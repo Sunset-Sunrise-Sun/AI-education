@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "makeup_task.schema.json",
+  "title": "MakeupTask",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["course_id", "course_name", "credit", "status"],
+  "properties": {
+    "course_id": {"type": "string", "minLength": 1},
+    "course_name": {"type": "string", "minLength": 1},
+    "credit": {"type": "number", "minimum": 0},
+    "status": {
+      "type": "string",
+      "enum": ["required", "possibly_equivalent", "manual_confirmation", "satisfied"]
+    },
+    "deadline_semester": {"type": ["integer", "null"], "minimum": 1},
+    "recommended_semester": {"type": ["integer", "null"], "minimum": 1},
+    "prerequisites": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "default": []
+    },
+    "reason": {"type": ["string", "null"]},
+    "source_evidence": {"type": ["string", "null"]}
+  }
+}
