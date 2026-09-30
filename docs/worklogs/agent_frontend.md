@@ -156,10 +156,8 @@
      指出图中 Curriculum 的输出是简写，Planner 的输入不止 `MakeupTask[]`。
   3. 本文件追加本条校准记录。
 - 负责人校准要点：
-  - 比赛 Demo 故事线（8 幕页面叙事）属于**后续产品展示阶段**，不是当前组长模块的开发主线。
-  - 据此，此前已启动的 8 幕原型被叫停并**停放在本地分支** `feature/frontend-demo-narrative`
-    （commit `0040cec`，**未推送、未合并**，未经新任务书不得使用或合并）；
-    `main` 未受任何影响，工作树已确认干净。
+  - 此前讨论过的 8 幕比赛 Demo 故事线已由负责人叫停，未进入远端仓库或 main，
+    不属于当前开发主线；后续比赛展示设计须由负责人另行下发任务。
 - 修改文件：
   - `docs/status/agent_frontend.md`
   - `docs/ARCHITECTURE.md`
