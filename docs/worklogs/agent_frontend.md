@@ -73,3 +73,70 @@
 - 需要人工确认：无（本轮仅修 blocker）
 - 对其他模块影响：无
 - 下一步：等待 Reviewer 第二轮验收；Phase 2 未开始，`main` 未合并。
+
+---
+
+### 2026-09-30 - Phase 2A：前端技术选型 + 最小 Demo 壳层
+- 本次目标：建立最小可运行的 Vue 前端，让用户能在浏览器里看到一条完整的 Mock 演示链路。
+- 已完成：
+  - 前端技术栈由负责人确认为 **Vue 3 + TypeScript + Vite**，并同步 `/docs/ARCHITECTURE.md`
+  - 新建 `frontend/` 工程：单页面、原生 CSS，**未引入** Vue Router / Pinia / UI 组件库 / 图表库
+  - 页面含：顶部 Mock 标识（含后端 `X-Data-Source` 实际取值）、四个展示区块、loading/success/error 三态
+  - 唯一数据来源 `GET /api/v1/mock/demo`；后端地址集中在 `vite.config.ts` + `.env.example`，不散落在组件里
+  - 采用 Vite 同源代理，**因此没有修改 backend**，也就不需要 CORS
+  - 请求失败时不生成任何替代数据（`useDemoData.ts` 错误分支把 data 置为 null）
+- 修改文件：
+  - 新增 `frontend/`（package.json、package-lock.json、vite.config.ts、tsconfig.json、index.html、
+    .env.example、.gitignore、README.md、src/**）
+  - 更新 `docs/ARCHITECTURE.md`（`Vue 或 React（尚未最终确定）` → `Vue 3 + TypeScript + Vite`）
+  - 更新 `docs/status/agent_frontend.md`、本文件
+- 测试：
+  - 前端构建：`npm run build` 通过（`vue-tsc --noEmit` + `vite build`，28 modules；
+    dist JS 76.56 kB / CSS 6.92 kB，gzip 后 29.98 kB / 1.93 kB）
+  - 后端回归：`cd backend && python -m pytest` → 125 passed, 1 skipped（后端未被修改，复跑确认）
+  - 端到端实测：
+    `npm run dev` → `GET http://127.0.0.1:5173/api/v1/mock/demo` 返回 200 且 `X-Data-Source: mock`；
+    `npm run preview` → `GET http://127.0.0.1:4173/api/v1/mock/demo` 同样返回 200；
+    关闭后端后同一请求失败（502），页面因此走 error 分支
+- 使用数据：Mock
+- 公共接口是否变化：否（未修改 `/schemas/` 与 `/docs/interfaces/`）
+- 是否修改 backend：否
+- 已知问题 / 踩坑记录：
+  - `typescript` 默认装到了 v7，而 `vue-tsc@3` 尚不兼容（报 `./lib/tsc` 未导出），
+    已将 `typescript` 固定为 `^5.9.0`
+  - Vite 默认绑定 `localhost`，Node 在 Windows 上优先解析到 IPv6 `::1`，
+    导致 `http://127.0.0.1:5173` 访问失败；已在 `vite.config.ts` 中显式 `host: '127.0.0.1'`
+  - 前端类型是与 `/schemas/` **手工对齐**的，不是代码生成，契约变更时需要同步
+- 需要人工确认：无（技术栈已确认）
+- 对其他模块影响：无。后端未改动；`/api/v1/mock/*` 仍是永久 Mock 通道
+- 下一步：Phase 2B 设计比赛 Demo 的信息结构（故事线）；在此之前不接 Agent / LLM
+
+---
+
+### 2026-09-30 - Phase 2A 第一轮 Review 修复（仅修 3 个 blocker）
+- 本次目标：只修 Reviewer 指出的 3 个前端 blocker，不进入 Phase 2B、不做其他重构。
+- 已完成：
+  1. `App.vue` 成功态把四个展示组件分别放进 `SectionCard`，补上
+     「补修任务 / 教学班 / 用户偏好 / 最终方案」四个顶层标题，`Mock` 标记因此真正显示；
+     未改动任何组件内部逻辑。
+  2. 修正 `PlanResultPanel.vue` 两处动态 class 的错误写法：
+     `class="tag tag--plan-{{ ... }}"` 与 `class="tag tag--risk-{{ ... }}"` 改为 `:class` 绑定，
+     现在会正确生成 `tag--plan-feasible|partially_feasible|infeasible`
+     与 `tag--risk-low|medium|high`。
+  3. 修正 `unresolved` 的展示语义：区块标题改为「未解决事项（unresolved）」；
+     `manual_confirmation` 显示"待人工确认"、`missing_data` 显示"缺少数据"，
+     未知 `type` 原样显示并保留原始 type 标签。
+     `unresolved[].type` 在公共 Schema 中是开放字符串，前端**不做业务归类**。
+- 修改文件：
+  - `frontend/src/App.vue`
+  - `frontend/src/components/PlanResultPanel.vue`
+  - `frontend/src/utils/labels.ts`（新增 `UNRESOLVED_TYPE_LABEL` / `unresolvedTypeLabel`）
+  - `frontend/README.md`、本文件
+- 测试：`cd frontend && npm run build`（`vue-tsc --noEmit` + `vite build`）→ 通过
+- 使用数据：Mock
+- 公共接口是否变化：否（未修改 `/schemas/` 与 `/docs/interfaces/`）
+- 是否修改 backend：否（backend 未改动，沿用已确认的 125 passed, 1 skipped）
+- 是否引入新依赖：否
+- 已知问题：无新增
+- 需要人工确认：无
+- 下一步：等待 Reviewer 第二轮验收；Phase 2B 未开始

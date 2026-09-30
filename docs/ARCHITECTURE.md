@@ -51,7 +51,7 @@
 - PostgreSQL
 - JavaScript/TypeScript
 - Chrome Extension Manifest V3
-- Vue 或 React（尚未最终确定）
+- Vue 3 + TypeScript + Vite（前端技术栈已由负责人确认）
 - LLM Structured Output / Tool Calling
 
 任何核心技术替换需人工确认并记录。
