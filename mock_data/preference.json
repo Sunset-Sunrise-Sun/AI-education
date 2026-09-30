@@ -1,0 +1,13 @@
+{
+  "max_credit": 15,
+  "avoid_cross_campus": true,
+  "preferred_courses": ["62001002"],
+  "avoid_times": [
+    {
+      "weekday": 5,
+      "start_section": 5,
+      "end_section": 8
+    }
+  ],
+  "notes": "演示用偏好：周五下午不要排课，尽量不跨校区。由人工编写，非真实用户需求。"
+}

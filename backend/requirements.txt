@@ -1,0 +1,18 @@
+# 组长模块后端集成底座依赖
+#
+# 版本下界取自实际验证通过的运行环境（Python 3.14 + 下列版本，pytest 全绿）。
+# 这里刻意不写死补丁版本：MVP 阶段优先保证可安装、可复现主版本，
+# 避免因为锁定过细导致其他成员装不上。
+#
+# jsonschema 属于**运行期**依赖：mock_service 必须先用 /schemas/*.schema.json 校验原始 JSON，
+# 再交给 Pydantic，否则 Pydantic 的类型转换（"1" -> 1、true -> 1）会放行违反公共契约的数据。
+# pytest / httpx 仅测试需要；暂时放在同一个文件里，是为了让其他成员一条命令就能跑起测试，
+# 如果后续依赖变复杂，再拆分 requirements.txt 与 requirements-dev.txt。
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+jsonschema>=4.20
+
+# --- 以下仅测试需要 ---
+pytest>=8.0
+httpx>=0.27
