@@ -73,3 +73,40 @@
 - 需要人工确认：无（本轮仅修 blocker）
 - 对其他模块影响：无
 - 下一步：等待 Reviewer 第二轮验收；Phase 2 未开始，`main` 未合并。
+
+---
+
+### 2026-09-30 - Phase 2A：前端技术选型 + 最小 Demo 壳层
+- 本次目标：建立最小可运行的 Vue 前端，让用户能在浏览器里看到一条完整的 Mock 演示链路。
+- 已完成：
+  - 前端技术栈由负责人确认为 **Vue 3 + TypeScript + Vite**，并同步 `/docs/ARCHITECTURE.md`
+  - 新建 `frontend/` 工程：单页面、原生 CSS，**未引入** Vue Router / Pinia / UI 组件库 / 图表库
+  - 页面含：顶部 Mock 标识（含后端 `X-Data-Source` 实际取值）、四个展示区块、loading/success/error 三态
+  - 唯一数据来源 `GET /api/v1/mock/demo`；后端地址集中在 `vite.config.ts` + `.env.example`，不散落在组件里
+  - 采用 Vite 同源代理，**因此没有修改 backend**，也就不需要 CORS
+  - 请求失败时不生成任何替代数据（`useDemoData.ts` 错误分支把 data 置为 null）
+- 修改文件：
+  - 新增 `frontend/`（package.json、package-lock.json、vite.config.ts、tsconfig.json、index.html、
+    .env.example、.gitignore、README.md、src/**）
+  - 更新 `docs/ARCHITECTURE.md`（`Vue 或 React（尚未最终确定）` → `Vue 3 + TypeScript + Vite`）
+  - 更新 `docs/status/agent_frontend.md`、本文件
+- 测试：
+  - 前端构建：`npm run build` 通过（`vue-tsc --noEmit` + `vite build`，28 modules；
+    dist JS 76.56 kB / CSS 6.92 kB，gzip 后 29.98 kB / 1.93 kB）
+  - 后端回归：`cd backend && python -m pytest` → 125 passed, 1 skipped（后端未被修改，复跑确认）
+  - 端到端实测：
+    `npm run dev` → `GET http://127.0.0.1:5173/api/v1/mock/demo` 返回 200 且 `X-Data-Source: mock`；
+    `npm run preview` → `GET http://127.0.0.1:4173/api/v1/mock/demo` 同样返回 200；
+    关闭后端后同一请求失败（502），页面因此走 error 分支
+- 使用数据：Mock
+- 公共接口是否变化：否（未修改 `/schemas/` 与 `/docs/interfaces/`）
+- 是否修改 backend：否
+- 已知问题 / 踩坑记录：
+  - `typescript` 默认装到了 v7，而 `vue-tsc@3` 尚不兼容（报 `./lib/tsc` 未导出），
+    已将 `typescript` 固定为 `^5.9.0`
+  - Vite 默认绑定 `localhost`，Node 在 Windows 上优先解析到 IPv6 `::1`，
+    导致 `http://127.0.0.1:5173` 访问失败；已在 `vite.config.ts` 中显式 `host: '127.0.0.1'`
+  - 前端类型是与 `/schemas/` **手工对齐**的，不是代码生成，契约变更时需要同步
+- 需要人工确认：无（技术栈已确认）
+- 对其他模块影响：无。后端未改动；`/api/v1/mock/*` 仍是永久 Mock 通道
+- 下一步：Phase 2B 设计比赛 Demo 的信息结构（故事线）；在此之前不接 Agent / LLM
