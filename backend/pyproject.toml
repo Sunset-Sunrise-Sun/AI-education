@@ -1,0 +1,5 @@
+[tool.pytest.ini_options]
+# 从 backend/ 目录运行 `python -m pytest` 时，保证 app 包可被导入。
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"

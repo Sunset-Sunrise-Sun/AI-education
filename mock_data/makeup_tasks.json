@@ -1,0 +1,57 @@
+[
+  {
+    "course_id": "62001001",
+    "course_name": "离散数学",
+    "credit": 3,
+    "status": "required",
+    "deadline_semester": 5,
+    "recommended_semester": 4,
+    "prerequisites": [],
+    "reason": "转专业后新培养方案必修，原专业无对应课程记录。",
+    "source_evidence": "mock://curriculum/diff/62001001（演示数据，非真实培养方案）"
+  },
+  {
+    "course_id": "62001002",
+    "course_name": "数据结构与算法",
+    "credit": 4,
+    "status": "required",
+    "deadline_semester": 6,
+    "recommended_semester": 4,
+    "prerequisites": ["62001001"],
+    "reason": "新培养方案专业核心课，且为后续课程先修。",
+    "source_evidence": "mock://curriculum/diff/62001002（演示数据，非真实培养方案）"
+  },
+  {
+    "course_id": "62002031",
+    "course_name": "概率论与数理统计",
+    "credit": 3,
+    "status": "possibly_equivalent",
+    "deadline_semester": 6,
+    "recommended_semester": 5,
+    "prerequisites": [],
+    "reason": "原专业修读过名称相近课程，是否可认定为同一门课需人工确认学分与学时。",
+    "source_evidence": "mock://curriculum/equivalence/62002031（演示数据，非真实认定结果）"
+  },
+  {
+    "course_id": "62003007",
+    "course_name": "复变函数与积分变换",
+    "credit": 2,
+    "status": "manual_confirmation",
+    "deadline_semester": 7,
+    "recommended_semester": 5,
+    "prerequisites": [],
+    "reason": "新旧培养方案学分不一致（原 3 学分 / 新 2 学分），需教务人工判定是否需补修差额。",
+    "source_evidence": "mock://curriculum/manual/62003007（演示数据，非真实判定结果）"
+  },
+  {
+    "course_id": "62009001",
+    "course_name": "大学英语（一）",
+    "credit": 2,
+    "status": "satisfied",
+    "deadline_semester": null,
+    "recommended_semester": null,
+    "prerequisites": [],
+    "reason": "已修课程可直接抵认，无需补修。",
+    "source_evidence": "mock://curriculum/transcript/62009001（演示数据，非真实成绩单）"
+  }
+]

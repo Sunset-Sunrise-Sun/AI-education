@@ -1,0 +1,29 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# --- 环境变量 / 密钥（AGENTS.md 第 11 节：禁止提交真实值）---
+.env
+.env.*
+!.env.example
+
+# --- 编辑器 / 操作系统 ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- 本地数据库 / 日志 ---
+*.db
+*.sqlite3
+*.log
+# pytest temp dirs (created when cacheprovider is disabled)
+pytest-cache-files-*/

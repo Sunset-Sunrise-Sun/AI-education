@@ -1,0 +1,17 @@
+# 组长模块后端集成底座依赖
+#
+# 版本下界取自实际验证通过的运行环境（Python 3.14 + 下列版本，pytest 全绿）。
+# 这里刻意不写死补丁版本：MVP 阶段优先保证可安装、可复现主版本，
+# 避免因为锁定过细导致其他成员装不上。
+#
+# 引入 pytest / httpx / jsonschema 仅为**测试**用途，运行服务本身只需要 fastapi 与 uvicorn。
+# 它们暂时放在同一个文件里，是为了让其他成员一条命令就能跑起测试；
+# 如果后续依赖变复杂，再拆分 requirements.txt 与 requirements-dev.txt。
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# --- 以下仅测试需要 ---
+pytest>=8.0
+httpx>=0.27
+jsonschema>=4.20
