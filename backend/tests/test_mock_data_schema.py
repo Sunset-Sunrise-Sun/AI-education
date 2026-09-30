@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -24,6 +25,8 @@ from app.models.contracts import (
     PlanResult,
     Preference,
 )
+from app.services import mock_service
+from app.services.mock_service import MOCK_DATA_DIR, MockDataError
 
 # Mock 文件 -> (公共 Schema 文件, Pydantic 模型, 是否数组)
 MOCK_BINDINGS: dict[str, tuple[str, type, bool]] = {
@@ -374,3 +377,107 @@ def test_source_evidence_points_to_mock(mock_files) -> None:
         assert "演示数据" in evidence or "非真实" in evidence, (
             f"{task['course_id']} 的 source_evidence 未说明非真实：{evidence!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 运行期必须按公共 JSON Schema 校验（不能依赖 Pydantic 的类型转换）
+# ---------------------------------------------------------------------------
+
+
+def _poisoned_copy(tmp_path, file_name: str) -> dict:
+    """把真实 Mock 文件复制到临时目录并返回可修改的原始 JSON，供破坏性用例使用。
+
+    直接改仓库里的 `mock_data/` 会污染其他测试与工作区，所以一律在 tmp_path 上做。
+    """
+
+    shutil.copy(MOCK_DATA_DIR / file_name, tmp_path / file_name)
+    return json.loads((tmp_path / file_name).read_text(encoding="utf-8"))
+
+
+def test_json_schema_rejects_string_weekday_before_pydantic(tmp_path, monkeypatch) -> None:
+    """回归测试：JSON 里 `weekday` 写成字符串 `"1"` 必须被拒绝。
+
+    背景（第一轮 Review blocker 2）：`mock_service` 早期只做 `model_validate`，
+    而 Pydantic 默认会把 `"1"` 转成 `1`，于是「违反公共 JSON Schema（要求 integer）
+    的数据」会被静默接受。公共 Schema 是唯一真源，必须先按 Schema 校验原始 JSON。
+
+    本用例先断言 Pydantic 单独校验**确实会接受**这条数据，以证明回归测试不是空跑，
+    然后再断言数据层会拒绝它。
+    """
+
+    raw = _poisoned_copy(tmp_path, "course_offerings.json")
+    raw[0]["weekday"] = "1"
+
+    assert CourseOffering.model_validate(raw[0]).weekday == 1, (
+        "Pydantic 不再转换该数据，本回归测试的前提已变化，需要改用别的类型错误样例"
+    )
+
+    (tmp_path / "course_offerings.json").write_text(
+        json.dumps(raw, ensure_ascii=False), encoding="utf-8"
+    )
+    monkeypatch.setattr(mock_service, "MOCK_DATA_DIR", tmp_path)
+
+    with pytest.raises(MockDataError) as excinfo:
+        mock_service.load_course_offerings()
+
+    message = str(excinfo.value)
+    assert "weekday" in message, f"报错未指出问题字段：{message}"
+    assert "course_offering.schema.json" in message, f"报错未指出依据的公共 Schema：{message}"
+
+
+def test_json_schema_rejects_boolean_credit_before_pydantic(tmp_path, monkeypatch) -> None:
+    """第二个回归样例：`credit` 写成布尔值也必须被拒绝。
+
+    公共 Schema 要求 `credit` 是 number，而 `true` 不是 number。
+    Pydantic 默认会把 `True` 当成 `1`，所以只有先按 Schema 校验才能拦住。
+    """
+
+    raw = _poisoned_copy(tmp_path, "course_offerings.json")
+    raw[0]["credit"] = True
+
+    assert CourseOffering.model_validate(raw[0]).credit == 1
+
+    (tmp_path / "course_offerings.json").write_text(
+        json.dumps(raw, ensure_ascii=False), encoding="utf-8"
+    )
+    monkeypatch.setattr(mock_service, "MOCK_DATA_DIR", tmp_path)
+
+    with pytest.raises(MockDataError):
+        mock_service.load_course_offerings()
+
+
+def test_json_schema_rejects_duplicate_weeks(tmp_path, monkeypatch) -> None:
+    """`weeks` 重复元素不仅要被模型拒绝，也必须被公共 Schema 在数据层拦下。"""
+
+    raw = _poisoned_copy(tmp_path, "course_offerings.json")
+    raw[0]["weeks"] = [1, 1]
+
+    (tmp_path / "course_offerings.json").write_text(
+        json.dumps(raw, ensure_ascii=False), encoding="utf-8"
+    )
+    monkeypatch.setattr(mock_service, "MOCK_DATA_DIR", tmp_path)
+
+    with pytest.raises(MockDataError) as excinfo:
+        mock_service.load_course_offerings()
+
+    assert "weeks" in str(excinfo.value)
+
+
+def test_startup_self_check_uses_public_schema(tmp_path, monkeypatch) -> None:
+    """启动自检走的 `all_mock_data()` 也必须按公共 JSON Schema 校验，而不是只靠 Pydantic。"""
+
+    for file_name in MOCK_BINDINGS:
+        shutil.copy(MOCK_DATA_DIR / file_name, tmp_path / file_name)
+
+    raw = json.loads((tmp_path / "preference.json").read_text(encoding="utf-8"))
+    raw["max_credit"] = "15"
+
+    assert Preference.model_validate(raw).max_credit == 15
+
+    (tmp_path / "preference.json").write_text(
+        json.dumps(raw, ensure_ascii=False), encoding="utf-8"
+    )
+    monkeypatch.setattr(mock_service, "MOCK_DATA_DIR", tmp_path)
+
+    with pytest.raises(MockDataError):
+        mock_service.all_mock_data()

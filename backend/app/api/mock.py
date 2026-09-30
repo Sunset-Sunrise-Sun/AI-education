@@ -12,6 +12,9 @@
 那些属于 Curriculum / Course Data / Planner 模块。
 
 每个响应都带 `X-Data-Source: mock` 响应头，确保调用方不可能把 Mock 误认成真实教务数据。
+
+本文件是**永久 Mock 通道**：不会在将来被"原地替换"成真实数据源，也不会返回真实教务数据。
+未来的真实接入将以**新增独立 adapter / provider** 的方式另开通道。
 """
 
 from typing import Annotated

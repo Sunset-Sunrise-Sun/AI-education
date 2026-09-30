@@ -19,4 +19,4 @@
 - 人工检查 Elements / Network / Fetch-XHR
 - 获取少量已授权真实课程样本
 - 确定 DOM 读取还是页面正常接口数据解析
-- 产出真实 CourseOffering 后，按 `backend/README.md` 第 9 节替换 Mock 来源，并将 `data_source` 改为 `real`
+- 产出真实 CourseOffering 后，将以**新增独立 adapter / provider** 的方式接入真实通道；`/mock_data/` 与 `/api/v1/mock/*` 保持 **Mock-only**，不会被改写为真实数据源（见 `backend/README.md` 第 9 节）

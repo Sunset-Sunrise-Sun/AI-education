@@ -37,6 +37,7 @@ __all__ = [
     "MakeupTask",
     "PlanResult",
     "PlanStatus",
+    "PositiveIntList",
     "Preference",
     "Risk",
     "RiskLevel",
@@ -89,6 +90,17 @@ UniqueStrList = Annotated[list[str], BeforeValidator(_reject_duplicates)]
 #: 与公共 Schema 的语义不同（公共 Schema 允许空数组）。
 CourseIdList = Annotated[
     list[Annotated[str, Field(min_length=1)]],
+    BeforeValidator(_reject_duplicates),
+]
+
+#: 正整数数组：元素 ≥1 且不重复。
+#: 对应公共 Schema 中 `{"type": "array", "items": {"type": "integer", "minimum": 1},
+#: "minItems": 1, "uniqueItems": true}` —— 即 CourseOffering.weeks。
+#: `minimum: 1` 加在**元素**上（与 CourseIdList 同理）；
+#: `uniqueItems` 同样由 `_reject_duplicates` 在运行时强制：
+#: Pydantic 不会把 `uniqueItems` 生成为 Schema 关键字，不显式校验就会比公共契约更宽松。
+PositiveIntList = Annotated[
+    list[Annotated[int, Field(ge=1)]],
     BeforeValidator(_reject_duplicates),
 ]
 
@@ -164,7 +176,7 @@ class CourseOffering(BaseModel):
     weekday: int = Field(ge=1, le=7, description="1=周一 … 7=周日")
     start_section: int = Field(ge=1, description="起始节次")
     end_section: int = Field(ge=1, description="结束节次")
-    weeks: list[Annotated[int, Field(ge=1)]] = Field(
+    weeks: PositiveIntList = Field(
         min_length=1, description="实际周次数组，至少 1 项且不重复"
     )
     campus: str | None = None

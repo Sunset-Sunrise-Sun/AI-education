@@ -6,11 +6,11 @@
 ## 已完成
 - 模块边界和依赖接口已定义
 - FastAPI 集成底座可启动：`backend/app/main.py`
-- 与 `/schemas/` 一致的 Pydantic 校验层：`backend/app/models/contracts.py`
+- 与 `/schemas/` 一致的 Pydantic 校验层：`backend/app/models/contracts.py`（含 `uniqueItems` 的运行时强制）
 - Mock 回放接口：`GET /api/v1/mock/{makeup-tasks, course-offerings, preference, plan-result, demo}`
 - 健康检查：`GET /health`（另挂 `/api/v1/health`）
-- 启动数据自检：Mock 数据不合契约时进程直接启动失败
-- 自动测试：118 passed / 1 skipped（`cd backend && python -m pytest`）
+- 启动数据自检：**先按公共 JSON Schema 校验原始 JSON**（不依赖 Pydantic 的类型转换），不合契约时进程直接启动失败
+- 自动测试：125 passed / 1 skipped（`cd backend && python -m pytest`）
 - 接口清单、启动/测试/验收步骤：`backend/README.md`
 
 ## 当前接口
@@ -32,4 +32,4 @@
 ## 下一步
 - 基于公共 Schema 做静态页面原型，直接调 `/api/v1/mock/demo`
 - 用 Mock `PlanResult` 展示冲突与 Path Repair 的前后变化，以及 `unresolved` 的人工确认项
-- 上游任一模块可用后，按 `backend/README.md` 第 9 节只替换数据来源，不改 API 与模型
+- 真实模块接入将在后续阶段以**新增独立 adapter / provider** 的方式进入；`/api/v1/mock/*` 与 `mock_service` 保持 **Mock-only**，不会被改造成真实数据源（见 `backend/README.md` 第 9 节）

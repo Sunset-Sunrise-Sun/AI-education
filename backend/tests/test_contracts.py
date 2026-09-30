@@ -270,15 +270,35 @@ def test_model_matches_public_schema(model_name: str, load_schema) -> None:
     _compare_shape(model_name, model_schema, json_schema, model_defs)
 
 
+#: 每个模型的最小合法数据，用于「只替换某一个字段」构造非法输入。
+_VALID_BASE: dict[str, dict] = {
+    "Course": VALID_COURSE,
+    "CourseOffering": VALID_OFFERING,
+    "MakeupTask": VALID_MAKEUP_TASK,
+    "Preference": {},
+    "PlanResult": VALID_PLAN_RESULT,
+}
+
+#: 按公共 Schema 的 items 类型生成「重复元素」。
+#: 如果将来公共 Schema 给新的元素类型加了 uniqueItems，这里会因为找不到对应类型而失败，
+#: 从而强制补测试，而不是静默跳过验证。
+_DUPLICATE_ITEM_BY_TYPE: dict[str, object] = {
+    "string": "DUP",
+    "integer": 1,
+}
+
+
 @pytest.mark.parametrize("model_name", sorted(SCHEMA_BINDINGS))
 def test_unique_items_fields_are_enforced_at_runtime(model_name: str, load_schema) -> None:
-    """公共 Schema 声明 `uniqueItems: true` 的数组，模型必须在运行时真的拒绝重复项。
+    """公共 Schema 声明 `uniqueItems: true` 的数组，模型必须真的拒绝重复项。
 
-    Pydantic 不会把 `uniqueItems` 生成为 Schema 关键字，因此这条必须单独验证：
-    否则「模型比公共契约更宽松」会悄悄溜过去。
+    Pydantic 不会把 `uniqueItems` 生成为 Schema 关键字，因此这条必须单独验证。
+
+    注意：本用例是**构造重复数据并断言被拒绝**，不是「确认字段存在」。
+    只确认字段存在无法证明模型真的会拒绝重复项——那正是第一轮 Review 指出的问题。
     """
 
-    _model, schema_file = SCHEMA_BINDINGS[model_name]
+    model, schema_file = SCHEMA_BINDINGS[model_name]
     json_schema = load_schema(schema_file)
 
     unique_fields = [
@@ -291,27 +311,61 @@ def test_unique_items_fields_are_enforced_at_runtime(model_name: str, load_schem
         pytest.skip(f"{model_name} 的公共 Schema 没有 uniqueItems 字段，无需运行")
 
     for name in unique_fields:
-        assert name in _model.model_fields, f"{model_name} 缺少带有 uniqueItems 的字段 {name}"
+        assert name in model.model_fields, f"{model_name} 缺少带有 uniqueItems 的字段 {name}"
+
+        item_type = json_schema["properties"][name]["items"]["type"]
+        assert item_type in _DUPLICATE_ITEM_BY_TYPE, (
+            f"{model_name}.{name} 的元素类型 {item_type!r} 尚未在测试中支持，"
+            f"请扩展 _DUPLICATE_ITEM_BY_TYPE，不要跳过这条验证"
+        )
+
+        duplicate = _DUPLICATE_ITEM_BY_TYPE[item_type]
+        payload = {**_VALID_BASE[model_name], name: [duplicate, duplicate]}
+
+        with pytest.raises(ValidationError):
+            model.model_validate(payload)
 
 
 @pytest.mark.parametrize(
-    ("payload", "field"),
+    ("model", "payload", "field"),
     [
-        ({**VALID_COURSE, "prerequisites": ["A", "A"]}, "prerequisites"),
-        ({**VALID_MAKEUP_TASK, "prerequisites": ["A", "B", "A"]}, "prerequisites"),
-        ({"preferred_courses": ["62001001", "62001001"]}, "preferred_courses"),
+        (Course, {**VALID_COURSE, "prerequisites": ["A", "A"]}, "prerequisites"),
+        (CourseOffering, {**VALID_OFFERING, "weeks": [1, 1]}, "weeks"),
+        (MakeupTask, {**VALID_MAKEUP_TASK, "prerequisites": ["A", "B", "A"]}, "prerequisites"),
+        (Preference, {"preferred_courses": ["62001001", "62001001"]}, "preferred_courses"),
+    ],
+    ids=[
+        "course-prerequisites",
+        "course-offering-weeks",
+        "makeup-task-prerequisites",
+        "preference-preferred-courses",
     ],
 )
-def test_duplicate_items_are_rejected(payload: dict, field: str) -> None:
-    """`uniqueItems: true` 的实际行为：重复元素必须被拒绝。"""
+def test_duplicate_items_are_rejected(model: type, payload: dict, field: str) -> None:
+    """`uniqueItems: true` 的实际行为：重复元素必须被拒绝。
 
-    model = {
-        "prerequisites": MakeupTask if "status" in payload else Course,
-        "preferred_courses": Preference,
-    }[field]
+    显式写出模型而不是靠 payload 猜，避免「加了字段但映射写错」导致验证落空。
+    """
+
+    assert field in model.model_fields
 
     with pytest.raises(ValidationError):
         model.model_validate(payload)
+
+
+def test_duplicate_weeks_are_rejected() -> None:
+    """第一轮 Review 明确要求：`weeks=[1, 1]` 必须 ValidationError。"""
+
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate({**VALID_OFFERING, "weeks": [1, 1]})
+
+
+def test_distinct_weeks_are_accepted() -> None:
+    """反向确认：不重复的 weeks 必须正常通过，避免把合法数据也挡掉。"""
+
+    offering = CourseOffering.model_validate({**VALID_OFFERING, "weeks": [1, 2]})
+
+    assert offering.weeks == [1, 2]
 
 
 def test_duplicate_items_allow_distinct_values() -> None:

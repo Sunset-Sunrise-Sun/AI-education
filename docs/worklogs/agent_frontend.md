@@ -42,4 +42,34 @@
   - 真实教务数据的访问方式需等页面技术侦察结果
   - `MakeupTask` 的课程等价判定仍为演示数据，正式认定须人工完成
 - 对其他模块影响：无破坏性影响。上游模块只要产出符合 `/schemas/` 的结果，即可被本层直接接入，无需本层改动接口。
-- 下一步：先做静态页面原型对接 `/api/v1/mock/demo`；上游任一模块可用后替换 `mock_service` 中对应的数据来源函数。
+- 下一步：先做静态页面原型对接 `/api/v1/mock/demo`；真实模块接入将新增独立 adapter / provider，`mock_service` 与 `/api/v1/mock/*` 保持 Mock-only。
+
+---
+
+### 2026-09-30 - 第一轮 Code Review 修复（仅修 blocker）
+- 本次目标：只修 Reviewer 第一轮指出的 3 个 blocker，不做其他重构，不进入 Phase 2。
+- 已完成：
+  1. `CourseOffering.weeks` 现在真的在运行时拒绝重复元素（新增 `PositiveIntList`），
+     并补上显式用例 `weeks=[1, 1]` 必须 `ValidationError`；
+     同时**修正**原先只"确认字段存在"、并未真正验证运行时拒绝的 `uniqueItems` 用例，
+     改为按公共 Schema 自动构造重复数据并断言被拒绝。
+  2. `mock_service` 现在在进入 Pydantic 之前，**先按 `/schemas/*.schema.json` 校验原始 JSON**；
+     新增回归测试覆盖"Pydantic 原本会做类型转换"的非法数据
+     （`weekday: "1"`、`credit: true`、`max_credit: "15"`、`weeks: [1, 1]`），
+     并单独覆盖启动自检 `all_mock_data()` 这条路径。
+  3. 修正文档中"把 `mock_service` / `mock.py` 原地替换为真实数据源"的错误描述：
+     `mock_service` 与 `/api/v1/mock/*` **永久 Mock-only**，
+     真实接入将以**新增独立 adapter / provider** 的方式另开通道，正式形态届时确认。
+- 修改文件：
+  - `backend/app/models/contracts.py`、`backend/app/services/mock_service.py`、`backend/app/api/mock.py`
+  - `backend/tests/test_contracts.py`、`backend/tests/test_mock_data_schema.py`
+  - `backend/requirements.txt`（`jsonschema` 由测试依赖提升为**运行期**依赖）
+  - `backend/README.md`、`mock_data/README.md`、`docs/status/agent_frontend.md`、
+    `docs/status/course_data.md`、本文件
+- 测试：`cd backend && python -m pytest` → 125 passed, 1 skipped
+- 使用数据：Mock
+- 公共接口是否变化：否（未修改 `/schemas/` 与 `/docs/interfaces/`）
+- 已知问题：无新增
+- 需要人工确认：无（本轮仅修 blocker）
+- 对其他模块影响：无
+- 下一步：等待 Reviewer 第二轮验收；Phase 2 未开始，`main` 未合并。

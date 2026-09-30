@@ -117,7 +117,7 @@ cd backend
 python -m pytest
 ```
 
-**当前结果：118 passed, 1 skipped。**
+**当前结果：125 passed, 1 skipped。**
 
 那 1 个 skip 不是失败：`tests/test_contracts.py` 里有一条用例专门验证
 「公共 Schema 声明 `uniqueItems: true` 的数组，模型必须在运行时真的拒绝重复项」。
@@ -147,9 +147,9 @@ python -m pytest tests/test_mock_data_schema.py -v
 
 **所有响应都带 `X-Data-Source: mock` 响应头。** 这是刻意的：调用方不可能把演示数据误认成真实教务数据。
 
-> ⚠️ `/api/v1/mock/*` 是**数据回放**，不是计算。
-> 例如 `/mock/plan-result` 返回的方案**不是求解器算出来的**，而是人工写好的演示结果；
-> 服务端不执行任何冲突检测或 Path Repair。
+> ⚠️ `/api/v1/mock/*` 是**永久只读的 Mock 通道**：不是计算，也不会变成真实数据接口。
+> 它只回放 `/mock_data/` 下的演示数据，任何阶段都不会返回真实教务数据；
+> 例如 `/mock/plan-result` 返回的方案**不是求解器算出来的**，而是人工写好的演示结果。
 
 ---
 
@@ -161,39 +161,39 @@ python -m pytest tests/test_mock_data_schema.py -v
 - `MakeupTask` / `Preference` / `PlanResult` 的公共 Schema **没有** `data_source` 字段，
   且声明了 `additionalProperties: false`。因此本项目**不在这三个对象上私自增加来源字段**
   （那属于未获批准的公共接口变更），改为通过响应头 `X-Data-Source: mock` 与文档明确标记。
+- **`/api/v1/mock/*` 与 `app/services/mock_service.py` 永远只服务 Mock**：
+  它们不会在将来被“原地替换”成真实数据源（见第 9 节）。
 - 真实数据接入必须等用户完成教务页面的技术侦察，并在**本人正常登录、已有权限查看**的范围内获取。
   任何绕过登录、破解验证码、越权访问的做法都禁止（`/AGENTS.md` 第 8 节）。
 
 ---
 
-## 9. 后续如何把 Mock 换成真实模块
+## 9. 未来真实模块如何接入（Phase 1 不做实现）
 
-设计上，**替换数据来源不需要动 API 层、模型层和前端**。`app/services/mock_service.py`
-是唯一的数据来源边界，它对外暴露的函数签名就是未来的接入点：
+**先说清楚三条不会变的事：**
 
-```python
-load_makeup_tasks()     -> list[MakeupTask]      # 未来：改调 Curriculum 模块
-load_course_offerings() -> list[CourseOffering]  # 未来：改调 Course Data 模块
-load_preference()       -> Preference            # 未来：改调 Agent 的偏好解析
-load_plan_result()      -> PlanResult            # 未来：改调 Planner 模块
+1. `app/services/mock_service.py` **永远是 Mock-only**。
+   它只读 `/mock_data/` 下的演示数据，永远不会读取真实教务数据，也不会被"原地改造成"真实数据源。
+2. `/api/v1/mock/*` **永远只返回 Mock 数据**，永远带 `X-Data-Source: mock`。
+   它不会被改造成真实数据接口，任何人都不应把这条通道的结果当成真实结果。
+3. **Phase 1 不实现任何 Real Provider，也不在本阶段设计新的正式 API。**
+   真实接入的接口形状，要等上游模块（Curriculum / Course Data / Planner）产出稳定结果之后，
+   由负责人与相关模块一起确认；如需改动公共契约，走 `/AGENTS.md` 第 4 节的流程。
+
+**方向性说明（不是本阶段的承诺，也不是本阶段要做的设计）：**
+
+真实数据将通过**新增独立的 adapter / provider** 进入系统，而不是改写 `mock_service`。
+Mock 通道与将来的真实通道是两条并行路径，互不影响：
+
+```text
+Mock 通道（始终存在）:  /api/v1/mock/course-offerings  ->  mock_service  ->  mock_data/*.json
+真实通道（未来新增）:   路径与形状待定                  ->  新增 adapter / provider  ->  Course Data 模块
 ```
 
-替换步骤（以 Course Data 接入为例）：
+无论走哪条通道，对外返回的都必须是符合 `/schemas/*.schema.json` 的公共对象；
+契约层与前端因此不需要因为"数据来源变了"而重写。
 
-1. 新增 `app/services/course_data_client.py`，实现 `get_course_offerings(course_id) -> list[CourseOffering]`
-   （函数名参考 `docs/interfaces/course_data.md` 的建议接口）；
-2. 保持返回的仍然是**符合 `schemas/course_offering.schema.json` 的 `CourseOffering`**，
-   字段名、类型、枚举一律不变；
-3. 把 `app/api/mock.py` 中 `course_offerings()` 这个依赖项的**内部实现**换成新客户端，
-   路径与返回结构保持不变；
-4. 数据来源标记从 `mock` 改为 `real`，并同步更新 `/docs/status/` 与 `/docs/worklogs/`；
-5. 前端与 Planner 无需改动——这正是本阶段把契约层和来源层分开的目的。
-
-**禁止的替换方式**：为了接上真实数据而修改 `/schemas/` 字段；
-或者把上游的业务算法复制进 `backend/`。两种情况都应先按 `/AGENTS.md` 第 4 节
-提交 `【接口变更请求】`，或直接把算法留在它自己的模块里。
-
----
+**本阶段的下游影响：** 以上都属于后续阶段的决策，当前不实现，也不需要其他模块现在就配合改动。
 
 ## 10. 手动验收步骤
 
@@ -240,5 +240,6 @@ load_plan_result()      -> PlanResult            # 未来：改调 Planner 模�
 - 没有前端页面。前端框架尚未最终确定（见 `/docs/ARCHITECTURE.md`），本阶段只保证后端可被调用。
 - 没有 LLM / Agent Tool Calling。属于后续阶段。
 - 没有 `courses.json`。`Course` 对象应由 Curriculum 模块在真实培养方案接入后产出，本次不预造。
+- 没有真实数据通道。本阶段只有 Mock 通道；真实 adapter / provider 属于后续阶段，尚未设计。
 - `app/models/contracts.py` 与 `/schemas/*.schema.json` 的一致性靠测试维护，
   而不是代码生成。若未来 Schema 频繁变动，应改为从 Schema 生成模型，避免人工同步漂移。
