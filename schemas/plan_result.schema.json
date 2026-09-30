@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plan_result.schema.json",
+  "title": "PlanResult",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "selected_classes", "changes", "risks", "unresolved"],
+  "properties": {
+    "status": {"type": "string", "enum": ["feasible", "partially_feasible", "infeasible"]},
+    "selected_classes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["course_id", "class_id"],
+        "properties": {
+          "course_id": {"type": "string"},
+          "class_id": {"type": "string"}
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["course_id", "reason"],
+        "properties": {
+          "course_id": {"type": "string"},
+          "from_class": {"type": ["string", "null"]},
+          "to_class": {"type": ["string", "null"]},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "risks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["level", "reason"],
+        "properties": {
+          "course_id": {"type": ["string", "null"]},
+          "level": {"type": "string", "enum": ["low", "medium", "high"]},
+          "reason": {"type": "string"}
+        }
+      }
+    },
+    "unresolved": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "message"],
+        "properties": {
+          "type": {"type": "string"},
+          "message": {"type": "string"}
+        }
+      }
+    },
+    "objective_summary": {"type": ["string", "null"]}
+  }
+}

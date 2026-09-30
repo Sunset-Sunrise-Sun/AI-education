@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "course.schema.json",
+  "title": "Course",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["course_id", "course_name", "credit"],
+  "properties": {
+    "course_id": {"type": "string", "minLength": 1},
+    "course_name": {"type": "string", "minLength": 1},
+    "credit": {"type": "number", "minimum": 0},
+    "course_type": {"type": ["string", "null"]},
+    "recommended_semester": {"type": ["integer", "null"], "minimum": 1},
+    "prerequisites": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true,
+      "default": []
+    },
+    "source": {"type": ["string", "null"]}
+  }
+}

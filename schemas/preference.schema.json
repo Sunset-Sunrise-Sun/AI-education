@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "preference.schema.json",
+  "title": "Preference",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "max_credit": {"type": ["number", "null"], "minimum": 0},
+    "avoid_cross_campus": {"type": "boolean", "default": false},
+    "preferred_courses": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true,
+      "default": []
+    },
+    "avoid_times": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["weekday", "start_section", "end_section"],
+        "properties": {
+          "weekday": {"type": "integer", "minimum": 1, "maximum": 7},
+          "start_section": {"type": "integer", "minimum": 1},
+          "end_section": {"type": "integer", "minimum": 1}
+        }
+      },
+      "default": []
+    },
+    "notes": {"type": ["string", "null"]}
+  }
+}
