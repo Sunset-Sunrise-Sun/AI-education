@@ -69,18 +69,46 @@ onMounted(() => {
         <button class="button" type="button" @click="load">重新加载</button>
       </SectionCard>
 
-      <!-- 状态三：加载成功，展示四类公共对象 -->
+      <!-- 状态三：加载成功。
+           四个展示组件分别放进 SectionCard，形成四个明确区域：
+           补修任务 / 教学班 / 用户偏好 / 最终方案。
+           数据全部来自后端 Mock 通道，所以每个区域都带 Mock 标记（SectionCard 的 mock 默认为 true，
+           这里显式写出，便于阅读时确认标记确实存在）。 -->
       <template v-else-if="data">
-        <MakeupTaskList :tasks="data.makeup_tasks" />
+        <SectionCard
+          mock
+          title="补修任务"
+          subtitle="Curriculum 模块本应输出的 MakeupTask：转专业后需要补什么。"
+        >
+          <MakeupTaskList :tasks="data.makeup_tasks" />
+        </SectionCard>
 
-        <CourseOfferingList :offerings="data.course_offerings" />
+        <SectionCard
+          mock
+          title="教学班"
+          subtitle="Course Data 模块本应输出的 CourseOffering：这些课现实中开了哪些班。"
+        >
+          <CourseOfferingList :offerings="data.course_offerings" />
+        </SectionCard>
 
-        <PreferencePanel :preference="data.preference" />
+        <SectionCard
+          mock
+          title="用户偏好"
+          subtitle="Agent 解析后本应产出的 Preference：学分上限与需要避开的时段。"
+        >
+          <PreferencePanel :preference="data.preference" />
+        </SectionCard>
 
-        <PlanResultPanel
-          :plan-result="data.plan_result"
-          :course-name-by-id="courseNameById"
-        />
+        <SectionCard
+          mock
+          title="最终方案"
+          subtitle="Planner 模块本应输出的 PlanResult：换了哪些班、有哪些风险、还有什么没解决。"
+        >
+          <PlanResultPanel
+            :plan-result="data.plan_result"
+            :course-name-by-id="courseNameById"
+          />
+        </SectionCard>
       </template>
     </main>
 
@@ -89,7 +117,7 @@ onMounted(() => {
         本页全部数据来自后端 Mock 通道 <code class="mono">GET /api/v1/mock/demo</code>，
         为人工虚构的演示数据，<strong>不是真实教务数据</strong>。
       </p>
-      <p>A. 补修任务 · B. 教学班 · C. 用户偏好 · D. 最终方案（含 changes / risks / unresolved）</p>
+      <p>补修任务 · 教学班 · 用户偏好 · 最终方案（含 changes / risks / unresolved）</p>
     </footer>
   </div>
 </template>

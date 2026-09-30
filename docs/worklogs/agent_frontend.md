@@ -110,3 +110,33 @@
 - 需要人工确认：无（技术栈已确认）
 - 对其他模块影响：无。后端未改动；`/api/v1/mock/*` 仍是永久 Mock 通道
 - 下一步：Phase 2B 设计比赛 Demo 的信息结构（故事线）；在此之前不接 Agent / LLM
+
+---
+
+### 2026-09-30 - Phase 2A 第一轮 Review 修复（仅修 3 个 blocker）
+- 本次目标：只修 Reviewer 指出的 3 个前端 blocker，不进入 Phase 2B、不做其他重构。
+- 已完成：
+  1. `App.vue` 成功态把四个展示组件分别放进 `SectionCard`，补上
+     「补修任务 / 教学班 / 用户偏好 / 最终方案」四个顶层标题，`Mock` 标记因此真正显示；
+     未改动任何组件内部逻辑。
+  2. 修正 `PlanResultPanel.vue` 两处动态 class 的错误写法：
+     `class="tag tag--plan-{{ ... }}"` 与 `class="tag tag--risk-{{ ... }}"` 改为 `:class` 绑定，
+     现在会正确生成 `tag--plan-feasible|partially_feasible|infeasible`
+     与 `tag--risk-low|medium|high`。
+  3. 修正 `unresolved` 的展示语义：区块标题改为「未解决事项（unresolved）」；
+     `manual_confirmation` 显示"待人工确认"、`missing_data` 显示"缺少数据"，
+     未知 `type` 原样显示并保留原始 type 标签。
+     `unresolved[].type` 在公共 Schema 中是开放字符串，前端**不做业务归类**。
+- 修改文件：
+  - `frontend/src/App.vue`
+  - `frontend/src/components/PlanResultPanel.vue`
+  - `frontend/src/utils/labels.ts`（新增 `UNRESOLVED_TYPE_LABEL` / `unresolvedTypeLabel`）
+  - `frontend/README.md`、本文件
+- 测试：`cd frontend && npm run build`（`vue-tsc --noEmit` + `vite build`）→ 通过
+- 使用数据：Mock
+- 公共接口是否变化：否（未修改 `/schemas/` 与 `/docs/interfaces/`）
+- 是否修改 backend：否（backend 未改动，沿用已确认的 125 passed, 1 skipped）
+- 是否引入新依赖：否
+- 已知问题：无新增
+- 需要人工确认：无
+- 下一步：等待 Reviewer 第二轮验收；Phase 2B 未开始

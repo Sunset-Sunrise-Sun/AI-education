@@ -141,9 +141,10 @@ VITE_API_BASE_URL=
 
 ## 7. 本阶段包含 / 不包含
 
-**包含**：顶部 Mock 状态标识、补修任务、教学班、用户偏好、最终方案（含
-`status` / `selected_classes` / `changes` / `risks` / `unresolved` / `objective_summary`）、
-加载中与请求失败两种状态。
+**包含**：顶部 Mock 状态标识；四个带顶层标题与 `Mock` 标记的明确区域——
+**补修任务 / 教学班 / 用户偏好 / 最终方案**（最终方案内含
+`status` / `selected_classes` / `changes` / `risks` / `unresolved` / `objective_summary`）；
+以及加载中与请求失败两种状态。
 
 **不包含**（属于后续阶段，本轮明确不做）：
 
@@ -167,7 +168,9 @@ VITE_API_BASE_URL=
 5. 在最终方案里确认：
    - `changes` 能看懂「原教学班 ↓ 修改为 新教学班 + 原因」；
    - `risks` 显示了 `低 / 中 / 高` 等级（等级来自后端，前端不重算）；
-   - `unresolved` 区块显眼，每条都带「待人工确认」标记；
+   - `unresolved`（未解决事项）区块显眼：每条显示由 `type` 翻译出的标签
+     （`manual_confirmation` → 待人工确认，`missing_data` → 缺少数据，未知类型原样显示），
+     并同时保留原始 `type` 以便追溯；
 6. **失败路径**：停掉后端，刷新页面 → 应看到「Demo 数据加载失败」+ 非敏感错误说明 + 重新加载按钮，
    且页面上**没有**任何编造的数据。
 

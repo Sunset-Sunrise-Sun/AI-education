@@ -35,6 +35,29 @@ export const RISK_LEVEL_LABEL: Record<RiskLevel, string> = {
   high: '高',
 }
 
+/**
+ * `unresolved[].type` 的展示翻译。
+ *
+ * 公共 Schema 对 `unresolved[].type` **只要求是字符串，没有 enum 约束**，
+ * 也就是说上游随时可能产出新的类型。因此这里：
+ * - 只翻译已知取值；
+ * - 未知取值**原样显示 type 本身**，绝不猜测、绝不归类成别的业务含义
+ *   （那会变成前端替后端下结论）。
+ */
+export const UNRESOLVED_TYPE_LABEL: Record<string, string> = {
+  manual_confirmation: '待人工确认',
+  missing_data: '缺少数据',
+}
+
+/** 把 `unresolved[].type` 翻成中文；未知类型原样返回，空值兜底为"未解决"。 */
+export function unresolvedTypeLabel(type: string): string {
+  const known = UNRESOLVED_TYPE_LABEL[type]
+  if (known) {
+    return known
+  }
+  return type || '未解决'
+}
+
 const WEEKDAY_NAMES = ['周一', '周二', '周三', '周四', '周五', '周六', '周日']
 
 /** weekday: 1=周一 … 7=周日（与公共 Schema 一致）。 */
