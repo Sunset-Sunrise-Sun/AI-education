@@ -140,3 +140,35 @@
 - 已知问题：无新增
 - 需要人工确认：无
 - 下一步：等待 Reviewer 第二轮验收；Phase 2B 未开始
+
+---
+
+### 2026-09-30 - 负责人路线校准（docs-only）
+- 本次目标：按负责人校准，修正两份文档里的"下一阶段定位"与"模块职责描述"。
+  **不改代码、不改 Schema、不改 Interface**；本文件只追加记录，不改写任何历史条目。
+- 已完成：
+  1. `docs/status/agent_frontend.md`：下一阶段由"比赛 Demo 故事线"改为
+     **Integration / Orchestrator 集成骨架**；对应阻塞项同步更新
+     （改为"集成骨架尚未建立：上游模块没有正式接入点"）。
+  2. `docs/ARCHITECTURE.md`：Curriculum 与 Planner 的职责 / 不负责范围按 `/AGENTS.md` 第 5 节重写，
+     并补充"Planner 消费 Curriculum 的补修任务、课程依赖结果与已确认优先级，
+     不得自行重写课程认定或学业优先级规则"；数据流图下补了一条说明，
+     指出图中 Curriculum 的输出是简写，Planner 的输入不止 `MakeupTask[]`。
+  3. 本文件追加本条校准记录。
+- 负责人校准要点：
+  - 比赛 Demo 故事线（8 幕页面叙事）属于**后续产品展示阶段**，不是当前组长模块的开发主线。
+  - 据此，此前已启动的 8 幕原型被叫停并**停放在本地分支** `feature/frontend-demo-narrative`
+    （commit `0040cec`，**未推送、未合并**，未经新任务书不得使用或合并）；
+    `main` 未受任何影响，工作树已确认干净。
+- 修改文件：
+  - `docs/status/agent_frontend.md`
+  - `docs/ARCHITECTURE.md`
+  - 本文件
+- 测试：本次为 docs-only，未改动任何代码。已复跑确认现状仍为绿：
+  前端 `cd frontend && npm run build` 通过；后端 `cd backend && python -m pytest` → 125 passed, 1 skipped
+- 使用数据：Mock
+- 公共接口是否变化：否（未修改 `/schemas/` 与 `/docs/interfaces/`）
+- 是否修改 backend：否
+- 已知问题：无新增
+- 需要人工确认：无
+- 下一步：等待负责人下发新的 Phase 2B 技术任务书（Integration / Orchestrator 集成骨架）

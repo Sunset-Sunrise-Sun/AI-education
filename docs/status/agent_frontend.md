@@ -1,6 +1,6 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-09-30（Phase 2A：前端最小 Demo 壳层）
+> 最后更新：2026-09-30（路线校准：下一阶段 = Integration / Orchestrator 集成骨架）
 > 数据状态：**全部为 Mock**，尚未接入真实教务数据
 
 ## 已完成
@@ -36,10 +36,12 @@
 ## 当前阻塞
 - 上游 Curriculum / Course Data / Planner 均未产出真实结果，前端只能展示 Mock
 - 真实教务数据接入需等用户完成教务页面技术侦察并确认授权范围
-- Demo 的信息结构（比赛讲述顺序）尚未设计，属于 Phase 2B
+- **集成骨架尚未建立**：上游模块暂时没有正式的接入点（模块适配层 / 编排层待做）
 
 ## 下一步
-- **Phase 2B**：与负责人一起设计 Demo 信息结构，把
-  「转专业前 → 缺什么 → 有什么班 → 怎么调整 → 最终方案」串成一条用户看得懂的故事线
+- **Phase 2B（路线已校准）**：**Integration / Orchestrator 集成骨架** ——
+  在 Phase 1 的 Mock 底座之上建立模块适配层与编排骨架，
+  为真实 Curriculum / Course Data / Planner 预留正式接入点；具体范围以负责人下发的任务书为准
+- 比赛 Demo 故事线（页面叙事结构）**不属于当前开发主线**，推迟到后续产品展示阶段再评估
 - 真实模块接入将以**新增独立 adapter / provider** 的方式进入；`/api/v1/mock/*` 与 `mock_service` 保持 **Mock-only**
 - 在真实 Curriculum / Planner / Course Data 稳定之前，不接 Agent / LLM
