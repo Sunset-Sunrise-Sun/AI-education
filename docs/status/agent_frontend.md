@@ -28,8 +28,9 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                    →  Phase 2B-2A ✅ Course Data Normalization Core（字段映射 + 快照 + Provider 落点）
                    →  Phase 2B-2B ✅ Schedule Parser + Local Import Adapter（纯本地、零网络）
                    →  Phase 2B-2C0 ✅ Pagination Core（零网络分页采集 + completeness 证据链）
-                   →  【下一步，需新任务书】Phase 2B-2C1 真实网络 Transport
-                      （登录 / 分页参数人工验证 / 请求规模确认）
+                   →  ✅ SYSU 分页参数人工验证完成（first_page_no=1、单页上限 200、前两页 total=6892）
+                   →  【下一步，需新任务书】Phase 2B-2C1 真实授权 Transport
+                      （登录 / 授权导入 / 请求规模确认）
                    →  之后：Phase 2B Integration / Orchestrator 接真实 Provider
 ```
 
@@ -368,10 +369,24 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - **partial**：达到 `max_pages`（**安全阀**）仍未取满 → `partial`，并如实记录 `reported_total`；
 - 提前空页 / 累计超限 / 跨页重复 → **FAIL**；fetcher 异常与解析失败**原样向上抛**（⛔ 不 retry / fallback / 跳页）；
 - 分页器**不自行去重**，重复判定交给 `OfferingSnapshot`；按**原页序 + 原行序**累积；
-- 分页参数**无默认值**，且**不假定 `page_no` 从 1 开始**（`first_page_no=0` 按 0,1,2 调用）；
+- 分页参数**无默认值**（核心与具体学校无关），且**不假定 `page_no` 从 1 开始**（`first_page_no=0` 按 0,1,2 调用）；
+  SYSU 的实际取值属**后续 Transport 配置**，**不硬编码进核心**；
 - ⛔ **`partial` 不得接入 Integration / Planner**（有测试锁定分页核心不导入 / 不构造 Provider）；
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/` 均未修改；
   后端 **420 passed / 2 skipped**。
+
+### SYSU 分页参数人工验证（已完成）
+
+| 项 | 已验证结果 |
+|---|---|
+| `pageNo=1` | 请求成功（`code=200`，`total=6892`） |
+| `pageNo=2` | 请求成功（`code=200`，`total=6892`） |
+| `pageSize=200` | 请求成功；负责人确认 **SYSU 单页最大支持 200** |
+| `total` 稳定性 | **已验证前两页** `total` 均为 **6892** |
+
+> ⚠️ **仅覆盖已验证的前两页**，不代表整学期分页已跑完；
+> ⚠️ 本次**未单独记录** `rows.length`，因此**不声称**已确认每页满 200 行；
+> ⚠️ `max_pages` 是**内部安全阀**，**不是**学校侧参数，无需人工验证。
 
 ## 已完成
 - 模块边界和依赖接口已定义
@@ -534,10 +549,11 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 ## 下一步
 - **等待 Reviewer 验收 Phase 2B-2C0**（分页核心；
   重点看"是否假定分页参数""是否静默去重 / 跳页""是否把 partial 当 complete""是否偷偷接 Integration"）
-- **下一步是 Phase 2B-2C1**：真实**网络 Transport**（实现 `OpeningCoursesPageFetcher`）+
+- **下一步是 Phase 2B-2C1**：实现**真实授权 Transport**（`OpeningCoursesPageFetcher`）+
   完整 **2026-1** semester snapshot，
   ⚠️ **本轮不得自行开始**，须等新一轮任务书
-- **2B-2C1 启动前必须先人工验证**：`page_size` / `first_page_no` / `max_pages`；
+- **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`），
+  Transport 按此配置即可；`max_pages` 是**内部安全阀**，不是学校侧参数；
   **partial snapshot 必须显式记录 completeness，不得宣称 complete**（C9）
 - **仍不允许实现层自行补齐**：`prerequisites[]` / `weekDay` / `openingSchoolName → campus` /
   meeting-level teacher 四项保持"待确认"或"已知暂缓"（C11）

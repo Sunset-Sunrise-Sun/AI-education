@@ -23,8 +23,10 @@ fetch_page(第 2 页) → import_opening_courses_response(..., completeness="par
 - ⛔ **不重试、不 fallback、不跳页**：fetcher 抛异常或某页解析失败 → **原样向上失败**；
 - ⛔ **不自行去重**：不 `set()`、不建 dict、不保留第一条 / 最后一条 ——
   重复判定交给 `OfferingSnapshot` 的 `(semester, course_id, class_id)` 规则；
-- ⛔ **不假定分页参数**：**不写** `page_size` / `first_page_no` 默认值，
-  **不假定** `page_no` 从 1 开始 —— 真实取值尚未人工验证，全部由调用方显式给出。
+- ⛔ **本核心不绑定任何具体分页参数**：**不写** `page_size` / `first_page_no` 默认值，
+  **不假定** `page_no` 从 1 开始，全部由调用方显式给出。
+  SYSU 专有的取值（起始页码、单页上限等）属于**后续 Transport** 的配置，
+  **不得硬编码进 Pagination Core** —— 这样核心才能被 Fake 与真实 Transport 复用。
 
 ## complete 的证据链（缺一不可）
 
@@ -117,8 +119,9 @@ def collect_opening_courses_snapshot(
 
     所有分页参数都必须**显式传入**（没有默认值）：
 
-    - `page_size` —— 每页条数（**真实取值尚未人工验证**）；
-    - `first_page_no` —— 起始页码（**不假定从 1 开始**，可为 0）；
+    - `page_size` —— 每页条数；
+    - `first_page_no` —— 起始页码（**本核心不假定从 1 开始**，可为 0；
+      SYSU 的实际起点由后续 Transport 配置）；
     - `max_pages` —— **安全阀**：最多取多少页；未取满时返回 `partial`。
 
     返回：

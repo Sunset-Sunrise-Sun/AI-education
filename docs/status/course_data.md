@@ -17,9 +17,25 @@ Course Data normalization core（2B-2A）             ✅ 已完成
 teachingTimePlaceStr parser（2B-2B）                ✅ 已完成（依据私密脱敏样本，未入 Git）
 本地 Raw-response import adapter（2B-2B）            ✅ 已完成（零网络）
 分页采集核心 Pagination Core（2B-2C0）              ✅ 已完成（零网络；fetch_page 由外部提供）
-真实网络 Transport（登录 / 分页 / 参数人工验证）      ⏳ 未实现（Phase 2B-2C1）
+SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（前两页；见下）
+真实网络 Transport（登录 + 授权分页采集）            ⏳ 未实现（Phase 2B-2C1）
 完整 semester snapshot                              ⏳ 未取得
 ```
+
+### SYSU 分页参数人工验证结论（已验证事实）
+
+| 项 | 已验证结果 |
+|---|---|
+| `pageNo=1` | 请求成功（`code=200`，`total=6892`） |
+| `pageNo=2` | 请求成功（`code=200`，`total=6892`） |
+| `pageSize=200` | 请求成功 |
+| 单页上限 | 负责人确认 **SYSU 单页最大支持 200** |
+| `total` 稳定性 | **已验证前两页** `total` 均为 **6892**（即在这两页范围内保持稳定） |
+
+> ⚠️ **以上仅覆盖已验证的前两页**，**不代表**整学期分页已经跑完。
+> ⚠️ 本次**未单独记录** `rows.length`（单页实际返回行数），因此**不声称**已确认每页满 200 行。
+> ⚠️ 这些是 **SYSU 专有取值**，属于**后续 Transport 的配置**，
+> **不会硬编码进 Pagination Core**（核心保持与具体学校无关、无默认值）。
 
 ## 已完成
 
@@ -41,7 +57,7 @@ teachingTimePlaceStr parser（2B-2B）                ✅ 已完成（依据私�
 | 顺序 | 按**原页序 + 原行序**累积，不重排 |
 | 错误策略 | fetcher 异常 / 某页解析失败 **原样向上抛**；⛔ 不 retry、⛔ 不 fallback、⛔ 不跳页、⛔ 不返回"看起来差不多"的 complete |
 | 参数 | `semester` / `source` 非空字符串；`page_size ≥ 1`；`first_page_no ≥ 0`；`max_pages ≥ 1`（`bool` 不算整数）；**非法即 fail closed** |
-| 分页参数默认值 | ⛔ **不提供**：真实 `pageSize` 与 `firstPageNo` **尚未人工验证**，**不假定 `page_no` 从 1 开始**，全部由调用方显式传入 |
+| 分页参数默认值 | ⛔ **本核心不提供默认值**（保持与具体学校无关），全部由调用方显式传入；<br>SYSU 的实际取值（起始页码 1、单页上限 200）属**后续 Transport 配置**，**不硬编码进核心** |
 | 取满后 | **不再**请求下一页 |
 | `total == 0` | 第一页 `total=0` + 空 rows → **complete**（`loaded_count = 0`），且**不再**请求下一页 |
 | `partial` 用途限制 | ⛔ **禁止**把 `partial` 包成生产 `SnapshotCourseDataProvider` 接进 Integration；<br>`partial` 仅用于**获取规模验证 / 小范围验证 / parser 与 normalizer 验证**，**不进入 Planner 产品链路** |
@@ -184,11 +200,10 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 当前阻塞
 
-- **真实网络 Transport 未实现**（Phase 2B-2C1）：尚未有"用户明确触发授权导入"的网络通道；
+- **真实网络 Transport 尚未实现**（Phase 2B-2C1）：还没有"用户明确触发授权导入"的网络通道；
   本轮只做到**零网络**的分页采集核心（`fetch_page` 由外部提供）；
-- **分页参数未经人工验证**：真实 `pageSize` / `firstPageNo` 取值未确认，
-  因此代码**不提供默认值**、**不假定 `page_no` 从 1 开始**；
-- **完整 semester snapshot 未取得**：当前只有 D5 小规模侦察 + 私密脱敏样本，
+- **完整 semester snapshot 未取得**：当前只有 D5 小规模侦察 + 私密脱敏样本
+  + 已验证的**前两页**分页参数；
   **不是**完整快照；**本轮未发起任何 SYSU 请求**；
 - ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（本阶段限制）；
 - ⛔ **`weekDay → weekday` 与 `openingSchoolName → campus` 仍然不做**（C11 待确认项）：
@@ -212,7 +227,8 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 - **Phase 2B-2C1：真实网络 Transport**（实现 `OpeningCoursesPageFetcher`）——
   用户本人正常登录、已有权限、**用户明确触发**的授权导入；
-  `page_size` / `first_page_no` / `max_pages` **必须先人工验证**；
+  分页参数**已完成人工验证**（`first_page_no=1`、`page_size` 上限 200、前两页 `total` 均为 6892），
+  由 Transport 按此配置；`max_pages` 是**内部安全阀**，不是学校侧参数；
   只能取得部分范围时**必须显式记录 completeness**，**不得宣称 complete**（C9）；
 - **完整 semester snapshot**：目标为 **2026-1**，取得后以 `OfferingSnapshot` 表达，
   并由 `SnapshotCourseDataProvider` 供 Integration 消费；
