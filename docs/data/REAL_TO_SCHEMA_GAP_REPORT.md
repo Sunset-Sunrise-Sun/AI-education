@@ -340,6 +340,15 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 
 **最终表示方式（多 segment 如何建模）留给 Data Gate。**
 
+> **Data Gate-1 引用（状态已同步）**：上述 G9 与 G10（以及 G1 / G2 / G4 等）已在
+> `docs/data/DATA_GATE_DECISIONS.md` 中整理为实体边界、
+> Shared / Private / Derived 分类与 **DG-01 – DG-06 接口变更请求**。
+>
+> **状态：Data Gate-1 架构裁决已完成；公共契约尚未实施，实施进入 Data Gate-2。**
+>
+> ⚠️ 该文件**同样没有修改任何 Schema / Interface**；
+> 本报告的**缺口状态与 G1–G10 历史分析不因该文件而改变**。
+
 ---
 
 ## 5. 缺口处理流程
@@ -385,3 +394,5 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | 2026-09-30 | **Phase 2B-0C 验证（D4 真实样本）** | 依据 `TRANSCRIPT-001`（D4，认证来源 + 负责人私密侧脱敏，24 条、8 字段 100% 覆盖）：① 新增 **§3.6**，把 `course_id` / `course_name` / `credit` / `course_type` / `semester` / `passed` / `offering_unit` / `cultivation_type` **逐项判定 A/B/C**；② 明确 **`semester` 不得映射到 `recommended_semester`**（实际修读学期 ≠ 培养方案建议学期）、**`passed` 不得塞入 `Course`**（学生修读事实 ≠ 课程固有属性）、**`cultivation_type` 不得当成 `course_type`**；③ **G2 更新为「已由 Case A 真实 D4 样本验证」**（见 4.4）。**只记录问题，未自行决定新增任何 Schema，未修改公共 Schema，未做课程等价判断** |
 | 2026-09-30 | **Reviewer 修复（`course_type` 归属 + 隐私口径）** | ① **修正 `course_type` 的语义归属**：由"课程固有属性"改为 **培养方案 / 上下文属性**，并明确"`Course.course_type` 能承载该字符串值"**不等于**"该字段归属已正确建模"。新的四类归属：**课程核心标识 / 基础属性**（`course_id` / `course_name` / `credit`）、**学生修读事实**（`semester` / `passed`）、**培养方案 / 上下文属性**（`course_type`）、**归属待确认**（`offering_unit` / `cultivation_type`）；§3.1 同步补注；② **收紧隐私口径**：不再记录 `passed` 的通过 / 未通过分布，只保留"覆盖率 24/24 + 类型 / 语义 = boolean"；`semester` 改为"覆盖两个学期"、`course_type` 只列取值种类不列数量；③ 明确 **G7 本轮不升级**（`offering_unit` 的存在**不能**证明教学班页面也提供该字段，须等 2B-0D） |
 | 2026-09-30 | **Phase 2B-0D 验证（D5 真实样本）** | 依据 `OFFERING-001`（D5，认证来源，**小规模人工侦察**；`CSE202` / `2026-1` 返回 **2 个真实教学班**）：① **§3.2 `CourseOffering` 字段映射逐项判定 A/B/C** —— A：`courseNum` / `courseName` / `classNumber` / `yearTerm` / `limitNumber`；B：`score` → `credit`（字符串数字转换）、`remaining_capacity` 为 `limitNumber - selectedNumber` 的**派生值**；C：`selectedNumber` / `openingUnitName` / `courseCategoryName` / `examMode` / `readObj` / `teachProgressSubmitState` / `openClass`；② **新增 G9**：一个教学班可有**多个上课时间 / 地点 segment**，当前 `CourseOffering` **无法在一个对象中无损表达**；③ **新增 G10**：D5 另有多个真实字段在现有 Schema 中无表示；④ **G7 升级为「已由真实 D5 样本验证」**（2B-0C 预留的"须等 2B-0D"条件已满足）。**未修改 Schema、未新增 `meetings[]`、未实现 parser、未写 crawler / DB / Adapter、未进入 Integration**。⚠️ **不得声称学校接口直接提供 `remaining_capacity`**；⚠️ `courseCategoryName`（样本为"专必"）**带培养方案边界上下文，不得认定为课程全局固有属性** |
+| 2026-09-30 | **Data Gate-1 引用（不改缺口状态）** | 新增 `docs/data/DATA_GATE_DECISIONS.md`（当时为**草案，未经批准**），把 G1 / G2 / G4 / G9 / G10 等整理为实体边界、Shared / Private / Derived 分类与 **DG-01 – DG-06 接口变更请求草案**；并在 §4.5 末尾加入 Data Gate 引用。**本报告的缺口状态与 A/B/C 映射结论一律不变**；**未修改 Schema / Interface / 代码**，**未调用 SYSU 接口**，当时**未做任何裁决** |
+| 2026-09-30 | **Data Gate-1 状态同步（Reviewer 认可后）** | 仅同步 **Data Gate 状态措辞**（§4.5 引用块 + 本表）：`DATA_GATE_DECISIONS.md` 的标注由"**草案，未经批准**"改为 **「Data Gate-1 架构裁决已完成；公共契约尚未实施，实施进入 Data Gate-2」**。**只同步状态**：**G1–G10 的历史分析与 A/B/C 映射结论一字未改**；**未修改 Schema / Interface / 代码**，**未调用 SYSU 接口**，**未进入 Data Gate-2** |
