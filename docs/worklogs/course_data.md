@@ -255,3 +255,65 @@
 - 下一步：等待 Reviewer 验收 Phase 2B-2B。之后是 **Phase 2B-2C 真实受控获取**，
   ⚠️ **须等新一轮任务书，不自行开始**。
 
+---
+
+### 2026-09-30 - Phase 2B-2C0：Course Data Pagination Core
+- 本次目标：新增**零网络**分页采集核心，把多页 Raw 逐页交给**已审核通过的** importer 标准化，
+  再按**证据链**判定最终 `completeness`。`fetch_page` 本轮**只能由测试 Fake 提供**；**不实现真实 HTTP**。
+- 起点：`main` = `6485dd15491a1f971927f853ffb032f3f8e71c4b`；
+  新建 `feature/course-data-pagination-core`。
+- **新增 `backend/app/course_data/pagination.py`**：
+  - 内部 Protocol `OpeningCoursesPageFetcher.fetch_page(*, semester, page_no, page_size) -> Mapping`
+    （`@runtime_checkable`）—— **Course Data 内部接口**，**不进** `/docs/interfaces`、**不加入** Integration；
+  - `collect_opening_courses_snapshot(fetcher, *, semester, source, page_size, first_page_no, max_pages)
+    -> OfferingSnapshot`：
+    - **严格串行**取页：`first_page_no`、`first_page_no + 1`、…；⛔ 不并发、⛔ 不预取下一页；
+    - 每页**复用** `import_opening_courses_response(..., completeness="partial")`，
+      **不重写** Raw parser / normalizer；
+    - **total 一致性**：第一页 `reported_total` 记为 `expected_total`，
+      后续每页必须**完全相等**；⛔ 不采用最新 / 最大 / 最小值（变化即 FAIL）；
+    - **complete 证据链**：所有页成功解析 + 每页 total 一致 + 累计 `loaded_count == expected_total`
+      + 无重复教学班（交给 `OfferingSnapshot`）+ 无中途空页 + 无请求错误；
+    - **partial**：达到 `max_pages`（**安全阀**）仍未取满 → `completeness="partial"`，
+      `reported_total` 如实记录；
+    - **提前空页**（`loaded_count == 0` 且累计 < total）→ FAIL；**累计超限** → FAIL；
+    - **跨页重复**：分页器**不自行去重**（不 `set()` / 不建 dict / 不留第一条或最后一条），
+      交由 `OfferingSnapshot` 的 `(semester, course_id, class_id)` 判定 → FAIL；
+    - 按**原页序 + 原行序**累积，不重排；
+    - fetcher 异常 / 任一行解析失败 → **原样向上抛**（⛔ 不 retry / fallback / 跳页 /
+      不返回"看起来差不多"的 complete）；
+    - 参数校验：`semester` / `source` 非空字符串；`page_size ≥ 1`；`first_page_no ≥ 0`；`max_pages ≥ 1`
+      （`bool` 不算整数）；**非法即 fail closed 且不调用 fetcher**；
+    - **分页参数无默认值**，且**不假定 `page_no` 从 1 开始**（真实取值尚未人工验证）；
+    - 取满后**不再请求下一页**；`total == 0` + 空 rows → **complete**（`loaded_count = 0`）且不多请求。
+- **`backend/app/course_data/__init__.py`**：导出 `OpeningCoursesPageFetcher` 与
+  `collect_opening_courses_snapshot`，并更新包说明（含 2B-2C0 阶段边界与 `partial` 使用限制）。
+- **新增 `backend/tests/test_course_data_pagination.py`**（54 个测试，全部使用测试内 Fake Fetcher）：
+  单页 / 两页 / 三页 complete、`first_page_no=1` 与 `first_page_no=0` 的**调用序列**、
+  `semester` / `page_size` 透传、`total=0` 立即 complete 且不再请求、
+  `max_pages` 截断 → partial（`reported_total` 正确）、`max_pages` 是安全阀而非页数、
+  **第二页 total 变化（减少 / 增加）→ FAIL**、**达到 total 前空页 → FAIL**、
+  累计超限 → FAIL、单页行数超 total → FAIL、
+  **跨页重复 → FAIL**（同课不同班保留）、页序与行序保持、
+  fetcher 异常（首页 / 第二页）原样上抛、某页 parser 失败 / 畸形响应 → 整体 FAIL、
+  semester 不一致 FAIL、`data_source == real` 与 `source` 透传、
+  非法 `page_size` / `first_page_no` / `max_pages` / `semester` / `source` → FAIL 且**未调用 fetcher**、
+  分页核心**无网络 import**、**不导入 / 不构造 Provider**（AST 检查）、
+  `partial` 不被包装成生产 Provider。
+- 修改文件：
+  - 新增 `backend/app/course_data/pagination.py`
+  - 修改 `backend/app/course_data/__init__.py`
+  - 新增 `backend/tests/test_course_data_pagination.py`
+  - 更新 `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **420 passed / 2 skipped**
+  （本轮基线 366 passed / 2 skipped；**旧测试全部继续通过，未删除旧测试、未新增 skip、未放宽校验**）。
+  `test_course_data_snapshot.py` 里的**包边界检查自动覆盖了 `pagination.py`**（零网络 / 无 endpoint / 无凭据痕迹）。
+- 使用数据：**Mock**（测试全部为人工虚构 page / row）
+- 已知问题：**真实网络 Transport 未实现**（2B-2C1）；分页参数未经人工验证；完整 2026-1 snapshot 未取得
+- 需要人工确认：`page_size` / `first_page_no` / `max_pages` 的真实取值（**因此代码不写默认值、不假定起点**）
+- 对其他模块影响：**无公共接口变化**；`SnapshotCourseDataProvider` **未修改**；
+  `partial` snapshot **未接入** Integration / Planner
+- 下一步：等待 Reviewer 验收 Phase 2B-2C0。之后是 **Phase 2B-2C1 真实网络 Transport**，
+  ⚠️ **须等新一轮任务书，不自行开始**。
+

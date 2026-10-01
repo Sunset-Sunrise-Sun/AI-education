@@ -1,12 +1,12 @@
 # Course Data 当前状态
 
-> 最后更新：2026-09-30（**Phase 2B-2B：Schedule Parser + Local Import Adapter** 完成，等待 Reviewer）
+> 最后更新：2026-09-30（**Phase 2B-2C0：Course Data Pagination Core** 完成，等待 Reviewer）
 >
 > ⚠️ **准确表述（不得夸大）**：
 > **真实 Course Data 尚未完成**，**2026-1 全量 snapshot 尚未取得**，**未发起任何 SYSU 请求**。
-> 本轮完成的是"**已取得 Raw response → `CourseOffering[]` → 内部快照**"的
-> **纯本地 parser + import adapter**（**零网络**）。
-> 真实受控获取（登录 / 分页 / 请求规模确认）属于 **Phase 2B-2C**。
+> 本轮完成的是**零网络的分页采集核心**（把多页 Raw 逐页标准化 + 依据证据链判定 completeness），
+> `fetch_page` **仍由外部提供**（本轮只由测试 Fake 提供）。
+> **真实网络 Transport（登录 / 分页 / 请求规模确认）属于 Phase 2B-2C1，尚未实现。**
 
 ## 阶段状态
 
@@ -16,11 +16,35 @@ Data Gate（契约裁决 + 实施）                        ✅ 已完成（C1�
 Course Data normalization core（2B-2A）             ✅ 已完成
 teachingTimePlaceStr parser（2B-2B）                ✅ 已完成（依据私密脱敏样本，未入 Git）
 本地 Raw-response import adapter（2B-2B）            ✅ 已完成（零网络）
-真实受控获取 adapter（登录 / 分页 / 请求规模确认）    ⏳ 未实现（Phase 2B-2C）
+分页采集核心 Pagination Core（2B-2C0）              ✅ 已完成（零网络；fetch_page 由外部提供）
+真实网络 Transport（登录 / 分页 / 参数人工验证）      ⏳ 未实现（Phase 2B-2C1）
 完整 semester snapshot                              ⏳ 未取得
 ```
 
 ## 已完成
+
+### 分页采集核心（Phase 2B-2C0，本轮）
+位置：`backend/app/course_data/pagination.py`（**内部实现 / 内部接口**）
+
+| 项 | 内容 |
+|---|---|
+| 内部 Protocol | `OpeningCoursesPageFetcher.fetch_page(*, semester, page_no, page_size) -> Mapping`<br>⛔ **不是** `/docs/interfaces` 公共接口，**不加入** Integration |
+| 核心函数 | `collect_opening_courses_snapshot(fetcher, *, semester, source, page_size, first_page_no, max_pages) -> OfferingSnapshot` |
+| 取页方式 | **严格串行**：`first_page_no`、`first_page_no + 1`、…；⛔ 不并发、⛔ 不预取下一页 |
+| 逐页处理 | 复用**已审核通过的** `import_opening_courses_response(..., completeness="partial")`；**不重写** parser / normalizer |
+| total 一致性 | 第一页的 `reported_total` 记为 `expected_total`；后续每页必须**完全相等**；<br>⛔ 不采用最新 / 最大 / 最小值（变化即 FAIL） |
+| complete 条件 | 所有页成功解析 + 每页 total 一致 + 累计 `loaded_count == expected_total` + 无重复教学班（由 `OfferingSnapshot` 判定）+ 无中途空页 + 无请求错误 |
+| partial 条件 | 达到 `max_pages`（**安全阀**，不是"完整页数"）仍未取满 → `completeness="partial"`，`reported_total` 如实记录 |
+| 提前空页 | 在达到 `expected_total` 之前出现 `loaded_count == 0` → **FAIL**（分页提前停滞） |
+| 累计超限 | `accumulated_count > expected_total` → **FAIL** |
+| 跨页重复 | 分页器**不自行去重**（不 `set()` / 不建 dict / 不留第一条或最后一条）→ 交由 `OfferingSnapshot` 的 `(semester, course_id, class_id)` 判定 → **FAIL** |
+| 顺序 | 按**原页序 + 原行序**累积，不重排 |
+| 错误策略 | fetcher 异常 / 某页解析失败 **原样向上抛**；⛔ 不 retry、⛔ 不 fallback、⛔ 不跳页、⛔ 不返回"看起来差不多"的 complete |
+| 参数 | `semester` / `source` 非空字符串；`page_size ≥ 1`；`first_page_no ≥ 0`；`max_pages ≥ 1`（`bool` 不算整数）；**非法即 fail closed** |
+| 分页参数默认值 | ⛔ **不提供**：真实 `pageSize` 与 `firstPageNo` **尚未人工验证**，**不假定 `page_no` 从 1 开始**，全部由调用方显式传入 |
+| 取满后 | **不再**请求下一页 |
+| `total == 0` | 第一页 `total=0` + 空 rows → **complete**（`loaded_count = 0`），且**不再**请求下一页 |
+| `partial` 用途限制 | ⛔ **禁止**把 `partial` 包成生产 `SnapshotCourseDataProvider` 接进 Integration；<br>`partial` 仅用于**获取规模验证 / 小范围验证 / parser 与 normalizer 验证**，**不进入 Planner 产品链路** |
 
 ### D5 技术侦察（Phase 2B-0D）
 - 记录见 `docs/data/SYSU_COURSE_OFFERING_RECON.md`（`OFFERING-001`）；
@@ -154,14 +178,19 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 - 输出：`CourseOffering[]`（符合 `schemas/course_offering.schema.json`，`meetings[]` 至少 1 段）；
 - 跨模块公共边界：`CourseDataProvider.get_course_offerings(semester) -> list[CourseOffering]`
   （见 `docs/interfaces/integration.md`，**已冻结**，不得私自修改）；
+- **内部接口（非公共契约）**：`OpeningCoursesPageFetcher`（2B-2C0）——
+  只用于 Course Data 内部分页采集，**不加入 Integration**；
 - **尚未暴露任何真实 API**：`/api/v1/mock/*` 仍是独立的永久 Mock 回放通道。
 
 ## 当前阻塞
 
-- **真实受控获取 adapter 未实现**（Phase 2B-2C）：尚未有"用户明确触发授权导入"的网络通道；
-  本轮只做到**纯本地** Raw-response → `OfferingSnapshot`；
+- **真实网络 Transport 未实现**（Phase 2B-2C1）：尚未有"用户明确触发授权导入"的网络通道；
+  本轮只做到**零网络**的分页采集核心（`fetch_page` 由外部提供）；
+- **分页参数未经人工验证**：真实 `pageSize` / `firstPageNo` 取值未确认，
+  因此代码**不提供默认值**、**不假定 `page_no` 从 1 开始**；
 - **完整 semester snapshot 未取得**：当前只有 D5 小规模侦察 + 私密脱敏样本，
   **不是**完整快照；**本轮未发起任何 SYSU 请求**；
+- ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（本阶段限制）；
 - ⛔ **`weekDay → weekday` 与 `openingSchoolName → campus` 仍然不做**（C11 待确认项）：
   `weekday` 一律来自 segment 自身，`campus` 只来自 segment 的 location 字段，
   代码中**没有**这类 fallback；
@@ -181,10 +210,11 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 下一步
 
-- **Phase 2B-2C：真实受控获取**（网络 adapter）——
+- **Phase 2B-2C1：真实网络 Transport**（实现 `OpeningCoursesPageFetcher`）——
   用户本人正常登录、已有权限、**用户明确触发**的授权导入；
-  批量导入前**必须先确认合理 `pageSize` / 请求规模**，
+  `page_size` / `first_page_no` / `max_pages` **必须先人工验证**；
   只能取得部分范围时**必须显式记录 completeness**，**不得宣称 complete**（C9）；
 - **完整 semester snapshot**：目标为 **2026-1**，取得后以 `OfferingSnapshot` 表达，
   并由 `SnapshotCourseDataProvider` 供 Integration 消费；
-- ⛔ 这些都属于后续任务书范围，**本轮不得自行开始**。
+- ⛔ 这些都属于后续任务书范围，**本轮不得自行开始**；
+  ⛔ 本轮**不进入** 2B-2C1，也**不**把 `partial` snapshot 接入 Integration。

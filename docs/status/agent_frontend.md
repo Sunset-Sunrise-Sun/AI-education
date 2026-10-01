@@ -1,23 +1,23 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-09-30（**Phase 2B-2B Schedule Parser + Local Import Adapter** 完成，等待 Reviewer）
+> 最后更新：2026-09-30（**Phase 2B-2C0 Course Data Pagination Core** 完成，等待 Reviewer）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应与私密脱敏样本均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
 > **Data Gate 通过条件 C1–C11 全部完成**；**公共契约本轮未改**
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
-> Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter 与内部快照**均已完成
-> （**零网络**）；
+> Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照
+> 与零网络分页采集核心**均已完成；
 > 但 **production Curriculum / Planner provider 尚未接入**，
-> **真实受控获取 adapter（网络）与完整 semester snapshot 仍未实现**，
+> **真实网络 Transport（2B-2C1）与完整 semester snapshot 仍未实现**，
 > 因此**没有**任何一条真实数据链路端到端跑通，**也未新增任何 API**。
 >
 > 详见 `docs/status/course_data.md`。
 
 ## 当前阶段
 
-**Phase 2B-2B 已完成 → 下一步 Phase 2B-2C（真实受控获取，尚未开工）**
+**Phase 2B-2C0 已完成 → 下一步 Phase 2B-2C1（真实网络 Transport，尚未开工）**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -27,7 +27,9 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                    →  Phase 2B-1 ✅ Integration / Provider Skeleton（Provider 边界 + Orchestrator）
                    →  Phase 2B-2A ✅ Course Data Normalization Core（字段映射 + 快照 + Provider 落点）
                    →  Phase 2B-2B ✅ Schedule Parser + Local Import Adapter（纯本地、零网络）
-                   →  【下一步，需新任务书】Phase 2B-2C 真实受控获取（登录 / 分页 / 请求规模确认）
+                   →  Phase 2B-2C0 ✅ Pagination Core（零网络分页采集 + completeness 证据链）
+                   →  【下一步，需新任务书】Phase 2B-2C1 真实网络 Transport
+                      （登录 / 分页参数人工验证 / 请求规模确认）
                    →  之后：Phase 2B Integration / Orchestrator 接真实 Provider
 ```
 
@@ -347,6 +349,30 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/` 均未修改；
   后端 **366 passed / 2 skipped**。
 
+## Phase 2B-2C0 结果（Course Data Pagination Core）
+
+**零网络**分页采集核心：把多页 Raw 逐页交给**已审核通过的** importer 标准化，
+再按**证据链**判定最终 `completeness`。详见 `docs/status/course_data.md`。
+
+| 产出 | 内容 |
+|---|---|
+| `backend/app/course_data/pagination.py` | `OpeningCoursesPageFetcher`（**内部** Protocol）+ `collect_opening_courses_snapshot()` |
+| `backend/tests/test_course_data_pagination.py` | 54 个测试（全部使用测试内 Fake Fetcher） |
+
+**关键边界**：
+
+- `fetch_page` **由调用方提供**，本轮**只由测试 Fake 提供**；⛔ **不实现真实 HTTP**，⛔ 不并发、⛔ 不预取下一页；
+- 逐页**复用** `import_opening_courses_response(..., completeness="partial")`，**不重写** parser / normalizer；
+- `expected_total` 取第一页的 `reported_total`；后续每页**必须完全相等**（⛔ 不采用最新 / 最大 / 最小值）；
+- **complete 证据链**：所有页成功解析 + 每页 total 一致 + 累计 `== total` + 无重复教学班 + 无中途空页 + 无请求错误；
+- **partial**：达到 `max_pages`（**安全阀**）仍未取满 → `partial`，并如实记录 `reported_total`；
+- 提前空页 / 累计超限 / 跨页重复 → **FAIL**；fetcher 异常与解析失败**原样向上抛**（⛔ 不 retry / fallback / 跳页）；
+- 分页器**不自行去重**，重复判定交给 `OfferingSnapshot`；按**原页序 + 原行序**累积；
+- 分页参数**无默认值**，且**不假定 `page_no` 从 1 开始**（`first_page_no=0` 按 0,1,2 调用）；
+- ⛔ **`partial` 不得接入 Integration / Planner**（有测试锁定分页核心不导入 / 不构造 Provider）；
+- **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/` 均未修改；
+  后端 **420 passed / 2 skipped**。
+
 ## 已完成
 - 模块边界和依赖接口已定义
 - **前端技术栈已由负责人确认：Vue 3 + TypeScript + Vite**（`/docs/ARCHITECTURE.md` 已同步）
@@ -506,16 +532,17 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **等待 Reviewer 验收 Phase 2B-2B**（parser + 本地 import adapter；
-  重点看"是否只实现有证据的结构""是否用了 `weekDay` / `openingSchoolName`""是否跳过坏 row""是否猜 completeness"）
-- **下一步是 Phase 2B-2C**：真实**受控获取**（网络 adapter：用户本人正常登录、已有权限、
-  用户明确触发授权导入）与完整 **2026-1** semester snapshot，
+- **等待 Reviewer 验收 Phase 2B-2C0**（分页核心；
+  重点看"是否假定分页参数""是否静默去重 / 跳页""是否把 partial 当 complete""是否偷偷接 Integration"）
+- **下一步是 Phase 2B-2C1**：真实**网络 Transport**（实现 `OpeningCoursesPageFetcher`）+
+  完整 **2026-1** semester snapshot，
   ⚠️ **本轮不得自行开始**，须等新一轮任务书
-- **2B-2C 启动前必须先确认**：合理 `pageSize` / 请求规模；
+- **2B-2C1 启动前必须先人工验证**：`page_size` / `first_page_no` / `max_pages`；
   **partial snapshot 必须显式记录 completeness，不得宣称 complete**（C9）
 - **仍不允许实现层自行补齐**：`prerequisites[]` / `weekDay` / `openingSchoolName → campus` /
   meeting-level teacher 四项保持"待确认"或"已知暂缓"（C11）
 - ⚠️ **公共契约不得再自行修改**：任何后续变更仍须走 `【接口变更请求】` → 人工确认
+- ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（仅用于规模 / 小范围 / parser 验证）
 - 真实 Curriculum / Planner provider 的接入顺序与形式**待负责人安排**
   （Phase 2B-1 只定义了插座，未决定实现方式）
 - 2B-0 全程遵守 `docs/data/DATA_ACQUISITION_PLAN.md` 的三层数据模型与红线：
