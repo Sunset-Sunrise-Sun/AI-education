@@ -4,7 +4,7 @@
   "title": "CourseOffering",
   "type": "object",
   "additionalProperties": false,
-  "required": ["course_id", "course_name", "class_id", "weekday", "start_section", "end_section", "weeks", "semester"],
+  "required": ["course_id", "course_name", "class_id", "semester", "meetings"],
   "properties": {
     "course_id": {"type": "string", "minLength": 1},
     "course_name": {"type": "string", "minLength": 1},
@@ -12,17 +12,28 @@
     "semester": {"type": "string", "minLength": 1},
     "teacher": {"type": ["string", "null"]},
     "credit": {"type": ["number", "null"], "minimum": 0},
-    "weekday": {"type": "integer", "minimum": 1, "maximum": 7},
-    "start_section": {"type": "integer", "minimum": 1},
-    "end_section": {"type": "integer", "minimum": 1},
-    "weeks": {
+    "meetings": {
       "type": "array",
-      "items": {"type": "integer", "minimum": 1},
       "minItems": 1,
-      "uniqueItems": true
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["weekday", "start_section", "end_section", "weeks"],
+        "properties": {
+          "weekday": {"type": "integer", "minimum": 1, "maximum": 7},
+          "start_section": {"type": "integer", "minimum": 1},
+          "end_section": {"type": "integer", "minimum": 1},
+          "weeks": {
+            "type": "array",
+            "items": {"type": "integer", "minimum": 1},
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "campus": {"type": ["string", "null"]},
+          "classroom": {"type": ["string", "null"]}
+        }
+      }
     },
-    "campus": {"type": ["string", "null"]},
-    "classroom": {"type": ["string", "null"]},
     "capacity": {"type": ["integer", "null"], "minimum": 0},
     "remaining_capacity": {"type": ["integer", "null"], "minimum": 0},
     "source": {"type": ["string", "null"]},

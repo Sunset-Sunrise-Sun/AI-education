@@ -104,9 +104,19 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 
 ### 3.2 `course_offering.schema.json`（CourseOffering）
 
-**当前字段**：`course_id` · `course_name` · `class_id` · `semester` · `teacher?` · `credit?` ·
-`weekday` · `start_section` · `end_section` · `weeks[]` · `campus?` · `classroom?` ·
-`capacity?` · `remaining_capacity?` · `source?` · `data_source`（全部必填项见 Schema）
+> ⚠️ **本节记录的是 Data Gate-1 当时（DG-01 实施前）的字段形态。**
+> **Data Gate-2 已实施 DG-01**：`CourseOffering` 顶层不再有排课字段，
+> 改为 `meetings[]`（1 — N）。**历史分析保留在下方表格中，未删改**；
+> 当前真实字段见 `schemas/course_offering.schema.json`。
+
+**Data Gate-1 当时的字段**（保留为历史记录）：`course_id` · `course_name` · `class_id` · `semester` ·
+`teacher?` · `credit?` · `weekday` · `start_section` · `end_section` · `weeks[]` ·
+`campus?` · `classroom?` · `capacity?` · `remaining_capacity?` · `source?` · `data_source`
+
+**Data Gate-2 之后的字段**：`course_id` · `course_name` · `class_id` · `semester` ·
+`teacher?` · `credit?` · **`meetings[]`（必填，`minItems: 1`）** · `capacity?` ·
+`remaining_capacity?` · `source?` · `data_source`；
+每个 `Meeting` = `weekday` · `start_section` · `end_section` · `weeks[]` · `campus?` · `classroom?`。
 
 | 真实 D5 字段 | 映射结论 A/B/C | 目标 Schema 字段 | 潜在缺口（只描述缺什么） | 影响模块 | 样本出处 | 备注 |
 |---|---|---|---|---|---|---|
@@ -138,11 +148,13 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 >
 > 1. **单个 schedule segment** → 可解析为 `weeks` / `weekday` / `start_section` / `end_section` /
 >    `campus` / `classroom`，**属数据转换层能力**；
-> 2. **整个教学班** → 该字段**可包含多个 segment**，而当前一个 `CourseOffering` **只能表达一组**
+> 2. **整个教学班** → 该字段**可包含多个 segment**，而**当时**一个 `CourseOffering` **只能表达一组**
 >    → **无法无损映射**（**G9**）。
+>    ✅ **该限制已由 Data Gate-2（DG-01）解除**：`CourseOffering` 现为 1 — N `meetings[]`（见 4.6）。
 >
 > ⚠️ **不得**把 `weekday` / `weeks` / `campus` 等写成"当前无正式表示" ——
-> 这些字段**在现有 Schema 中已经存在**；真正的缺口是**多 segment 无法在一个 `CourseOffering` 中容纳**。
+> 这些字段**在 Schema 中一直存在**（Data Gate-2 后位于 `meetings[]` 内）；
+> **历史上**真正的缺口是**多 segment 无法在一个 `CourseOffering` 中容纳**，现已修复。
 
 ### 3.3 `makeup_task.schema.json`（MakeupTask）
 
@@ -225,7 +237,7 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | G6 | **`StudentProfile`：`AGENTS.md` 第 4 节列出了该名称，但 `/schemas/` 下没有对应文件** | `AGENTS.md` 第 4 节 vs `/schemas/` 目录 | 全部 | **已裁决（见 4.1）** |
 | G7 | **`CourseOffering` 没有课程类别 / 开课单位**：`course_type` 只存在于 `Course`，教学班级别没有；`CourseOffering` 也没有"开课单位"字段 | 两个 Schema 字段对比 ＋ **真实 D5 样本 `OFFERING-001`**（出现 `courseCategoryName` 与 `openingUnitName`） | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5） |
 | G8 | **`Preference` 无法表达"已经有什么"**：偏好只表达"想要什么"，不表达已修学分 / 已修课程 | `preference.schema.json` 字段清单 | Agent / Planner | 待验证 |
-| **G9** | **一个教学班可以拥有多个独立的上课时间 / 地点 segment，当前 `CourseOffering` 无法在一个对象中无损表达**：真实接口中 `CSE202` 的**每个教学班都有多个 schedule segment**（例如"1-17周 星期一 第 3-4 节 某教室" ＋ "1-17单周 星期三 第 5-6 节 某教室"），而 `CourseOffering` 只有一组 `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。**未设计 `meetings[]`、未修改 Schema、未拆成多个可独立选择的 `CourseOffering`**；最终表示方式**留给 Data Gate** |
+| **G9** | **一个教学班可以拥有多个独立的上课时间 / 地点 segment，当前 `CourseOffering` 无法在一个对象中无损表达**：真实接口中 `CSE202` 的**每个教学班都有多个 schedule segment**（例如"1-17周 星期一 第 3-4 节 某教室" ＋ "1-17单周 星期三 第 5-6 节 某教室"），而 `CourseOffering` 只有一组 `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。⚠️ **原缺口描述保留如上**（历史上 `CourseOffering` 确实无法表达多 segment）。**Data Gate-2 已按 DG-01 完成公共契约修复**：`CourseOffering` 改为 1 — N `meetings[]`（见 4.6） |
 | **G10** | **D5 还有多个真实字段在现有 `CourseOffering` 中没有任何表示**：`selectedNumber`（已选人数）、`openingUnitName`（开课单位）、`courseCategoryName`（课程类别）、`examMode`（考核方式）、`readObj`（修读对象）、`teachProgressSubmitState` / `openClass`（**业务语义待确认**） | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。**只登记、不设计字段**；`teachProgressSubmitState` / `openClass` **不根据 0/1 值自行解释** |
 
 > 对 G1 / G2 / G4 的补充说明：这三条说的是"**当前没有明确的跨模块公共 Schema / 正式表示**"，
@@ -344,10 +356,32 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 > `docs/data/DATA_GATE_DECISIONS.md` 中整理为实体边界、
 > Shared / Private / Derived 分类与 **DG-01 – DG-06 接口变更请求**。
 >
-> **状态：Data Gate-1 架构裁决已完成；公共契约尚未实施，实施进入 Data Gate-2。**
+> **状态：Data Gate-1 架构裁决已完成；DG-01 与 DG-06 已在 Data Gate-2 实施。**
 >
-> ⚠️ 该文件**同样没有修改任何 Schema / Interface**；
-> 本报告的**缺口状态与 G1–G10 历史分析不因该文件而改变**。
+> ⚠️ 该文件**没有修改任何 Schema / Interface**；
+> 本报告的**缺口状态与 G1–G10 历史分析不因该文件而改变**（唯一的实际契约变更见 4.6）。
+
+---
+
+### 4.6 G9 的契约修复（Data Gate-2，DG-01）
+
+> **本节只记录"G9 已经被修好"这一事实与形态。§4.5 的原缺口描述与历史分析保持原样。**
+
+| 项 | 内容 |
+|---|---|
+| **变更** | `schemas/course_offering.schema.json`：顶层删除 `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`，新增 **`meetings[]`**（`type: array`，`minItems: 1`） |
+| **新关系** | **`CourseOffering` 1 —— N `Meeting`**；每个 `Meeting` 必填 `weekday` / `start_section` / `end_section` / `weeks`，可选 `campus` / `classroom` |
+| **顶层 `required`** | `course_id` · `course_name` · `class_id` · `semester` · **`meetings`** |
+| **性质** | **有意的 breaking migration**：不保留兼容字段，旧结构被 Schema 与 Pydantic **双重拒绝** |
+| **同步范围** | `mock_data/course_offerings.json`（全部教学班迁移，且至少 1 个教学班含 **2 段** meeting）、`backend/app/models/contracts.py`（新增 `Meeting`）、后端测试、`frontend` 类型与展示 |
+| **明确的表达损失** | **meeting 级教师关联**仍是 **known deferred representation gap**：`teacher` 保留在教学班顶层作汇总 / 展示，`Meeting` **不含** `teacher` |
+| **未新增的字段** | `selectedNumber` / `openingUnitName` / `courseCategoryName` / `examMode` / `readObj` / `teachProgressSubmitState` / `openClass` 一律**未进入**公共契约（见 §10 暂缓字段） |
+
+**因此 G9 的状态更新为**：
+
+> **已通过 DG-01 / Data Gate-2 完成公共契约修复。**
+> （原始问题——"一个教学班无法在一个 `CourseOffering` 中表达多个时间段"——已经消除；
+> 该问题的历史记录保留在 §4.5 与第 4 节观察表中。）
 
 ---
 
@@ -396,3 +430,4 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | 2026-09-30 | **Phase 2B-0D 验证（D5 真实样本）** | 依据 `OFFERING-001`（D5，认证来源，**小规模人工侦察**；`CSE202` / `2026-1` 返回 **2 个真实教学班**）：① **§3.2 `CourseOffering` 字段映射逐项判定 A/B/C** —— A：`courseNum` / `courseName` / `classNumber` / `yearTerm` / `limitNumber`；B：`score` → `credit`（字符串数字转换）、`remaining_capacity` 为 `limitNumber - selectedNumber` 的**派生值**；C：`selectedNumber` / `openingUnitName` / `courseCategoryName` / `examMode` / `readObj` / `teachProgressSubmitState` / `openClass`；② **新增 G9**：一个教学班可有**多个上课时间 / 地点 segment**，当前 `CourseOffering` **无法在一个对象中无损表达**；③ **新增 G10**：D5 另有多个真实字段在现有 Schema 中无表示；④ **G7 升级为「已由真实 D5 样本验证」**（2B-0C 预留的"须等 2B-0D"条件已满足）。**未修改 Schema、未新增 `meetings[]`、未实现 parser、未写 crawler / DB / Adapter、未进入 Integration**。⚠️ **不得声称学校接口直接提供 `remaining_capacity`**；⚠️ `courseCategoryName`（样本为"专必"）**带培养方案边界上下文，不得认定为课程全局固有属性** |
 | 2026-09-30 | **Data Gate-1 引用（不改缺口状态）** | 新增 `docs/data/DATA_GATE_DECISIONS.md`（当时为**草案，未经批准**），把 G1 / G2 / G4 / G9 / G10 等整理为实体边界、Shared / Private / Derived 分类与 **DG-01 – DG-06 接口变更请求草案**；并在 §4.5 末尾加入 Data Gate 引用。**本报告的缺口状态与 A/B/C 映射结论一律不变**；**未修改 Schema / Interface / 代码**，**未调用 SYSU 接口**，当时**未做任何裁决** |
 | 2026-09-30 | **Data Gate-1 状态同步（Reviewer 认可后）** | 仅同步 **Data Gate 状态措辞**（§4.5 引用块 + 本表）：`DATA_GATE_DECISIONS.md` 的标注由"**草案，未经批准**"改为 **「Data Gate-1 架构裁决已完成；公共契约尚未实施，实施进入 Data Gate-2」**。**只同步状态**：**G1–G10 的历史分析与 A/B/C 映射结论一字未改**；**未修改 Schema / Interface / 代码**，**未调用 SYSU 接口**，**未进入 Data Gate-2** |
+| 2026-09-30 | **Data Gate-2：G9 契约修复（DG-01 / DG-06 实施）** | ① **G9 更新为「已通过 DG-01 / Data Gate-2 完成公共契约修复」**：`schemas/course_offering.schema.json` 顶层删除 `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`，改为 **`meetings[]`（`minItems: 1`）**，即 **`CourseOffering` 1 —— N `Meeting`**，顶层 `required` = `course_id` / `course_name` / `class_id` / `semester` / `meetings`；② **新增 §4.6** 记录修复形态与同步范围（Mock 全量迁移且 ≥1 个教学班含 2 段、后端新增 `Meeting` 模型、前端类型与展示同步）；③ **§3.2 补注「Data Gate-1 当时的字段 / Data Gate-2 之后的字段」并在历史分析表上方标明时点**；④ **历史一律保留**：原缺口描述"一个教学班无法在一个 `CourseOffering` 中表达多个时间段"**未删除**，只在原处加注"已修复并指向 §4.6"；⑤ **未新增任何暂缓字段**（`selectedNumber` / `openingUnitName` / `courseCategoryName` / `examMode` / `readObj` / `teachProgressSubmitState` / `openClass` 仍不进公共契约）；⑥ **meeting 级教师关联仍为 known deferred representation gap**。⚠️ **未调用 SYSU 接口、未写 crawler / Adapter / Provider、未进入 Integration、未建数据库** |

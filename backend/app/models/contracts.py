@@ -35,6 +35,7 @@ __all__ = [
     "DataSource",
     "MakeupStatus",
     "MakeupTask",
+    "Meeting",
     "PlanResult",
     "PlanStatus",
     "PositiveIntList",
@@ -95,7 +96,7 @@ CourseIdList = Annotated[
 
 #: 正整数数组：元素 ≥1 且不重复。
 #: 对应公共 Schema 中 `{"type": "array", "items": {"type": "integer", "minimum": 1},
-#: "minItems": 1, "uniqueItems": true}` —— 即 CourseOffering.weeks。
+#: "minItems": 1, "uniqueItems": true}` —— 即 `Meeting.weeks`。
 #: `minimum: 1` 加在**元素**上（与 CourseIdList 同理）；
 #: `uniqueItems` 同样由 `_reject_duplicates` 在运行时强制：
 #: Pydantic 不会把 `uniqueItems` 生成为 Schema 关键字，不显式校验就会比公共契约更宽松。
@@ -156,11 +157,46 @@ class Course(BaseModel):
     source: str | None = None
 
 
+class Meeting(BaseModel):
+    """`course_offering.schema.json` 中 `meetings[]` 的元素（一段上课时间 / 地点）。
+
+    概念关系是 **`CourseOffering` 1 —— N `Meeting`**：
+    一个教学班不等同一个时间段，可以有多个独立的排课段
+    （例如"周一 3-4 节 1-16 周"与"周三 5-6 节 1-16 单周"）。
+
+    必填：`weekday`、`start_section`、`end_section`、`weeks`。
+
+    ⚠️ 本类**不含 `teacher`**。真实 D5 中 segment 与教师确实存在关联，
+    但 Data Gate-1 的架构裁决把 meeting 级教师关联登记为
+    **known deferred representation gap**：MVP 不依赖它，
+    教师仍作为教学班汇总字段保留在 `CourseOffering.teacher`。
+    """
+
+    model_config = _FORBID_EXTRA
+
+    weekday: int = Field(ge=1, le=7, description="1=周一 … 7=周日")
+    start_section: int = Field(ge=1, description="起始节次")
+    end_section: int = Field(ge=1, description="结束节次")
+    weeks: PositiveIntList = Field(
+        min_length=1, description="实际周次数组，至少 1 项且不重复"
+    )
+    campus: str | None = None
+    classroom: str | None = None
+
+
 class CourseOffering(BaseModel):
     """对应 `schemas/course_offering.schema.json`。
 
-    必填：`course_id`、`course_name`、`class_id`、`weekday`、
-    `start_section`、`end_section`、`weeks`、`semester`。
+    必填：`course_id`、`course_name`、`class_id`、`semester`、`meetings`。
+
+    **Data Gate-2（DG-01）后的结构**：排课信息不再位于顶层，
+    而是收敛到 `meetings[]`（至少 1 段）。旧的顶层
+    `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`
+    已**彻底移除**，因为一个教学班可以有多个独立的时间 / 地点段，
+    单组字段无法无损表达（G9）。
+
+    ⚠️ 这是**有意的 breaking migration**：不保留兼容字段，旧结构一律被拒绝。
+    消费方（Planner / 前端）必须遍历 `meetings[]`，不得只看第一段。
 
     注意：这是公共 Schema 中**唯一**带 `data_source` 的对象。
     """
@@ -171,16 +207,13 @@ class CourseOffering(BaseModel):
     course_name: str = Field(min_length=1)
     class_id: str = Field(min_length=1, description="教学班号")
     semester: str = Field(min_length=1, description="学期标识，例如 2026-1")
-    teacher: str | None = None
-    credit: float | None = Field(default=None, ge=0)
-    weekday: int = Field(ge=1, le=7, description="1=周一 … 7=周日")
-    start_section: int = Field(ge=1, description="起始节次")
-    end_section: int = Field(ge=1, description="结束节次")
-    weeks: PositiveIntList = Field(
-        min_length=1, description="实际周次数组，至少 1 项且不重复"
+    teacher: str | None = Field(
+        default=None, description="教学班汇总 / 展示用教师；meeting 级教师关联暂缓"
     )
-    campus: str | None = None
-    classroom: str | None = None
+    credit: float | None = Field(default=None, ge=0)
+    meetings: list[Meeting] = Field(
+        min_length=1, description="上课时间 / 地点段，至少 1 段；一个教学班可有多个"
+    )
     capacity: int | None = Field(default=None, ge=0)
     remaining_capacity: int | None = Field(default=None, ge=0)
     source: str | None = None

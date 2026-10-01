@@ -83,6 +83,21 @@ def _iter_strings(node):
         yield node
 
 
+def _meetings_of(offering: dict) -> list[dict]:
+    """取一个教学班的**全部** meeting 段。
+
+    Data Gate-2（DG-01）后，`CourseOffering` 的排课信息只存在于 `meetings[]` 内，
+    顶层不再有 `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`。
+    所有与时间 / 地点有关的检查都必须遍历这里，**只看第一段会漏掉真实冲突**。
+    """
+
+    meetings = offering.get("meetings")
+    assert isinstance(meetings, list) and meetings, (
+        f"教学班 {offering.get('class_id')} 缺少非空 meetings（DG-01 后的必填数组）"
+    )
+    return meetings
+
+
 @pytest.fixture(scope="module")
 def mock_files(load_mock_file) -> dict[str, object]:
     """一次性载入全部 Mock 文件。"""
@@ -172,29 +187,75 @@ def test_offering_single_semester(course_offerings: list[dict]) -> None:
 
 
 def test_course_offerings_have_time_and_location_details(course_offerings: list[dict]) -> None:
-    """任务要求教学班包含教师、星期、节次、周次、校区信息。"""
+    """任务要求教学班包含教师、星期、节次、周次、校区信息（**逐 segment** 检查）。"""
 
     for offering in course_offerings:
         label = offering["class_id"]
         assert offering.get("teacher"), f"{label} 缺少教师"
-        assert offering.get("weekday") is not None, f"{label} 缺少星期"
-        assert offering.get("start_section") is not None, f"{label} 缺少起始节次"
-        assert offering.get("end_section") is not None, f"{label} 缺少结束节次"
-        assert offering.get("weeks"), f"{label} 缺少周次"
-        assert offering.get("campus"), f"{label} 缺少校区"
+        for index, meeting in enumerate(_meetings_of(offering), start=1):
+            where = f"{label} 第 {index} 段"
+            assert meeting.get("weekday") is not None, f"{where} 缺少星期"
+            assert meeting.get("start_section") is not None, f"{where} 缺少起始节次"
+            assert meeting.get("end_section") is not None, f"{where} 缺少结束节次"
+            assert meeting.get("weeks"), f"{where} 缺少周次"
+            assert meeting.get("campus"), f"{where} 缺少校区"
 
 
 def test_offering_end_section_not_before_start_section(course_offerings: list[dict]) -> None:
-    """基本业务合理性：结束节次不能早于起始节次。
+    """基本业务合理性：结束节次不能早于起始节次（每一段都要成立）。
 
     注意：公共 Schema 并未强制这条（它只要求各自 ≥1），
     这是 Mock 数据自身的质量检查，不代表契约要求。
     """
 
     for offering in course_offerings:
-        assert offering["end_section"] >= offering["start_section"], (
-            f"{offering['class_id']}：end_section({offering['end_section']}) "
-            f"< start_section({offering['start_section']})"
+        for index, meeting in enumerate(_meetings_of(offering), start=1):
+            assert meeting["end_section"] >= meeting["start_section"], (
+                f"{offering['class_id']} 第 {index} 段：end_section({meeting['end_section']}) "
+                f"< start_section({meeting['start_section']})"
+            )
+
+
+def test_at_least_one_offering_has_multiple_meetings(course_offerings: list[dict]) -> None:
+    """任务明确要求：至少一个 Mock 教学班拥有 **≥2 个 Meeting**。
+
+    这是 G9（一个教学班可有多个上课时间 / 地点段）在 Mock 侧的验证前提；
+    如果所有教学班都只有一段，新结构就等于没有被真正用到。
+
+    ⚠️ 新增的第二段必须是**人工构造的 Mock**，
+    不得复制真实 SYSU Response 或真实教师信息。
+    """
+
+    multi = [
+        offering["class_id"]
+        for offering in course_offerings
+        if len(_meetings_of(offering)) >= 2
+    ]
+
+    assert multi, "没有任何教学班拥有 ≥2 个 meeting，无法验证 DG-01 的多 segment 结构"
+
+
+def test_no_offering_keeps_legacy_top_level_schedule_fields(course_offerings: list[dict]) -> None:
+    """旧格式的顶层排课字段必须**彻底消失**，不允许残留。
+
+    公共 Schema 的 `additionalProperties: false` 已经能拒绝它们；
+    这条用来防止 Mock 迁移只做了一半（既写 `meetings`，又留下旧的顶层字段）。
+    """
+
+    legacy_fields = (
+        "weekday",
+        "start_section",
+        "end_section",
+        "weeks",
+        "campus",
+        "classroom",
+    )
+
+    for offering in course_offerings:
+        leftovers = [field for field in legacy_fields if field in offering]
+        assert not leftovers, (
+            f"{offering['class_id']} 仍残留旧顶层排课字段：{leftovers}；"
+            f"DG-01 之后这些字段只能出现在 meetings[] 内"
         )
 
 
@@ -206,14 +267,17 @@ def test_offering_data_source_enum_is_mock(course_offerings: list[dict]) -> None
 
 
 def test_offering_weeks_are_plausible_semester_weeks(course_offerings: list[dict]) -> None:
-    """周次应落在 1~25 的合理学期范围内，且不重复。"""
+    """周次应落在 1~25 的合理学期范围内，且不重复（**逐 segment** 检查）。"""
 
     for offering in course_offerings:
-        weeks = offering["weeks"]
-        assert len(set(weeks)) == len(weeks), f"{offering['class_id']} 周次重复：{weeks}"
-        assert all(1 <= week <= 25 for week in weeks), (
-            f"{offering['class_id']} 周次超出合理学期范围：{weeks}"
-        )
+        for index, meeting in enumerate(_meetings_of(offering), start=1):
+            weeks = meeting["weeks"]
+            assert len(set(weeks)) == len(weeks), (
+                f"{offering['class_id']} 第 {index} 段周次重复：{weeks}"
+            )
+            assert all(1 <= week <= 25 for week in weeks), (
+                f"{offering['class_id']} 第 {index} 段周次超出合理学期范围：{weeks}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +371,11 @@ def test_plan_result_selected_credit_within_preference_limit(mock_files) -> None
 
 
 def test_plan_result_avoids_preferred_avoid_times(mock_files) -> None:
-    """演示方案应体现「避开用户不想要的时段」，否则看不出 Path Repair 的效果。"""
+    """演示方案应体现「避开用户不想要的时段」，否则看不出 Path Repair 的效果。
+
+    ⚠️ Data Gate-2 之后必须检查**每一个 Meeting**：
+    一个教学班可以有多个上课时间 / 地点段，只检查第一段会漏掉真实冲突。
+    """
 
     avoid_blocks = mock_files["preference.json"]["avoid_times"]
     offerings = {
@@ -319,16 +387,21 @@ def test_plan_result_avoids_preferred_avoid_times(mock_files) -> None:
 
     for selected in mock_files["plan_result.json"]["selected_classes"]:
         offering = offerings[(selected["course_id"], selected["class_id"])]
-        for block in avoid_blocks:
-            if offering["weekday"] != block["weekday"]:
-                continue
-            overlaps = (
-                offering["start_section"] <= block["end_section"]
-                and offering["end_section"] >= block["start_section"]
-            )
-            assert not overlaps, (
-                f"选中教学班 {offering['class_id']} 落在用户避开的时段内：{block}"
-            )
+        meetings = _meetings_of(offering)
+
+        for index, meeting in enumerate(meetings, start=1):
+            for block in avoid_blocks:
+                if meeting["weekday"] != block["weekday"]:
+                    continue
+                overlaps = (
+                    meeting["start_section"] <= block["end_section"]
+                    and meeting["end_section"] >= block["start_section"]
+                )
+                assert not overlaps, (
+                    f"选中教学班 {offering['class_id']} 的第 {index} 段"
+                    f"（{meeting['weekday']} 第 {meeting['start_section']}-"
+                    f"{meeting['end_section']} 节）落在用户避开的时段内：{block}"
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -395,20 +468,23 @@ def _poisoned_copy(tmp_path, file_name: str) -> dict:
 
 
 def test_json_schema_rejects_string_weekday_before_pydantic(tmp_path, monkeypatch) -> None:
-    """回归测试：JSON 里 `weekday` 写成字符串 `"1"` 必须被拒绝。
+    """回归测试：JSON 里 `meetings[0].weekday` 写成字符串 `"1"` 必须被拒绝。
 
     背景（第一轮 Review blocker 2）：`mock_service` 早期只做 `model_validate`，
     而 Pydantic 默认会把 `"1"` 转成 `1`，于是「违反公共 JSON Schema（要求 integer）
     的数据」会被静默接受。公共 Schema 是唯一真源，必须先按 Schema 校验原始 JSON。
+
+    Data Gate-2 后 `weekday` 位于 `meetings[]` 内，校验路径也随之变深，
+    因此这里显式锁定嵌套路径仍然生效。
 
     本用例先断言 Pydantic 单独校验**确实会接受**这条数据，以证明回归测试不是空跑，
     然后再断言数据层会拒绝它。
     """
 
     raw = _poisoned_copy(tmp_path, "course_offerings.json")
-    raw[0]["weekday"] = "1"
+    raw[0]["meetings"][0]["weekday"] = "1"
 
-    assert CourseOffering.model_validate(raw[0]).weekday == 1, (
+    assert CourseOffering.model_validate(raw[0]).meetings[0].weekday == 1, (
         "Pydantic 不再转换该数据，本回归测试的前提已变化，需要改用别的类型错误样例"
     )
 
@@ -447,10 +523,10 @@ def test_json_schema_rejects_boolean_credit_before_pydantic(tmp_path, monkeypatc
 
 
 def test_json_schema_rejects_duplicate_weeks(tmp_path, monkeypatch) -> None:
-    """`weeks` 重复元素不仅要被模型拒绝，也必须被公共 Schema 在数据层拦下。"""
+    """`meetings[].weeks` 重复元素不仅要被模型拒绝，也必须被公共 Schema 在数据层拦下。"""
 
     raw = _poisoned_copy(tmp_path, "course_offerings.json")
-    raw[0]["weeks"] = [1, 1]
+    raw[0]["meetings"][0]["weeks"] = [1, 1]
 
     (tmp_path / "course_offerings.json").write_text(
         json.dumps(raw, ensure_ascii=False), encoding="utf-8"
@@ -461,6 +537,45 @@ def test_json_schema_rejects_duplicate_weeks(tmp_path, monkeypatch) -> None:
         mock_service.load_course_offerings()
 
     assert "weeks" in str(excinfo.value)
+
+
+def test_json_schema_rejects_legacy_flat_offering(tmp_path, monkeypatch) -> None:
+    """回归测试：**旧格式**（顶层排课字段、没有 `meetings`）必须被数据层拒绝。
+
+    Data Gate-2（DG-01）是**有意的 breaking migration**，**不保留兼容层**：
+    旧结构必须在「先按公共 JSON Schema 校验原始 JSON」这一步就被拦下，
+    而不是被宽容接受后再靠下游各自兜底。
+    """
+
+    raw = _poisoned_copy(tmp_path, "course_offerings.json")
+    raw[0] = {
+        "course_id": raw[0]["course_id"],
+        "course_name": raw[0]["course_name"],
+        "class_id": raw[0]["class_id"],
+        "semester": raw[0]["semester"],
+        "teacher": raw[0]["teacher"],
+        "credit": raw[0]["credit"],
+        "weekday": 3,
+        "start_section": 3,
+        "end_section": 4,
+        "weeks": [1, 2, 3],
+        "campus": "东校园",
+        "classroom": "东B305",
+        "source": "mock",
+        "data_source": "mock",
+    }
+
+    (tmp_path / "course_offerings.json").write_text(
+        json.dumps(raw, ensure_ascii=False), encoding="utf-8"
+    )
+    monkeypatch.setattr(mock_service, "MOCK_DATA_DIR", tmp_path)
+
+    with pytest.raises(MockDataError) as excinfo:
+        mock_service.load_course_offerings()
+
+    message = str(excinfo.value)
+    assert "meetings" in message, f"报错未指出缺失的 meetings：{message}"
+    assert "course_offering.schema.json" in message, f"报错未指出依据的公共 Schema：{message}"
 
 
 def test_startup_self_check_uses_public_schema(tmp_path, monkeypatch) -> None:
