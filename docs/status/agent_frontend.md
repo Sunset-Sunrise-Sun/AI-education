@@ -1,25 +1,28 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C1C 真实证据同步**：浏览器相关性诊断
-> **已由负责人真实执行完成**，**真实聚合结果已回填**；
-> 当前人工下一步为 **Phase 2B-2C1D — G11 Business Semantics Verification**
-> （**待 Architecture Lead 下达人工验证步骤**））
+> 最后更新：2026-10-01（**Phase 2B-2C1D 人工界面核验已完成（n = 2）**；
+> **DG-07 契约缺口草案已提交**（`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`）；
+> Data Gate **Reopened narrowly for DG-07 only**）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
-> **原始材料、逐行记录、Raw 响应、私密脱敏样本与真实 Capture Bundle 均不进入 public Git**
+> **原始材料、逐行记录、Raw 响应、私密脱敏样本、截图与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
 > **Data Gate 通过条件 C1–C11 全部完成**；**公共契约本轮未改**
+> （DG-07 仅 **`PROPOSED`**，**未修改任何 Schema / Interface**）
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
 > Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
 > 零网络分页采集核心、浏览器端授权采集器代码、Capture Bridge、结构诊断入口
 > 与相关性诊断入口**均已完成，且**两个浏览器诊断均已在真实环境执行完成**；
-> **已完成一次真实 smoke run + 一次真实结构诊断 + 一次真实相关性诊断**
+> **已完成一次真实 smoke run + 一次真实结构诊断 + 一次真实相关性诊断 + 一次人工界面最小核验**
 > （「全校开设课程」独立模块内 **same-origin 成功**，**认证不再是 blocker**）；
 > 第 1 页 **200** 条真实 row 中 **39 条完全没有 `teachingTimePlaceStr`**、
 > **161 条非空**，其余形态 0（⚠️ **39/200 只描述第 1 页样本，不得外推**），
 > C1C 显示**结构差异集中在排课相关字段**（`limitNumber` / `selectedNumber` 完整存在），
+> C1D（**n = 2**）显示两条典型候选在官方 UI 中**均为普通教学班行**、
+> 时间 / 周次 / 地点**空白且无状态文字**，
 > 当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**、
-> **尚未取得 complete semester snapshot**；**G11 的业务语义仍未解决**；
+> **尚未取得 complete semester snapshot**；**G11 仍未 resolved**
+> （业务语义部分有界面证据，**契约缺口候选 DG-07 待架构裁决**）；
 > **production Curriculum / Planner provider 仍未接入**，
 > 因此**没有**任何一条真实数据链路端到端跑通，**也未新增任何 API**。
 >
@@ -29,8 +32,7 @@
 
 ## 当前阶段
 
-**Phase 2B-2C1C 已真实运行完成 → 下一步 Phase 2B-2C1D — G11 Business Semantics Verification
-（待 Architecture Lead 下达人工验证步骤）**
+**G11 证据链已完成（C1B / C1C / C1D）→ 下一步：等待 Architecture Lead 裁决 `DG-07`**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -48,9 +50,12 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                       第 1 页 200 条：39 missing / 161 非空 / 其余 0（仅第 1 页，不得外推）
                    →  Phase 2B-2C1C ✅ 相关性诊断入口 + Reviewer 批准并 merge
                       + 负责人真实运行 + 真实聚合结果已回填
-                      （结构差异集中在排课相关字段；业务语义仍未解决）
-                   →  【下一步】Phase 2B-2C1D — G11 Business Semantics Verification
-                      （**待 Architecture Lead 下达人工验证步骤**，本模块不自行设计）
+                      （结构差异集中在排课相关字段）
+                   →  Phase 2B-2C1D ✅ 人工界面最小核验（n = 2，负责人本人完成）
+                      两条候选在官方 UI 中均为普通教学班行、时间区域空白、无状态文字
+                   →  ⚠️  Data Gate Reopened narrowly for DG-07 only
+                   →  ⏳  DG-07（CourseOffering 空 meetings）PROPOSED /
+                      WAITING FOR ARCHITECTURE REVIEW（本模块不自行实施）
                    →  之后：真实 Capture 导入 UI → Phase 2B Integration 接真实 Provider
 ```
 
@@ -505,9 +510,36 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   - ⚠️ **只有边际计数、无逐 row 交叉证据** → ⛔ **不得**写成
     "38 条**同时**缺 `weekDay` 和 `timePlaceId`"；
   - ⛔ **不登记任何真实 categorical 取值 / 分类名 / 单位名**；⛔ **不推断业务语义**；
-  - **G11**：**structural evidence substantially narrowed, business semantics still unresolved**
-    —— ⛔ **不声称 G11 resolved**；
+  - **G11**：**business semantics partially evidenced; contract gap candidate identified;
+    architecture decision pending** —— ⛔ **不声称 G11 resolved**；
 - **Builder 实际 SYSU 请求数：0**（本轮为**文档证据同步**）。
+
+## Phase 2B-2C1D 结果（G11 人工界面最小核验 + DG-07 草案）
+
+**由 Architecture Lead 指导定位候选，由负责人本人在官方 UI 人工检查（n = 2）**；
+本轮交付的是**契约缺口草案**，不是实施。详见 `docs/status/course_data.md`。
+
+| 产出 | 内容 |
+|---|---|
+| `docs/data/DATA_GATE_DECISIONS.md` | **新增 §17 `DG-07`**（`CourseOffering` 空 `meetings` / 未知排课信息）：完整 `【接口变更请求】` 草案 + 4 个替代方案比较 + 安全不变量的提案；**状态 `PROPOSED / WAITING FOR ARCHITECTURE REVIEW`** |
+| `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` | **新增 §4.7.2**（C1D 人工核验）与 G11 状态更新 |
+| `docs/data/DATA_SOURCE_REGISTRY.md` | `OFFERING-002` 补 **C1D 汇总事实（n = 2）** |
+
+**核验结果（两条候选一致）**：UI 中可正常找到 ｜ 时间 / 周次 / 地点**完全空白** ｜
+**无状态文字** ｜ 容量 / 已选人数**正常显示** ｜ **与普通教学班同一种表格行** ｜
+**无解释空白原因的详情 / tooltip**。
+
+**关键边界（不得越过）**：
+
+- ⚠️ **n = 2**，⛔ **不得**写成"39 条全部如此"；⛔ 不得外推 39/200 到 6892；
+- ⛔ **不登记**候选的课程名 / 课程号 / 教学班号，也不登记截图；
+- ⛔ **不得**使用"未排课课程 / 未排课教学班 / 时间待定课程 / 异步课程 / 无需排课课程 /
+  停开课程 / 无效教学班 / 自由时间教学班"等**学校未提供**的业务标签；
+- ⛔ **不推断学校业务状态**、⛔ **不声称 G11 resolved**；
+- ⛔ **本轮未修改** `schemas/` / `docs/interfaces/` / 任何代码 / 任何测试 /
+  `mock_data/`；DG-07 **未实施**；
+- **Browser 侧**：⛔ **没有新增任何诊断入口**，⛔ **不再需要重复运行** C1B / C1C；
+  **Builder 实际 SYSU 请求数：0**（UI 核验由负责人本人完成）。
 
 ## Phase 2B-2C1A 结果（SYSU Authorized Browser Transport + Capture Bridge）
 
@@ -705,17 +737,20 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   均由**负责人手动执行**）：⛔ **不再需要重复运行任何一个诊断**；
   两者的真实聚合结果均已登记（见 `docs/status/course_data.md` 与
   `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` §4.7 / §4.7.1）；
-- **当前人工下一步：Phase 2B-2C1D — G11 Business Semantics Verification**
-  —— ⛔ **待 Architecture Lead 下达人工验证步骤**；
-  **本模块不自行设计、不自行实施 C1D**；
-  目标是回到**业务语义确认**（而不是继续扩大结构诊断）；
+- **当前人工下一步：等待 Architecture Lead 裁决 `DG-07`**
+  （`docs/data/DATA_GATE_DECISIONS.md` §17，**`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**）；
+  Data Gate **仅**为 DG-07 **narrow reopen**（⛔ DG-01 – DG-06 不重新打开）；
+  ⛔ **本模块不自行实施** DG-07（不改 Schema / Interface / 代码 / 测试）；
+  ⛔ **不再要求重复** C1B / C1C 诊断或 C1D 人工核验；
 - **真实 Capture Bundle 的导入 UI**（前端产品链路）属**后续步骤**，本轮不做；
 - **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
   `max_pages` 是**内部安全阀**，不是学校侧参数；
   **partial snapshot 必须显式记录 completeness，不得宣称 complete**（C9）
 - **仍不允许实现层自行补齐**：`prerequisites[]` / `weekDay` / `openingSchoolName → campus` /
   meeting-level teacher 四项保持"待确认"或"已知暂缓"（C11）；
-  **G11（部分 row 缺 `teachingTimePlaceStr`）**同样**只登记、不推测业务含义**
+  **G11（部分 row 缺 `teachingTimePlaceStr`）**同样**只登记、不推测业务含义**，
+  且 **DG-07 未获批准前，⛔ 不得**在 Course Data / Planner / Frontend 里
+  以任何 workaround 方式表达"排课信息不可用"（不得伪造 `Meeting`、不得过滤、不得猜时间）
 - ⚠️ **公共契约不得再自行修改**：任何后续变更仍须走 `【接口变更请求】` → 人工确认
 - ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（仅用于规模 / 小范围 / parser 验证）
 - **真实 Capture Bundle 属 Real Sanitized Capture**：**不得进入 Git**（含 `mock_data/` 与测试 fixture）

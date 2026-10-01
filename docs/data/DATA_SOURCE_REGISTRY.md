@@ -416,14 +416,29 @@ OFFERING-###      课程开设 / 教学班数据（D5）
     也不得声称两处缺失是**同一批 row**。
   - ⚠️ 上述结果**只是结构层取证**：⛔ **不推断业务含义**、⛔ **不解决 G11**、
     ⛔ **不预设**任何公共契约修改。
+- **C1D 人工界面核验的汇总事实**（Phase 2B-2C1D；由 Architecture Lead 指导定位候选，
+  由**负责人本人**在「**全校开设课程**」UI 中人工检查，**n = 2**）：
+  - 候选条件：`teachingTimePlaceStr` 不存在 ＋ `weekDay` 不存在 ＋ `timePlaceId` 不存在；
+  - 两条候选（**candidate A / candidate B**）结果一致：
+    **UI 中能够正常找到** ｜ **上课时间 / 周次 / 地点完全空白** ｜ **无明确状态文字** ｜
+    **容量 / 已选人数等普通教学班信息正常显示** ｜ **与普通教学班为同一种表格行** ｜
+    **无解释空白原因的详情 / tooltip**；
+  - ⚠️ **范围限制**：**n = 2**，⛔ **不能代表全部 39 条**，⛔ **不得外推**；
+  - ⛔ **只登记 `candidate A` / `candidate B`**：**不登记课程名 / 课程号 / 教学班号**，
+    也不登记截图中的任何具体课程身份；
+  - 该核验把 **G11** 的**业务语义**推进到"**部分界面证据**"，并识别出
+    **契约缺口候选 `DG-07`**（见 `DATA_GATE_DECISIONS.md` §17，
+    **`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**）；⛔ **不推断学校业务状态**。
 - **证据等级：Confirmed**
-- 已获取数据的层级：**结构事实（字段存在性 / 形态 / 第 1 页聚合计数与聚合分布）**；**不含任何 Raw row**
+- 已获取数据的层级：**结构事实（字段存在性 / 形态 / 第 1 页聚合计数与聚合分布）
+  ＋ 人工界面核验（n = 2）**；**不含任何 Raw row**
 - **必须注明的约束**：
   1. **不登记 Raw row**；
-  2. **不登记课程 / 教学班信息、教师、教室、内部 ID、`readObj`**；
-  3. **Cookie / Session / Token、完整 Request Headers、HAR 均不得进入 Git**；
+  2. **不登记课程 / 教学班信息、教师、教室、内部 ID、`readObj`、课程名 / 课程号 / 教学班号**；
+  3. **Cookie / Session / Token、完整 Request Headers、HAR / 截图均不得进入 Git**；
   4. **不登记任何真实 categorical 取值 / 分类名 / 单位名**（只登记计数与 distinct 数量）；
-  5. 缺失字段的**业务含义未确认**（不得据此写成"缺排课 / 未排课课程 / 异步课程 / 暂无教室"）。
+  5. 缺失字段的**业务含义未确认**（不得据此写成"缺排课 / 未排课课程 / 异步课程 /
+     暂无教室 / 未排课教学班 / 时间待定"等任何学校未提供的业务标签）。
 - 备注：用于把 **G11**（部分真实 `CourseOffering` row 缺少 `teachingTimePlaceStr`）
   登记为**有真实来源**的待调查项；详见 `REAL_TO_SCHEMA_GAP_REPORT.md` §4.7 与
   `docs/status/course_data.md`。取证工具为 `tools/sysu_course_offering_collector.js` 的
@@ -485,3 +500,4 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 | 2026-10-01 | **Phase 2B-2C1B 登记（D5 结构 smoke）** | **新增 `OFFERING-002`**（「全校开设课程」独立模块第 1 页真实结构 smoke，**Authenticated Official**，证据等级 **Confirmed**）：来源为负责人在**真正的「全校开设课程」独立模块**（与「选课」是**两个独立模块**）内显式触发的浏览器端采集器；**只登记汇总事实** —— same-origin 请求成功、第 1 页响应成功进入 Collector、**第 1 页至少发现 1 条 row 缺少 `teachingTimePlaceStr`**；**不登记任何 Raw row**（不含课程 / 教学班信息、教师、教室、内部 ID、`readObj`）；**Cookie / Session / Token / 完整 Request Headers / HAR / Capture Bundle 均不入库**；**缺失字段的业务含义未确认**。据此把 **G11** 登记为**有真实来源**的待调查项；**未修改** `schemas/` / `docs/interfaces/`；**Builder 未发起任何真实 SYSU 请求** |
 | 2026-10-01 | **Phase 2B-2C1C：`OFFERING-002` 补录第 1 页聚合证据** | 负责人**手动执行** `diagnoseSchedulePresence({ semester: "2026-1" })` 的真实聚合结果回填到 `OFFERING-002`：`reported_total = 6892`、第 1 页 `total_rows = 200`、`teachingTimePlaceStr` 五桶 = `missing 39` / `null 0` / `empty_string 0` / `non_empty_string 161` / `other_type 0`（第 1 页 **39/200 = 19.5%**）。⚠️ **明确限定：该比例只描述第 1 页 200 条样本，不代表 6892 条整体的比例，不得外推**。**不创建新 `source_id`**（同一数据源 / 同一学期 / 同一模块 / 同一页 / 同一取证目的）；**不登记任何 Raw row**、不登记逐行信息；同时新增**同源同页**的相关性诊断入口 `diagnoseMissingScheduleCorrelation({ semester })`（只请求第 1 页一次、只返回聚合结构对照）。**未修改** `schemas/` / `docs/interfaces/` / Python 数据链路；**Builder 未发起任何真实 SYSU 请求（请求数 = 0）** |
 | 2026-10-01 | **Phase 2B-2C1C 真实证据同步（docs-only）** | 负责人**手动执行** `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })` 的**真实 C1C 聚合结果**回填到**同一个 `OFFERING-002`**（**未创建新 `source_id`**；同一学期 / 同一「全校开设课程」模块 / 同一第 1 页 / 同一 `pageSize = 200` / 同一 `reported_total = 6892`）：`total_rows = 200`、五桶 = `missing 39` / 其余形态 0 + `non_empty_string 161`、`compared_rows = 200`、`ungrouped_rows = 0`；A 类字段**只登记存在性 / 类型计数**（`missing` 组 `timePlaceId` = `missing 38` / `non_empty_string 1`，`limitNumber` 与 `selectedNumber` 均为 `number 39`；`non_empty_string` 组三个字段分别为 `non_empty_string 161` / `number 161` / `number 161`）；B 类字段**只登记聚合分布、⛔ 不登记任何真实取值 / 分类名 / 单位名**（`weekDay` 两组 `missing 38` vs `12`；`openClass` 两组实际取值完全一致 → 不能区分两组；`teachProgressSubmitState` 与 `examMode` 两组共享同一分类集合、仅分布不同、**无 missing 组独占分类**；`courseCategoryName` 的 3 个分类**全部出现在** present 组、present 组另有 2 个；`openingUnitName` **只登记 `distinct_count`** 11 / 27）。⚠️ **只有边际计数，没有逐 row 交叉证据**：⛔ **不得**写成"38 条**同时**缺 `weekDay` 和 `timePlaceId`"。⛔ **不推断业务含义、不解决 G11、不预设契约修改**。**未修改** `schemas/` / `docs/interfaces/` / 代码 / 测试；**Builder 未发起任何真实 SYSU 请求（请求数 = 0）**，本轮**只做文档回填** |
+| 2026-10-01 | **Phase 2B-2C1D 人工界面核验（docs-only，n = 2）** | 由 Architecture Lead 指导定位候选、由**负责人本人**在「**全校开设课程**」UI 中人工检查 **2 条**典型候选（候选条件：`teachingTimePlaceStr` / `weekDay` / `timePlaceId` 三者均不存在），汇总事实登记到 `OFFERING-002`：两条候选**均可在 UI 中正常找到**、**上课时间 / 周次 / 地点完全空白**、**无明确状态文字**、**容量 / 已选人数等普通教学班信息正常显示**、**与普通教学班为同一种表格行**、**无解释空白原因的详情 / tooltip**。⚠️ **n = 2**，⛔ **不能代表全部 39 条**、⛔ **不得外推**。⛔ **只登记 `candidate A` / `candidate B`**：**不登记课程名 / 课程号 / 教学班号**，也不登记截图或截图中的任何具体课程身份；⛔ **不登记任何真实 categorical 取值**；⛔ **不推断学校业务状态**（不得写成"未排课课程 / 异步课程 / 时间待定 / 停开课程"等学校未提供的标签）。该核验把 **G11** 推进到"**业务语义部分有界面证据**"，并识别出**契约缺口候选 `DG-07`**（`DATA_GATE_DECISIONS.md` §17，**`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**）。**未创建新 `source_id`**；**未修改** Schema / Interface / 代码 / 测试；**Builder 实际 SYSU 请求数 = 0** |

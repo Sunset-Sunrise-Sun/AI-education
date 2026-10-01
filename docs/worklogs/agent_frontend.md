@@ -1472,3 +1472,35 @@
 - 公共接口是否变化：**否**；**Builder 实际 SYSU 请求数：0**。
 - 下一步：**Phase 2B-2C1D — G11 Business Semantics Verification**
   （**待 Architecture Lead 下达人工验证步骤**）。⚠️ **不 merge，不自行开始**。
+
+### 2026-10-01 - Data Gate Reopen — DG-07 Proposal（docs-only，阶段同步）
+- 本次目标：起草 **DG-07【接口变更请求】**（`CourseOffering` 空 `meetings` / 未知排课信息）。
+  ⛔ **Proposal only**：不改代码 / 测试 / Schema / Interface / `mock_data/`。
+  （主记录见 `docs/worklogs/course_data.md`。）
+- **本模块相关的新证据（C1D）**：由 Architecture Lead 指导定位候选、
+  由**负责人本人**在「全校开设课程」UI 人工核验 **n = 2** 条典型候选 ——
+  两条均可在 UI 中正常找到、时间 / 周次 / 地点**完全空白**、**无状态文字**、
+  容量 / 已选人数**正常显示**、**与普通教学班同一种表格行**、
+  **无解释空白原因的详情 / tooltip**；⚠️ **n = 2 不得外推**，⛔ 不登记课程名 / 课程号 / 教学班号。
+- **Browser 侧边界（本模块视角）**：
+  - ⛔ **没有新增任何诊断入口**，⛔ **不需要重复运行** C1B / C1C；
+  - ⛔ **本轮不改** `tools/sysu_course_offering_collector.js`，**不改** 采集器守卫测试；
+  - **Builder 实际 SYSU 请求数：0**（UI 核验由负责人本人完成）。
+- **DG-07 要点（详见 `docs/data/DATA_GATE_DECISIONS.md` §17）**：
+  建议把 `meetings` 的 `minItems: 1 → 0`（`"meetings": []` 合法），
+  并锁定其**精确定义**（仅表示"当前来源快照没有可用排课信息"）；
+  **核心安全不变量 `meetings = []` ≠ conflict-free**（Planner 不得视为已验证无冲突）；
+  `unresolved[].type = missing_schedule` 仅为 **candidate convention**
+  （`PlanResult.unresolved[].type` 本就是开放字符串，**无需改 Schema**）；
+  ⛔ **本轮不决定** Planner 最终 `status`；⛔ **不新增** `schedule_status` 枚举；
+  **状态 = `PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**（⛔ 不写 APPROVED）。
+- **Data Gate 状态**：**原 PASSED / CLOSED** → 因 G11 新证据
+  **Reopened narrowly for DG-07 only**；⛔ **DG-01 – DG-06 不重新打开**。
+- **STATUS 同步**：C1D 已完成人工最小核验；DG-07 已形成 proposal；
+  **人工下一步 = 等待 Architecture Lead 裁决 DG-07**（本模块不自行实施）。
+- 修改文件（本模块视角）：`docs/status/agent_frontend.md`、本文件（**仅追加**）；
+- 回归：`cd backend && python -m pytest` → **539 passed / 2 skipped**；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**（未改测试）。
+- 公共接口是否变化：**否**（DG-07 仅提案，**未实施**）。
+- 下一步：等待 **Architecture Lead** 对 **DG-07** 的裁决。
+  ⚠️ **不 merge，不自行开始 DG-07 实施**。

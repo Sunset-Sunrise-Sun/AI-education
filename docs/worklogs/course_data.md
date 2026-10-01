@@ -747,3 +747,80 @@
 - 下一步：**Phase 2B-2C1D — G11 Business Semantics Verification**
   （**待 Architecture Lead 下达人工验证步骤**）。⚠️ **不 merge，不自行开始下一阶段**。
 
+### 2026-10-01 - Data Gate Reopen — DG-07 Proposal（docs-only）
+- 本次目标：基于**已确认的真实证据**起草 **DG-07【接口变更请求】**
+  （`CourseOffering` Empty Meetings / Unknown Schedule）。
+  ⛔ **本轮是 Proposal，不是 Implementation**：不改 `schemas/`、不改 `docs/interfaces/`、
+  不改任何代码 / 测试 / `mock_data/`，**不实施** `minItems = 0`，
+  **不**决定 Planner 最终行为，**不**认定 G11 resolved，**不**发起任何真实请求。
+- 起点：`main` = `de161440aac19ad0947b7605b23ddaf16de5baee`；
+  新建 `docs/data-gate-dg07-empty-meetings-proposal`（**base 已核对一致**）。
+- **本轮的新证据（C1D，人工界面核验）**：由 **Architecture Lead 指导负责人**从第 1 页本地定位
+  **2 条**典型候选（条件：`teachingTimePlaceStr` / `weekDay` / `timePlaceId` 三者均不存在），
+  由**负责人本人**在「**全校开设课程**」UI 人工检查：两条候选**均可在 UI 中正常找到**、
+  **时间 / 周次 / 地点完全空白**、**无明确状态文字**、**容量 / 已选人数等普通教学班信息正常显示**、
+  **与普通教学班为同一种表格行**、**无解释空白原因的详情 / tooltip**。
+  ⚠️ **n = 2**，⛔ 不能代表全部 39 条；⛔ **只登记 `candidate A` / `candidate B`**，
+  **不登记课程名 / 课程号 / 教学班号**，也不登记截图；**Builder 实际 SYSU 请求数 = 0**。
+- **新增 `DATA_GATE_DECISIONS.md` §17（DG-07 草案）**：
+  - **状态：`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**（⛔ **不写 APPROVED**）；
+  - 按 `/AGENTS.md` 第 4 节完整格式给出：**当前设计**（`meetings` `minItems: 1`，
+    `"meetings": []` 非法）→ **建议修改**（`minItems: 1 → 0`，`"meetings": []` 合法；
+    ⛔ 不新增字段、不改 `Meeting`、不改 `required`）→ **原因**（真实来源存在
+    "官方教学班记录存在但当前快照没有可用排课信息"的已观察状态；现有契约只剩
+    "伪造 `Meeting`" 或 "静默过滤" 两种坏选择）→ **影响模块** → **是否为破坏性修改** →
+    **是否存在不修改接口的替代方案**；
+  - **`meetings = []` 的精确定义**：仅表示
+    "**当前来源快照没有提供能够形成公共 `Meeting` 的可用排课信息**"；
+    ⛔ 不表示无课 / 异步 / 时间自由 / **无冲突** / 学校确认未排课 / 应被过滤；
+  - **核心安全不变量**：**`meetings = []` ≠ conflict-free** ——
+    Planner **绝不能**因为"没有 `Meeting` 对象"就推导"没有任何时间冲突"；
+    保守 MVP 行为**只作 Proposal**（不自动选入 conflict-free 候选；
+    必须处理的 `MakeupTask` 若只有空 meetings 候选 → 显式进入 unresolved / 人工确认路径）；
+    `PlanResult.unresolved[].type` 为**开放字符串**，候选值 **`missing_schedule`**
+    标为 **candidate convention only**（最终命名 **requires Planner implementation review**）；
+    ⛔ **本轮不武断规定** `partially_feasible` / `infeasible`；
+  - **4 个替代方案比较**：A（保持 `minItems = 1` + 过滤）、
+    **B（`minItems = 0`，⭐ 推荐）**、C（新增 `schedule_status` 枚举）、
+    D（独立 DTO / `UnknownScheduleOffering`，评价为 **MVP 过重**，⛔ 不擅自选 D）；
+    并说明**暂不新增业务状态枚举**的理由（无官方语义证据，易把"未知"伪装成"已知状态"）；
+  - **Breaking 分析分两层**：Schema validation 层面 = **兼容性放宽**；
+    对依赖 `meetings` 非空不变量的消费者 = **语义性 breaking change**
+    （Planner / Frontend / tests / `mock_data` 需同步迁移）；
+  - **术语纪律**：推荐中性术语
+    `schedule information unavailable in current source snapshot` /
+    「当前来源快照中没有可用排课信息」；⛔ 不得使用"未排课课程 / 未排课教学班 /
+    时间待定课程 / 异步课程 / 无需排课课程 / 停开课程 / 无效教学班 / 自由时间教学班"；
+    并写明**只有边际计数、无逐 row 交叉证据**（⛔ 不得写"38 条**同时**缺两个字段"）、
+    **n = 2 不得外推**、**39/200 不得外推到 6892**。
+- **新增 `DATA_GATE_DECISIONS.md` §12.3**：明确
+  **原 Data Gate = PASSED / CLOSED**，因 G11 新证据
+  **Reopened narrowly for DG-07 only**；⛔ **DG-01 – DG-06 不重新打开**；
+  其它已裁决问题不重新讨论；DG-07 **未经批准不得实施**。
+- **缺口报告 `REAL_TO_SCHEMA_GAP_REPORT.md`**：新增 **§4.7.2 C1D 人工业务界面核验**（n = 2，
+  只登记 candidate A / B 与 6 项检查结果），写明"**已人工核验的 2 条典型候选在学校 UI 中
+  均作为普通教学班记录展示，但时间 / 周次 / 地点位置为空**"，并更新 G11 现状为
+  **business semantics partially evidenced; contract gap candidate identified;
+  architecture decision pending**（⛔ **不写 resolved**）。
+- **来源登记 `DATA_SOURCE_REGISTRY.md`**：`OFFERING-002` **补 C1D 汇总事实（n = 2）**，
+  继续复用同一 `source_id`；明确**不登记**课程名 / 课程号 / 教学班号与任何截图身份，
+  **不登记任何真实 categorical 取值**；约束中增补"HAR / 截图均不得进入 Git"。
+- **本地已确认的既存约束（只引用、未修改）**：
+  `backend/app/models/contracts.py` 的 `CourseOffering.meetings` 仍是 `min_length=1`；
+  `backend/tests/test_contracts.py` 有**明确锁定 `meetings: []` 必须失败**的回归用例
+  → 若 DG-07 将来获批，这些位置**需要同步迁移**（本轮**一字未改**）。
+- 修改文件（**仅 7 个 docs 文件**）：
+  - `docs/data/DATA_GATE_DECISIONS.md`、`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`、
+    `docs/data/DATA_SOURCE_REGISTRY.md`
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - `docs/worklogs/course_data.md`、`docs/worklogs/agent_frontend.md`（**仅追加**）
+- ⛔ **未修改** `schemas/`、`docs/interfaces/`、任何代码、任何测试、`mock_data/`；
+  ⛔ **未实施** `minItems = 0`；⛔ **未新增** diagnostic / workaround；
+  ⛔ **未认定** G11 resolved；⛔ **未推断**学校业务状态。
+- 回归（仅确认无副作用，**未为本轮修改任何测试**）：
+  `cd backend && python -m pytest` → **539 passed / 2 skipped**；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**。
+- **Builder 实际 SYSU 请求数：0**。
+- 下一步：等待 **Architecture Lead** 对 **DG-07** 的裁决。
+  ⚠️ **不 merge，不自行开始 DG-07 实施**。
+
