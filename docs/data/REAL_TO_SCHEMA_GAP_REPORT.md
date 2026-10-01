@@ -1,12 +1,14 @@
 # 真实数据 → 公共 Schema 承载能力分析（框架）
 
-> **状态：分析框架 ＋ 两轮真实材料验证。**
+> **状态：分析框架 ＋ 三轮真实材料验证。**
 > Phase 2B-0B 取得部分公开官方材料（见 `SYSU_CASE_A_PUBLIC_EVIDENCE.md`）；
 > **Phase 2B-0B+ 取得 Case A 两份 2025 级真实培养方案（认证来源，见
-> `SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md`）**，因此
-> **G1 已升级为「由 Case A 两份 2025 级真实培养方案确认存在」**（见 4.3），
-> 且 `Course` 的字段映射已按真实样本**逐项判定 A/B/C**（见 3.1）；
-> 其余观察**仍未验证**，保持「待验证」。
+> `SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md`）** → **G1 升级为「由 Case A 两份
+> 2025 级真实培养方案确认存在」**（见 4.3），`Course` 字段映射按样本逐项判定 A/B/C（见 3.1）；
+> **Phase 2B-0C 取得 D4 真实已修课程脱敏样本（见 `SYSU_CASE_A_COMPLETED_COURSES_EVIDENCE.md`）**
+> → **G2 更新为「已由 Case A 真实 D4 样本验证」**（见 4.4），
+> 且 D4 的 8 个字段已逐项判定 A/B/C（见 3.6）；
+> 其余观察（G3 / G4 / G5 / G7 / G8）**仍未验证**，保持「待验证」。
 >
 > ## 红线（本文件最重要的两条）
 >
@@ -135,6 +137,34 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 |---|---|---|---|---|---|---|
 | 待填写 | 待填写 | 待填写 | 待填写 | Planner / Agent | 待填写 | |
 
+### 3.6 D4 真实样本对 `Course` 的字段映射验证（Phase 2B-0C）
+
+**样本**：`TRANSCRIPT-001`（中山大学本科教务系统，"申请成绩转换 → 实修课程成绩" ＋ "本科生成绩单"，
+由负责人在私密侧完成合并与脱敏），**24 条**记录，8 个字段覆盖率**均为 100%**。
+
+| 真实 D4 字段 | 映射结论 A/B/C | 目标 Schema 字段 | 潜在缺口（只描述缺什么） | 影响模块 | 样本出处 | 备注 |
+|---|---|---|---|---|---|---|
+| `course_id`（课程号） | **A 可直接映射** | `Course.course_id` | —— | Curriculum | `TRANSCRIPT-001` | 24 个唯一值 |
+| `course_name`（课程名称） | **A 可直接映射** | `Course.course_name` | —— | Curriculum | 同上 | —— |
+| `credit`（学分） | **A 可直接映射** | `Course.credit` | —— | Curriculum | 同上 | 取值 1–5，无 0 / 负值 |
+| `course_type`（公必 / 专必 / 专选 / 公选） | **B 可转换后映射** | `Course.course_type` | 现有 `course_type` 是**自由字符串、无枚举**；样本出现 4 个取值，**取值体系需人工确认** | Curriculum | 同上 | 与培养方案中的课程模块口径一致 |
+| `semester`（学生**实际修读**学期） | **C 当前无正式表示**（**且不得映射到 `recommended_semester`**） | —— | `Course` 中**没有**"学生实际修读学期"的位置；`recommended_semester` 是**培养方案建议学期**，**两者语义完全不同**，不可互相替代 | Curriculum | 同上 | 样本 2 个取值（2025-1 / 2025-2） |
+| `passed`（**某个学生的一次修读结果**） | **C 当前无正式表示**（**且不得塞入 `Course`**） | —— | `passed` 是**学生的修读事实**，**不是课程固有属性**；`Course` 中没有任何承载位置 | Curriculum | 同上 | 样本内全部为 true |
+| `offering_unit`（开课单位） | **C 当前无正式表示** | —— | 现有 Schema 中**没有任何"开课单位 / 院系"字段**（`Course` 与 `CourseOffering` 均无） | Curriculum / Course Data | 同上 | 样本含 11 个不同开课单位 |
+| `cultivation_type`（培养类别，样本为"主修"） | **C 当前无正式表示** | —— | 它与 `course_type`（公必 / 专必 / 专选 / 公选）**不是同一语义**；**不得把 `cultivation_type` 强行当成 `course_type`** | Curriculum | 同上 | 样本内为单一取值，**完整取值域未知** |
+
+**归属分类（本轮要回答的问题 ③④）**：
+
+| 类别 | 字段 | 说明 |
+|---|---|---|
+| **属于"课程本身"** | `course_id`、`course_name`、`credit`、`course_type` | 课程的固有属性，与"由谁修读"无关 |
+| **属于"学生的修读事实"** | `semester`（实际修读学期）、`passed`（该次修读是否通过） | 同一门课由不同学生、在不同学期修读，结果可能不同 |
+| **归属待确认（本轮不下结论）** | `offering_unit`、`cultivation_type` | `offering_unit` 更像"开课侧"信息；`cultivation_type` 在本样本中恒为"主修"，与培养方案语境相关，**本轮不判断其确切语义与完整取值域** |
+
+> ⚠️ **本轮未做任何课程等价判断**：即使样本与培养方案中出现名称相近的课程，
+> 也**不判断**任何两门课等价、**不判断**任何课程可抵认或转换。
+> 这些属于后续 Curriculum 逻辑 + 正式人工规则。
+
 ---
 
 ## 4. 待验证的初步观察（**仅记录，未经真实样本验证**）
@@ -148,7 +178,7 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | 编号 | 观察 | 依据 | 影响模块 | 状态 |
 |---|---|---|---|---|
 | G1 | **培养方案本身当前没有明确的跨模块公共 Schema / 正式表示**：现有 Schema 只能表达单门 `Course`，没有"培养方案版本 / 适用专业 / 适用年级 / 学分结构 / 课程分组（必修·选修·通识）"的正式表示 | `course.schema.json` 字段清单 ＋ **Case A 两份 2025 级真实培养方案 `CURR-OLD-003` / `CURR-NEW-004`**（认证来源） | Curriculum | **已由 Case A 两份 2025 级真实培养方案确认存在**（见 4.3） |
-| G2 | **已修课程 / 成绩当前没有明确的跨模块公共 Schema / 正式表示**：Curriculum 要把"已修课程记录"变成 `MakeupTask`，但 `/schemas/` 下没有成绩单或"已完成课程"的对象；`Course` 也无法表达成绩、修读学期、是否通过 | `/schemas/` 目录清单 + `docs/interfaces/curriculum.md` 的输入描述 | Curriculum | 待验证 |
+| G2 | **已修课程 / 成绩当前没有明确的跨模块公共 Schema / 正式表示**：Curriculum 要把"已修课程记录"变成 `MakeupTask`，但 `/schemas/` 下没有成绩单或"已完成课程"的对象；`Course` 也无法表达成绩、修读学期、是否通过 | `/schemas/` 目录清单 ＋ `docs/interfaces/curriculum.md` 的输入描述 ＋ **真实 D4 样本 `TRANSCRIPT-001`** | Curriculum | **已由 Case A 真实 D4 样本验证**（见 4.4） |
 | G3 | **学分差额没有结构化表达**：现有 Mock 的 `MakeupTask.reason` 文本里出现"原 3 学分 / 新 2 学分"，但 Schema 中没有可承载"学分差额"的位置 | `mock_data/makeup_tasks.json` 62003007 + `makeup_task.schema.json` | Curriculum / Agent | 待验证 |
 | G4 | **"当前课表"当前没有明确的跨模块公共 Schema / 正式表示**：`docs/interfaces/planner.md` 把"当前课表"列为 Planner 的输入，但 `/schemas/` 下没有对应文件；`CourseOffering` 表示"学校开设什么"，不等于"学生已选什么" | `docs/interfaces/planner.md` 对外输入 | Planner | 待验证 |
 | G5 | **`PlanResult` 没有冲突对象**：冲突只能从 `changes[].reason` 的文本读出，无法计数或分类 | `plan_result.schema.json` 字段清单 | Planner / Agent | 待验证 |
@@ -216,6 +246,25 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 
 ---
 
+### 4.4 G2 的真实数据验证（Phase 2B-0C，依据 D4 真实样本）
+
+**验证结论：G2 已由 Case A 真实 D4 样本验证。**
+
+| 观察 | 真实材料证据（source_id） | 验证到什么程度 |
+|---|---|---|
+| **学生的修读事实无法由 `Course` 完整表达** | `TRANSCRIPT-001`：`semester`（学生**实际修读**学期）与 `passed`（该次修读结果）**在 `Course` 中都没有承载位置** | 证实"某学生在某学期修了某门课、结果如何"这类**修读事实**，确实**无法只靠 `Course` 表达** |
+| 另有真实字段在现有 Schema 中**完全无表示** | `TRANSCRIPT-001`：`offering_unit`（开课单位，样本含 11 个取值）、`cultivation_type`（培养类别，样本恒为"主修"） | 证实除修读事实外，还有**开课侧 / 培养语境**的信息无处承载 |
+| `Course` 能承载的部分 | `course_id` / `course_name` / `credit` 为 **A 直接映射**；`course_type` 为 **B 可转换后映射** | `Course` 覆盖的是**课程本身**的属性，**覆盖不到"学生的修读事实"** |
+
+**本轮明确不做的判断**：
+
+- **不自行决定新增 `CompletedCourse`（或任何）Schema** —— 本文件**只记录问题**；
+- 该信息最终以何种形态存在（**Curriculum 内部模型** ／ **Integration DTO** ／ **正式公共契约**），
+  由**架构负责人**决定；
+- 若最终要成为正式公共契约，须走 `【接口变更请求】`。
+
+---
+
 ## 5. 缺口处理流程
 
 ```text
@@ -256,3 +305,4 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | 2026-09-30 | 第一轮 Review 修订 | ① G1 / G2 / G4 措辞由"没有承载对象"改为"当前没有明确的跨模块公共 Schema / 正式表示"，并补充"不预设一定新增 Schema，可能是模块内部输入"；② G6 记录负责人裁决（见 4.1） |
 | 2026-09-30 | **Phase 2B-0B 验证** | 依据中山大学公开官方材料，**G1 更新为「已由真实材料部分验证」**（依据 `CURR-OLD-001` / `CURR-OLD-002`，见 4.2）；G2 / G3 / G4 / G5 / G7 / G8 因缺乏真实证据**维持「待验证」**；**未修改任何公共 Schema** |
 | 2026-09-30 | **Phase 2B-0B+ 验证（认证来源）** | 依据 Case A 两份 **2025 级**真实培养方案（`CURR-OLD-003` / `CURR-NEW-004`，认证来源）：① **G1 升级为「已由 Case A 两份 2025 级真实培养方案确认存在」**（见 4.3）；② **§3.1 `Course` 字段映射按真实样本逐项判定 A/B/C**（A：课程号/课程名/学分；B：课程类别/推荐学期；C：学时、实验实践学时、培养方案总学分、实践教学学分、适用年级、专业、课程分组、英文名）；③ 记录**本次可检索文本中未发现**明确的先修 / 前置课程字段或条款（不构成对学校制度的结论）。**未设计新字段、未修改 Schema、未做课程等价判断** |
+| 2026-09-30 | **Phase 2B-0C 验证（D4 真实样本）** | 依据 `TRANSCRIPT-001`（D4，认证来源 + 负责人私密侧脱敏，24 条、8 字段 100% 覆盖）：① 新增 **§3.6**，把 `course_id` / `course_name` / `credit` / `course_type` / `semester` / `passed` / `offering_unit` / `cultivation_type` **逐项判定 A/B/C**；② 明确 **`semester` 不得映射到 `recommended_semester`**（实际修读学期 ≠ 培养方案建议学期）、**`passed` 不得塞入 `Course`**（学生修读事实 ≠ 课程固有属性）、**`cultivation_type` 不得当成 `course_type`**；③ **G2 更新为「已由 Case A 真实 D4 样本验证」**（见 4.4）。**只记录问题，未自行决定新增任何 Schema，未修改公共 Schema，未做课程等价判断** |

@@ -419,3 +419,59 @@
 - 公共接口是否变化：否 ｜ 是否修改 backend / frontend / mock_data：否
 - 未做：未改 Schema / Interface / 附件；未进入 2B-0C / 2B-0D；未 merge
 - 下一步：等待 Reviewer 复验。**不 merge，不进入 2B-0C**，Phase 2B Integration 保持暂停编码。
+
+---
+
+### 2026-09-30 - Phase 2B-0C：已修课程真实样本验证（D4，docs-only）
+- 本次目标：只回答五个问题 —— ① 中大真实已修课程记录是什么形态？② 当前 `Course` Schema 能承载其中哪些信息？
+  ③ 哪些属于"课程本身"？④ 哪些属于"学生的修读事实"？⑤ G2 是否被真实数据正式验证？
+  **不回答**：学生缺什么课、哪两门等价、什么课可转换、什么课需补修。
+- 输入与安全边界：
+  - 本轮输入为负责人**已在私密侧完成合并与脱敏**的 D4 样本（**24 条**记录）；
+  - 已删除：姓名、学号、**具体成绩**、GPA、排名、班级、NetID、Cookie、Session、Token；
+  - `passed` 已由负责人依据**官方成绩结果**转换；**Builder 不接触原始成绩、不推断 GPA**；
+  - 原始成绩单 PDF **未提供给 Builder**；逐行样本**仅存在于本地临时文件**，
+    统计完成后**已删除**，**从未进入 Git**。
+- 真实来源（两个，均为 **Authenticated Official**）：
+  - **A. 申请成绩转换 → 实修课程成绩**：提供 课程号 / 课程名称 / 课程类别 / 学分 / 开课单位 / 成绩 / 培养类别；
+  - **B. 本科生成绩单**：提供 课程名称 / 学分 / 成绩 / 课程属性 / 所属学期。
+  - **重要变化**：此前认为"成绩单不提供 `course_id`"；经 A 确认**该页面能提供 `course_id`**。
+- 字段覆盖统计（**唯一允许的统计口径**）：
+  - 总记录数 **24**；`course_id` / `course_name` / `credit` / `semester` / `passed` /
+    `course_type` / `offering_unit` / `cultivation_type` 八个字段**覆盖率均为 100%**；
+  - `semester` 2 个取值（2025-1：11 条；2025-2：13 条）；`passed` 样本内全部为 true；
+  - `course_type` 4 个取值（公必 12 / 专必 8 / 公选 3 / 专选 1）；
+  - `offering_unit` **11 个不同开课单位**；`cultivation_type` 样本内**单一取值**（主修）；
+  - `credit` 取值 1–5，无 0 / 负值；`course_id` 24 个唯一值（无重复行）。
+  - ⚠️ **未写入任何逐行课程清单、具体成绩或 GPA。**
+- Schema 判定（`REAL_TO_SCHEMA_GAP_REPORT.md` 新增 **§3.6**）：
+  - **A 可直接映射**：`course_id`、`course_name`、`credit`；
+  - **B 可转换后映射**：`course_type`（现有字段为自由字符串、无枚举，取值体系待确认）；
+  - **C 当前无正式表示**：`semester`、`passed`、`offering_unit`、`cultivation_type`；
+  - **特别强调**：`semester` 是**学生实际修读学期**，**不得**映射到 `recommended_semester`
+    （后者是**培养方案建议学期**，语义完全不同）；`passed` 是**某个学生的一次修读结果**，
+    **不是课程固有属性**，**不得塞入 `Course`**；`cultivation_type`（样本为"主修"）与
+    `course_type`（公必/专必/专选/公选）**不是同一语义**，**不得强行当成 `course_type`**。
+- G2 验证（新增 **§4.4**）：**G2 更新为「已由 Case A 真实 D4 样本验证」** ——
+  学生的修读事实（`semester` / `passed`）与开课侧 / 培养语境信息（`offering_unit` / `cultivation_type`）
+  **无法由 `Course` 完整表达**。**未自行决定新增 `CompletedCourse` 或任何 Schema**，只记录问题；
+  最终形态（Curriculum 内部模型 / Integration DTO / 正式公共契约）**由架构负责人决定**。
+- 登记（`DATA_SOURCE_REGISTRY.md`）：**登记既有 `TRANSCRIPT-001`**（**未创建新的 D4 `source_id`**）：
+  D4 / 中山大学本科教务系统 / **Authenticated Official** / 官方 / 不公开 / 需登录（仅本人正常权限）/
+  来源 = A + B / **Evidence Grade：Confirmed**；并注明 **Raw 成绩单与逐行脱敏记录均不入库**，
+  **Git 仅登记汇总事实与字段覆盖**。
+- 关于"申请成绩转换"页面右侧状态：**只记录一条汇总结论** ——
+  教务系统内**存在官方的成绩转换 / 培养方案对照状态**，可作为后续 Curriculum 结果的**外部验收参考**。
+  **未**把红色课程当作 Curriculum Diff 输出、**未**复制进 `mock_data`、**未**据此做任何等价或补修判定。
+- 课程等价：**本轮完全未做**（即使样本与培养方案中出现名称相近课程，也未写任何等价或抵认结论）。
+- 修改文件：
+  - 新增 `docs/data/SYSU_CASE_A_COMPLETED_COURSES_EVIDENCE.md`
+  - 更新 `docs/data/DATA_SOURCE_REGISTRY.md`、`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - 更新 `docs/status/agent_frontend.md`、本文件（**仅追加**）
+- 测试：docs-only，未改动任何代码，未复跑前后端
+- 使用数据：Mock（业务数据）+ **D4 真实脱敏样本的汇总事实**（逐行样本不入库，已删除）
+- 公共接口是否变化：否 ｜ 是否修改 backend / frontend / mock_data：否
+- 未做：未登录教务系统、未保存 Cookie/Session/Token、未获取教学班、未做 Network/XHR 侦察、
+  未进入 2B-0D、未改 Schema / Interface、未做 Curriculum Diff、未生成 MakeupTask、未恢复 Integration
+- 下一步：等待 Reviewer 验收 **2B-0C**。通过后进入 **Phase 2B-0D：教学班技术侦察**（**本轮不得自行开始**）。
+  **不 merge**，Phase 2B Integration 保持暂停编码。

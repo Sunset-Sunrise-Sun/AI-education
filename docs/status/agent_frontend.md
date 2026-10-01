@@ -1,41 +1,45 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-09-30（**Phase 2B-0B+：中大教务系统培养方案证据登记**完成，等待 Reviewer）
-> 数据状态：**核心业务数据仍全部为 Mock**；已取得 Case A 两份 **2025 级真实培养方案**（认证来源），
-> 但**原始材料不进入 public Git**
+> 最后更新：2026-09-30（**Phase 2B-0C：已修课程真实样本验证**完成，等待 Reviewer）
+> 数据状态：**核心业务数据仍全部为 Mock**；已取得 Case A 两份 **2025 级真实培养方案**
+> 与 **D4 已修课程脱敏样本**（均为认证来源），但**原始材料与逐行脱敏记录均不进入 public Git**
 
 ## 当前阶段
 
 **Phase 2B-0：真实数据准备与数据源技术侦察**
 
 ```text
-2B-0A ✅ 数据规划  →  2B-0B ✅ 公开政策 / 培养方案  →  2B-0B+ ← 本轮（认证来源培养方案）
-                   →  2B-0C 已修课程最小脱敏样本  →  2B-0D 教学班技术侦察
+2B-0A ✅ 数据规划  →  2B-0B ✅ 公开政策 / 培养方案  →  2B-0B+ ✅ 认证来源培养方案
+                   →  2B-0C ← 本轮（已修课程最小脱敏样本）  →  2B-0D 教学班技术侦察
                    →  数据 Gate  →  恢复 Phase 2B Integration / Orchestrator
 ```
 
 - **Phase 2B（Integration / Orchestrator 集成骨架）暂停编码**，待真实样本通过 **数据 Gate** 后恢复；
   Phase 1 与 Phase 2A 成果不受影响。
 
-## 2B-0B+ 当前结果（Case A：2025级 遥感科学与技术 → 网络空间安全）
+## 2B-0C 当前结果（Case A：2025级 遥感科学与技术 → 网络空间安全）
 
 | 目标 | 状态 | 说明 |
 |---|---|---|
-| **D1 政策** | **Partial ／ sufficient for current validation** | **3 项 Confirmed**；4 项 Partial；1 项 Historical；上级通知原文 **Not Found**。**版本链**：2024〔159号〕→2025〔1号〕有正文证据；**2025〔1号〕→2026〔62号〕待确认** |
-| **D2 2025级 遥感科学与技术 正式培养方案** | ✅ **Confirmed via authenticated official source** | `CURR-OLD-003`（中山大学本科教务系统，本人正常权限）：修业年限 **4 年**、毕业总学分 **147.0**、实践教学学分 **37.1** |
-| **D3 2025级 网络空间安全 本科正式培养方案** | ✅ **Confirmed via authenticated official source** | `CURR-NEW-004`（同上）：修业年限 **4 年**、毕业总学分 **153.0**、实践教学学分 **38.5** |
+| **D1 政策** | **sufficient for current validation** | **3 项 Confirmed**；4 项 Partial；1 项 Historical；上级通知原文 **Not Found**。**版本链**：2024〔159号〕→2025〔1号〕有正文证据；**2025〔1号〕→2026〔62号〕待确认** |
+| **D2 2025级 遥感科学与技术 正式培养方案** | ✅ **Confirmed** | `CURR-OLD-003`（Authenticated Official，中大本科教务系统）：修业年限 **4 年**、毕业总学分 **147.0**、实践教学学分 **37.1** |
+| **D3 2025级 网络空间安全 本科正式培养方案** | ✅ **Confirmed** | `CURR-NEW-004`（Authenticated Official，同上）：修业年限 **4 年**、毕业总学分 **153.0**、实践教学学分 **38.5** |
+| **D4 已完成课程记录** | ✅ **Confirmed via authenticated private sanitized sample** | `TRANSCRIPT-001`：真实样本共 **24 条**记录，8 个字段覆盖率均 **100%**；**Raw 成绩单与逐行脱敏记录均不在 public Git** |
+| **D5 课程开设 / 教学班数据** | ⛔ **未开始** | 属 **2B-0D**，本轮**不处理** |
 
-> ⚠️ **原始培养方案（docx）不进入 public Git**；仓库内只保存 `source_id`、来源性质、
-> 必要结构化事实与 Schema gap 结论。这两份来源为 **Authenticated Official**，
-> **外部访问者无法通过公开 URL 独立复核**。
+> ⚠️ **原始材料一律不进入 public Git**：培养方案 docx、Raw 成绩单、**逐行脱敏课程记录**均不入库；
+> 仓库内只保存 `source_id`、来源性质、**汇总事实**与 Schema gap 结论。
+> 这些来源均为 **Authenticated Official**，**外部访问者无法通过公开 URL 独立复核**。
 
-**Confirmed（5）**：
+**Confirmed（6）**：
 - `POLICY-001` 中山大学本科生学籍管理规定（中大教务〔2026〕62号），教务部现行收录，2026-08-16
 - `POLICY-003` 网络空间安全学院 2026 年本科生转院系专业考核通知，2026-04-20
 - `POLICY-008` 中山大学本科生学籍管理规定（中大教务〔2025〕1号），官方站点发布**全文**，2025-04-05
   （**其第三十一条直接规定转专业后的学分认定与成绩转换**）
 - **`CURR-OLD-003`** 25级 遥感科学与技术 本科培养方案 —— **Authenticated Official**（中大本科教务系统）
 - **`CURR-NEW-004`** 25级 网络空间安全 本科培养方案 —— **Authenticated Official**（中大本科教务系统）
+- **`TRANSCRIPT-001`** 已完成课程记录（D4）—— **Authenticated Official**（中大本科教务系统，
+  负责人私密侧合并与脱敏；**24 条**记录、8 字段 100% 覆盖）
 
 **Partial（7）**：`POLICY-002`（转专业实施办法，现行性未确认）、`POLICY-004`、`POLICY-005`、
 `POLICY-006`（学分成绩转换操作指南，学院站点发布）、`CURR-OLD-001`（2019 级培养方案）、
@@ -79,6 +83,12 @@
   **Authenticated Official** 来源，并新增「访问类型」字段（区分 Public / Authenticated）；
   `REAL_TO_SCHEMA_GAP_REPORT.md` 中 **G1 升级为「已由 Case A 两份 2025 级真实培养方案确认存在」**，
   且 `Course` 字段映射已按真实样本逐项判定 A/B/C
+- **2B-0C 已修课程真实样本验证（D4）**：新增 `docs/data/SYSU_CASE_A_COMPLETED_COURSES_EVIDENCE.md`；
+  登记 **`TRANSCRIPT-001`**（**Authenticated Official**，**未创建新的 D4 `source_id`**）；
+  `REAL_TO_SCHEMA_GAP_REPORT.md` 新增 **§3.6**（D4 八个字段逐项判定 A/B/C）与 **§4.4**，
+  **G2 更新为「已由 Case A 真实 D4 样本验证」**；
+  并明确 `semester` **不得**映射到 `recommended_semester`、`passed` **不得**塞入 `Course`、
+  `cultivation_type` **不得**当成 `course_type`
 
 ## 当前接口
 - 读取：`MakeupTask[]`、`CourseOffering[]`、`Preference`、`PlanResult`（当前来自 Mock）
@@ -88,10 +98,12 @@
 
 ## 当前使用数据
 - **业务数据仍全部为 Mock**：仓库根目录 `/mock_data/`（人工虚构的演示数据）
-- 本轮取得的是**公开官方政策 URL / 事实**，以及 **Case A 两份 2025 级真实培养方案的结构化事实**
-- **原始培养方案 docx 不进入 public Git**；仓库内**不含完整课程表**
-- 这两份来源为 **Authenticated Official**：**外部访问者无法通过公开 URL 独立复核**
-- 真实数据链路**尚未验证**（尚无真实成绩单 / 教学班数据）
+- 本轮取得的是**公开官方政策 URL / 事实**、**Case A 两份 2025 级真实培养方案的结构化事实**，
+  以及 **D4 已修课程脱敏样本的汇总事实（24 条、8 字段 100% 覆盖）**
+- **原始培养方案 docx、Raw 成绩单、逐行脱敏课程记录均不进入 public Git**；仓库内**不含完整课程表**，
+  也**不含任何具体成绩 / GPA**
+- 这些来源为 **Authenticated Official**：**外部访问者无法通过公开 URL 独立复核**
+- 真实数据链路**尚未验证**（尚无真实教学班数据）
 - 「当前功能仅使用 Mock 数据验证，尚未完成真实数据验证」
 
 ## 当前阻塞
@@ -104,15 +116,14 @@
   Case A 转专业时点适用哪一版需人工判定。另：转专业实施办法（`POLICY-002`）现行性未确认
 - 上游 Curriculum / Course Data / Planner 均未产出真实结果，前端只能展示 Mock
 - **集成骨架尚未建立**：上游模块暂时没有正式的接入点
-- **真实数据尚未通过数据 Gate**：2B-0C / 0D 均未开始，Phase 2B Integration 因此暂停编码
+- **真实数据尚未通过数据 Gate**：**2B-0D 未开始**，Phase 2B Integration 因此暂停编码
 
 ## 下一步
-- **2B-0B+ 完成，等待 Reviewer 验收**
-- **Review 通过后进入 Phase 2B-0C：已修课程最小脱敏样本**（D4）。
-  第一版只保留 课程号 / 课程名 / 学分 / 修读学期 / 是否通过 / 必要课程性质；
-  **Raw 与脱敏样本均不得进入 public 仓库**，只能经负责人控制的非公开位置交付
+- **2B-0C 完成，等待 Reviewer 验收**
+- **Review 通过后进入 Phase 2B-0D：教学班技术侦察**（D5）。
+  ⚠️ **本轮不得自行开始**，必须等新一轮任务书
 - 2B-0 全程遵守 `docs/data/DATA_ACQUISITION_PLAN.md` 的三层数据模型与红线：
-  **Raw 不进 Git；D4 的 Raw 与脱敏样本均不得进入 public 仓库；`/mock_data/` 保持人工虚构**
+  **Raw 不进 Git；D4 的 Raw 与逐行脱敏样本均不得进入 public 仓库；`/mock_data/` 保持人工虚构**
 - **Phase 2B（Integration / Orchestrator 集成骨架）暂停编码**，待**真实样本通过数据 Gate**后恢复
 - 比赛 Demo 故事线**不属于当前开发主线**，推迟到后续产品展示阶段再评估
 - 在真实 Curriculum / Planner / Course Data 稳定之前，不接 Agent / LLM
