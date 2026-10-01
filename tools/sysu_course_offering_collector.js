@@ -5,7 +5,9 @@
  * 定位
  * ----
  * 本文件是 **SYSU-specific Transport 的浏览器侧实现**。
- * 它只做三件事：串行取页 → 最小化字段 + 脱敏 → 产出本地 Capture Bundle。
+ * 它提供两件事：
+ *   1. `collect()` —— 串行取页 → 最小化字段 + 脱敏 → 产出本地 Capture Bundle；
+ *   2. `diagnoseSchedulePresence()` —— **只取第 1 页一次**的**结构诊断**（只统计，不产出数据）。
  *
  * ⛔ 本文件**不实现**任何后端直连学校的认证 HTTP 客户端。
  * 认证完全交给浏览器既有的登录状态（`credentials: "same-origin"`），
@@ -17,6 +19,7 @@
  * 用户必须在控制台**显式调用**：
  *
  *     await window.XuehangSysuCollector.collect({ semester: "2026-1" })
+ *     await window.XuehangSysuCollector.diagnoseSchedulePresence({ semester: "2026-1" })
  *
  * 默认只跑 2 页 smoke test；要跑更多页必须显式提高 `maxPages`，并会弹出确认框。
  *
@@ -34,6 +37,12 @@
  * **不会**反向写进通用 `backend/app/course_data/pagination.py`。
  * `firstPageNo` 被**锁定为 1**：传入其它起始页会在发请求之前直接失败
  * （通用多起始页能力留在 backend 分页核心，不在这里放开）。
+ *
+ * ⛔ 结构诊断的定位
+ * ----------------
+ * `diagnoseSchedulePresence()` 是**取证**，**不是** workaround：
+ * 它只统计 `teachingTimePlaceStr` 的存在形态，**不**改造数据、
+ * **不**放宽 `collect()` 的 fail-closed 行为、**不**产出 Capture Bundle。
  *
  * ⛔ 完整性归属
  * ------------
@@ -138,13 +147,15 @@
    *   6 fields: weeks / weekday / sections / location / teacher / activity
    *
    * 其余字段（weeks / weekday / sections / location / activity）**原样保留**。
+   *
+   * `humanRowNo` 为**从 1 开始**的人类行号，只用于错误信息（见 `minimizeRow`）。
    */
-  function redactSegmentTeacher(segment, pageNo, rowIndex) {
+  function redactSegmentTeacher(segment, pageNo, humanRowNo) {
     var fields = segment.split(FIELD_SEPARATOR);
 
     if (fields.length !== 5 && fields.length !== 6) {
       fail(
-        "第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr " +
+        "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
           "出现不支持的字段数（" + fields.length + "）。本采集器不猜格式，已整体停止。"
       );
     }
@@ -158,7 +169,7 @@
     // 错误信息不回显 teacher 取值。
     if (typeof teacher !== "string" || teacher.trim() === "") {
       fail(
-        "第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr " +
+        "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
           "中 teacher 字段为空或不是字符串。本采集器不写入脱敏占位符来掩盖该问题，已整体停止。"
       );
     }
@@ -172,10 +183,12 @@
    * 对整条 teachingTimePlaceStr 脱敏，并保持全部已确认结构：
    * segment 顺序、`/`、`,`、**最多一个** trailing comma、
    * location 原文、weeks / weekday / sections / activity 原文。
+   *
+   * `humanRowNo` 为**从 1 开始**的人类行号，只用于错误信息（见 `minimizeRow`）。
    */
-  function redactTeachingTimePlace(text, pageNo, rowIndex) {
+  function redactTeachingTimePlace(text, pageNo, humanRowNo) {
     if (typeof text !== "string" || text === "") {
-      fail("第 " + pageNo + " 页第 " + rowIndex + " 条记录缺少可用的 teachingTimePlaceStr。");
+      fail("第 " + pageNo + " 页第 " + humanRowNo + " 条记录缺少可用的 teachingTimePlaceStr。");
     }
 
     var segments = text.split(SEGMENT_SEPARATOR);
@@ -191,7 +204,7 @@
 
     if (trailingEmpty > 1) {
       fail(
-        "第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr " +
+        "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
           "出现多个末尾逗号。已整体停止。"
       );
     }
@@ -202,17 +215,17 @@
     }
 
     if (segments.length === 0) {
-      fail("第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr 没有有效 segment。");
+      fail("第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr 没有有效 segment。");
     }
 
     var redacted = segments.map(function (segment) {
       if (segment.trim() === "") {
         fail(
-          "第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr " +
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
             "出现中间空 segment。已整体停止。"
         );
       }
-      return redactSegmentTeacher(segment, pageNo, rowIndex);
+      return redactSegmentTeacher(segment, pageNo, humanRowNo);
     });
 
     return redacted.join(SEGMENT_SEPARATOR) + (hadTrailingComma ? SEGMENT_SEPARATOR : "");
@@ -222,16 +235,25 @@
   // 数据最小化
   // ---------------------------------------------------------------------
 
-  function minimizeRow(row, pageNo, rowIndex) {
+  /**
+   * 取一条 row 的最小化副本：只保留 `KEPT_ROW_FIELDS`，
+   * 并把 `teachingTimePlaceStr` 覆盖为脱敏后的文本。
+   *
+   * ⚠️ **`humanRowNo` 是从 1 开始的人类行号，只用于错误信息**。
+   * 调用方在第 1 页对第 1 条记录报告"第 1 条"，
+   * 因此 `collect()` 传入的是 `Array.prototype.map` 的 **0-based** 下标 **加 1**。
+   * 这样错误信息可以直接和浏览器里看到的行号对齐；**报告的是行数，不是数组下标**。
+   */
+  function minimizeRow(row, pageNo, humanRowNo) {
     if (!row || typeof row !== "object" || Array.isArray(row)) {
-      fail("第 " + pageNo + " 页第 " + rowIndex + " 条记录不是对象。");
+      fail("第 " + pageNo + " 页第 " + humanRowNo + " 条记录不是对象。");
     }
 
     var minimized = {};
     for (var i = 0; i < KEPT_ROW_FIELDS.length; i += 1) {
       var field = KEPT_ROW_FIELDS[i];
       if (!Object.prototype.hasOwnProperty.call(row, field)) {
-        fail("第 " + pageNo + " 页第 " + rowIndex + " 条记录缺少字段：" + field);
+        fail("第 " + pageNo + " 页第 " + humanRowNo + " 条记录缺少字段：" + field);
       }
       minimized[field] = row[field];
     }
@@ -240,7 +262,7 @@
     minimized.teachingTimePlaceStr = redactTeachingTimePlace(
       row.teachingTimePlaceStr,
       pageNo,
-      rowIndex
+      humanRowNo
     );
 
     return minimized;
@@ -422,8 +444,10 @@
         );
       }
 
+      // 报告给用户的行号从 1 开始：map 的下标是 0-based，因此显式 + 1。
+      // 不改变顺序、不跳过任何 row、不做任何字段修补。
       var minimizedRows = data.rows.map(function (row, rowIndex) {
-        return minimizeRow(row, currentPageNo, rowIndex);
+        return minimizeRow(row, currentPageNo, rowIndex + 1);
       });
 
       pages.push({
@@ -458,6 +482,118 @@
     };
   }
 
+  // ---------------------------------------------------------------------
+  // 结构诊断（Phase 2B-2C1B）：只取证，不是 workaround
+  // ---------------------------------------------------------------------
+
+  /** 诊断统计的目标字段名。 */
+  var SCHEDULE_FIELD = "teachingTimePlaceStr";
+
+  /** 诊断固定只取第 1 页（不对外开放、不循环、不重试）。 */
+  var DIAGNOSTIC_PAGE_NO = 1;
+
+  /** 诊断固定使用已验证的单页上限。 */
+  var DIAGNOSTIC_PAGE_SIZE = 200;
+
+  /**
+   * 纯函数：统计 `rows` 中 `teachingTimePlaceStr` 的存在形态。
+   *
+   * 分类（互斥且穷尽）：
+   *   missing          —— 字段不存在
+   *   null             —— 字段存在且值为 null
+   *   empty_string     —— 值是字符串但 trim 后为空
+   *   non_empty_string —— 值是字符串且 trim 后非空
+   *   other_type       —— 字段存在，但既不是 null 也不是字符串
+   *
+   * 保证：missing + null + empty_string + non_empty_string + other_type === rows.length
+   *
+   * ⛔ 只统计数量，**不返回也不打印**任何 row 内容、课程号、教师、教室或原文。
+   */
+  function summarizeSchedulePresence(rows) {
+    if (!Array.isArray(rows)) {
+      fail("诊断需要 data.rows 是数组。已停止。");
+    }
+
+    var bucket = {
+      missing: 0,
+      null: 0,
+      empty_string: 0,
+      non_empty_string: 0,
+      other_type: 0
+    };
+
+    for (var index = 0; index < rows.length; index += 1) {
+      var row = rows[index];
+
+      if (!row || typeof row !== "object" || Array.isArray(row)) {
+        // 只报结构性问题与下标，不回显 row 内容。
+        fail("诊断遇到非对象 row（下标 " + index + "）。已停止。");
+      }
+
+      if (!Object.prototype.hasOwnProperty.call(row, SCHEDULE_FIELD)) {
+        bucket.missing += 1;
+        continue;
+      }
+
+      var value = row[SCHEDULE_FIELD];
+
+      if (value === null) {
+        bucket.null += 1;
+      } else if (typeof value === "string") {
+        if (value.trim() === "") {
+          bucket.empty_string += 1;
+        } else {
+          bucket.non_empty_string += 1;
+        }
+      } else {
+        bucket.other_type += 1;
+      }
+    }
+
+    return {
+      total_rows: rows.length,
+      teachingTimePlaceStr: bucket
+    };
+  }
+
+  /**
+   * 结构诊断：**只请求第 1 页一次**，统计 `teachingTimePlaceStr` 的存在形态。
+   *
+   * - 复用现有 hostname guard / same-origin 请求 / 既有取页函数的
+   *   HTTP / JSON / code / total / rows 校验（**不复制认证逻辑**）；
+   * - 固定 `pageNo = DIAGNOSTIC_PAGE_NO`（1）、`pageSize = DIAGNOSTIC_PAGE_SIZE`（200）；
+   * - ⛔ 不接受任何分页选项（没有 maxPages / firstPageNo / 循环 / 重试 / 并发）；
+   * - ⛔ **不生成 Capture Bundle**、不做字段最小化、不做教师脱敏、不调用 `toJson`；
+   * - ⛔ 不修改 `collect()` 的 fail-closed 行为 —— 本函数只是取证，不是 workaround。
+   *
+   * 返回值只有聚合统计，**不含**任何 Raw row / 课程号 / 教师 / 教室 / 原文。
+   */
+  async function diagnoseSchedulePresence(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var semester = opts.semester;
+    if (typeof semester !== "string" || semester.trim() === "") {
+      fail('诊断必须显式提供非空 semester（例如 "2026-1"）。');
+    }
+    semester = semester.trim();
+
+    // 只取第 1 页、只取一次。
+    var data = await requestPage(semester, DIAGNOSTIC_PAGE_NO, DIAGNOSTIC_PAGE_SIZE);
+
+    var summary = summarizeSchedulePresence(data.rows);
+
+    return {
+      semester: semester,
+      page_no: DIAGNOSTIC_PAGE_NO,
+      page_size: DIAGNOSTIC_PAGE_SIZE,
+      reported_total: data.total,
+      total_rows: summary.total_rows,
+      teachingTimePlaceStr: summary.teachingTimePlaceStr
+    };
+  }
+
   /**
    * 把采集结果序列化成**裸 Capture Bundle**（可直接交给 Python `load_capture_bundle`）。
    *
@@ -486,7 +622,11 @@
 
   window.XuehangSysuCollector = {
     collect: collect,
+    diagnoseSchedulePresence: diagnoseSchedulePresence,
+    summarizeSchedulePresence: summarizeSchedulePresence,
     toJson: toJson,
+    DIAGNOSTIC_PAGE_NO: DIAGNOSTIC_PAGE_NO,
+    DIAGNOSTIC_PAGE_SIZE: DIAGNOSTIC_PAGE_SIZE,
     CAPTURE_FORMAT: CAPTURE_FORMAT,
     ALLOWED_HOSTNAME: ALLOWED_HOSTNAME,
     ENDPOINT_PATH: ENDPOINT_PATH,

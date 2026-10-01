@@ -1,6 +1,7 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C1A SYSU Authorized Browser Transport + Capture Bridge** 完成，等待 Reviewer）
+> 最后更新：2026-10-01（**Phase 2B-2C1B Schedule Presence Diagnostic** 完成，
+> **Reviewer 修复 6 项已完成**，等待 Reviewer 复核）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应、私密脱敏样本与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
@@ -8,16 +9,21 @@
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
 > Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
-> 零网络分页采集核心、浏览器端授权采集器代码与 Capture Bridge**均已完成；
-> 但 **production Curriculum / Planner provider 尚未接入**，
-> **尚未执行真实完整学期程序化采集，尚未取得 complete semester snapshot**，
+> 零网络分页采集核心、浏览器端授权采集器代码、Capture Bridge 与结构诊断入口**均已完成；
+> **已完成一次真实 smoke run**（「全校开设课程」独立模块内 **same-origin 成功**，
+> **认证不再是 blocker**），但**第 1 页至少 1 条真实 row 缺少 `teachingTimePlaceStr`**，
+> 当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**、
+> **尚未取得 complete semester snapshot**；**缺失字段的业务含义尚未确认**；
+> **production Curriculum / Planner provider 仍未接入**，
 > 因此**没有**任何一条真实数据链路端到端跑通，**也未新增任何 API**。
+>
+> ⚠️ **导航纠错**：「**选课**」与「**全校开设课程**」是**两个独立模块**。
 >
 > 详见 `docs/status/course_data.md`。
 
 ## 当前阶段
 
-**Phase 2B-2C1A 代码已完成 → 下一步由负责人手动 smoke run（尚未执行）**
+**Phase 2B-2C1B 代码已完成 → 下一步由负责人手动 1 页结构诊断**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -29,9 +35,11 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                    →  Phase 2B-2B ✅ Schedule Parser + Local Import Adapter（纯本地、零网络）
                    →  Phase 2B-2C0 ✅ Pagination Core（零网络分页采集 + completeness 证据链）
                    →  ✅ SYSU 分页参数人工验证完成（first_page_no=1、单页上限 200、前两页 total=6892）
-                   →  Phase 2B-2C1A ✅ 浏览器端授权采集器代码 + Capture Bridge（未执行真实采集）
-                   →  【下一步】负责人手动 smoke run（2 页，预期 partial）+ 真实 Capture 导入 UI
-                   →  之后：Phase 2B Integration / Orchestrator 接真实 Provider
+                   →  Phase 2B-2C1A ✅ 浏览器端授权采集器代码 + Capture Bridge
+                   →  ✅ 真实 smoke run：same-origin 成功、认证不再是 blocker
+                   →  Phase 2B-2C1B ✅ 结构诊断入口（只取证；缺 teachingTimePlaceStr → 当前 fail closed）
+                   →  【下一步】负责人手动 1 页诊断 → 依据结果走正式【接口变更请求】
+                   →  之后：真实 Capture 导入 UI → Phase 2B Integration 接真实 Provider
 ```
 
 - **Phase 1 / Phase 2A 成果不受影响**；`/api/v1/mock/*` 仍是独立的**永久 Mock 通道**。
@@ -388,6 +396,44 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 > ⚠️ 本次**未单独记录** `rows.length`，因此**不声称**已确认每页满 200 行；
 > ⚠️ `max_pages` 是**内部安全阀**，**不是**学校侧参数，无需人工验证。
 
+## Phase 2B-2C1B 结果（Schedule Presence Diagnostic）
+
+**只取证、不裁决**：在**现有**采集器内新增显式触发的结构诊断入口。详见 `docs/status/course_data.md`。
+
+| 产出 | 内容 |
+|---|---|
+| `tools/sysu_course_offering_collector.js` | 新增 `diagnoseSchedulePresence({ semester })` 与纯函数 `summarizeSchedulePresence(rows)` |
+| `backend/tests/test_sysu_collector_guard.py` | 新增诊断相关静态守卫 |
+
+**关键边界**：
+
+- ⛔ **加载脚本仍不自动请求**；诊断必须由用户显式调用；
+- **固定只取第 1 页一次**：`pageNo = 1`、`pageSize = 200`、`total = true`；⛔ 无 `maxPages` /
+  `firstPageNo` / 循环 / 重试 / 并发；**复用**既有 hostname guard 与取页函数（不复制认证逻辑）；
+- **只返回聚合统计**：`semester` / `page_no` / `page_size` / `reported_total` /
+  `total_rows`（= `data.rows.length`）/ `teachingTimePlaceStr{missing, null, empty_string,
+  non_empty_string, other_type}`；五类之和 == `total_rows`；
+- ⛔ **不含** Raw row、row 下标、课程号 / 课程名 / 教学班号 / 教师 / 教室 / 原文 / 内部 ID；
+- ⛔ **不生成 Capture Bundle**、不做字段最小化、不做教师脱敏、不调用 `toJson`；
+- ⛔ **不改** `collect()` 的 fail-closed 行为（缺字段仍整体失败，不跳过 / 不补空 / 不造占位 `Meeting`）；
+- ⛔ **本轮不改契约**：`CourseOffering.meetings` `minItems = 1` 保持不变；**G11 只登记、不裁决**；
+- **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/`、`frontend/` 均未修改；
+  后端 **524 passed / 2 skipped**。
+
+**Reviewer 修复（2026-10-01，本阶段 6 项）**：
+
+- 真实结构 smoke **登记为 `OFFERING-002`**（`DATA_SOURCE_REGISTRY.md`；只登记汇总事实、无 Raw row）；
+- 删除**不成立的精确条数**表述（原写作"第 1 页第 N 条"，来自 JS 0-based 下标）→ 统一为"**第 1 页至少 1 条** row 缺少
+  `teachingTimePlaceStr`"（**只登记"至少 1 条"**）；**G11** 补 **样本出处 `OFFERING-002`**；
+  缺口报告表头补 `Phase 2B-2C1B 真实 smoke 结构证据`；
+- **错误信息行号口径 = 1-based**：`collect()` 调用点 `minimizeRow(row, currentPageNo, rowIndex + 1)`
+  （`map` 的 0-based 下标 + 1），`minimizeRow` / `redactTeachingTimePlace` / `redactSegmentTeacher`
+  第三参数统一为 `humanRowNo` 并写入 JSDoc（**只用于错误信息**）；
+  ⛔ **未改** fail-closed、字段检查、数据行为、诊断统计；⛔ 未改任何契约 / 前端产品 UI；
+- 新增守卫：`test_collector_reports_one_based_human_row_numbers`、
+  `test_collector_row_number_is_only_for_messages`；回归 **524 passed / 2 skipped**、
+  `node --check` exit 0；**实际 SYSU 请求数：0**。
+
 ## Phase 2B-2C1A 结果（SYSU Authorized Browser Transport + Capture Bridge）
 
 **浏览器端显式触发的授权采集 + Python 本地回放桥**；不接 Integration / Planner / API / 前端产品 UI。
@@ -580,14 +626,31 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **等待 Reviewer 验收 Phase 2B-2C1A**（采集器 + Capture Bridge；
-  重点看"是否自动发请求""是否读取 / 导出认证状态""是否保留最小字段并脱敏教师"
-  "Bridge 是否复用分页核心且不接 Integration"）
-- **下一步是负责人手动 smoke run**（Reviewer 合并后）：在本人已登录、已有权限的教务页面
-  加载采集器并显式调用 `collect({ semester: "2026-1" })`（默认 2 页，**预期 partial**），
-  把 Capture Bundle 保存到**非公开位置**后本地验证；
+- **等待 Reviewer 复核 Phase 2B-2C1B 的 6 项修复**（结构诊断本身 +
+  证据边界 / 行号口径修正；重点看"是否只请求第 1 页一次""是否只输出聚合统计"
+  "是否未产出 bundle""是否未改动 `collect()` 的 fail-closed 行为"
+  "是否只登记'至少 1 条'而非精确条数"）
+- **下一步是负责人手动 1 页结构诊断**（Reviewer 合并后）：在本人已登录、已有权限的
+  「**全校开设课程**」模块页面显式调用
+  `diagnoseSchedulePresence({ semester: "2026-1" })`；
+  依据结果判断缺字段的普遍性与形态，**下一轮再走正式 `【接口变更请求】`**；
   ⚠️ **本轮不得自行开始**，须等新一轮任务书
 - **真实 Capture Bundle 的导入 UI**（前端产品链路）属**后续步骤**，本轮不做；
+- **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
+  `max_pages` 是**内部安全阀**，不是学校侧参数；
+  **partial snapshot 必须显式记录 completeness，不得宣称 complete**（C9）
+- **仍不允许实现层自行补齐**：`prerequisites[]` / `weekDay` / `openingSchoolName → campus` /
+  meeting-level teacher 四项保持"待确认"或"已知暂缓"（C11）；
+  **G11（部分 row 缺 `teachingTimePlaceStr`）**同样**只登记、不推测业务含义**
+- ⚠️ **公共契约不得再自行修改**：任何后续变更仍须走 `【接口变更请求】` → 人工确认
+- ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（仅用于规模 / 小范围 / parser 验证）
+- **真实 Capture Bundle 属 Real Sanitized Capture**：**不得进入 Git**（含 `mock_data/` 与测试 fixture）
+- 真实 Curriculum / Planner provider 的接入顺序与形式**待负责人安排**
+  （Phase 2B-1 只定义了插座，未决定实现方式）
+- 2B-0 全程遵守 `docs/data/DATA_ACQUISITION_PLAN.md` 的三层数据模型与红线：
+  **Raw 不进 Git；D4 的 Raw 与逐行脱敏样本均不得进入 public 仓库；`/mock_data/` 保持人工虚构**
+- 比赛 Demo 故事线**不属于当前开发主线**，推迟到后续产品展示阶段再评估
+- 在真实 Curriculum / Planner / Course Data 稳定之前，不接 Agent / LLM
 - **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
   `max_pages` 是**内部安全阀**，不是学校侧参数；
   **partial snapshot 必须显式记录 completeness，不得宣称 complete**（C9）

@@ -1,6 +1,6 @@
 # 真实数据 → 公共 Schema 承载能力分析（框架）
 
-> **状态：分析框架 ＋ 四轮真实材料验证。**
+> **状态：分析框架 ＋ 四轮真实材料验证 ＋ Phase 2B-2C1B 真实 smoke 结构证据。**
 > Phase 2B-0B 取得部分公开官方材料（见 `SYSU_CASE_A_PUBLIC_EVIDENCE.md`）；
 > **Phase 2B-0B+ 取得 Case A 两份 2025 级真实培养方案（认证来源，见
 > `SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md`）** → **G1 升级为「由 Case A 两份
@@ -11,6 +11,8 @@
 > → **G7 升级为「已由真实 D5 样本验证」**（见 4.5），
 > **新增 G9**（一个教学班多个上课时间 / 地点 segment 无法无损表达）与
 > **G10**（D5 另有多个字段无表示）；`CourseOffering` 字段映射逐项判定 A/B/C（见 3.2）；
+> **Phase 2B-2C1B 依据真实 smoke run 新增 G11**
+> （部分真实 `CourseOffering` row 缺少 `teachingTimePlaceStr`，见 4.7）；
 > 其余观察（G3 / G4 / G5 / G8）**仍未验证**，保持「待验证」。
 >
 > ## 红线（本文件最重要的两条）
@@ -239,6 +241,7 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | G8 | **`Preference` 无法表达"已经有什么"**：偏好只表达"想要什么"，不表达已修学分 / 已修课程 | `preference.schema.json` 字段清单 | Agent / Planner | 待验证 |
 | **G9** | **一个教学班可以拥有多个独立的上课时间 / 地点 segment，当前 `CourseOffering` 无法在一个对象中无损表达**：真实接口中 `CSE202` 的**每个教学班都有多个 schedule segment**（例如"1-17周 星期一 第 3-4 节 某教室" ＋ "1-17单周 星期三 第 5-6 节 某教室"），而 `CourseOffering` 只有一组 `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。⚠️ **原缺口描述保留如上**（历史上 `CourseOffering` 确实无法表达多 segment）。**Data Gate-2 已按 DG-01 完成公共契约修复**：`CourseOffering` 改为 1 — N `meetings[]`（见 4.6） |
 | **G10** | **D5 还有多个真实字段在现有 `CourseOffering` 中没有任何表示**：`selectedNumber`（已选人数）、`openingUnitName`（开课单位）、`courseCategoryName`（课程类别）、`examMode`（考核方式）、`readObj`（修读对象）、`teachProgressSubmitState` / `openClass`（**业务语义待确认**） | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。**只登记、不设计字段**；`teachProgressSubmitState` / `openClass` **不根据 0/1 值自行解释** |
+| **G11** | **部分真实 `CourseOffering` row 缺少 `teachingTimePlaceStr`**：真实 smoke run 中**第 1 页至少 1 条 row 没有该字段**（**只登记"至少 1 条"，不登记精确条数**）；当前 `importer` / `parser` 无法为这样的 row 构造 `meetings`，而公共契约要求 `CourseOffering.meetings` **`minItems = 1`**。**样本出处：`OFFERING-002`** | **负责人真实 smoke run**（2026-10-01，在「全校开设课程」独立模块内，第 1 页；来源登记 `OFFERING-002`） | Course Data / Planner | **已由真实 smoke run 观察**（见 4.7）。⚠️ **缺失原因 / 记录类型 / 是否普遍 / 是否应进入 Planner 全部未确认**；**本轮不裁决 Schema、不预设修复方案** |
 
 > 对 G1 / G2 / G4 的补充说明：这三条说的是"**当前没有明确的跨模块公共 Schema / 正式表示**"，
 > 而**不是**"一定要新增公共 Schema"。
@@ -385,6 +388,45 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 
 ---
 
+### 4.7 G11 的真实观察（Phase 2B-2C1B，依据真实 smoke run）
+
+> **本节只记录事实与待调查项，不做任何 Schema 裁决。**
+
+**样本出处**：`OFFERING-002`（`docs/data/DATA_SOURCE_REGISTRY.md`，D5，「全校开设课程」独立模块第 1 页真实结构 smoke，**Authenticated Official**，证据等级 **Confirmed**）。
+
+**已确认**：
+
+- 负责人在真正的「**全校开设课程**」独立模块内运行了已合并的浏览器端采集器；
+- **same-origin 请求成功**，**第 1 页响应成功进入采集器**；
+- **第 1 页至少发现 1 条真实 row 缺少 `teachingTimePlaceStr`**（**只登记"至少 1 条"，不登记精确条数**）。
+
+**当前影响**：
+
+- 当前 `importer` / `schedule_parser` **无法**为这样的 row 构造 `meetings`；
+- 而公共契约要求 **`CourseOffering.meetings` `minItems = 1`**；
+- 因此当前 `collect()` **按设计 fail closed**（缺字段即整体失败），
+  **尚未生成真实 Capture Bundle**，**尚未取得 complete semester snapshot**。
+
+**未确认（全部待调查）**：
+
+- 缺失的**原因**；
+- 这些 row 的**记录类型**；
+- **是否应进入 Planner**；
+- **是否普遍存在**（当前证据只覆盖第 1 页的一条 row）；
+- **是否需要修改公共契约**。
+
+> ⚠️ **不得**据此写成"缺排课""未排课课程""异步课程""暂无教室"等任何**业务结论** ——
+> 现有证据只证明"存在这样的 row"。
+>
+> ⚠️ **本轮不修改** `schemas/`、`docs/interfaces/`，也**不预设**修复方案。
+> 若后续证据表明现有契约确实覆盖不了真实数据，
+> 按 `/AGENTS.md` 第 4 节提交 `【接口变更请求】`，由负责人裁决。
+>
+> **取证工具**：`tools/sysu_course_offering_collector.js` 中的
+> `diagnoseSchedulePresence({ semester })`（**只请求第 1 页一次**，只返回聚合计数，不产出数据）。
+
+---
+
 ## 5. 缺口处理流程
 
 ```text
@@ -431,3 +473,4 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | 2026-09-30 | **Data Gate-1 引用（不改缺口状态）** | 新增 `docs/data/DATA_GATE_DECISIONS.md`（当时为**草案，未经批准**），把 G1 / G2 / G4 / G9 / G10 等整理为实体边界、Shared / Private / Derived 分类与 **DG-01 – DG-06 接口变更请求草案**；并在 §4.5 末尾加入 Data Gate 引用。**本报告的缺口状态与 A/B/C 映射结论一律不变**；**未修改 Schema / Interface / 代码**，**未调用 SYSU 接口**，当时**未做任何裁决** |
 | 2026-09-30 | **Data Gate-1 状态同步（Reviewer 认可后）** | 仅同步 **Data Gate 状态措辞**（§4.5 引用块 + 本表）：`DATA_GATE_DECISIONS.md` 的标注由"**草案，未经批准**"改为 **「Data Gate-1 架构裁决已完成；公共契约尚未实施，实施进入 Data Gate-2」**。**只同步状态**：**G1–G10 的历史分析与 A/B/C 映射结论一字未改**；**未修改 Schema / Interface / 代码**，**未调用 SYSU 接口**，**未进入 Data Gate-2** |
 | 2026-09-30 | **Data Gate-2：G9 契约修复（DG-01 / DG-06 实施）** | ① **G9 更新为「已通过 DG-01 / Data Gate-2 完成公共契约修复」**：`schemas/course_offering.schema.json` 顶层删除 `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`，改为 **`meetings[]`（`minItems: 1`）**，即 **`CourseOffering` 1 —— N `Meeting`**，顶层 `required` = `course_id` / `course_name` / `class_id` / `semester` / `meetings`；② **新增 §4.6** 记录修复形态与同步范围（Mock 全量迁移且 ≥1 个教学班含 2 段、后端新增 `Meeting` 模型、前端类型与展示同步）；③ **§3.2 补注「Data Gate-1 当时的字段 / Data Gate-2 之后的字段」并在历史分析表上方标明时点**；④ **历史一律保留**：原缺口描述"一个教学班无法在一个 `CourseOffering` 中表达多个时间段"**未删除**，只在原处加注"已修复并指向 §4.6"；⑤ **未新增任何暂缓字段**（`selectedNumber` / `openingUnitName` / `courseCategoryName` / `examMode` / `readObj` / `teachProgressSubmitState` / `openClass` 仍不进公共契约）；⑥ **meeting 级教师关联仍为 known deferred representation gap**。⚠️ **未调用 SYSU 接口、未写 crawler / Adapter / Provider、未进入 Integration、未建数据库** |
+| 2026-10-01 | **Phase 2B-2C1B：新增 G11（真实 smoke run 观察）** | 依据负责人在真正的「**全校开设课程**」独立模块内完成的真实 smoke run（same-origin 请求成功、第 1 页响应成功进入采集器）：① **新增 G11** —— **部分真实 `CourseOffering` row 缺少 `teachingTimePlaceStr`**（**第 1 页至少 1 条**，样本出处 `OFFERING-002`），当前 `importer` / `parser` 无法为其构造 `meetings`，而公共契约要求 `meetings` `minItems = 1`；② **新增 §4.7**，严格区分**已确认**（至少一条 row 缺该字段）、**当前影响**（`collect()` 按设计 fail closed）、**未确认**（原因 / 记录类型 / 是否应进入 Planner / 是否普遍 / 是否需要改契约）；③ **只记录事实，不做任何 Schema 裁决**，**未修改** `schemas/` / `docs/interfaces/`；④ 明确**不得**据此写成"缺排课 / 未排课课程 / 异步课程 / 暂无教室"等业务结论；⑤ 记录取证工具为 `tools/sysu_course_offering_collector.js` 的 `diagnoseSchedulePresence({ semester })`（只请求第 1 页一次、只返回聚合计数）。**G1–G10 的历史分析与结论一字未改**；**Builder 未发起任何真实 SYSU 请求** |

@@ -443,3 +443,108 @@
   `frontend/`、`mock_data/`
 - 下一步：等待 Reviewer 复验。⚠️ **不 merge，不自行开始手动 smoke run**。
 
+---
+
+### 2026-10-01 - Phase 2B-2C1B：Schedule Presence Diagnostic
+- 本次目标：新增一个**显式触发、只请求第 1 页一次**的**结构诊断**入口，
+  为"真实 row 缺 `teachingTimePlaceStr`"这一新事实**取证**。
+  **只取证、不裁决、不改 Schema**；Builder **不运行**诊断、**不发起任何真实请求**。
+- 起点：`main` = `b0c4c751063ba2f93d6d10637470aaab2d68ea27`；
+  新建 `feature/course-data-schedule-presence-diagnostic`。
+- **背景（负责人已确认的真实事实）**：
+  - 真实 smoke run 在真正的「**全校开设课程**」独立模块内完成；
+  - **same-origin 请求成功**，第 1 页响应成功进入采集器；**认证不再是当前 blocker**；
+  - **第 1 页至少 1 条 row 缺少 `teachingTimePlaceStr`**（**只登记"至少 1 条"，不登记精确条数**）；
+  - 当前 `collect()` 因此 **按设计 fail closed**；**尚未生成真实 Capture Bundle**、
+    **尚未取得 complete semester snapshot**；
+  - ⚠️ **纠正导航描述**：「**选课**」与「**全校开设课程**」是**两个独立模块**。
+- **`tools/sysu_course_offering_collector.js` 新增（在现有采集器内，不新建 Transport 文件）**：
+  - 纯函数 `summarizeSchedulePresence(rows)`：把每条 row 归入**互斥且穷尽**的五类
+    （`missing` / `null` / `empty_string` / `non_empty_string` / `other_type`），
+    返回 `{ total_rows: rows.length, teachingTimePlaceStr: {...} }`；
+  - `diagnoseSchedulePresence({ semester })`：
+    - ✅ 复用现有 hostname guard 与取页函数（**不复制认证逻辑**）；
+    - 固定 `DIAGNOSTIC_PAGE_NO = 1`、`DIAGNOSTIC_PAGE_SIZE = 200`、`total = true`，**只发 1 次请求**；
+    - ⛔ 不接受 `maxPages` / `firstPageNo`，无循环、无重试、无并发；
+    - 返回值只有聚合统计（`semester` / `page_no` / `page_size` / `reported_total` /
+      `total_rows` / `teachingTimePlaceStr{...}`）；`total_rows` 取 `data.rows.length`（**不写死**）；
+    - ⛔ 不返回 rows / row 下标 / 课程号 / 课程名 / 教学班号 / 教师 / 教室 / 原文 / 内部 ID；
+    - ⛔ **不生成 Capture Bundle**、不做字段最小化、不做教师脱敏、不调用 `toJson`；
+  - 顶部文档补充"诊断的定位：**取证**，不是 workaround"。
+- **⛔ `collect()` 行为未变**：`minimizeRow` 仍要求 8 个必要字段齐备，
+  缺 `teachingTimePlaceStr` **仍整体失败** —— 未改成跳过 / `meetings=[]` / 占位 `Meeting` / 标记 complete。
+- **⛔ 本轮不决定如何修复**：`schemas/`、`docs/interfaces/`、`captured_pages.py`、`pagination.py`、
+  `importer.py`、`schedule_parser.py`、`normalization.py`、`snapshot.py`、`integration/`、
+  `main.py`、`api/`、`mock_data/`、`frontend/` **一律未修改**；
+  `CourseOffering.meetings` 的 **`minItems = 1` 保持不变**。
+- **新增缺口登记 G11**（`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`）：
+  - **已确认**：至少一条真实 row 缺该字段；
+  - **当前影响**：当前 importer / parser 无法构造 `meetings[minItems=1]`；
+  - **未确认**：缺失原因 / 记录类型 / 是否应进入 Planner / 是否普遍 / 是否需要修改公共契约；
+  - **§4.7** 明确写出"**只记录事实，不做任何 Schema 裁决**"，并禁止写成
+    "缺排课 / 未排课课程 / 异步课程 / 暂无教室"等业务结论。
+- **测试**：`backend/tests/test_sysu_collector_guard.py` 新增 7 条静态守卫 ——
+  诊断已暴露且加载时不被自动调用；复用既有取页函数（`requestPage(` 3 处、`await requestPage(` 2 处）；
+  固定 `pageNo=1` / `pageSize=200` 且只调一次、无分页选项与循环；
+  不产出 bundle / 不做最小化 / 脱敏 / 序列化；返回值只有聚合键且不含 rows / 下标 / 业务字段；
+  纯函数五桶穷尽；`collect()` 的 fail-closed 未改动（`minimizeRow` 内无 workaround）。
+- 修改文件：
+  - `tools/sysu_course_offering_collector.js`
+  - `backend/tests/test_sysu_collector_guard.py`
+  - `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`（新增 G11 + §4.7 + 变更记录）
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **522 passed / 2 skipped**
+  （本轮基线 515 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**（仅语法解析，**未执行**该文件）。
+- 使用数据：**Mock / 人工虚构**；**本轮未生成真实 Capture Bundle**
+- 需要人工确认：缺字段的**业务含义**（本轮不推测）；后续是否发起【接口变更请求】
+- **实际 SYSU 请求数：0**（Builder 未登录、未运行诊断）
+- 下一步：等待 Reviewer 验收 Phase 2B-2C1B；之后由**负责人手动执行 1 页诊断**，
+  再依据结果走正式【接口变更请求】。⚠️ **不 merge，不自行开始**。
+
+### 2026-10-01 - Phase 2B-2C1B Reviewer 修复（6 项）
+- 本次目标：按 Reviewer 意见做**证据边界与口径**修正，**不新增能力、不改契约**。
+- 起点：`feature/course-data-schedule-presence-diagnostic`，HEAD `39d5f1d`（未 merge）。
+- **① 来源登记**：`docs/data/DATA_SOURCE_REGISTRY.md` 新增 **`OFFERING-002`**
+  （D5「全校开设课程」独立模块第 1 页真实结构 smoke，**Authenticated Official**，
+  **Confirmed**）：新增登记表行、**新增 §4.1 明细块**、§6 汇总同步
+  （已登记 **17 → 18**、Authenticated Official **4 → 5**、Confirmed **7 → 8**、
+  来源清单 `OFFERING-001/002`、最近更新 **2026-10-01**）、追加变更记录。
+  **只登记汇总事实，无 Raw row**；Cookie / Session / Token / Headers / HAR / Capture Bundle 不入库。
+- **② 删除不成立的精确条数**：删除全部"**第 1 页第 N 条**"式表述（来自 JS 0-based `rowIndex`，
+  该说法本身不成立），统一为"**第 1 页至少 1 条 row 缺少 `teachingTimePlaceStr`**"，
+  并在 `status/course_data.md`、`status/agent_frontend.md`、缺口报告、两个 worklog 中显式注明
+  **只登记"至少 1 条"，不登记精确条数**。
+- **③ G11 补样本出处**：`REAL_TO_SCHEMA_GAP_REPORT.md` 的 G11 表行与 **§4.7** 均写明
+  **样本出处：`OFFERING-002`**。
+- **④ 缺口报告表头**：`分析框架 ＋ 四轮真实材料验证` →
+  `分析框架 ＋ 四轮真实材料验证 ＋ Phase 2B-2C1B 真实 smoke 结构证据`。
+- **⑤ 行号口径 1-based**（`tools/sysu_course_offering_collector.js`）：
+  - 调用点改为 `minimizeRow(row, currentPageNo, rowIndex + 1)`
+    （`data.rows.map` 的回调下标是 **0-based**；直接透传会把第 1 条报成"第 0 条"）；
+  - `minimizeRow` / `redactTeachingTimePlace` / `redactSegmentTeacher` 的第三参数
+    统一改名 `rowIndex → humanRowNo`，并写入 JSDoc：**从 1 开始的人类行号，只用于错误信息**；
+  - ⛔ **未改** fail-closed 行为、字段存在性检查、数据最小化结果、脱敏规则、诊断统计；
+    ⛔ 未改任何 Schema / Interface。
+- **⑥ 新增守卫**（`backend/tests/test_sysu_collector_guard.py`，42 条）：
+  - `test_collector_reports_one_based_human_row_numbers`：断言调用点必须是
+    `minimizeRow(row, currentPageNo, rowIndex + 1)`、**不得**出现裸下标透传
+    `minimizeRow(row, currentPageNo, rowIndex)`、文档必须写明"从 1 开始"；
+  - `test_collector_row_number_is_only_for_messages`：行号**不得**进入最小化结果 / 数据字段
+    （`minimized[humanRowNo]`、`row_no` 均不得出现）。
+- 修改文件：
+  - `tools/sysu_course_offering_collector.js`
+  - `backend/tests/test_sysu_collector_guard.py`
+  - `docs/data/DATA_SOURCE_REGISTRY.md`（`OFFERING-002` 登记 + §6 汇总 + 变更记录）
+  - `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`（表头 / G11 出处 / §4.7 措辞）
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **526 collected / 2 skipped（= 524 passed）**，exit 0
+  （上一轮基线 522 passed / 2 skipped；未删除任何旧测试、未新增 skip）；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**（仅语法解析，**未执行**）。
+- 使用数据：**Mock / 人工虚构**；**仍未生成真实 Capture Bundle**；仓库内 0 个真实数据文件。
+- **实际 SYSU 请求数：0**；Builder **未登录**、**未运行诊断**。
+- 下一步：等待 Reviewer 复核本修复，之后由**负责人手动执行 1 页诊断**。
+  ⚠️ **不 merge，不自行开始下一阶段**。
+
