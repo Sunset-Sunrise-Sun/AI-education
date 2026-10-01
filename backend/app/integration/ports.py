@@ -5,8 +5,10 @@
 - **只声明 Integration 需要的最小形状**，不搬运任何上游内部结构；
 - Integration 只与 `/schemas/*.schema.json` 的**公共对象**打交道：
   `MakeupTask` / `CourseOffering` / `Preference` / `PlanResult`；
-- 这里的 Protocol **不是新的公共契约**：它们不新增字段、不改变任何 Schema，
-  只描述"Integration 打算怎样调用上游"。
+- 这些 Protocol 是 `docs/interfaces/integration.md` 的**代码侧映射**：
+  它们**不新增业务字段或 Schema**，
+  但其**跨模块调用签名属于已确认的 Integration 公共接口边界**，
+  **不得由实现模块私自修改**（变更须走 `/AGENTS.md` 第 4 节 `【接口变更请求】`）。
 
 三个边界各自的"不知道"清单（很重要，防止 Integration 越权深入上游实现）：
 

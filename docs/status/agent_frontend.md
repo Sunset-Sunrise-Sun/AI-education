@@ -270,7 +270,10 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - Provider 异常**原样向上抛**：**不吞、不 fallback、不切 Mock**（AST 检查锁定 Integration 层不引用 `mock_service`）；
 - **不新增 API**：路由集合与 Phase 1 完全一致（有测试断言 OpenAPI `paths` 未变化）；
 - **不创建生产 Mock Provider**（`MockCurriculumProvider` / `MockCourseDataProvider` / `MockPlannerProvider` **均未创建**）；
-- **未新增任何跨模块 Schema / DTO**：只使用 `MakeupTask[]` / `CourseOffering[]` / `Preference` / `PlanResult` / `semester: str`。
+- **未新增公共业务 Schema / 跨模块 DTO**：只使用 `MakeupTask[]` / `CourseOffering[]` / `Preference` / `PlanResult` / `semester: str`；
+  但**新增了 Integration Provider 公共接口边界** —— `docs/interfaces/integration.md` 位于 `/docs/interfaces/`，
+  与 `ports.py` / `orchestrator.py` 的四个调用签名**同属公共跨模块接口**，
+  **后续模块不得自行修改方法名 / 参数语义 / 返回类型**（变更须走 `【接口变更请求】`）。
 
 **DG-05 旧口径已修正**：`docs/ARCHITECTURE.md` 不再写"Planner 实际消费补修任务 + 课程依赖结果 + 已确认优先级"，
 改为 **MVP 当前跨模块只传 `MakeupTask[]`**、prerequisite 由 `MakeupTask.prerequisites[]` 承载、
@@ -372,7 +375,10 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   `semester` 原样下传，`current_schedule=[]` 与 `offerings=[]` 均合法下传，
   Provider 异常**不吞 / 不 fallback / 不切 Mock**。
   **未新增 API**（`main.py` 未修改，OpenAPI `paths` 有测试锁定）；
-  **未创建生产 Mock Provider**；**未新增任何跨模块 Schema / DTO**；
+  **未创建生产 Mock Provider**；**未新增公共业务 Schema / 跨模块 DTO**，
+  但**新增了 Integration Provider 公共接口边界**（`docs/interfaces/integration.md` + 三个 Protocol +
+  `PlanningOrchestrator` 的四个调用签名；同属 `/docs/interfaces/` 公共契约，
+  变更须走 `【接口变更请求】`）；
   **`mock_service.py` 与 `/api/v1/mock/*` 未修改**。
   后端 **147 passed / 2 skipped**。
 
@@ -382,7 +388,10 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - 业务接口统一前缀 `/api/v1`；全部响应带 `X-Data-Source: mock`
 - **Integration 层（Phase 2B-1）**：`backend/app/integration/` 定义了
   `CurriculumProvider` / `CourseDataProvider` / `PlannerProvider` 三个 Protocol
-  与 `PlanningOrchestrator`；**尚未暴露任何 API**，`main.py` 未修改
+  与 `PlanningOrchestrator`；**尚未暴露任何 API**，`main.py` 未修改。
+  ⚠️ 这四个调用签名是**已确认的 Integration 公共接口边界**
+  （`docs/interfaces/integration.md`，属 `/docs/interfaces/` 公共契约）——
+  **不得由实现模块私自修改**，变更须走 `【接口变更请求】`
 - 公共契约真源仍是 `/schemas/*.schema.json`；
   **`course_offering.schema.json` 已由 Data Gate-2 变更**（`meetings[]`），
   其余四个 Schema **未变**

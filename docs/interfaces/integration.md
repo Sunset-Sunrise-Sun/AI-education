@@ -1,8 +1,17 @@
 # Integration 模块接口
 
-> ⚠️ **本文件描述的是"现有公共对象之间"的编排边界，不是一个新 Schema。**
-> 这里**不新增任何业务字段**，也不改变 `/schemas/*.schema.json`。
+> ⚠️ **本文件位于 `/docs/interfaces/`，因此它属于项目的公共跨模块接口**
+> （`/AGENTS.md` 第 4 节把 `/schemas/` 与 `/docs/interfaces/` 一并列为公共契约）。
+>
+> 必须区分两件事：
+>
+> - 本文件**不新增业务对象 Schema**，也**不修改** `/schemas/` 中的公共数据结构；
+> - 但本文件定义的 **Provider 调用边界属于项目的公共跨模块接口**。
+>
 > 它回答的是："**谁按什么顺序调用谁**"。
+>
+> 后续模块**不得自行修改** Provider 方法名、参数语义或返回类型；
+> 如需变更，仍必须按 `/AGENTS.md` 第 4 节提交 `【接口变更请求】` 并经负责人确认。
 
 ## 1. Integration 职责
 
@@ -36,7 +45,8 @@ Integration **不得**：
 - ❌ 排序 / 筛掉 / 去重 / 补默认值 / 计算派生值。
 
 > 代码位置：`backend/app/integration/`（`ports.py` = 插座，`orchestrator.py` = 顺序）。
-> 这些**不是**新的公共契约，只是"Integration 打算怎样调用上游"的声明。
+> 这些**不是新的业务对象 Schema**，但它们是**已确认的 Integration 公共接口边界** ——
+> 四个调用签名见 §3.1「接口冻结」。
 
 ## 2. 三个 Provider
 
@@ -123,6 +133,44 @@ PlannerProvider.plan(
 
 - Orchestrator **只持有**三个 Provider，不持有状态 / 缓存 / 会话 / 上下文；
 - `semester` **原样**传给 Course Data（不改写、不规整、不补默认值）。
+
+### 3.1 接口冻结（Phase 2B-1 已确认）
+
+**以下四个调用签名已经是 Phase 2B-1 确认的 Integration 公共接口**：
+
+```python
+# CurriculumProvider
+def get_makeup_tasks(self) -> list[MakeupTask]: ...
+
+# CourseDataProvider
+def get_course_offerings(self, semester: str) -> list[CourseOffering]: ...
+
+# PlannerProvider
+def plan(
+    self,
+    *,
+    makeup_tasks: list[MakeupTask],
+    offerings: list[CourseOffering],
+    current_schedule: list[CourseOffering],
+    preference: Preference,
+) -> PlanResult: ...
+
+# PlanningOrchestrator
+def build_plan(
+    self,
+    *,
+    semester: str,
+    current_schedule: list[CourseOffering],
+    preference: Preference,
+) -> PlanResult: ...
+```
+
+- 它们是**代码侧的事实接口**（`backend/app/integration/ports.py` 与 `orchestrator.py`），
+  与本文件一一对应；
+- 后续模块**不得自行修改**方法名、参数语义或返回类型；
+- 如需变更，仍必须按 `/AGENTS.md` 第 4 节提交 `【接口变更请求】` 并经负责人确认；
+- 特别地：`PlannerProvider.plan()` 的参数集合**恰为四个**，
+  不得私自添加 `priority` / `dependency_graph` / `risk_scores` 等（见第 5 节）。
 
 ## 4. `current_schedule` 的语义
 

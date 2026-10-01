@@ -1159,3 +1159,61 @@
 - 下一步：等待 Reviewer 验收 **Phase 2B-1**。之后是 **Phase 2B-2 Course Data MVP**
   （真实 2026-1 semester offering snapshot，实现 `CourseDataProvider`），
   **须等新一轮任务书**。⚠️ **不 merge，不自行开始 Phase 2B-2**。
+
+---
+
+### 2026-09-30 - Phase 2B-1 Reviewer 治理口径修复（Integration 接口的契约地位，docs-only）
+- 本次目标：修掉 Reviewer 指出的**唯一 blocker** ——
+  Integration Provider 接口被**错误描述为"不是公共契约"**。
+- **治理口径的准确区分**（`/AGENTS.md` 第 4 节把 `/schemas/` 与 `/docs/interfaces/` **一并**列为公共契约）：
+  - ✅ **没有新增公共业务 Schema**（未改 `/schemas/`、未改现有公共数据结构）；
+  - ✅ **但新增了受保护的 Integration 公共接口边界** ——
+    `docs/interfaces/integration.md` 位于 `/docs/interfaces/`，
+    与 `ports.py` / `orchestrator.py` 的四个调用签名**同属公共跨模块接口**。
+  - 后续模块**不得自行修改** Provider 方法名、参数语义或返回类型；
+    变更仍须按 `/AGENTS.md` 第 4 节提交 `【接口变更请求】` 并经负责人确认。
+- **具体修改**：
+  1. `docs/interfaces/integration.md`
+     - 文件开头：删除"**不是一个新 Schema**"这一会误导为"非公共契约"的表述，
+       改为"本文件**不新增业务对象 Schema**，也不修改 `/schemas/` 中的公共数据结构；
+       但本文件位于 `/docs/interfaces/`，因此其中定义的 **Provider 调用边界属于项目的公共跨模块接口**"，
+       并写明"后续模块不得自行修改 Provider 方法名 / 参数语义 / 返回类型；变更须走 `【接口变更请求】`"；
+     - §1 注释：把"这些**不是**新的公共契约，只是……的声明"改为
+       "这些不是**新的业务对象 Schema**，但它们是**已确认的 Integration 公共接口边界**"；
+     - **新增 §3.1「接口冻结（Phase 2B-1 已确认）」**：逐一列出
+       `CurriculumProvider.get_makeup_tasks()`、`CourseDataProvider.get_course_offerings(semester)`、
+       `PlannerProvider.plan(*, ...)`、`PlanningOrchestrator.build_plan(*, ...)` 四个**已确认签名**，
+       明确它们是代码侧的事实接口、**不得私自修改**，并重申
+       `PlannerProvider.plan()` 参数集合**恰为四个**（不得私加 `priority` / `dependency_graph` / `risk_scores`）。
+  2. `backend/app/integration/ports.py`（**仅 docstring**）
+     - 删除"这里的 Protocol **不是新的公共契约**"；
+     - 改为"这些 Protocol 是 `docs/interfaces/integration.md` 的**代码侧映射**：
+       不新增业务字段或 Schema，但其**跨模块调用签名属于已确认的 Integration 公共接口边界**，
+       **不得由实现模块私自修改**"。
+  3. `backend/app/integration/__init__.py`
+     - **已逐句检查，不存在同类"非公共接口"的错误表述，因此未修改**（按任务要求"没有则不改"）。
+  4. `docs/status/agent_frontend.md`
+     - 把"**未新增任何跨模块 Schema / DTO**"改为
+       "**未新增公共业务 Schema / 跨模块 DTO**……但**新增了 Integration Provider 公共接口边界**"
+       （Phase 2B-1 结果与「已完成」两处）；
+     - 「当前接口」的 Integration 条目补注：这四个调用签名是**已确认的 Integration 公共接口边界**，
+       不得由实现模块私自修改。
+- **更正上一轮记录中的口径**：上一轮本文件写的
+  "公共接口是否变化：**否**（……`docs/interfaces/integration.md` 只是编排说明）"
+  **应记为「是」** —— 该轮**未新增业务 Schema，但新增了受保护的 Integration 公共接口边界**。
+  （按 worklog 仅追加的约定，旧行保留，以本条更正为准。）
+- **未修改（严格守住 Reviewer 的禁止项）**：
+  - ❌ Provider 方法签名（`get_makeup_tasks` / `get_course_offerings` / `plan` 一字未动）；
+  - ❌ `orchestrator.py` 的行为（本轮**未打开该文件的逻辑**）；
+  - ❌ 测试逻辑（未新增测试、未改断言）；
+  - ❌ `schemas/`、`mock_data/`、`main.py`、现有 API。
+- 修改文件：
+  - `docs/interfaces/integration.md`
+  - `backend/app/integration/ports.py`（**仅 docstring**）
+  - `docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：本轮为文档 / 注释治理修复，**不需要新增测试**；按要求快速复跑
+  `cd backend && python -m pytest` → **147 passed / 2 skipped**（全部通过）。
+- 公共接口是否变化：**否**（未改任何方法签名 / 未改 Schema / 未新增 API）；
+  本轮只**修正对既有接口契约地位的描述**。
+- 下一步：等待 Reviewer 复验。⚠️ **不 merge，不自行开始 Phase 2B-2 Course Data MVP**。
