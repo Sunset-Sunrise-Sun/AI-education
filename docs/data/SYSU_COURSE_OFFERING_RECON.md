@@ -145,12 +145,12 @@ weekday / start_section / end_section / weeks[] / campus / classroom
 |---|---|
 | segment 分隔符 | `,` |
 | 字段分隔符 | `/` |
-| 末尾逗号 | **存在**（末尾产生的空 segment 应忽略） |
+| 末尾逗号 | **最多一个**（单个末尾逗号产生的空 segment 可忽略） |
 | 无地点 segment | **5 字段**：weeks / weekday / sections / teacher / activity |
 | 有地点 segment | **6 字段**：weeks / weekday / sections / location / teacher / activity |
 | 地点字段 | **可选**（不是每段都有） |
 | teacher 字段 | segment 级**存在**（当前公共 `Meeting` **不承载**，见下） |
-| activity 字段 | 已观察到形如"理论环节"的取值 |
+| activity 字段 | **存在**；作为**非空文本**在内部保留，**当前不进入公共契约** |
 
 **已确认的取值形态**：
 

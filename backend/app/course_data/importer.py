@@ -152,11 +152,21 @@ def import_opening_courses_response(
     duplicate key 与 partial / complete 纪律）。
 
     任意一行失败 → 整体失败，**不静默跳过**。
+
+    `source` 会在**遍历 rows 之前**校验（即使 `rows` 为空也必须合法）。
     """
 
     if not isinstance(payload, Mapping):
         raise CourseDataNormalizationError(
             f"Raw response 必须是对象，实际是 {type(payload).__name__}"
+        )
+
+    # ⚠️ `source` 必须在**遍历 rows 之前**校验：
+    # 否则 `rows == []` 时不会调用 `build_course_offering()`，
+    # 非法 source 会被静默放过（"空数据 + 非法来源"不应算成功）。
+    if not isinstance(source, str) or not source.strip():
+        raise CourseDataNormalizationError(
+            f"source 必须由调用方显式提供为非空字符串，实际是 {type(source).__name__}：{source!r}"
         )
 
     _require_success_code(payload)

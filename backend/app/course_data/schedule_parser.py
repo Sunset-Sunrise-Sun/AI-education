@@ -13,7 +13,8 @@ field separator   = "/"
 有地点（6 字段）：weeks / weekday / sections / location / teacher / activity
 ```
 
-- **末尾逗号**存在：`segment1,segment2,` → 末尾产生的空 segment **忽略**；
+- **最多一个末尾逗号**：`seg,` → 忽略末尾空 segment；
+  ⛔ `seg,,` / `seg,,,`（多个末尾逗号）**失败**；
 - **中间**空 segment **不得静默忽略**：`segment1,,segment2` → `CourseDataNormalizationError`；
 - **字段数只接受 5 或 6**，其它一律 fail closed。
 
@@ -210,7 +211,8 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
     """解析整条 `teachingTimePlaceStr`，按 Raw 顺序返回**全部** segment。
 
     - 输出顺序 == Raw 顺序（**不排序**）；**不丢段**、**不合并**；
-    - 末尾逗号产生的空 segment 忽略；中间空 segment 抛错；
+    - **最多一个**末尾逗号：`seg,` 可以，`seg,,` / `seg,,,` 抛错；
+    - 中间 / 开头的空 segment 抛错；
     - 字段数只接受 5（无地点）或 6（有地点）。
     """
 
@@ -225,8 +227,21 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
 
     raw_segments = candidate.split(SEGMENT_SEPARATOR)
 
-    # 只忽略**末尾**的空 segment（真实存在末尾逗号）。
-    while raw_segments and not raw_segments[-1].strip():
+    # 真实证据只确认**最多一个**末尾逗号：因此只允许**恰好一个**末尾空 segment。
+    # ⛔ 不能用 while 静默吞掉多个末尾空 segment（那会超出证据）。
+    trailing_empty_count = 0
+    for item in reversed(raw_segments):
+        if item.strip():
+            break
+        trailing_empty_count += 1
+
+    if trailing_empty_count > 1:
+        raise CourseDataNormalizationError(
+            f"teachingTimePlaceStr 出现了 {trailing_empty_count} 个连续的末尾分隔符；"
+            f"真实证据只确认**最多一个**末尾逗号，因此只允许恰好一个末尾空 segment"
+        )
+
+    if trailing_empty_count == 1:
         raw_segments.pop()
 
     if not raw_segments:
@@ -240,7 +255,8 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
         if not raw_segment.strip():
             raise CourseDataNormalizationError(
                 f"teachingTimePlaceStr 的第 {offset} 段为空 segment；"
-                f"只有**末尾**逗号产生的空段可以忽略，中间空段一律拒绝"
+                f"只有**单个**末尾逗号产生的末尾空段可以忽略，"
+                f"中间 / 开头空段与多个末尾逗号一律拒绝"
             )
 
         fields = raw_segment.split(FIELD_SEPARATOR)

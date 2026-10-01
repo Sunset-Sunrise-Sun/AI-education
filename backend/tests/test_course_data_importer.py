@@ -388,6 +388,36 @@ def test_empty_rows_with_partial_is_allowed() -> None:
     assert snapshot.is_complete is False
 
 
+@pytest.mark.parametrize("source", ["", "   ", None, 123])
+def test_invalid_source_is_rejected_even_with_empty_rows(source: object) -> None:
+    """⛔ **空 rows 也必须校验 source**。
+
+    否则 `rows == []` 时不会调用 `build_course_offering()`，
+    非法 source 会被静默放过（"空数据 + 非法来源"不应算成功）。
+    """
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        import_opening_courses_response(
+            _payload([]),
+            semester=SEMESTER,
+            source=source,  # type: ignore[arg-type]
+            completeness="partial",
+        )
+
+    assert "source" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("source", ["", "   ", None, 123])
+def test_invalid_source_is_rejected_with_non_empty_rows(source: object) -> None:
+    with pytest.raises(CourseDataNormalizationError):
+        import_opening_courses_response(
+            _payload([_row()]),
+            semester=SEMESTER,
+            source=source,  # type: ignore[arg-type]
+            completeness="partial",
+        )
+
+
 def test_empty_rows_with_complete_is_allowed_when_total_is_zero() -> None:
     snapshot = _import([], total=0, completeness="complete")
 

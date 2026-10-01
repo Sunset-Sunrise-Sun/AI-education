@@ -191,7 +191,8 @@
     - `segment separator = ","`、`field separator = "/"`；
     - 无地点 **5 字段**（weeks/weekday/sections/teacher/activity）；
       有地点 **6 字段**（weeks/weekday/sections/**location**/teacher/activity）；
-    - **末尾逗号**产生的空 segment 忽略（多个末尾逗号也忽略）；
+    - **最多一个**末尾逗号：单个末尾逗号产生的空 segment 忽略；
+      ⛔ 多个末尾逗号（`seg,,` / `seg,,,`）**失败**（不再用 `while` 静默吞）；
       **中间空 segment**（`seg1,,seg2`）→ `CourseDataNormalizationError`（不静默忽略）；
     - 字段数非 5/6 → fail closed；
     - 输出顺序 == Raw 顺序（**不排序、不丢段、不合并**）；
@@ -224,7 +225,7 @@
 - **`backend/app/course_data/__init__.py`**：导出新增符号并更新包说明（含 2B-2B 阶段边界）。
 - **新增测试**：
   - `backend/tests/test_course_data_schedule_parser.py`：5/6 字段、多 segment 全保留且顺序不变、
-    末尾逗号忽略、**中间空段 FAIL**、字段数异常 FAIL、
+    末尾逗号（最多一个）忽略、**中间空段 FAIL**、字段数异常 FAIL、
     周次 `1-5周` / `1-6周` / `1-8周` / `6-6周` / `7-8周` / `10-17周` / `1-17单周`、
     单周不泛化 FAIL、星期映射与未知 token FAIL、`第1-2节`/`第4-4节` 合法与非法节次 FAIL、
     地点切分 / 无地点 `None` / location 缺 `-` FAIL、teacher & activity 内部保留、

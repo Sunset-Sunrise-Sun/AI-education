@@ -48,7 +48,8 @@ segment separator = ","      field separator = "/"
 有地点（6 字段）：weeks / weekday / sections / location / teacher / activity
 ```
 
-- ✅ 末尾逗号产生的空 segment **忽略**；
+- ✅ **最多一个**末尾逗号：单个末尾逗号产生的空 segment **忽略**；
+  ⛔ `seg,,` / `seg,,,`（多个末尾逗号）**失败**；
 - ⛔ 中间空 segment（`seg1,,seg2`）**失败**，不静默忽略；
 - ⛔ 字段数只接受 **5 或 6**，其它 fail closed；
 - **星期**：只接受 `星期一` … `星期日`；⛔ **`weekday` 一律来自 segment 自身**——

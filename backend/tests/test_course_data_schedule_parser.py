@@ -4,7 +4,7 @@
 按结构等价构造。**不包含**私密脱敏样本原文、真实教师姓名、真实教室或内部 ID。
 
 结构依据（已确认）：`segment separator = ","`、`field separator = "/"`，
-无地点 5 字段 / 有地点 6 字段，末尾逗号存在且需忽略。
+无地点 5 字段 / 有地点 6 字段，**最多一个**末尾逗号（需忽略）。
 """
 
 from __future__ import annotations
@@ -159,7 +159,17 @@ def test_multiple_segments_are_all_preserved_in_order() -> None:
     assert [s.meeting.classroom for s in segments] == ["示例教室甲", "示例教室乙", "示例教室甲"]
 
 
-def test_trailing_comma_is_ignored() -> None:
+def test_single_trailing_comma_is_ignored() -> None:
+    """`seg,` —— 真实证据确认**最多一个**末尾逗号，因此单个末尾空段可忽略。"""
+
+    text = _segment("1-8周", "星期五", "第5-6节") + ","
+
+    assert len(parse_teaching_time_place(text)) == 1
+
+
+def test_two_segments_with_single_trailing_comma() -> None:
+    """`seg1,seg2,` —— 多段 + 单个末尾逗号（真实样本形态）。"""
+
     text = (
         _segment("1-8周", "星期五", "第5-6节")
         + ","
@@ -167,17 +177,22 @@ def test_trailing_comma_is_ignored() -> None:
         + ","
     )
 
-    segments = parse_teaching_time_place(text)
-
-    assert len(segments) == 2
+    assert len(parse_teaching_time_place(text)) == 2
 
 
-def test_multiple_trailing_commas_are_ignored() -> None:
-    """末尾空段可以有多个（都来自末尾逗号），一并忽略。"""
+@pytest.mark.parametrize("trailing", [",,", ",,,", ",,,,"])
+def test_multiple_trailing_commas_are_rejected(trailing: str) -> None:
+    """⛔ 多个末尾逗号**超出真实证据**（只确认最多一个），必须拒绝。
 
-    text = _segment("1-8周", "星期五", "第5-6节") + ",,,"
+    这里**不用** `while` 静默吞掉多个末尾空 segment。
+    """
 
-    assert len(parse_teaching_time_place(text)) == 1
+    text = _segment("1-8周", "星期五", "第5-6节") + trailing
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_teaching_time_place(text)
+
+    assert "末尾" in str(excinfo.value)
 
 
 def test_middle_empty_segment_is_rejected() -> None:
