@@ -111,10 +111,32 @@ optimize_path(makeup_tasks, offerings, current_schedule, preferences) -> PlanRes
 ## 实现约束
 
 - 时间冲突、学分计算、先修关系等确定性逻辑不得交给 LLM 判断；
-- ⚠️ **冲突检测必须遍历 `CourseOffering.meetings[]` 的每一段**：
-  Data Gate-2（DG-01）后，一个教学班可有**多个**上课时间 / 地点段，
-  只看第一段会**漏检冲突**并输出**不可执行的方案**；
-  同理，任何"这个教学班占用了哪些时间"的判断都必须基于全部 meeting；
+- **冲突检测必须按状态分别处理（DG-07A 契约语义）**：
+
+  | `CourseOffering.meetings` | 语义 | Planner 必须做什么 |
+  |---|---|---|
+  | **非空** | 来源提供了可用排课信息 | **遍历全部 `Meeting`**，逐段比较时间占用 |
+  | **`[]`** | **schedule unknown**（当前来源快照没有可用排课信息） | ⛔ **绝不能**解释为"没有时间占用"；⛔ **绝不能**解释为 **conflict-free** |
+
+  - Data Gate-2（DG-01）后，一个教学班可有**多个**上课时间 / 地点段，
+    只看第一段会**漏检冲突**并输出**不可执行的方案**；
+    任何"这个教学班占用了哪些时间"的判断都必须基于全部 meeting；
+  - ⚠️ **同一条规则同时适用于 `offerings` 与 `current_schedule`**
+    （两者都是公共类型 `CourseOffering[]`）：
+    **任意 `CourseOffering.meetings = []` → 该教学班的 schedule 视为 unknown**；
+  - ⛔ **若 `current_schedule` 中存在 `meetings = []`**：
+    Planner **不得**输出"**已验证与当前课表无时间冲突**"这类结论 ——
+    因为"当前课表"本身有一段**时间占用未知**；
+    最多只能判断"**与当前课表中已知时间段未发现冲突**"，
+    且**整体时间冲突状态仍含未知部分**（必须显式表达为未知 / 待人工确认）；
+- ⚠️ **本轮（DG-07A）只同步公共契约语义，未实现任何 Planner 行为**：
+  unknown-schedule safety 的实现属 **DG-07C**；
+- ⏳ **以下仍留待 Planner Implementation Review，本轮未批准**：
+  `PlanResult.status` 如何取值、`unresolved[].type` 的**最终命名**、
+  `missing_schedule` 是否正式采用 ——
+  当前 **`missing_schedule` 只是 `candidate convention only`**，
+  ⛔ 不得当作已定公共约定；`plan_result.schema.json` 的 `unresolved[].type`
+  是**开放字符串**，因此**不需要**改 Schema；
 - 优化器第一版建议使用 Google OR-Tools CP-SAT；
 - 图关系第一版建议使用 NetworkX；
 - 无解时必须返回明确的 `infeasible` 或 `partially_feasible`，不得伪造可行方案。

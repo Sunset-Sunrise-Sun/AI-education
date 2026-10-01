@@ -41,7 +41,8 @@ export interface MakeupTask {
  * 对应 `course_offering.schema.json` 中 `meetings[]` 的元素：**一段**上课时间 / 地点。
  *
  * Data Gate-2（DG-01）后，一个教学班可以有多个独立的上课时间 / 地点段
- * （`CourseOffering` 1 —— N `Meeting`），因此排课信息不再挂在教学班顶层。
+ * （`CourseOffering` 0 — N `Meeting`，DG-07A 起允许 0 段），
+ * 因此排课信息不再挂在教学班顶层。
  *
  * ⚠️ 这里**没有** `teacher`：meeting 级教师关联是已登记的
  * known deferred representation gap，本轮不进入公共契约。
@@ -55,7 +56,18 @@ export interface Meeting {
   classroom?: string | null
 }
 
-/** 对应 `course_offering.schema.json`。 */
+/**
+ * 对应 `course_offering.schema.json`。
+ *
+ * `meetings` 的公共表示允许 **0..N** 个 `Meeting`（DG-07A 起 `minItems: 0`）：
+ * - 非空 → 来源提供了可用排课信息；
+ * - `[]` → **仅**表示当前来源快照没有能够形成公共 `Meeting` 的可用排课信息；
+ *   ⛔ 不表示没有上课时间、异步教学、时间自由，**更不表示没有时间冲突**。
+ *
+ * ⚠️ 契约层允许空数组 ≠ 产品链路可以产生：前端 empty-meeting 展示属 DG-07D，
+ * 在 DG-07B / DG-07C / DG-07D 完成前，界面不应收到 `meetings = []` 的数据
+ * （rollout gate，见 `docs/status/agent_frontend.md`）。
+ */
 export interface CourseOffering {
   course_id: string
   course_name: string

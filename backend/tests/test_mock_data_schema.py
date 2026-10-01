@@ -84,16 +84,22 @@ def _iter_strings(node):
 
 
 def _meetings_of(offering: dict) -> list[dict]:
-    """取一个教学班的**全部** meeting 段。
+    """取一个教学班（**本项目 Mock 文件**中的）全部 meeting 段。
 
     Data Gate-2（DG-01）后，`CourseOffering` 的排课信息只存在于 `meetings[]` 内，
     顶层不再有 `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`。
     所有与时间 / 地点有关的检查都必须遍历这里，**只看第一段会漏掉真实冲突**。
+
+    ⚠️ 这里的"非空"断言是**对本仓库 Mock 数据的 rollout-gate 要求**，
+    **不是**公共契约的最小值：DG-07A 起公共 Schema 允许 `meetings: []`（排课信息不可用）。
+    在 DG-07B / DG-07C / DG-07D 完成前，产品 Mock 必须保持全部非空
+    （见 `docs/status/course_data.md` 的 rollout gate）。
     """
 
     meetings = offering.get("meetings")
     assert isinstance(meetings, list) and meetings, (
-        f"教学班 {offering.get('class_id')} 缺少非空 meetings（DG-01 后的必填数组）"
+        f"教学班 {offering.get('class_id')} 缺少非空 meetings"
+        f"（rollout gate：DG-07B/C/D 完成前，Mock 不得出现空 meetings）"
     )
     return meetings
 
@@ -285,9 +291,75 @@ def test_offering_weeks_are_plausible_semester_weeks(course_offerings: list[dict
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# DG-07A：契约层允许 `meetings: []`（用**测试构造**的 payload 验证，不动 Mock 文件）
+# ---------------------------------------------------------------------------
+
+
+def test_public_schema_declares_min_items_zero_for_meetings(load_schema) -> None:
+    """DG-07A 契约迁移：公共 Schema 的 `meetings.minItems` 必须是 **0**。
+
+    这条锁定"不许悄悄改回 1"：契约真源只允许是 0，且 `meetings` 仍在顶层 `required` 中。
+    """
+
+    schema = load_schema("course_offering.schema.json")
+    Draft202012Validator.check_schema(schema)
+
+    meetings_schema = schema["properties"]["meetings"]
+
+    assert meetings_schema["type"] == "array"
+    assert meetings_schema["minItems"] == 0, (
+        f"DG-07A 之后 meetings.minItems 必须是 0，实际 {meetings_schema.get('minItems')!r}"
+    )
+    assert "meetings" in schema["required"], "meetings 必须仍然是必填字段"
+
+
+def test_json_schema_accepts_empty_meetings_and_still_requires_the_key(
+    load_schema, course_offerings: list[dict]
+) -> None:
+    """公共 JSON Schema 层：`meetings: []` 合法；缺字段 / null / 非法元素仍非法。
+
+    ⚠️ payload 由**测试构造**（把真实 Mock 的 `meetings` 替换掉），
+    ⛔ **不修改** `mock_data/`：rollout gate 要求产品 Mock 保持非空。
+    """
+
+    schema = load_schema("course_offering.schema.json")
+    validator = Draft202012Validator(schema)
+    base = course_offerings[0]
+
+    empty = {**base, "meetings": []}
+    assert not list(validator.iter_errors(empty)), "公共 Schema 必须接受 meetings: []"
+
+    missing = {key: value for key, value in base.items() if key != "meetings"}
+    assert list(validator.iter_errors(missing)), "缺少 meetings 字段必须非法"
+
+    assert list(validator.iter_errors({**base, "meetings": None})), "meetings = null 必须非法"
+
+    assert list(validator.iter_errors({**base, "meetings": [{"weekday": 1}]})), (
+        "meetings 元素必须是合法 Meeting（minItems 放宽不影响元素校验）"
+    )
+
+    assert list(validator.iter_errors({**base, "schedule_status": "unknown"})), (
+        "DG-07 未批准新增排课状态字段：additionalProperties: false 必须拒绝"
+    )
+
+
+def test_mock_course_offerings_stay_non_empty_during_rollout_gate(
+    course_offerings: list[dict],
+) -> None:
+    """rollout gate：DG-07B / DG-07C / DG-07D 完成前，**Mock 必须保持每班至少 1 段**。
+
+    契约已允许 `meetings: []`，但前端 empty-meeting 展示（DG-07D）尚未实现，
+    因此不得提前把该状态送进产品链路；空数组只在测试构造数据中出现。
+    """
+
+    empty = [offering["class_id"] for offering in course_offerings if not offering["meetings"]]
+
+    assert not empty, f"rollout gate 要求 Mock 教学班仍有 ≥1 段 meeting，出现空数组：{empty}"
+
+
 def test_makeup_tasks_cover_required_and_uncertain_statuses(mock_files) -> None:
     """任务要求：至少一个 required，以及一个 manual_confirmation 或 possibly_equivalent。"""
-
     statuses = {task["status"] for task in mock_files["makeup_tasks.json"]}
 
     assert "required" in statuses, f"缺少 required 状态的补修任务：{sorted(statuses)}"

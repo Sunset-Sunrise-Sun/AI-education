@@ -512,7 +512,7 @@ def test_multiple_meetings_are_accepted() -> None:
 
 
 def test_missing_meetings_is_rejected() -> None:
-    """`meetings` 是必填项：没有排课信息的教学班不合法。"""
+    """`meetings` 是必填项：连字段都没有的教学班不合法。"""
 
     payload = dict(VALID_OFFERING)
     del payload["meetings"]
@@ -521,11 +521,53 @@ def test_missing_meetings_is_rejected() -> None:
         CourseOffering.model_validate(payload)
 
 
-def test_empty_meetings_is_rejected() -> None:
-    """任务明确要求：`meetings: []` 必须失败（教学班至少要有一段上课安排）。"""
+def test_empty_meetings_is_accepted() -> None:
+    """DG-07A：`meetings: []` 现在是**合法**实例（空数组 = 排课信息不可用）。
+
+    语义（已批准）：`meetings == []` 仅表示"当前来源快照没有能够形成公共
+    `Meeting` 的可用排课信息"；
+    ⛔ **不表示**没有上课时间 / 异步教学 / 时间自由，**更不表示没有时间冲突**。
+
+    ⚠️ 契约合法 ≠ 生产链路可以产生：Course Data 的 empty-meeting 归一化属 DG-07B，
+    Planner 的 unknown-schedule safety 属 DG-07C，因此生产链路仍保持 fail closed。
+    """
+
+    offering = CourseOffering.model_validate({**VALID_OFFERING, "meetings": []})
+
+    assert offering.meetings == []
+    assert offering.course_id == VALID_OFFERING["course_id"]
+
+
+def test_meetings_null_is_rejected() -> None:
+    """`meetings: null` 仍然非法：允许空数组 ≠ 允许 null。"""
 
     with pytest.raises(ValidationError):
-        CourseOffering.model_validate({**VALID_OFFERING, "meetings": []})
+        CourseOffering.model_validate({**VALID_OFFERING, "meetings": None})
+
+
+@pytest.mark.parametrize(
+    "bad_meeting",
+    [
+        {},
+        {"weekday": 0, "start_section": 1, "end_section": 2, "weeks": [1]},
+        {"weekday": 1, "start_section": 1, "end_section": 2},
+        {"weekday": 1, "start_section": 1, "end_section": 2, "weeks": []},
+    ],
+    ids=["empty-object", "weekday-0", "missing-weeks", "empty-weeks"],
+)
+def test_invalid_meeting_inside_empty_or_filled_array_is_rejected(bad_meeting: dict) -> None:
+    """数组允许为空，但**元素**必须仍然是合法 `Meeting`（minItems 放宽不影响元素校验）。"""
+
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate({**VALID_OFFERING, "meetings": [bad_meeting]})
+
+
+@pytest.mark.parametrize("field", ["schedule_status", "schedule_known", "schedule_state"])
+def test_unapproved_schedule_status_fields_are_rejected(field: str) -> None:
+    """DG-07 **未批准**新增任何排课状态字段：`additionalProperties: false` 必须拒绝。"""
+
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate({**VALID_OFFERING, field: "unknown"})
 
 
 def test_meeting_extra_field_is_rejected() -> None:

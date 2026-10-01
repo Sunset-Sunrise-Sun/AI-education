@@ -190,13 +190,26 @@ class CourseOffering(BaseModel):
     必填：`course_id`、`course_name`、`class_id`、`semester`、`meetings`。
 
     **Data Gate-2（DG-01）后的结构**：排课信息不再位于顶层，
-    而是收敛到 `meetings[]`（至少 1 段）。旧的顶层
+    而是收敛到 `meetings[]`（一个教学班可以有多个段）。旧的顶层
     `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`
     已**彻底移除**，因为一个教学班可以有多个独立的时间 / 地点段，
     单组字段无法无损表达（G9）。
 
     ⚠️ 这是**有意的 breaking migration**：不保留兼容字段，旧结构一律被拒绝。
     消费方（Planner / 前端）必须遍历 `meetings[]`，不得只看第一段。
+
+    **DG-07A（Contract Migration）起**：`meetings` 允许为空数组（`minItems: 0`），
+    但 `meetings` 本身**仍是必填**（缺字段 / `null` 均非法）。
+
+    - `meetings` 非空 → 来源提供了可用排课信息，必须保留全部可解析 segment；
+    - `meetings == []` → **仅**表示"当前来源快照没有能够形成公共 `Meeting`
+      的可用排课信息"；
+      ⛔ **不表示**没有上课时间、异步教学、时间自由；
+      ⛔ **更不表示没有时间冲突**（`meetings == []` ≠ conflict-free）。
+
+    ⚠️ **rollout gate（DG-07B / DG-07C / DG-07D 完成前）**：
+    契约层虽已允许 `meetings == []`，但**生产真实数据链路不得主动产生或接入**
+    empty-meeting `CourseOffering`；Course Data 仍对"缺排课信息"fail closed。
 
     注意：这是公共 Schema 中**唯一**带 `data_source` 的对象。
     """
@@ -212,7 +225,11 @@ class CourseOffering(BaseModel):
     )
     credit: float | None = Field(default=None, ge=0)
     meetings: list[Meeting] = Field(
-        min_length=1, description="上课时间 / 地点段，至少 1 段；一个教学班可有多个"
+        min_length=0,
+        description=(
+            "排课段，允许 0..N；空数组仅表示当前来源快照没有可用排课信息，"
+            "不表示无课、异步、时间自由或无冲突"
+        ),
     )
     capacity: int | None = Field(default=None, ge=0)
     remaining_capacity: int | None = Field(default=None, ge=0)

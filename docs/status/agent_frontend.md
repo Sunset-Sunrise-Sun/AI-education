@@ -1,13 +1,17 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-01（**DG-07 架构裁决已落档**：
-> **APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING**（**契约方向已批准，尚未实施**）；
-> **Data Gate 仍保持 Reopened**）
+> 最后更新：2026-10-01（**DG-07A — Contract Migration 已实施、待 Reviewer**：
+> `CourseOffering.meetings` 的 `minItems` 已由 **1 → 0**（`required` 不变），
+> 前端类型**仅注释**同步、**未改类型形状 / 组件 / 文案**；
+> ⛔ **DG-07 整体仍未完成**（DG-07B/C/D 未开始）；**Data Gate 仍保持 Reopened**）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应、私密脱敏样本、截图与真实 Capture Bundle 均不进入 public Git**
-> 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
-> **Data Gate 通过条件 C1–C11 全部完成**；**公共契约本轮未改**
-> （DG-07 已**批准**但**未实施**：`schemas/` / `docs/interfaces/` **未被修改**）
+> 契约状态：**`CourseOffering.meetings` = `type: array`、`minItems: 0`**（DG-07A；
+> 顶层 `required` 仍含 `meetings`，缺字段 / `null` 非法）；
+> **DG-01 时的 `minItems: 1` 已是历史**；**Data Gate 通过条件 C1–C11 全部完成**
+> ⚠️ **rollout gate**：`meetings = []` 契约合法，但在 **DG-07B / DG-07C / DG-07D 完成前**，
+> 生产真实数据链路**不得**产生或接入 empty-meeting `CourseOffering`；
+> `mock_data/` 保持全部非空；**前端尚未支持 empty-meeting 展示**（属 DG-07D）
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
 > Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
@@ -32,8 +36,8 @@
 
 ## 当前阶段
 
-**DG-07 已批准（APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING）
-→ 下一步：等待 DG-07 实施任务书（本模块不自行实施）**
+**DG-07A Contract Migration 已实施（待 Reviewer）
+→ 下一步：等待 DG-07B / DG-07C / DG-07D 任务书（本模块不自行实施）**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -55,9 +59,12 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                    →  Phase 2B-2C1D ✅ 人工界面最小核验（n = 2，负责人本人完成）
                       两条候选在官方 UI 中均为普通教学班行、时间区域空白、无状态文字
                    →  ⚠️  Data Gate Reopened narrowly for DG-07 only（仍保持 Reopened）
-                   →  ✅  DG-07（CourseOffering 空 meetings）
-                      APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING
-                      （契约方向已批准；⛔ 尚未实施，本模块不自行实施）
+                   →  ✅  DG-07 APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING
+                   →  ✅  DG-07A — Contract Migration 已实施（待 Reviewer）
+                      meetings minItems 1 → 0（required 不变）；接口语义 + 契约级测试已同步；
+                      前端仅注释同步
+                   →  ⏳  待办：DG-07B（Course Data）/ DG-07C（Planner safety）/
+                      DG-07D（Frontend 展示）—— **本轮不开始**
                    →  之后：真实 Capture 导入 UI → Phase 2B Integration 接真实 Provider
 ```
 
@@ -234,22 +241,24 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
 | **契约真源** | `schemas/course_offering.schema.json` 已改写 |
 | **顶层删除** | `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`（**彻底移除**） |
 | **顶层 `required`** | `course_id` / `course_name` / `class_id` / `semester` / **`meetings`** |
-| **`meetings`** | `type: array`，`minItems: 1` |
+| **`meetings`** | `type: array`，`minItems: 1`（**DG-01 当时**；**DG-07A 起为 `minItems: 0`**） |
 | **`Meeting` 必填** | `weekday`(1–7) / `start_section`(≥1) / `end_section`(≥1) / `weeks[]`(`minItems:1`, `uniqueItems`) |
 | **`Meeting` 可选** | `campus` / `classroom` |
 | **未新增** | `selectedNumber` / `openingUnitName` / `courseCategoryName` / `examMode` / `readObj` / `teachProgressSubmitState` / `openClass` / **`meeting.teacher`** |
 | **表达损失** | **meeting 级教师关联仍为 known deferred representation gap**；`teacher` 留在教学班顶层 |
 
 - **后端**：`backend/app/models/contracts.py` 新增 `Meeting`（`__all__` 同步）；
-  `CourseOffering.meetings: list[Meeting]` 至少 1 项；`weeks` 的 `uniqueItems` 仍由运行时真实拒绝重复项；
+  `CourseOffering.meetings: list[Meeting]` **DG-01 当时为至少 1 项**（**DG-07A 起为 `min_length=0`**）；
+  `weeks` 的 `uniqueItems` 仍由运行时真实拒绝重复项；
   预览旧结构被 Schema 与 Pydantic **双重拒绝**。
 - **Mock**：`mock_data/course_offerings.json` **9 个教学班**全部迁移，
   其中 **1 个教学班含 2 段 meeting**（第二段为**人工构造的 Mock**，
   未复制真实 SYSU 响应或真实教师信息）。
 - **测试**：`backend/tests/test_contracts.py`、`test_mock_data_schema.py` 已迁移并**加严** ——
   所有时间 / 地点 / 周次 / 节次检查改为**逐 meeting 遍历**（不再只看第一段），
-  并新增：旧格式拒绝、`meetings: []` 拒绝、`Meeting` 额外字段拒绝、
+  并新增：旧格式拒绝、`Meeting` 额外字段拒绝、
   `meetings[].weeks` 的 `uniqueItems` 单独锁定、Mock 至少 1 个多 meeting 教学班。
+  （**当时**新增的"`meetings: []` 拒绝"用例已由 **DG-07A 翻转**为"必须通过"，见下。）
 - **前端**：`types/contracts.ts` 新增 `Meeting`；`CourseOfferingList.vue` 把原来的
   上课时间 / 节次 / 周次 / 校区教室四列**收敛为"上课安排"一列并逐段展示**；
   `utils/labels.ts` 新增**纯展示**函数 `formatMeetingLine`（无任何业务判断）。
@@ -553,6 +562,34 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - **Browser 侧**：⛔ **没有新增任何诊断入口**，⛔ **不再需要重复运行** C1B / C1C；
   **Builder 实际 SYSU 请求数：0**（UI 核验由负责人本人完成）。
 
+## DG-07A 结果（Contract Migration，待 Reviewer）
+
+**只做契约迁移**：公共契约放宽 + 契约直接镜像 + 公共接口语义 + 契约级测试。
+⛔ **不实施** Course Data 归一化（DG-07B）、Planner safety（DG-07C）、前端展示（DG-07D）。
+
+| 产出 | 内容 |
+|---|---|
+| `schemas/course_offering.schema.json` | `meetings` 的 **`minItems: 1 → 0`**；`required` **不变**；新增非校验性 `description`（空数组语义）；**未新增 / 未删除字段**、**`Meeting` 未变** |
+| `backend/app/models/contracts.py` | `CourseOffering.meetings` → **`min_length=0`**（Pydantic 生成 **`minItems: 0`**，与公共 Schema 精确对齐）；注释同步 |
+| `docs/interfaces/course_data.md` | 两种合法状态 + 已批准的 fail-closed 边界（DG-07B 唯一允许来源形态 = `teachingTimePlaceStr` 属性不存在） |
+| `docs/interfaces/planner.md` | `meetings` 非空 → 遍历全部 `Meeting`；`meetings = []` → **schedule unknown，绝不 conflict-free**；**同一规则覆盖 `offerings` 与 `current_schedule`** |
+| `docs/interfaces/integration.md` | **Provider 签名一字不改**；`meetings = []` **原样透明传递**（不过滤 / 不补 / 不转换 / 不推断） |
+| `frontend/src/types/contracts.ts` | **仅注释**同步（`meetings: Meeting[]` 类型形状**未变**） |
+| `backend/tests/test_contracts.py`、`test_mock_data_schema.py` | "`meetings: []` 必须失败" **翻转为"必须通过"**；新增 `null` / 非法元素 / 额外字段拒绝、Schema 层 `minItems == 0` 锁定、rollout-gate 用例；**未删除既有严格性用例、未新增 skip** |
+
+**⚠️ rollout gate（本阶段最重要的一条）**：
+
+> `meetings = []` **已成为契约合法状态**，但在 **DG-07B / DG-07C / DG-07D 完成前**，
+> **生产真实数据链路不得主动产生或接入 empty-meeting `CourseOffering`**。
+> `mock_data/` **保持全部教学班 ≥1 段**；Course Data 仍对"缺排课信息"fail closed；
+> **前端尚未实现 empty-meeting 的明确展示**（属 DG-07D）。
+> 这是**阶段性 rollout gate**，不是新的 Schema 字段。
+
+**⛔ 前端未改**：任何 Vue 组件 / CSS / 展示文案 / 业务行为**均未修改**；
+`CourseOfferingList.vue` 仍按"至少有一段"的现状渲染（因此**不应**收到空数组数据）。
+
+**Builder 实际 SYSU 请求数：0**；**未 merge**。
+
 ## Phase 2B-2C1A 结果（SYSU Authorized Browser Transport + Capture Bridge）
 
 **浏览器端显式触发的授权采集 + Python 本地回放桥**；不接 Integration / Planner / API / 前端产品 UI。
@@ -749,13 +786,16 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   均由**负责人手动执行**）：⛔ **不再需要重复运行任何一个诊断**；
   两者的真实聚合结果均已登记（见 `docs/status/course_data.md` 与
   `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` §4.7 / §4.7.1）；
-- **当前人工下一步：等待 DG-07 的实施任务书**
-  （`docs/data/DATA_GATE_DECISIONS.md` §17，状态
-  **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**）；
-  ⛔ **DG-07 已批准但未实施**：公共契约（`schemas/` / `docs/interfaces/`）**未被修改**；
+- **当前人工下一步：等待 DG-07B / DG-07C / DG-07D 的任务书**
+  （`docs/data/DATA_GATE_DECISIONS.md` §17；**DG-07A 契约迁移已实施 / 待 Reviewer**）；
+  ⛔ **DG-07 整体仍为 `IMPLEMENTATION PENDING`**：
+  Course Data 归一化（DG-07B）、Planner safety（DG-07C）、
+  前端 empty-meeting 展示（DG-07D）**均未开始**；
   Data Gate **仍保持 Reopened**（⛔ 未 CLOSED；⛔ DG-01 – DG-06 不重新打开）；
-  ⛔ **本模块不自行实施** DG-07，也**不自行命名 / 拆分实施阶段**；
+  ⛔ **本模块不自行实施**，也**不自行命名 / 拆分实施阶段**；
   ⛔ **不再要求重复** C1B / C1C 诊断或 C1D 人工核验；
+  ⚠️ **rollout gate**：`meetings = []` 契约合法，但在 DG-07B/C/D 完成前，
+  产品链路（含前端展示）**不得**接入 empty-meeting `CourseOffering`；
 - **真实 Capture Bundle 的导入 UI**（前端产品链路）属**后续步骤**，本轮不做；
 - **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
   `max_pages` 是**内部安全阀**，不是学校侧参数；
@@ -763,8 +803,9 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - **仍不允许实现层自行补齐**：`prerequisites[]` / `weekDay` / `openingSchoolName → campus` /
   meeting-level teacher 四项保持"待确认"或"已知暂缓"（C11）；
   **G11（部分 row 缺 `teachingTimePlaceStr`）**同样**只登记、不推测业务含义**，
-  且 **DG-07 未获批准前，⛔ 不得**在 Course Data / Planner / Frontend 里
-  以任何 workaround 方式表达"排课信息不可用"（不得伪造 `Meeting`、不得过滤、不得猜时间）
+  且 **DG-07B/C/D 实施前，⛔ 不得**在 Course Data / Planner / Frontend 里
+  以任何 workaround 方式表达"排课信息不可用"（不得伪造 `Meeting`、不得过滤、不得猜时间、
+  不得把 `meetings = []` 提前接入产品链路）
 - ⚠️ **公共契约不得再自行修改**：任何后续变更仍须走 `【接口变更请求】` → 人工确认
 - ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（仅用于规模 / 小范围 / parser 验证）
 - **真实 Capture Bundle 属 Real Sanitized Capture**：**不得进入 Git**（含 `mock_data/` 与测试 fixture）
