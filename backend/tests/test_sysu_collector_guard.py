@@ -257,7 +257,13 @@ def test_collector_does_not_claim_completeness(collector_source: str) -> None:
 
 
 def test_collector_keeps_only_minimal_row_fields(collector_source: str) -> None:
-    """只保留 8 个必要字段；内部 ID / 暂缓字段不得出现。"""
+    """Capture Bundle 只保留 8 个必要字段；内部 ID / 暂缓字段不得进入最小化路径。
+
+    ⚠️ **Phase 2B-2C1C 起本断言的作用域收窄**为「bundle 的保留字段清单 + 最小化函数」：
+    C1C 的相关性诊断**允许**在**诊断配置**中引用这些字段名（只做存在性统计 /
+    有限分类值计数，见本文件 C1C 段落），但**仍不得**把它们写进 `KEPT_ROW_FIELDS`，
+    也不得放进最小化结果。**旧断言的本意（bundle 不夹带内部字段）一字未改。**
+    """
 
     kept = (
         "courseNum",
@@ -271,6 +277,14 @@ def test_collector_keeps_only_minimal_row_fields(collector_source: str) -> None:
     )
     for field in kept:
         assert f'"{field}"' in collector_source, f"缺少必要字段：{field}"
+
+    # bundle 的保留字段清单本身：只允许上面这 8 个
+    start = collector_source.index("var KEPT_ROW_FIELDS = [")
+    end = collector_source.index("];", start)
+    kept_block = collector_source[start:end]
+
+    for field in kept:
+        assert f'"{field}"' in kept_block, f"KEPT_ROW_FIELDS 缺少必要字段：{field}"
 
     for forbidden in (
         "class_ID",
@@ -290,7 +304,7 @@ def test_collector_keeps_only_minimal_row_fields(collector_source: str) -> None:
         "timePlaceId",
         "openClass",
     ):
-        assert f'"{forbidden}"' not in collector_source, f"不得保留字段：{forbidden}"
+        assert f'"{forbidden}"' not in kept_block, f"不得保留字段：{forbidden}"
 
 
 def test_collector_redacts_teacher_in_segments(collector_source: str) -> None:
@@ -351,9 +365,10 @@ def test_diagnostic_is_exposed_and_not_auto_called(collector_source: str) -> Non
 def test_diagnostic_uses_the_shared_request_path(collector_source: str) -> None:
     """诊断复用既有取页函数（不复制认证 / 请求逻辑）。"""
 
-    # 1 处定义 + collect 的 1 处调用 + 诊断的 1 处调用
-    assert collector_source.count("requestPage(") == 3
-    assert collector_source.count("await requestPage(") == 2
+    # 1 处定义 + 每个"只取一页一次"的入口各 1 处调用
+    # （`collect()` 是唯一的多页入口；2C1B / 2C1C 诊断各只调一次）
+    assert collector_source.count("requestPage(") == collector_source.count("await requestPage(") + 1
+    assert collector_source.count("await requestPage(") == 3
 
     slice_ = _diagnose_slice(collector_source)
     assert "await requestPage(" in slice_
@@ -484,3 +499,427 @@ def test_collector_row_number_is_only_for_messages(collector_source: str) -> Non
     assert "minimized[humanRowNo]" not in minimize
     assert "row_no" not in minimize
     assert "row_no" not in collector_source
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B-2C1C：Missing Schedule Correlation Diagnostic
+# ---------------------------------------------------------------------------
+
+_CORRELATION_PURE_START = "var CORRELATION_PAGE_NO"
+_CORRELATION_DIAGNOSTIC_START = "async function diagnoseMissingScheduleCorrelation("
+_COLLECTOR_EXPOSE_START = "window.XuehangSysuCollector = {"
+
+
+def _correlation_pure_slice(collector_source: str) -> str:
+    """截取 C1C 的**常量 + 纯函数**（到诊断函数之前，不含诊断函数的 JSDoc）。"""
+
+    start = collector_source.index(_CORRELATION_PURE_START)
+    end = collector_source.index(_CORRELATION_DIAGNOSTIC_START)
+    assert start < end, "C1C 的常量 / 纯函数应位于诊断函数之前"
+
+    slice_ = collector_source[start:end]
+
+    # 尾部会带上下一个函数（诊断）的 JSDoc，截断掉
+    tail_comment = slice_.rfind("/**")
+    if tail_comment != -1:
+        slice_ = slice_[:tail_comment]
+
+    return slice_
+
+
+def _correlation_diagnostic_slice(collector_source: str) -> str:
+    """截取 `diagnoseMissingScheduleCorrelation` 的**代码**（不含其上方的 JSDoc）。"""
+
+    start = collector_source.index(_CORRELATION_DIAGNOSTIC_START)
+    end = collector_source.index(_COLLECTOR_EXPOSE_START)
+    assert start < end, "诊断函数应位于显式暴露段之前"
+
+    return collector_source[start:end]
+
+
+def _exposure_slice(collector_source: str) -> str:
+    """截取 `window.XuehangSysuCollector = { ... }` 的**全局暴露面**。"""
+
+    return collector_source[collector_source.index(_COLLECTOR_EXPOSE_START) :]
+
+
+def _js_function_slice(collector_source: str, start_marker: str, end_marker: str) -> str:
+    """截取单个函数的代码（不含其上方 JSDoc，也不含下一个函数的 JSDoc）。"""
+
+    start = collector_source.index(start_marker)
+    end = collector_source.index(end_marker)
+    assert start < end, f"函数顺序异常：{start_marker}"
+
+    slice_ = collector_source[start:end]
+
+    tail_comment = slice_.rfind("/**")
+    if tail_comment != -1:
+        slice_ = slice_[:tail_comment]
+
+    return slice_
+
+
+def test_correlation_diagnostic_is_exposed_and_not_auto_called(collector_source: str) -> None:
+    """诊断入口必须显式暴露，且**加载脚本不得自动调用**。"""
+
+    assert (
+        "diagnoseMissingScheduleCorrelation: diagnoseMissingScheduleCorrelation" in collector_source
+    )
+
+    expose_index = collector_source.rindex("window.XuehangSysuCollector")
+    remainder = collector_source[expose_index + len("window.XuehangSysuCollector") :]
+    assert "diagnoseMissingScheduleCorrelation(" not in remainder, "挂载之后不得自动调用相关性诊断"
+
+
+def test_correlation_diagnostic_requests_page_one_once(collector_source: str) -> None:
+    """⛔ C1C 只允许一次 `await requestPage(...)`：无 fetch / 无并发 / 无重试 / 无第二次请求。"""
+
+    slice_ = _correlation_diagnostic_slice(collector_source)
+
+    assert slice_.count("await requestPage(") == 1
+    assert "requestPage(semester, CORRELATION_PAGE_NO, CORRELATION_PAGE_SIZE)" in slice_
+
+    for forbidden in (
+        "fetch(",
+        "Promise.all",
+        "Promise.allSettled",
+        "Promise.race",
+        "setInterval",
+        "setTimeout",
+        "sleep(",
+        "while (",
+        "for (",
+        "CORRELATION_PAGE_NO +",
+        "pageNo:",
+    ):
+        assert forbidden not in slice_, f"相关性诊断不得出现：{forbidden}"
+
+
+def test_correlation_diagnostic_page_and_size_are_locked(collector_source: str) -> None:
+    """固定 `pageNo = 1` / `pageSize = 200`，且**不**从 options 读取任何分页选项。"""
+
+    # SYSU 已人工验证的取值（2C1B 引入）
+    assert "DIAGNOSTIC_PAGE_NO = 1" in collector_source
+    assert "DIAGNOSTIC_PAGE_SIZE = 200" in collector_source
+    # C1C 直接复用同一口径，避免两处取值漂移
+    assert "var CORRELATION_PAGE_NO = DIAGNOSTIC_PAGE_NO;" in collector_source
+    assert "var CORRELATION_PAGE_SIZE = DIAGNOSTIC_PAGE_SIZE;" in collector_source
+
+    slice_ = _correlation_diagnostic_slice(collector_source)
+
+    for option in (
+        "opts.pageNo",
+        "opts.pageSize",
+        "opts.firstPageNo",
+        "opts.maxPages",
+        "opts.delayMs",
+        "opts.retry",
+    ):
+        assert option not in slice_, f"C1C 不得接收分页 / 限速 / 重试参数：{option}"
+
+    # 唯一被读取的 options 字段就是 semester
+    assert "opts.semester" in slice_
+    assert slice_.count("opts.") == 1, "C1C 只允许读取 opts.semester"
+
+
+def test_correlation_diagnostic_rejects_any_option_other_than_semester(
+    collector_source: str,
+) -> None:
+    """⛔ 严格白名单：只接受 `semester`，其它任何 own key 都在**发请求之前**失败。
+
+    覆盖：`{semester}` 放行；`{semester, pageSize}` / `{semester, foo}` /
+    `{semester, fields}` 等一律拒绝（不是"已知参数黑名单"，而是白名单）。
+
+    说明：本测试文件按既有约定**只做源码级检查**，不执行 JS；
+    这里验证白名单逻辑与"早于请求"的时序确实写在代码里。
+    """
+
+    slice_ = _correlation_diagnostic_slice(collector_source)
+
+    assert "var optionNames = Object.keys(opts);" in slice_
+    assert 'return name !== "semester";' in slice_
+    assert "if (unexpected.length > 0) {" in slice_
+
+    # 时序：白名单校验必须早于唯一一次取页调用
+    assert slice_.index("var optionNames = Object.keys(opts);") < slice_.index("await requestPage(")
+
+    # ⛔ 不得再使用"已知参数黑名单"（可绕过）
+    assert "CORRELATION_FORBIDDEN_OPTIONS" not in collector_source
+    assert "hasOwnProperty.call(opts," not in collector_source
+
+    # ⛔ 失败信息不回显调用方提供的键名
+    assert "unexpected.join(" not in slice_
+    assert "optionNames.join(" not in slice_
+
+
+def test_correlation_helpers_are_internal_only(collector_source: str) -> None:
+    """⛔ C1C 的字段级 summarizer 不得暴露到 `window.XuehangSysuCollector`。
+
+    `summarizeCategoricalValues` 是**任意字段**的 generic summarizer：
+    一旦公开，调用方就能绕过 C1C 的字段 allowlist，
+    对 `timePlaceId` / 课程名等字段直接产生具体 value counts。
+    三者都保持为 IIFE 内部实现。
+    """
+
+    exposure = _exposure_slice(collector_source)
+
+    for forbidden in (
+        "classifySchedulePresence",
+        "summarizeFieldShape",
+        "summarizeCategoricalValues",
+    ):
+        assert forbidden not in exposure, f"全局 exposure 不得包含：{forbidden}"
+
+    # 也不得以"函数名: 函数名"的暴露写法出现在任何位置
+    for forbidden in (
+        "classifySchedulePresence:",
+        "summarizeFieldShape:",
+        "summarizeCategoricalValues:",
+    ):
+        assert forbidden not in collector_source, f"不得暴露：{forbidden}"
+
+    # 通用分类值 summarizer 的暴露面必须为空（只允许 2C1B 的 schedule presence summarizer）
+    assert "summarizeSchedulePresence: summarizeSchedulePresence" in exposure
+
+
+def test_correlation_diagnostic_produces_no_capture_artifacts(collector_source: str) -> None:
+    """⛔ C1C 不产出任何数据：不最小化、不脱敏、不序列化、不构造 bundle / pages。"""
+
+    slice_ = _correlation_diagnostic_slice(collector_source)
+
+    for forbidden in (
+        "minimizeRow",
+        "redactTeachingTimePlace",
+        "redactSegmentTeacher",
+        "toJson",
+        "collect(",
+        "bundle",
+        "pages",
+        "CAPTURE_FORMAT",
+        "JSON.stringify",
+        "localStorage",
+        "sessionStorage",
+        "indexedDB",
+    ):
+        assert forbidden not in slice_, f"相关性诊断不得出现：{forbidden}"
+
+
+def test_correlation_diagnostic_return_path_has_no_raw_or_private_fields(
+    collector_source: str,
+) -> None:
+    """⛔ 返回路径不得包含 Raw row / 课程标识 / 教师 / 内部 ID / 原文。"""
+
+    slice_ = _correlation_diagnostic_slice(collector_source)
+
+    for forbidden in (
+        "courseNum",
+        "courseName",
+        "classNumber",
+        "teachingName",
+        "readObj",
+        "class_ID",
+        "courseId",
+        "outLineId",
+        "sumClassesID",
+        "raw_rows",
+        "rows: rows",
+        "rows: data.rows",
+        "teachingTimePlaceStr",
+    ):
+        assert forbidden not in slice_, f"相关性诊断返回路径不得包含：{forbidden}"
+
+    for key in (
+        "semester: semester",
+        "page_no: CORRELATION_PAGE_NO",
+        "page_size: CORRELATION_PAGE_SIZE",
+        "reported_total: data.total",
+        "total_rows: presence.total_rows",
+        "schedule_presence: presence.buckets",
+        "compared_rows: groups.missing.total + groups.non_empty_string.total",
+        "ungrouped_rows: split.other_rows",
+        "groups: groups",
+    ):
+        assert key in slice_, f"相关性诊断返回值缺少：{key}"
+
+
+def test_correlation_pure_functions_keep_the_five_buckets(collector_source: str) -> None:
+    """纯函数必须给出与 2C1B **同口径**的五桶分类（互斥且穷尽）。"""
+
+    slice_ = _correlation_pure_slice(collector_source)
+
+    assert "function classifySchedulePresence(row)" in slice_
+    assert "function summarizePresenceBuckets(rows)" in slice_
+
+    for bucket in ("missing", "null", "empty_string", "non_empty_string", "other_type"):
+        assert f"{bucket}: 0" in slice_, f"缺少统计桶：{bucket}"
+
+    # 与 2C1B 完全相同的判定写法
+    assert "Object.prototype.hasOwnProperty.call(row, SCHEDULE_FIELD)" in slice_
+    assert "value === null" in slice_
+    assert 'value.trim() === "" ? "empty_string" : "non_empty_string"' in slice_
+    assert "total_rows: rows.length" in slice_
+
+    # 非对象 row 直接失败，不静默跳过
+    assert "相关性诊断遇到非对象 row" in slice_
+
+
+def test_correlation_splits_only_two_groups_and_keeps_ungrouped(collector_source: str) -> None:
+    """只比较 missing / non_empty_string；其余形态只计数，**不**被塞进任何一组。"""
+
+    slice_ = _correlation_pure_slice(collector_source)
+
+    assert 'var CORRELATION_GROUP_MISSING = "missing";' in slice_
+    assert 'var CORRELATION_GROUP_PRESENT = "non_empty_string";' in slice_
+    assert "function splitRowsForCorrelation(rows)" in slice_
+    assert "otherRows += 1" in slice_
+    assert "other_rows: otherRows" in slice_
+
+    # 只有两个分组分支，各 push 一次
+    assert slice_.count("missingRows.push(") == 1
+    assert slice_.count("presentRows.push(") == 1
+
+
+def test_correlation_structural_fields_are_value_free(collector_source: str) -> None:
+    """A 类字段只做存在性 / 类型统计：⛔ 无 value 列表、无具体取值。"""
+
+    slice_ = _correlation_pure_slice(collector_source)
+
+    assert (
+        'var STRUCTURAL_ONLY_FIELDS = ["timePlaceId", "limitNumber", "selectedNumber"];' in slice_
+    )
+
+    shape = _js_function_slice(
+        collector_source, "function summarizeFieldShape(", "function accumulateScalarEntry("
+    )
+
+    for bucket in (
+        "missing: 0",
+        "null: 0",
+        "empty_string: 0",
+        "non_empty_string: 0",
+        "number: 0",
+        "boolean: 0",
+        "other_type: 0",
+    ):
+        assert bucket in shape, f"字段形态统计缺少桶：{bucket}"
+
+    # ⛔ 结构字段统计里不得出现"取值列表 / 去重计数"这类会泄露具体值的输出
+    for forbidden in ("values", "distinct_count", "values_suppressed", "String(value)"):
+        assert forbidden not in shape, f"结构字段统计不得包含：{forbidden}"
+
+
+def test_correlation_categorical_fields_are_the_agreed_six(collector_source: str) -> None:
+    """B 类字段只允许约定的 6 个（禁止顺手扩大统计范围）。"""
+
+    slice_ = _correlation_pure_slice(collector_source)
+
+    for field in (
+        "weekDay",
+        "openClass",
+        "teachProgressSubmitState",
+        "courseCategoryName",
+        "examMode",
+        "openingUnitName",
+    ):
+        assert f'"{field}"' in slice_, f"缺少分类字段：{field}"
+
+
+def test_correlation_categorical_values_use_safe_serialized_format(collector_source: str) -> None:
+    """分类值必须序列化成字符串 + 保留原始类型，且**不用真实取值当 key**。"""
+
+    slice_ = _correlation_pure_slice(collector_source)
+
+    assert 'var SCALAR_TYPE_ORDER = ["boolean", "number", "string"];' in slice_
+    assert "var serialized = String(value);" in slice_
+    assert "entries.push({ type: type, value: serialized, count: 1 });" in slice_
+
+    accumulate = _js_function_slice(
+        collector_source, "function accumulateScalarEntry(", "function compareScalarEntries("
+    )
+    assert "entries[index].value === serialized" in accumulate
+    assert "entries[index].count += 1;" in accumulate
+
+    # ⛔ 真实取值不得成为 object / Map / Set 的键
+    for forbidden in ("entries[serialized]", "counts[", "new Map(", "new Set(", "Object.create(null)"):
+        assert forbidden not in accumulate, f"累加实现不得出现：{forbidden}"
+
+
+def test_correlation_suppresses_high_cardinality_values(collector_source: str) -> None:
+    """⛔ distinct > MAX_DISTINCT_VALUES → 整体 suppression（不返回前 N / 最常见 N 个）。"""
+
+    slice_ = _correlation_pure_slice(collector_source)
+    categorical = _js_function_slice(
+        collector_source, "function summarizeCategoricalValues(", "function summarizeCorrelationGroup("
+    )
+
+    assert "var MAX_DISTINCT_VALUES = 20;" in slice_
+    assert "if (entries.length > MAX_DISTINCT_VALUES) {" in categorical
+    assert "summary.values_suppressed = true;" in categorical
+    assert "summary.values = [];" in categorical
+    assert "summary.distinct_count = entries.length;" in categorical
+
+    # ⛔ 不得有任何"取前 N / 最常见 N"的选择逻辑
+    for forbidden in ("slice(0", "splice(", "left.count - right.count", "right.count - left.count"):
+        assert forbidden not in categorical, f"分类值统计不得出现：{forbidden}"
+
+    # 顺序必须与出现次数无关（只按类型 + 序列化文本）
+    comparator = _js_function_slice(
+        collector_source, "function compareScalarEntries(", "function summarizeCategoricalValues("
+    )
+    assert "left.value < right.value" in comparator
+    assert "count" not in comparator, "排序不得依赖出现次数"
+
+
+def test_correlation_invariants_are_checked_in_code(collector_source: str) -> None:
+    """⛔ 计数不变量必须在代码里显式校验（不允许静默丢 row）。
+
+    说明：本测试文件按既有约定**只做源码级检查**，不执行 JS；
+    这里验证的是"不变量确实被写成断言，且在 return 之前调用"。
+    """
+
+    slice_ = _correlation_pure_slice(collector_source)
+
+    assert "function assertFieldTotals(groupName, group)" in slice_
+    assert "function assertCorrelationInvariants(presence, split, groups)" in slice_
+
+    for check in (
+        "bucketTotal !== presence.total_rows",
+        "groups.missing.total !== buckets.missing",
+        "groups.non_empty_string.total !== buckets.non_empty_string",
+        "split.other_rows !== buckets.null + buckets.empty_string + buckets.other_type",
+        "summary.other_type + summary.scalar_count !== summary.total",
+        "sumListedCounts(summary.values) !== summary.scalar_count",
+    ):
+        assert check in slice_, f"缺少不变量检查：{check}"
+
+    diagnostic = _correlation_diagnostic_slice(collector_source)
+
+    assert "assertCorrelationInvariants(presence, split, groups);" in diagnostic
+    assert diagnostic.index("assertCorrelationInvariants(presence, split, groups);") < diagnostic.index(
+        "return {"
+    ), "不变量校验必须发生在 return 之前"
+
+
+def test_correlation_diagnostic_does_not_touch_collect_or_2c1b(collector_source: str) -> None:
+    """2C1B 入口与 `collect()` 保持原样：C1C 只是**并列**的第三个入口。"""
+
+    # 2C1B 入口仍在，且仍只取第 1 页一次
+    diagnose = _js_function_slice(
+        collector_source, "async function diagnoseSchedulePresence(", "function toJson("
+    )
+    assert diagnose.count("await requestPage(") == 1
+    assert "requestPage(semester, DIAGNOSTIC_PAGE_NO, DIAGNOSTIC_PAGE_SIZE)" in diagnose
+    assert "summarizeSchedulePresence(data.rows)" in diagnose
+
+    # C1C 不得被 collect() 调用（它只是并列入口，不参与生产链路）
+    start = collector_source.index("async function collect(")
+    end = collector_source.index("// 结构诊断（Phase 2B-2C1B）")
+    collect_body = collector_source[start:end]
+
+    for forbidden in (
+        "diagnoseMissingScheduleCorrelation",
+        "classifySchedulePresence",
+        "summarizeCategoricalValues",
+        "summarizeFieldShape",
+    ):
+        assert forbidden not in collect_body, f"collect() 不得引入 C1C：{forbidden}"

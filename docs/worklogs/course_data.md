@@ -548,3 +548,140 @@
 - 下一步：等待 Reviewer 复核本修复，之后由**负责人手动执行 1 页诊断**。
   ⚠️ **不 merge，不自行开始下一阶段**。
 
+### 2026-10-01 - Phase 2B-2C1C：Missing Schedule Correlation Diagnostic
+- 本次目标：新增一个**同样只取第 1 页一次**的**相关性诊断**入口，
+  对 `missing` 组与 `non_empty_string` 组做**已有真实字段**的**聚合结构对照**，
+  用来判断"缺 `teachingTimePlaceStr` 的 row 是否表现出一致的结构特征"。
+  ⛔ **只做相关性取证、不判断业务含义、不是 workaround、不改契约**。
+- 起点：`main` = `e43f0effca8ce424fe83da4eb8311024affe2123`；
+  新建 `feature/course-data-missing-schedule-correlation`（**base 已核对一致**）。
+- **负责人手动执行的真实证据（本轮回填，非 Builder 取得）**：
+  `diagnoseSchedulePresence({ semester: "2026-1" })`：
+  `reported_total = 6892`、第 1 页 `total_rows = 200`、
+  `teachingTimePlaceStr` 五桶 = `missing 39` / `null 0` / `empty_string 0` /
+  `non_empty_string 161` / `other_type 0`（第 1 页 **39/200 = 19.5%**）。
+  ⚠️ **范围限定**：该比例**只代表第 1 页这 200 条样本**，
+  ⛔ **不外推**为"全校 19.5%""6892 条中约有多少条""整学期约有多少无排课课程"。
+  可确认的形态事实：第 1 页只出现 `missing` 与 `non_empty_string` 两种形态，
+  **不是单条孤立现象**；但**业务含义仍未知**。
+- **来源登记**：`OFFERING-002` **补录**上述聚合证据（`docs/data/DATA_SOURCE_REGISTRY.md` §4.1 + §6 + 变更记录）；
+  ⛔ **不创建新 `source_id`**（同一数据源 / 同一学期 / 同一模块 / 同一页 / 同一取证目的）；
+  仍**不登记任何 Raw row**、不登记逐行信息、不登记字段取值。
+- **`tools/sysu_course_offering_collector.js` 新增（在现有采集器内，不新建 Transport 文件）**：
+  - `diagnoseMissingScheduleCorrelation({ semester })`：**固定**
+    `pageNo = CORRELATION_PAGE_NO`（= `DIAGNOSTIC_PAGE_NO` = **1**）、
+    `pageSize = CORRELATION_PAGE_SIZE`（= `DIAGNOSTIC_PAGE_SIZE` = **200**）；
+    **只调一次** `await requestPage(...)`；复用既有 hostname guard / same-origin / 全部校验；
+    用户**只允许提供 `semester`**，`pageNo` / `pageSize` / `firstPageNo` / `maxPages` /
+    `delayMs` / `retry` **一律显式拒绝**；⛔ 无分页循环（用 `Array.prototype.filter` 做参数校验，
+    函数体内**没有 `for` / `while`**）、⛔ 无重试、⛔ 无并发、⛔ 无第二次请求；
+  - 纯函数：`classifySchedulePresence`（与 2C1B **同口径**五桶）、
+    `summarizePresenceBuckets`、`splitRowsForCorrelation`（只分 `missing` /
+    `non_empty_string` 两组，其余形态只计 `other_rows`，⛔ **不并入任何一组**）、
+    `summarizeFieldShape`（A 类：只做存在性 / 类型统计，**无 value 列表**）、
+    `summarizeCategoricalValues`（B 类：有限分类值计数 + 高基数 suppression）、
+    `summarizeCorrelationGroup`、`assertFieldTotals`、`assertCorrelationInvariants`；
+  - 返回结构：`semester` / `page_no` / `page_size` / `reported_total` / `total_rows` /
+    `schedule_presence{五桶}` / `compared_rows` / `ungrouped_rows` /
+    `groups{missing, non_empty_string}`（每组含 `total` + `structural_fields` + `categorical_fields`）；
+  - **安全格式**：分类值一律 `{ type, value: String(value), count }`；
+    ⛔ **不用真实取值当 object / Map / Set key**（用数组线性扫描累加）；
+    `missing` / `null` / `empty_string` / `other_type` 单独归类，不进入 value 列表；
+    ⛔ **A 类字段（含 `timePlaceId`）绝不输出具体取值**；
+  - **高基数安全阀**：`MAX_DISTINCT_VALUES = 20`（**诊断输出安全阀，不是 SYSU 参数**）；
+    distinct **> 20** → `values_suppressed = true`、`values = []`；
+    ⛔ **不返回前 N 个 / 随机 N 个 / 最常见 N 个**；排序只按「类型 + 序列化文本」，**与出现次数无关**；
+  - **计数不变量**：五桶之和 == `total_rows`；两组之和 == `compared_rows`；
+    `compared_rows + ungrouped_rows == total_rows`；每个字段自身统计加总 == 该组 `total`；
+    ⛔ **任一不成立即整体失败，绝不静默丢 row**；不变量校验在 `return` **之前**调用；
+  - ⛔ **不生成 Capture Bundle**、不落盘、不写 `localStorage` / `IndexedDB`、不调用 `toJson`；
+  - ⛔ **完全未改** 2C1B 的 `diagnoseSchedulePresence()`，也**未改** `collect()` 的 fail-closed 行为。
+- **本地合成校验（非入库、非真实请求）**：用**人工虚构** fixtures（含五桶、
+  25 个 distinct 的高基数字段、缺字段 / 空串 / 非字符串等形态）在本地 Node 里加载采集器、
+  stub `fetch` 跑通诊断：五桶之和 == `total_rows`、`compared_rows + ungrouped_rows == total_rows`、
+  高基数字段 `distinct_count = 25` → `values_suppressed = true` / `values = []`、
+  A 类字段只输出 shape 计数、返回 JSON 内**无** `courseNum` / `courseName` / `classNumber` /
+  `readObj` / `class_ID` / 教师 / 教室 / 原文，6 个禁止参数**全部被拒绝**。
+  ⚠️ 该脚本是**临时**校验（**未入库**），**未**访问任何真实系统。
+- **缺口报告**：G11 与 §4.7 补录第 1 页真实聚合证据，并把**未确认**清单细化为
+  「为什么缺失 / 缺失 row 的业务类型 / 是否属于有效可选教学班 / 是否应进入 Planner /
+  全学期缺失比例 / 是否需要修改公共契约」；明确⛔ **不得**写成
+  "缺排课 / 未排课课程 / 未排课教学班 / 时间待定 / 异步课程 / 无需排课 / 异常数据 / 暂无教室"。
+- 修改文件：
+  - `tools/sysu_course_offering_collector.js`
+  - `backend/tests/test_sysu_collector_guard.py`（新增 13 条 C1C 守卫；
+    把「暂缓字段名全文不得出现」的旧断言**作用域收窄**到 `KEPT_ROW_FIELDS` / 最小化路径，
+    **未删除**该断言；更新 `requestPage(` 调用点计数为 4 / `await requestPage(` 为 3）
+  - `docs/data/DATA_SOURCE_REGISTRY.md`、`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **537 passed / 2 skipped**，exit 0
+  （baseline **524 passed / 2 skipped**；**未删除任何旧测试、未新增 skip**；
+  `test_sysu_collector_guard.py` 由 42 → **55** 条）；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**（仅语法解析，**Builder 未执行**浏览器脚本）。
+- ⛔ **未修改** `schemas/` / `docs/interfaces/` / `backend/app/models/contracts.py` /
+  `backend/app/course_data/*.py` / `integration/` / `planner/` / `curriculum/` / `main.py` /
+  `api/` / `frontend/` / `mock_data/`；
+  `CourseOffering.meetings` 的 **`minItems = 1` 保持不变**；本轮**不存在**【接口变更请求】。
+- 使用数据：**Mock / 人工虚构**；**未生成真实 Capture Bundle**；仓库内 0 个真实数据文件。
+- **实际 SYSU 请求数：0**（Builder 未登录、未运行任何诊断）。
+- 下一步：等待 Reviewer 验收 Phase 2B-2C1C；之后由**负责人手动运行相关性诊断**，
+  真实结果回填后再决定是否走正式【接口变更请求】。⚠️ **不 merge，不自行开始下一阶段**。
+
+### 2026-10-01 - Phase 2B-2C1C Reviewer 修复（3 项）
+- 本次目标：按 Reviewer 意见收紧**暴露面 / 参数面 / 文档口径**，**不新增能力、不改契约**。
+- 起点：`feature/course-data-missing-schedule-correlation`，HEAD `1177dab`（未 merge）。
+- **① 收口 C1C helper 暴露面**（`tools/sysu_course_offering_collector.js`）：
+  - 从 `window.XuehangSysuCollector` **删除** `classifySchedulePresence` /
+    `summarizeFieldShape` / `summarizeCategoricalValues` 三个键；
+  - 原因：`summarizeCategoricalValues` 是**任意字段**的 generic summarizer，
+    一旦公开，调用方就能绕过 C1C 的字段 allowlist（对 `timePlaceId` / 课程名等
+    字段直接产生具体 value counts）；
+  - C1C 现在**只暴露** `diagnoseMissingScheduleCorrelation` 一个入口；
+    三个 helper 仍为 IIFE 内部实现，并在暴露段上方写明"不暴露 + 原因"；
+  - 新增守卫 `test_correlation_helpers_are_internal_only`：
+    在**全局 exposure 切片**中断言三者均不出现、断言不存在 `函数名: 函数名` 暴露写法。
+- **② options 改为严格白名单**：
+  - 删除 `CORRELATION_FORBIDDEN_OPTIONS`（"已知参数黑名单"可绕过）；
+  - 改为 `var optionNames = Object.keys(opts);` +
+    `optionNames.filter(function (name) { return name !== "semester"; })`；
+    任何额外 own key（`pageSize` / `pageNo` / `firstPageNo` / `maxPages` / `delayMs` /
+    `retry`，以及 `foo` / `fields` 等**任意未知字段**）都在**发请求之前** fail closed；
+  - ⛔ 失败信息**不回显**调用方提供的键名（只报额外参数个数），
+    避免把任意字符串带进日志；
+  - 守卫：`test_correlation_diagnostic_rejects_any_option_other_than_semester`（白名单逻辑 +
+    **时序早于 `await requestPage(`** + 旧黑名单常量已消失 + 不回显键名），
+    并在 `test_correlation_diagnostic_page_and_size_are_locked` 中增加
+    `slice_.count("opts.") == 1`（唯一被读取的 options 字段就是 `semester`）。
+- **③ 修正文档输出口径**：全部删除"只含计数与类型 / 不含取值原文"这类**不准确**说法，
+  统一改为四点口径：
+  1. **不返回** Raw row / 逐行数据 / 课程与教学班标识 / 教师 / 教室 /
+     `teachingTimePlaceStr` 原文；
+  2. **Structural-only 字段不返回具体值**；
+  3. **Categorical 字段 `distinct <= 20` 时会返回聚合后的原始标量分类值 + `count`**；
+  4. **`distinct > 20` 时 `values` 全部 suppression**。
+  同步位置：`docs/status/course_data.md`（C1C 表格 + 新增"返回内容的准确口径"引用块 + 「下一步」）、
+  `docs/status/agent_frontend.md`（C1C 关键边界）、本文件；
+  另在 JS 的 `diagnoseMissingScheduleCorrelation` JSDoc 中写明同一口径。
+- 修改文件：
+  - `tools/sysu_course_offering_collector.js`
+  - `backend/tests/test_sysu_collector_guard.py`（C1C 守卫 13 → **15** 条）
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **539 passed / 2 skipped**，exit 0
+  （上一轮 537 passed / 2 skipped；**未删除任何旧测试、未新增 skip**）；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**。
+- **本地合成校验（临时脚本、未入库、非真实请求）**：加载采集器并 stub `fetch`，
+  确认 ① 暴露键中 `summarizeCategoricalValues` / `summarizeFieldShape` /
+  `classifySchedulePresence` 均为 `undefined`；
+  ② `{semester}` 放行且只发 1 次请求，`{semester, pageSize}` / `{semester, foo}` /
+  `{semester, fields}` / `{semester, pageNo}` / `{semester, retry}` **全部被拒且 0 次额外请求**；
+  ③ `openClass`（2 个 distinct）返回聚合分类值 + count，
+  `openingUnitName`（25 个 distinct）`values_suppressed = true` / `values = []`，
+  `timePlaceId` 只返回 shape 计数；返回 JSON 内无课程 / 教师 / 教室 / 原文。
+- ⛔ **未修改** `schemas/` / `docs/interfaces/` / Python 数据链路 / `collect()` / 2C1B 诊断入口；
+  `CourseOffering.meetings` 的 **`minItems = 1` 保持不变**。
+- 使用数据：**Mock / 人工虚构**；**未生成真实 Capture Bundle**。
+- **实际 SYSU 请求数：0**。
+- 下一步：等待 Reviewer 复核本修复。⚠️ **不 merge，不自行开始下一阶段**。
+

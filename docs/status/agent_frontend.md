@@ -1,7 +1,8 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C1B Schedule Presence Diagnostic** 完成，
-> **Reviewer 修复 6 项已完成**，等待 Reviewer 复核）
+> 最后更新：2026-10-01（**Phase 2B-2C1C Missing Schedule Correlation Diagnostic**
+> 代码已完成、**Reviewer 修复 3 项已完成**，等待 Reviewer 复核；
+> `OFFERING-002` 已补录**第 1 页真实聚合证据**）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应、私密脱敏样本与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
@@ -9,9 +10,12 @@
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
 > Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
-> 零网络分页采集核心、浏览器端授权采集器代码、Capture Bridge 与结构诊断入口**均已完成；
-> **已完成一次真实 smoke run**（「全校开设课程」独立模块内 **same-origin 成功**，
-> **认证不再是 blocker**），但**第 1 页至少 1 条真实 row 缺少 `teachingTimePlaceStr`**，
+> 零网络分页采集核心、浏览器端授权采集器代码、Capture Bridge、结构诊断入口
+> 与相关性诊断入口**均已完成；
+> **已完成一次真实 smoke run + 一次真实结构诊断**（「全校开设课程」独立模块内
+> **same-origin 成功**，**认证不再是 blocker**）；
+> 第 1 页 **200** 条真实 row 中 **39 条完全没有 `teachingTimePlaceStr`**、
+> **161 条非空**，其余形态 0（⚠️ **39/200 只描述第 1 页样本，不得外推**），
 > 当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**、
 > **尚未取得 complete semester snapshot**；**缺失字段的业务含义尚未确认**；
 > **production Curriculum / Planner provider 仍未接入**，
@@ -23,7 +27,7 @@
 
 ## 当前阶段
 
-**Phase 2B-2C1B 代码已完成 → 下一步由负责人手动 1 页结构诊断**
+**Phase 2B-2C1C 代码已完成 → 下一步由负责人手动 1 页相关性诊断**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -37,8 +41,10 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                    →  ✅ SYSU 分页参数人工验证完成（first_page_no=1、单页上限 200、前两页 total=6892）
                    →  Phase 2B-2C1A ✅ 浏览器端授权采集器代码 + Capture Bridge
                    →  ✅ 真实 smoke run：same-origin 成功、认证不再是 blocker
-                   →  Phase 2B-2C1B ✅ 结构诊断入口（只取证；缺 teachingTimePlaceStr → 当前 fail closed）
-                   →  【下一步】负责人手动 1 页诊断 → 依据结果走正式【接口变更请求】
+                   →  Phase 2B-2C1B ✅ 结构诊断入口（只取证）+ 负责人真实运行
+                      第 1 页 200 条：39 missing / 161 非空 / 其余 0（仅第 1 页，不得外推）
+                   →  Phase 2B-2C1C ✅ 相关性诊断入口（missing vs non_empty 字段聚合对照，只取证）
+                   →  【下一步】负责人手动运行相关性诊断 → 依据结果走正式【接口变更请求】
                    →  之后：真实 Capture 导入 UI → Phase 2B Integration 接真实 Provider
 ```
 
@@ -434,6 +440,57 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   `test_collector_row_number_is_only_for_messages`；回归 **524 passed / 2 skipped**、
   `node --check` exit 0；**实际 SYSU 请求数：0**。
 
+## Phase 2B-2C1C 结果（Missing Schedule Correlation Diagnostic）
+
+**只取证、不裁决**：在**现有**采集器内新增显式触发的**相关性诊断**入口。
+详见 `docs/status/course_data.md`。
+
+| 产出 | 内容 |
+|---|---|
+| `tools/sysu_course_offering_collector.js` | 新增 `diagnoseMissingScheduleCorrelation({ semester })`；字段级 summarizer `classifySchedulePresence` / `summarizeFieldShape` / `summarizeCategoricalValues` 为**内部实现，不暴露** |
+| `backend/tests/test_sysu_collector_guard.py` | 新增 C1C 静态守卫（15 条） |
+| `docs/data/DATA_SOURCE_REGISTRY.md` | `OFFERING-002` 补录第 1 页真实聚合证据（`missing 39` / `non_empty_string 161`，其余 0；**仅第 1 页**） |
+| `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` | G11 / §4.7 补录聚合证据 + 未确认清单 |
+
+**唯一目标**：在第 1 页同一份样本内，对 `missing` 组与 `non_empty_string` 组做
+**已有真实字段**的**聚合结构对照**，判断"缺字段的 row 是否表现出一致的结构特征"。
+⛔ **不判断业务含义**；⛔ **不是 workaround**。
+
+**关键边界**：
+
+- ⛔ **加载脚本仍不自动请求**；诊断必须由用户显式调用；
+- **固定只取第 1 页一次**（`pageNo = 1` / `pageSize = 200`）；⛔ 无分页循环 / 重试 / 并发 /
+  第二次请求 / 不复制 `fetch()`；**复用**既有 hostname guard 与 `requestPage()`；
+- **参数为严格白名单**：`Object.keys(opts)` 中**只允许** `semester`；任何其它 own key
+  （`pageSize` / `pageNo` / `firstPageNo` / `maxPages` / `delayMs` / `retry`，以及任意未知字段）
+  都在**发请求之前** fail closed（⛔ 不是"已知参数黑名单"；⛔ 不回显调用方键名）；
+- **暴露面收口**：C1C 只暴露 `diagnoseMissingScheduleCorrelation`；
+  `summarizeCategoricalValues` 这类**任意字段**的 generic summarizer
+  **不得**出现在 `window.XuehangSysuCollector`（否则可绕过字段 allowlist）；
+- **分组**：`schedule_presence` 保留**五桶**；只比较 `missing` 与 `non_empty_string`；
+  `ungrouped_rows`（`null` + `empty_string` + `other_type`）**保留但不并入任何一组**；
+- **A 类字段（Structural-only）只做存在性 / 类型统计**
+  （`timePlaceId` / `limitNumber` / `selectedNumber`）：⛔ **不返回具体值**、无 value 列表；
+- **B 类字段（Categorical）做有限分类值计数**（`weekDay` / `openClass` /
+  `teachProgressSubmitState` / `courseCategoryName` / `examMode` / `openingUnitName`）：
+  值**序列化为字符串 + 保留原始类型**（`{ type, value, count }`），
+  `missing` / `null` / `empty_string` / `other_type` 单独归类；
+- **返回内容口径（⚠️ 不是"只有计数"）**：⛔ **不返回** Raw row / 逐行数据 /
+  课程与教学班标识 / 教师 / 教室 / `teachingTimePlaceStr` 原文；
+  **Structural-only 字段不返回具体值**；
+  **Categorical 字段 `distinct <= 20` 时会返回聚合后的原始标量分类值 + `count`**；
+  **`distinct > 20` 时 `values` 全部 suppression**；
+- **高基数安全阀** `MAX_DISTINCT_VALUES = 20`：⛔ 不返回前 N / 随机 N / 最常见 N 个；
+- **计数不变量在代码中显式校验**（五桶之和、两组之和、`compared_rows + ungrouped_rows`、
+  每字段加总）：⛔ **任一不成立即整体失败，不静默丢 row**；
+- ⛔ **不生成 Capture Bundle**、不落盘、不写浏览器存储、不调用 `toJson`；
+- ⛔ **不改** `collect()` 的 fail-closed 行为；⛔ **不改** 2B-2C1B 的 `diagnoseSchedulePresence()`；
+- ⛔ **本轮不改契约**：`CourseOffering.meetings` `minItems = 1` 保持不变；**G11 只登记、不裁决**；
+- **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/`、
+  `frontend/`、`backend/app/course_data/*.py` 均未修改；后端 **539 passed / 2 skipped**；
+- ⚠️ **本轮不含任何真实相关性数值**：真实结果由**负责人手动执行**后回填；
+  **Builder 实际 SYSU 请求数：0**。
+
 ## Phase 2B-2C1A 结果（SYSU Authorized Browser Transport + Capture Bridge）
 
 **浏览器端显式触发的授权采集 + Python 本地回放桥**；不接 Integration / Planner / API / 前端产品 UI。
@@ -626,15 +683,18 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **等待 Reviewer 复核 Phase 2B-2C1B 的 6 项修复**（结构诊断本身 +
-  证据边界 / 行号口径修正；重点看"是否只请求第 1 页一次""是否只输出聚合统计"
-  "是否未产出 bundle""是否未改动 `collect()` 的 fail-closed 行为"
-  "是否只登记'至少 1 条'而非精确条数"）
-- **下一步是负责人手动 1 页结构诊断**（Reviewer 合并后）：在本人已登录、已有权限的
-  「**全校开设课程**」模块页面显式调用
-  `diagnoseSchedulePresence({ semester: "2026-1" })`；
-  依据结果判断缺字段的普遍性与形态，**下一轮再走正式 `【接口变更请求】`**；
-  ⚠️ **本轮不得自行开始**，须等新一轮任务书
+- **等待 Reviewer 复核 Phase 2B-2C1C 的 3 项修复**（暴露面收口 / 严格白名单参数 /
+  返回口径表述；以及相关性诊断本身：是否只请求第 1 页一次、是否未产出 bundle、
+  是否未改动 `collect()` 与 2C1B、是否正确区分 A 类"只统计存在性/类型"与
+  B 类"有限分类值计数"、是否对高基数整体 suppression）
+- **合并后唯一的人工下一步**：**Reviewer 合并 Phase 2B-2C1C 之后**，
+  由**负责人手动执行一次** `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`，
+  依据第 1 页真实相关性结果决定是否走正式【接口变更请求】
+  （⛔ 本轮不预设方案、不改 Schema）；
+  ⛔ **不再要求重复运行 2B-2C1B 的 1 页结构诊断** —— 该诊断**已由负责人真实运行完成**，
+  结果已登记：第 1 页 `total_rows = 200`（同页 `reported_total = 6892`）、
+  `missing = 39`、`non_empty_string = 161`、`null` / `empty_string` / `other_type` 均为 0
+  （⚠️ **仅第 1 页，不得外推**）；
 - **真实 Capture Bundle 的导入 UI**（前端产品链路）属**后续步骤**，本轮不做；
 - **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
   `max_pages` 是**内部安全阀**，不是学校侧参数；
