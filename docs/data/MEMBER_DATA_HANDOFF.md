@@ -1,6 +1,10 @@
 # 成员数据交接说明（Data Handoff）
 
-> **状态：交接规则 + 清单模板。** 目前没有任何真实数据可交接。
+> **状态：交接规则 + 当前清单 + 清单模板。**
+>
+> ⚠️ **「已有真实证据」≠「已经向组员交付了真实逐行数据」。**
+> 截至本文件更新：D1–D5 的**汇总事实已进入 public 仓库**（可直接共享），
+> 但**逐行真实数据的交接次数仍为 0**（见第 11 节）。
 >
 > **本文件最重要的两条规则：**
 > ## 1. 不得把 Raw 个人数据直接交给其他成员。
@@ -23,7 +27,71 @@
 
 ---
 
-## 2. 三层数据与交接原则
+## 2. 当前数据清单：可直接共享 / 按需交接 / 禁止交接
+
+> 本节回答一个此前不清晰的问题：**现在到底有什么、能怎么给。**
+> 分类口径与 `DATA_GATE_DECISIONS.md` 第 5 节（Shared / Private / Derived）一致。
+>
+> ⚠️ **关键区分：**「**已有真实证据**」记录的是"**我们确认了什么事实**"；
+> 「**交付真实数据**」指"**把逐行数据交给某个成员**"。**两者不是一回事。**
+
+### 2.1 GitHub public 仓库可直接共享（无需额外交接）
+
+以下内容**已经在 public 仓库中**，且**本身不含逐行真实数据 / 个人信息 / Raw 材料**，
+任何成员**可以直接读取**：
+
+| 内容 | 位置 | 说明 |
+|---|---|---|
+| **D1 公开政策证据** | `docs/data/SYSU_CASE_A_PUBLIC_EVIDENCE.md` | 公开官方来源与条款摘录 |
+| **D2 / D3 培养方案证据** | `docs/data/SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md` | 认证来源的**汇总事实**（总学分、实践学分、课程号单元格数等） |
+| **D4 已修课程证据** | `docs/data/SYSU_CASE_A_COMPLETED_COURSES_EVIDENCE.md` | 字段名、覆盖率、归属判定；**不含逐行记录** |
+| **D5 教学班侦察证据** | `docs/data/SYSU_COURSE_OFFERING_RECON.md` | 字段名、语义、映射结论、汇总事实；**不含 Raw JSON** |
+| **来源登记** | `docs/data/DATA_SOURCE_REGISTRY.md` | `source_id` / 证据等级 / 访问类型 |
+| **缺口登记** | `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` | G1–G10 与 A/B/C 映射结论 |
+| **Data Gate 决策草案** | `docs/data/DATA_GATE_DECISIONS.md` | 实体边界、所有权、DG-01 – DG-06 草案 |
+| **Mock 数据** | `/mock_data/` | **人工虚构**、面向全项目共享的演示数据 |
+| **公共契约** | `/schemas/`、`/docs/interfaces/` | 与数据共享无关，列出以便成员定位 |
+
+**共享的前提**：这些文件记录的是"**结论与来源性质**"，**不是数据本身**。
+仓库内**不含**完整课程表、不含任何具体成绩 / GPA、不含教师姓名、不含内部长 ID 取值、
+不含完整教学班逐行记录。
+
+> ⚠️ **认证来源（Authenticated Official）限制**：`CURR-OLD-003` / `CURR-NEW-004` /
+> `TRANSCRIPT-001` / `OFFERING-001` 均为**认证来源**，
+> **外部访问者无法通过公开 URL 独立复核**。共享这些**结论**时，必须同时说明这一限制，
+> 不得让接收方误以为可以自行公开验证。
+
+### 2.2 负责人控制的非公开位置，按需交接
+
+以下数据**可以**交付给确实需要的成员，但必须满足第 9 节的 Checklist，
+并**通过负责人控制的非公开位置**交付，**一律不得进入 public 仓库**：
+
+| 数据 | 层级 | 交付形态与限制 |
+|---|---|---|
+| **D4 Sanitized Sample**（已修课程脱敏**逐行**记录） | Sanitized Sample | 仅课程号 / 课程名 / 学分 / 修读学期 / 是否通过 / 必要课程性质；**必须先脱敏**并经负责人确认标准；**仅可用于 Schema 承载能力与 Curriculum 逻辑验证，不得对外展示** |
+| **后续 D5 normalized / sanitized sample** | Sanitized Sample | 需**先完成 Data Gate 对"一个教学班多个 segment"表示的裁决**（`DATA_GATE_DECISIONS.md` DG-01），否则交付形态不稳定、下游会各自发挥 |
+| **培养方案结构化输出**（若最终裁决为"模块内部输入 / 不进公共契约"） | Sanitized Sample 或模块内部输入 | 由负责人决定形态与交付方式；⚠️ **不得**被当作跨模块公共契约使用 |
+
+> ⚠️ **截至本文件更新，上述逐行样本的交接次数仍为 `0`。**
+> 已有的是"**汇总事实**"（在 public 仓库），**不是"已交付的逐行数据"**。
+
+### 2.3 禁止交接（任何情况下都不得交付）
+
+| 类别 | 具体内容 |
+|---|---|
+| **Raw 个人数据** | **Raw transcript**（原始成绩单）、**Raw D5 response**（原始教学班 JSON 响应） |
+| **凭据类** | **password**、**Cookie**、**Session**、**Token**、API Key、验证码 |
+| **流量记录** | **HAR**、完整 Request Headers |
+| **他人数据** | 其他学生的成绩单、选课名单、任何非本人授权的数据 |
+| **未脱敏内容** | 姓名、学号、身份证、联系方式等直接身份标识 |
+| **内部标识取值** | `courseId` / `class_ID` / `timePlaceId` 等后台内部长 ID 的**取值** |
+| **受限文本** | 教师姓名、`readObj`（修读对象）**完整文本**、`teachingTimePlaceStr` 原始串 |
+
+**一句话原则**：**不确定时一律按"不可交付"处理，先问负责人。**
+
+---
+
+## 3. 三层数据与交接原则
 
 数据分层定义见 `DATA_ACQUISITION_PLAN.md` 第 5.1 节（Raw → Sanitized Sample → Mock）。
 就"交接"而言，规则是：
@@ -44,7 +112,7 @@
 
 ---
 
-## 3. Curriculum 成员将来需要的数据
+## 4. Curriculum 成员将来需要的数据
 
 | 编号 | 数据 | 对应规划编号 | 交付形态 | 前置条件 |
 |---|---|---|---|---|
@@ -61,11 +129,11 @@
 
 ---
 
-## 4. Planner 成员将来需要的数据
+## 5. Planner 成员将来需要的数据
 
 | 编号 | 数据 | 对应规划编号 | 交付形态 | 前置条件 |
 |---|---|---|---|---|
-| P-1 | **CourseOffering 脱敏真实样本** | D5 | Sanitized Sample（符合 `course_offering.schema.json`） | 已完成页面技术侦察；采集范围经负责人批准；**Raw 按潜在含个人信息处理并已实际检查**；当前**不得进入 public Git** |
+| P-1 | **CourseOffering 脱敏真实样本** | D5 | Sanitized Sample（符合 `course_offering.schema.json`） | 已完成页面技术侦察；采集范围经负责人批准；**Raw 按潜在含个人信息处理并已实际检查**；当前**不得进入 public Git**；⚠️ **多 segment 表示方式需先按 `DATA_GATE_DECISIONS.md` DG-01 裁决** |
 | P-2 | **Curriculum 最终输出的正式结构化结果** | D2+D3+D4 的产出 | `MakeupTask[]`（符合 `makeup_task.schema.json`） | Curriculum 侧已确认输出稳定；确认哪些条目是 `manual_confirmation` |
 | P-3 | **Preference 样本** | 用户需求 | 符合 `preference.schema.json` 的对象 | 来自真实问卷 / 访谈 / 负责人确认，**不得由 Agent 编造** |
 
@@ -78,34 +146,40 @@
 
 ---
 
-## 5. Curriculum → Planner 的边界与当前缺口
+## 6. Curriculum → Planner 的边界与当前缺口
 
 这一节专门说明"目前能交什么、不能交什么"，避免下游成员去猜或自己造格式。
 
-### 5.1 现在就可以交付的
+### 6.1 现在就可以交付的
 
 - **`MakeupTask[]` 是当前已存在的稳定公共对象**（`schemas/makeup_task.schema.json`），
   Curriculum 产出后可以直接交付给 Planner 使用。
 
-### 5.2 目前没有正式表示的
+### 6.2 目前没有正式表示的
 
 - `/AGENTS.md` 第 5 节还要求 **Planner 消费 Curriculum 提供的"课程依赖结果"与"已确认优先级"**；
 - 但这两者**目前没有正式的公共 Schema**（`/schemas/` 下没有对应文件），
   在 `docs/interfaces/planner.md` 中它们也只以"来自 Curriculum"的方式被提及。
+- ⚠️ 另外，`docs/interfaces/planner.md` 目前把"课程依赖图 / 补修优先级与风险"写成
+  **Planner 自己的职责**，**与 `/AGENTS.md` 第 5 节冲突** ——
+  该**接口文档债务**已登记在 `DATA_GATE_DECISIONS.md` 的 **DG-06**，等待负责人裁决。
+- 依赖方面：`MakeupTask.prerequisites[]` **已存在**，可能已足够承载 MVP 所需依赖
+  （见 `DATA_GATE_DECISIONS.md` §7.3 / DG-05）。
 
-### 5.3 因此当前的硬性约束
+### 6.3 因此当前的硬性约束
 
 - 这两项**当前不得作为跨模块交付物**；
 - **任何成员都不得自行设计私有的跨模块格式**（例如在代码里定义一套只有两边懂的中间结构，
   再私下传递）——那等于绕过公共契约；
-- 处理方式：该缺口已登记在 `REAL_TO_SCHEMA_GAP_REPORT.md`；
+- 处理方式：该缺口已登记在 `REAL_TO_SCHEMA_GAP_REPORT.md`，
+  决策草案见 `DATA_GATE_DECISIONS.md`；
   如确需成为正式契约，由负责人决定是否发起 `【接口变更请求】`；
 - **在缺口解决之前，Planner 只能依赖 `MakeupTask[]` 中已存在的字段**，
   不得依赖任何未定义的私有结构。
 
 ---
 
-## 6. 数据生产方（供交接方向参考）
+## 7. 数据生产方（供交接方向参考）
 
 为避免"谁给谁"说不清，明确各数据的**产出方**：
 
@@ -119,9 +193,11 @@
 | `Preference` | Agent / 负责人（用户真实需求） | Planner |
 | `PlanResult` | **Planner 成员** | Agent/Frontend |
 
+> 实体级所有者与 Shared / Private / Derived 分类见 `DATA_GATE_DECISIONS.md` 第 4、5 节。
+
 ---
 
-## 7. 交接清单模板
+## 8. 交接清单模板
 
 每次真实数据交付，按下表填写（交接记录保存在负责人处，**不进入仓库**）：
 
@@ -142,7 +218,7 @@ source_id（对应 DATA_SOURCE_REGISTRY）：
 
 ---
 
-## 8. 交接前置条件（Checklist）
+## 9. 交接前置条件（Checklist）
 
 交付**之前**逐条确认，任一条不满足则不得交付：
 
@@ -159,7 +235,7 @@ source_id（对应 DATA_SOURCE_REGISTRY）：
 
 ---
 
-## 9. 禁止事项
+## 10. 禁止事项
 
 对**所有成员**一律适用（与 `/AGENTS.md` 第 7、8、11、18 节及 `/docs/SECURITY.md` 一致）：
 
@@ -176,13 +252,27 @@ source_id（对应 DATA_SOURCE_REGISTRY）：
 
 ---
 
-## 10. 当前状态
+## 11. 当前状态
 
 ```text
 已发生的真实数据交接：0
+已取得真实证据的数据类别：D1 / D2 / D3 / D4 / D5
+已在 public 仓库可直接共享：
+  - D1–D5 Evidence 汇总（SYSU_CASE_A_* 与 SYSU_COURSE_OFFERING_RECON）
+  - DATA_SOURCE_REGISTRY.md
+  - REAL_TO_SCHEMA_GAP_REPORT.md
+  - DATA_GATE_DECISIONS.md
+  - /mock_data/（人工虚构）
+已向组员交付的逐行真实数据：无
+  - D4 Sanitized Sample：待按需交接（交接次数 0）
+  - D5 normalized / sanitized sample：待 DG-01 裁决后再定交付形态（交接次数 0）
 已交付 Curriculum 的真实数据：无
 已交付 Planner 的真实数据：无
-最近更新：2026-09-30（第一轮 Review 修订：public 仓库规则、D4/D5 收紧、补齐 Curriculum → Planner 边界缺口）
+最近更新：2026-09-30（Data Gate-1：新增第 2 节"当前数据清单"，
+          明确区分「GitHub 可直接共享 / 负责人非公开按需交接 / 禁止交接」三层，
+          并澄清「已有真实证据」≠「已交付逐行数据」）
 ```
 
-> Phase 2B-0A 只做规划，**不获取、不交接任何真实数据**。
+> Phase 2B-0A 只做规划，**不获取、不交接任何真实数据**；
+> Phase 2B-0B – 2B-0D 取得的真实材料**只产出汇总事实与结论**，
+> **逐行数据一律不进入 public 仓库**。
