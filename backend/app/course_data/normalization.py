@@ -69,9 +69,11 @@ def _week_range_bounds(start: int, end: int, raw_text: str) -> None:
         raise CourseDataNormalizationError(
             f"周次起点必须 ≥1：{raw_text!r}（解析出 start={start}）"
         )
-    if end < start:
+    if end <= start:
         raise CourseDataNormalizationError(
-            f"周次区间非法（结束早于开始）：{raw_text!r}（start={start}, end={end}）"
+            f"周次区间必须满足「结束 > 开始」：{raw_text!r}（start={start}, end={end}）。"
+            f"真实证据只覆盖 `1-17周` / `1-17单周` 这类**真区间**；"
+            f"退化区间（例如 `3-3周`）与其它形式尚未取得样本，本轮一律拒绝。"
         )
 
 
@@ -85,9 +87,11 @@ def expand_weeks(text: str) -> list[int]:
     1-17单周  → [1, 3, 5, …, 17]
     ```
 
-    ⛔ **其余格式一律拒绝**（双周、逗号组合、多段组合、单个周次号、
-    带"第"字前缀、其它未知语法），**绝不猜**。
-    后续取得**脱敏后的真实样本**再扩 parser。
+    ⛔ **其余格式一律拒绝**，包括但不限于：双周、逗号组合、多段组合、单个周次号、
+    **退化区间（如 `3-3周`）**、带"第"字前缀、其它未知语法。**绝不猜。**
+
+    实现保持**最窄**：只接受"两个不同周次构成的区间"这一种形状，
+    后续取得**脱敏后的真实样本**再据实扩 parser（Phase 2B-2B）。
 
     只做一处无害规整：去掉首尾空白（不改变格式语义）。
     """
@@ -153,31 +157,31 @@ def _require_count(value: object, key: str) -> int:
 def _parse_credit(value: object) -> float:
     """`score` 是**字符串数字**（已确认真实格式），转换成 `number`。
 
-    接受：`"3"`、`"3.0"`、`" 3 "` 这类字符串数字，以及等价的 `int` / `float`。
-    拒绝：布尔、负数、空串、非数字文本（例如 `"3学分"`）。
+    ✅ 只接受**已经确认**的形态：字符串数字，例如 `"3"` / `"3.0"` / `" 3 "`
+    （去掉首尾空白后仍是数字）。
+
+    ⛔ **数值型 `score`（`3` / `3.0`）目前没有真实来源证据**，因此**当前拒绝**。
+    `docs/data/SYSU_COURSE_OFFERING_RECON.md` 只确认了"`score` 是字符串数字"；
+    如果后续**脱敏真实样本**显示 `score` 也可能是 JSON number，再据实放宽。
+
+    继续拒绝：布尔、负数、空字符串、非数字文本（例如 `"3学分"`）。
     """
 
-    if isinstance(value, bool):
-        raise CourseDataNormalizationError(f"score 不能是布尔值：{value!r}")
-
-    if isinstance(value, (int, float)):
-        credit = float(value)
-    elif isinstance(value, str):
-        candidate = value.strip()
-        if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", candidate):
-            raise CourseDataNormalizationError(
-                f"score 不是合法的字符串数字：{value!r}（已确认真实格式为字符串数字）"
-            )
-        credit = float(candidate)
-    else:
+    if not isinstance(value, str):
         raise CourseDataNormalizationError(
-            f"score 类型不符合已确认语义：{type(value).__name__}（{value!r}）"
+            f"score 必须是**字符串**形式的数字（已确认真实格式），"
+            f"实际是 {type(value).__name__}：{value!r}；"
+            f"数值型 score 尚无真实来源证据，本轮拒绝"
         )
 
-    if credit < 0:
-        raise CourseDataNormalizationError(f"score 不能为负：{value!r}")
+    candidate = value.strip()
+    if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", candidate):
+        raise CourseDataNormalizationError(
+            f"score 不是合法的字符串数字：{value!r}（已确认真实格式为字符串数字）"
+        )
 
-    return credit
+    # 正则已排除符号位，因此结果必然 ≥0。
+    return float(candidate)
 
 
 def _optional_teacher(raw: Mapping[str, object]) -> str | None:
@@ -238,6 +242,14 @@ def _require_source(source: str) -> str:
 
 
 #: 本模块**只会**读取这些 Raw 字段。其余字段一律忽略（不是"遗漏"，是明确边界）。
+#:
+#: ⚠️ **`selectedNumber` 的处理口径**：当前 2B-2A 的 **narrow normalizer**
+#: **基于已观察到的 D5 字段**把它作为必要字段（缺失即失败），因为
+#: `remaining_capacity = limitNumber - selectedNumber` 需要它。
+#:
+#: 这**不等于**"SYSU 所有记录必然都有 `selectedNumber`" ——
+#: 该字段是否**总是**存在，目前**没有**证据。
+#: **若后续真实脱敏样本出现缺失，再据实调整本内部实现**（不预先放宽，也不对外宣称必然存在）。
 _REQUIRED_RAW_FIELDS = (
     "courseNum",
     "courseName",

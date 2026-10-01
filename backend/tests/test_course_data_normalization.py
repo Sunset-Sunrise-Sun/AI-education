@@ -230,10 +230,25 @@ def test_missing_required_raw_field_is_rejected(missing: str) -> None:
     assert missing in str(excinfo.value)
 
 
-@pytest.mark.parametrize("score", ["abc", "", "   ", "-1", "3.5.1", "3学分", True, None, [3]])
+@pytest.mark.parametrize("score", ["abc", "", "   ", "-1", "3.5.1", "3学分", True, None, [3], 3, 3.0])
 def test_invalid_score_is_rejected(score: object) -> None:
     with pytest.raises(CourseDataNormalizationError):
         _build(_raw(score=score))
+
+
+@pytest.mark.parametrize("score", [3, 3.0])
+def test_numeric_score_is_rejected_without_evidence(score: object) -> None:
+    """⛔ **数值型 `score` 尚无真实来源证据，因此当前拒绝**。
+
+    `docs/data/SYSU_COURSE_OFFERING_RECON.md` 只确认了"`score` 是**字符串数字**"。
+    接受 `3` / `3.0` 会让实现能力超过真实证据，所以本轮一律拒绝；
+    若后续脱敏真实样本显示 `score` 也可能是 JSON number，再据实放宽。
+    """
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        _build(_raw(score=score))
+
+    assert "字符串" in str(excinfo.value)
 
 
 @pytest.mark.parametrize("value", [-1, "90", 90.0, True, None])
@@ -291,9 +306,24 @@ def test_odd_week_range_is_expanded() -> None:
 
 
 def test_single_week_range_is_expanded() -> None:
-    """`3-3周` 这种"区间退化为一个周次"仍属已确认语法，允许多少给 1 项。"""
+    """`3-4周` 这种**真区间**仍属已确认语法。"""
 
-    assert expand_weeks("3-3周") == [3]
+    assert expand_weeks("3-4周") == [3, 4]
+
+
+def test_degenerate_week_range_is_rejected_without_evidence() -> None:
+    """⛔ **退化区间（`3-3周`）未经真实样本确认，本轮拒绝**。
+
+    真实证据只覆盖 `1-17周` / `1-17单周` 这类"两个不同周次构成的区间"。
+    接受 `3-3周` 会让实现能力超过证据，因此 Phase 2B-2A 保持最窄实现，
+    其它形式统一抛 `CourseDataNormalizationError`（后续 2B-2B 依真实样本再扩）。
+    """
+
+    with pytest.raises(CourseDataNormalizationError):
+        expand_weeks("3-3周")
+
+    with pytest.raises(CourseDataNormalizationError):
+        expand_weeks("5-5单周")
 
 
 def test_week_range_bounds_are_checked() -> None:
@@ -311,6 +341,7 @@ def test_week_range_bounds_are_checked() -> None:
         "1,3,5周",  # 逗号组合：未确认
         "1-17周,3-4单周",  # 多段组合：未确认
         "5周",  # 单个周次号：未确认
+        "3-3周",  # 退化区间：未确认
         "1-17",  # 缺"周"字
         "第1-17周",  # 带前缀
         "1~17周",  # 波浪号
@@ -408,13 +439,19 @@ def test_opening_school_name_is_not_auto_mapped_to_campus() -> None:
     assert offering.meetings[0].campus == "东校园"
 
 
+#: 占位值：**不携带任何格式假设**（不假装知道真实 SYSU 的上课时间地点串长什么样）。
+#: 真实格式需取得脱敏样本后另行确认。
+UNPARSED_SCHEDULE_TEXT = "UNPARSED_SCHEDULE_TEXT"
+
+
 def test_raw_schedule_string_is_not_parsed() -> None:
     """⛔ `teachingTimePlaceStr` 本轮**不解析**（无真实脱敏 Raw string，不猜分隔符）。
 
+    这里刻意使用**不含任何格式假设**的占位值：
     传了它也不会产生任何 `Meeting` —— meeting 只能由调用方显式传入。
     """
 
-    raw = _raw(teachingTimePlaceStr="周一第3-4节{第1-17周};周三第5-6节{第1-17单周}")
+    raw = _raw(teachingTimePlaceStr=UNPARSED_SCHEDULE_TEXT)
     meetings = [_meeting(weekday=1)]
 
     offering = _build(raw, meetings=meetings)

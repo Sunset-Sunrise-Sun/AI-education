@@ -84,3 +84,50 @@
   之后是**真实 `teachingTimePlaceStr` parser** 与**授权 import adapter**（Phase 2B-2B），
   ⚠️ **须等新一轮任务书，不自行开始**。
 
+---
+
+### 2026-09-30 - Phase 2B-2A Reviewer 证据边界修复
+- 本次目标：只修"**实现能力超过真实证据**"的三处，**不扩大范围**。
+  起点：同一分支，head `e87d3af8dc546ed26258366bd68878343221680d`。
+- **修复 1：`score` 只接受字符串数字**
+  - 真实证据（`SYSU_COURSE_OFFERING_RECON.md`）只确认 `score = 字符串数字`；
+  - `_parse_credit()` 现在**只接受 `str`**：`"3"` / `"3.0"` / `" 3 "`；
+  - ⛔ **不再接受 `3` / `3.0`（数值型）** —— 数值型 `score` **尚无真实来源证据**，当前拒绝；
+  - bool / 负数 / 空串 / 非数字文本继续拒绝；
+  - 测试相应调整：`3`、`3.0` 移入"非法"参数集，并新增专用用例
+    `test_numeric_score_is_rejected_without_evidence` 明确说明"数值型 score 尚无真实来源证据"。
+- **修复 2：周次保持最窄实现**
+  - 继续支持 `expand_weeks("1-17周")` 与 `expand_weeks("1-17单周")`；
+  - ⛔ **删除"`3-3周` 为已确认合法格式"这一说法与用例**；
+    区间现在**必须满足「结束 > 开始」**（真区间），
+    退化区间（`3-3周`、`5-5单周`）以及其它未经真实样本确认的范围泛化**统一抛
+    `CourseDataNormalizationError`**；
+  - 新增 `test_degenerate_week_range_is_rejected_without_evidence`；
+    原 `test_single_week_range_is_expanded` 改用真区间 `3-4周`；
+    `3-3周` 也加入"未确认格式"参数集；
+  - 后续 2B-2B 依**真实脱敏样本**再扩 parser。
+- **修复 3：不虚构 SYSU 格式字符串**
+  - 测试中原来使用的 `"周一第3-4节{第1-17周};周三第5-6节{第1-17单周}"` **看起来像真实 SYSU 格式**，
+    已删除；
+  - 改为不携带任何格式假设的占位常量 `UNPARSED_SCHEDULE_TEXT`；
+    用例目的不变 —— 仍然只是证明 `build_course_offering` **不读取** `teachingTimePlaceStr`。
+- **修复 4：`selectedNumber` 表述收紧（保留必填，不改行为）**
+  - 在 `normalization.py` 与 `docs/status/course_data.md` 中删除任何可被读成
+    "SYSU 所有记录必然都有 `selectedNumber`" 的说法；
+  - 准确表述为：**当前 2B-2A 的 narrow normalizer 基于已观察到的 D5 字段要求 `selectedNumber`；
+    该字段是否总是存在目前没有证据；若后续真实脱敏样本出现缺失，再据实调整内部实现。**
+- **明确未改**（守住禁止项）：snapshot completeness 规则、duplicate key 判定、
+  `SnapshotCourseDataProvider` 行为、`schemas/`、`docs/interfaces/`、Integration、API、网络代码
+  **一律未修改**。
+- 修改文件：
+  - `backend/app/course_data/normalization.py`（`_parse_credit` / `_week_range_bounds` /
+    `expand_weeks` 文档与 `_REQUIRED_RAW_FIELDS` 注释）
+  - `backend/tests/test_course_data_normalization.py`
+  - `docs/status/course_data.md`（补"证据边界"与"周次最窄实现"说明）
+  - `docs/status/agent_frontend.md`（Phase 2B-2A 小节补证据边界一句）
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **243 passed / 2 skipped**
+  （修复前 237 passed / 2 skipped；原测试全部继续通过，**未删除旧测试、未新增 skip**）。
+- 使用数据：**Mock**（人工虚构的 source-shaped dict 与占位教师名 `"示例教师A"`）
+- 下一步：等待 Reviewer 复验。⚠️ **不 merge，不自行进入 2B-2B**。
+

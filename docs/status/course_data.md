@@ -57,6 +57,17 @@ source       → 必须由调用方显式传入
 > ⚠️ **`remaining_capacity` 是派生值**：学校接口**没有直接提供**剩余容量，
 > 它是 `limitNumber - selectedNumber` 相减得到的。**不得**描述成接口直接给的字段。
 
+**证据边界（实现能力不得超过真实证据）**：
+
+- **`score`**：真实证据只确认它是**字符串数字**，因此当前**只接受字符串数字**
+  （`"3"` / `"3.0"` / `" 3 "`）；
+  ⛔ **数值型 `score`（`3` / `3.0`）尚无真实来源证据，当前一律拒绝**；
+  bool / 负数 / 空串 / 非数字文本继续拒绝。若后续脱敏样本显示它也可是 JSON number，再据实放宽。
+- **`selectedNumber` 的处理口径**：当前 2B-2A 的 **narrow normalizer 基于已观察到的 D5 字段**
+  把它作为必要字段（缺失即失败），因为 `remaining_capacity` 需要它。
+  这**不等于**"SYSU 所有记录必然都有 `selectedNumber`" —— 该字段是否**总是**存在目前**没有**证据；
+  若后续真实脱敏样本出现缺失，**再据实调整内部实现**。
+
 **明确未映射**（本模块不读取、不映射）：
 
 - 内部 ID / 计数：`courseId`、`class_ID`、`sumClassesID`、`sumClassesNum`、
@@ -64,8 +75,13 @@ source       → 必须由调用方显式传入
 - 暂缓业务字段：`courseCategoryName`、`openingUnitName`、`examMode`、`readObj`、
   `teachProgressSubmitState`、`openClass`、`outlineTypeNum`。
 
-**周次**：只支持已记录过的两种原子格式 —— `1-17周`、`1-17单周`；
-**双周 / 逗号组合 / 多段组合 / 单个周次号 / 其它未知格式一律 `CourseDataNormalizationError`**（不猜）。
+**周次**：只支持真实证据记录过的两种原子格式 —— `1-17周`、`1-17单周`；
+**必须满足「结束 > 开始」**（真区间）；
+**双周 / 逗号组合 / 多段组合 / 单个周次号 / 退化区间（如 `3-3周`）/ 全角数字 / 其它未知格式
+一律 `CourseDataNormalizationError`**（不猜）；后续 2B-2B 依真实脱敏样本再扩。
+
+> ⛔ **`teachingTimePlaceStr` 本轮不解析**：仓库中**不虚构**任何"看起来像真实 SYSU 格式"的字符串，
+> 测试只用不携带格式假设的占位值。`meetings` 只能由调用方传入**已解析好的** `Meeting`。
 
 **Snapshot completeness（Data Gate C9 落代码）**：
 
