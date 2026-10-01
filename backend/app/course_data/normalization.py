@@ -45,7 +45,11 @@ from collections.abc import Mapping, Sequence
 from app.course_data.errors import CourseDataNormalizationError
 from app.models.contracts import CourseOffering, DataSource, Meeting
 
-__all__ = ["build_course_offering", "expand_weeks"]
+__all__ = [
+    "build_course_offering",
+    "build_course_offering_from_missing_schedule_field",
+    "expand_weeks",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -223,10 +227,14 @@ def _optional_teacher(raw: Mapping[str, object]) -> str | None:
 
 
 def _require_meetings(meetings: Sequence[Meeting]) -> list[Meeting]:
-    """本轮 `meetings` **只能由已经解析好的明确数据传入**。
+    """普通路径的 `meetings` **只能由已经解析好的明确数据传入**，且**必须非空**。
 
     因此这里拒绝"原始 dict / 未解析结构" —— 那意味着调用方在标准化层之前
     就开始猜 `teachingTimePlaceStr`，而这一层**故意不做解析**。
+
+    ⚠️ **DG-07B 后本条仍然有效**：空 `meetings` **不**能从这里进入。
+    只有 `build_course_offering_from_missing_schedule_field()` 这一条**窄路径**
+    （要求 Raw row **真的没有** `teachingTimePlaceStr` 这个 key）才允许 `meetings = []`。
     """
 
     if isinstance(meetings, (str, bytes)) or not isinstance(meetings, Sequence):
@@ -237,7 +245,9 @@ def _require_meetings(meetings: Sequence[Meeting]) -> list[Meeting]:
     materials = list(meetings)
     if not materials:
         raise CourseDataNormalizationError(
-            "meetings 至少需要 1 段：一个教学班不表示一个时间段，但也不能没有时间段"
+            "meetings 至少需要 1 段：普通路径不接受空数组；"
+            "来源快照没有可用排课信息时，必须走 "
+            "build_course_offering_from_missing_schedule_field()（要求该字段 key 真的不存在）"
         )
 
     for index, item in enumerate(materials):
@@ -280,20 +290,19 @@ _REQUIRED_RAW_FIELDS = (
 )
 
 
-def build_course_offering(
-    raw: Mapping[str, object],
-    *,
-    meetings: Sequence[Meeting],
-    source: str,
-) -> CourseOffering:
-    """把**已确认字段**的 Raw 映射成一个合法的公共 `CourseOffering`。
+#: 排课字段名（Raw 侧）。**只有**它"属性不存在"时才允许走 empty path（DG-07B）。
+_SCHEDULE_RAW_FIELD = "teachingTimePlaceStr"
 
-    - `meetings` 由调用方传入**已经解析好的** `Meeting` 序列（至少 1 项）；
-    - `source` 由调用方**显式提供**；
-    - 输出 `data_source` **强制为 `real`**；
-    - 返回对象会再由 `CourseOffering`（Pydantic）校验一次。
 
-    ⚠️ 这是 Course Data **内部函数**，不是跨模块公共 API。
+def _build_common_offering_fields(raw: Mapping[str, object], *, source: str) -> dict[str, object]:
+    """**共用**的公共字段构造（不含 `meetings`）。
+
+    ⛔ 这里**只有一份**字段映射：正常 Meeting 路径与 missing-schedule 路径**共用它**，
+    避免两处复制 `courseNum` / `courseName` / `classNumber` / `yearTerm` / `score` /
+    `limitNumber` / `selectedNumber` 的转换逻辑。
+
+    这是 Course Data **内部** private helper：不进 `docs/interfaces/`、不进 Provider / API、
+    不是新的公共 Schema。
     """
 
     if not isinstance(raw, Mapping):
@@ -302,7 +311,6 @@ def build_course_offering(
         )
 
     resolved_source = _require_source(source)
-    resolved_meetings = _require_meetings(meetings)
 
     course_id = _require_text(_require(raw, "courseNum"), "courseNum")
     course_name = _require_text(_require(raw, "courseName"), "courseName")
@@ -322,16 +330,87 @@ def build_course_offering(
     # ⚠️ 派生值：学校接口没有直接提供剩余容量，它是相减得到的。
     remaining_capacity = capacity - selected
 
+    return {
+        "course_id": course_id,
+        "course_name": course_name,
+        "class_id": class_id,
+        "semester": semester,
+        "teacher": _optional_teacher(raw),
+        "credit": credit,
+        "capacity": capacity,
+        "remaining_capacity": remaining_capacity,
+        "source": resolved_source,
+        "data_source": DataSource.REAL,
+    }
+
+
+def build_course_offering(
+    raw: Mapping[str, object],
+    *,
+    meetings: Sequence[Meeting],
+    source: str,
+) -> CourseOffering:
+    """把**已确认字段**的 Raw 映射成一个合法的公共 `CourseOffering`（**普通路径**）。
+
+    - `meetings` 由调用方传入**已经解析好的** `Meeting` 序列（**至少 1 项**）；
+    - `source` 由调用方**显式提供**；
+    - 输出 `data_source` **强制为 `real`**；
+    - 返回对象会再由 `CourseOffering`（Pydantic）校验一次。
+
+    ⚠️ **DG-07B**：本函数**仍然拒绝空 `meetings`**。
+    "来源快照没有可用排课信息"必须走
+    `build_course_offering_from_missing_schedule_field()`，不得从此处放行。
+
+    ⚠️ 这是 Course Data **内部函数**，不是跨模块公共 API。
+    """
+
+    resolved_meetings = _require_meetings(meetings)
+
     return CourseOffering(
-        course_id=course_id,
-        course_name=course_name,
-        class_id=class_id,
-        semester=semester,
-        teacher=_optional_teacher(raw),
-        credit=credit,
+        **_build_common_offering_fields(raw, source=source),  # type: ignore[arg-type]
         meetings=resolved_meetings,
-        capacity=capacity,
-        remaining_capacity=remaining_capacity,
-        source=resolved_source,
-        data_source=DataSource.REAL,
+    )
+
+
+def build_course_offering_from_missing_schedule_field(
+    raw: Mapping[str, object],
+    *,
+    source: str,
+) -> CourseOffering:
+    """**窄语义**路径：仅当 Raw row **真的没有** `teachingTimePlaceStr` 这个 key 时，
+    构造 `meetings = []` 的 `CourseOffering`（DG-07B）。
+
+    ⛔ 语义边界（必须逐条成立）：
+
+    - **key 不存在** → 允许（来源快照没有提供可形成公共 `Meeting` 的排课信息）；
+    - key 存在但 `null` / `""` / `"   "` / 数字 / 对象 / 列表 / 合法文本
+      → **一律拒绝**，必须回普通 parser 路径 —— 那属于
+      "字段存在但解析失败"，与"字段不存在"是**两类不同状态**，DG-07 的核心目的
+      就是保证它们**永远不会被混淆**；
+    - 本函数**不解析**任何排课文本，**不**吞任何 parser / normalization 异常
+      （它根本不调用 parser）。
+
+    字段映射与普通路径**共用** `_build_common_offering_fields()`，
+    因此 `data_source` / `source` / 其它字段语义完全一致。
+
+    ⚠️ 这是 Course Data **内部函数**：不进 `docs/interfaces/`、不进 Provider / API、
+    不是新的公共 Schema。
+    """
+
+    if not isinstance(raw, Mapping):
+        raise CourseDataNormalizationError(
+            f"raw 必须是字段映射，实际是 {type(raw).__name__}"
+        )
+
+    # ⛔ 唯一的准入条件：key **真的不存在**。
+    if _SCHEDULE_RAW_FIELD in raw:
+        # 不回显取值（可能含真实教师 / 教室文本），只说明"该走普通路径"。
+        raise CourseDataNormalizationError(
+            f"Raw row 存在 `{_SCHEDULE_RAW_FIELD}` 字段，不得走 missing-schedule 路径："
+            f"字段存在时必须由 parser 解析，解析失败应整体失败（不回显取值）"
+        )
+
+    return CourseOffering(
+        **_build_common_offering_fields(raw, source=source),  # type: ignore[arg-type]
+        meetings=[],
     )

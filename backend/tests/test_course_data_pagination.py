@@ -501,6 +501,93 @@ def test_page_and_row_order_are_preserved() -> None:
 
 
 # ---------------------------------------------------------------------------
+# DG-07B：缺排课信息的 row 必须被保留、计数、且不破坏 completeness
+# ---------------------------------------------------------------------------
+
+
+def _row_without_schedule(class_number: str) -> dict[str, object]:
+    """人工虚构：一条**真的没有** `teachingTimePlaceStr` 属性的 Raw row。"""
+
+    row = _row(class_number)
+    del row["teachingTimePlaceStr"]
+    assert "teachingTimePlaceStr" not in row
+    return row
+
+
+def test_missing_schedule_row_is_kept_and_counted() -> None:
+    """⛔ 缺排课信息的 row **不得被跳过**：仍计入 `loaded_count`，`meetings == []`。"""
+
+    fetcher = FakePageFetcher(
+        {
+            1: _page(
+                [
+                    _row("6200100120260101"),
+                    _row_without_schedule("6200100120260102"),
+                    _row("6200100120260103"),
+                ],
+                total=3,
+            )
+        }
+    )
+
+    snapshot = _collect(fetcher, page_size=3)
+
+    assert snapshot.loaded_count == 3
+    assert snapshot.reported_total == 3
+    assert snapshot.completeness == "complete"
+    assert [item.class_id for item in snapshot.offerings] == [
+        "6200100120260101",
+        "6200100120260102",
+        "6200100120260103",
+    ]
+    assert [item.meetings for item in snapshot.offerings][1] == []
+    assert [item.meetings for item in snapshot.offerings][0] != []
+
+
+def test_missing_schedule_rows_do_not_break_pagination_or_order_across_pages() -> None:
+    """跨页同样成立：row 顺序不变、计数正常、`partial` 判定不受影响。"""
+
+    fetcher = FakePageFetcher(
+        {
+            1: _page(
+                [_row_without_schedule("6200100120260101"), _row("6200100120260102")],
+                total=5,
+            ),
+            2: _page(
+                [_row("6200100120260103"), _row_without_schedule("6200100120260104")],
+                total=5,
+            ),
+        }
+    )
+
+    snapshot = _collect(fetcher, page_size=2, max_pages=2)
+
+    assert snapshot.loaded_count == 4
+    assert snapshot.reported_total == 5
+    assert snapshot.completeness == "partial"
+    assert [item.class_id for item in snapshot.offerings] == [
+        "6200100120260101",
+        "6200100120260102",
+        "6200100120260103",
+        "6200100120260104",
+    ]
+    assert snapshot.offerings[0].meetings == []
+    assert snapshot.offerings[3].meetings == []
+
+
+def test_present_but_unusable_schedule_still_fails_the_collection() -> None:
+    """⛔ 字段**存在**但不可用（null / 空串 / 畸形）→ 整批失败（不是空 meetings）。"""
+
+    for value in (None, "", "   ", "坏格式"):
+        fetcher = FakePageFetcher(
+            {1: _page([_row("6200100120260101", teachingTimePlaceStr=value)], total=1)}
+        )
+
+        with pytest.raises(CourseDataNormalizationError):
+            _collect(fetcher, page_size=1)
+
+
+# ---------------------------------------------------------------------------
 # 失败传播
 # ---------------------------------------------------------------------------
 

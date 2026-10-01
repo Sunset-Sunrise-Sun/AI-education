@@ -19,6 +19,7 @@ from app.course_data import (
     build_course_offering,
     expand_weeks,
 )
+from app.course_data.normalization import build_course_offering_from_missing_schedule_field
 from app.models.contracts import CourseOffering, DataSource, Meeting
 
 # ---------------------------------------------------------------------------
@@ -265,10 +266,124 @@ def test_selected_greater_than_limit_is_rejected() -> None:
 
 
 def test_empty_meetings_is_rejected() -> None:
+    """⛔ **普通路径**（DG-07B 后仍然）拒绝任意空 `meetings`。
+
+    空数组只有一条窄路径可以产生：`build_course_offering_from_missing_schedule_field()`，
+    且要求 Raw row **真的没有** `teachingTimePlaceStr` 这个 key。
+    """
+
     with pytest.raises(CourseDataNormalizationError) as excinfo:
         _build(meetings=[])
 
     assert "meetings" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# DG-07B：窄语义 missing-schedule 路径（只有 key 真不存在才放行）
+# ---------------------------------------------------------------------------
+
+
+def _build_missing_schedule(raw: dict[str, object] | None = None):
+    return build_course_offering_from_missing_schedule_field(
+        raw if raw is not None else _raw(),
+        source="mock://course-data-normalization-test",
+    )
+
+
+def test_missing_schedule_field_produces_empty_meetings() -> None:
+    """A. raw **不含** `teachingTimePlaceStr` → 窄路径成功，`meetings == []`。"""
+
+    raw = _raw()  # `_raw()` 本身就不含 teachingTimePlaceStr
+    assert "teachingTimePlaceStr" not in raw
+
+    offering = _build_missing_schedule(raw)
+
+    assert offering.meetings == []
+    assert offering.data_source is DataSource.REAL
+    assert offering.source == "mock://course-data-normalization-test"
+
+
+def test_missing_schedule_path_keeps_other_field_mapping_identical() -> None:
+    """窄路径与普通路径的**其它字段映射完全一致**（共用同一份字段构造）。"""
+
+    raw = _raw()
+    empty_path = _build_missing_schedule(raw)
+    normal_path = _build(raw, meetings=[_meeting()])
+
+    for field in (
+        "course_id",
+        "course_name",
+        "class_id",
+        "semester",
+        "teacher",
+        "credit",
+        "capacity",
+        "remaining_capacity",
+        "source",
+        "data_source",
+    ):
+        assert getattr(empty_path, field) == getattr(normal_path, field), field
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "", "   ", 42, 3.5, True, {}, [], {"segment": "x"}],
+    ids=["null", "empty-string", "blank-string", "number", "float", "boolean", "object", "list", "dict"],
+)
+def test_missing_schedule_path_rejects_present_field_whatever_the_value(value: object) -> None:
+    """B–E. **字段存在**（无论取值是什么）→ 窄路径必须拒绝。
+
+    `None` / `""` / `"   "` / 数字 / 对象 / 列表 **一律**不走 empty path；
+    它们属于"字段存在但（可能）无法解析"，必须回普通 parser 路径并整体失败。
+    """
+
+    raw = _raw(teachingTimePlaceStr=value)
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        _build_missing_schedule(raw)
+
+    message = str(excinfo.value)
+    assert "teachingTimePlaceStr" in message
+    # ⛔ 错误信息不回显取值（可能含真实教师 / 教室文本）。
+    if isinstance(value, str) and value.strip():
+        assert value not in message
+
+
+def test_missing_schedule_path_rejects_present_valid_text() -> None:
+    """F. 字段存在且是**合法** schedule 文本 → 也**不得**走 empty path。"""
+
+    raw = _raw(teachingTimePlaceStr="1-8周/星期五/第5-6节/示例教师A/示例环节,")
+
+    with pytest.raises(CourseDataNormalizationError):
+        _build_missing_schedule(raw)
+
+
+@pytest.mark.parametrize("source", ["", "   ", None, 123])
+def test_missing_schedule_path_still_validates_source(source: object) -> None:
+    """窄路径同样要求调用方**显式提供**合法 `source`。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        build_course_offering_from_missing_schedule_field(_raw(), source=source)
+
+
+@pytest.mark.parametrize("missing", ["courseNum", "courseName", "classNumber", "yearTerm", "score"])
+def test_missing_schedule_path_still_requires_base_fields(missing: str) -> None:
+    """窄路径**不放松**基础字段要求：缺基础字段仍失败。"""
+
+    raw = _raw()
+    del raw[missing]
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        _build_missing_schedule(raw)
+
+    assert missing in str(excinfo.value)
+
+
+def test_missing_schedule_path_rejects_non_mapping_raw() -> None:
+    with pytest.raises(CourseDataNormalizationError):
+        build_course_offering_from_missing_schedule_field(  # type: ignore[arg-type]
+            "not-a-mapping", source="mock://course-data-normalization-test"
+        )
 
 
 def test_unparsed_meeting_dict_is_rejected() -> None:
