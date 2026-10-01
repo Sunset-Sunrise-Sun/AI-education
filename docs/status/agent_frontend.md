@@ -345,7 +345,7 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   semester 一致性 / real-only / duplicate key / completeness **全部交由 `OfferingSnapshot`**；
 - 错误信息**不回显** Raw 串或其中任何字段取值；**包内仍零网络**（边界测试自动覆盖新增文件）；
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/` 均未修改；
-  后端 **355 passed / 2 skipped**。
+  后端 **366 passed / 2 skipped**。
 
 ## 已完成
 - 模块边界和依赖接口已定义
