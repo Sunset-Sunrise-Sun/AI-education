@@ -1,19 +1,23 @@
 # Course Data 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C1C：Missing Schedule Correlation Diagnostic**
-> 代码已完成、**Reviewer 修复 3 项已完成**，等待 Reviewer 复核；
-> `OFFERING-002` 已补录**第 1 页真实聚合证据**）
+> 最后更新：2026-10-01（**Phase 2B-2C1C 真实证据同步**：C1C **已由负责人真实运行**，
+> **真实聚合结果已回填**到 `OFFERING-002` / G11 / §4.7.1；
+> 当前 blocker 转为 **G11 业务语义确认**）
 >
 > ⚠️ **准确表述（不得夸大）**：
 > **真实 Course Data 尚未完成**，**尚未取得 complete semester snapshot**。
-> **已完成真实 smoke run + 一次真实结构诊断**（在真正的「**全校开设课程**」独立模块内）：
+> **已完成真实 smoke run + 一次真实结构诊断 + 一次真实相关性诊断**
+> （均在真正的「**全校开设课程**」独立模块内）：
 > **same-origin 请求成功**、**认证不再是当前 blocker**；
 > 第 1 页 **200** 条真实 row（同页 `reported_total = 6892`）中
 > **39 条完全没有 `teachingTimePlaceStr`**、**161 条非空**，其余形态为 0；
 > ⚠️ **39/200 = 19.5% 只描述第 1 页这 200 条样本**，**不代表** `6892` 条整体的比例、
 > **不得外推**；
-> 因此当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**。
-> **缺失字段的业务含义尚未确认** —— 不推测、不写成任何业务结论。
+> C1C 的相关性结果显示：**结构差异集中在排课相关字段**
+> （`timePlaceId` 38/39 缺失 vs 161/161 存在；`weekDay` 38/39 缺失 vs 12/161 缺失），
+> 而 `limitNumber` / `selectedNumber` 在 39 条中**完整存在**；
+> 因此当前 `collect()` 仍**按设计 fail closed**，**尚未生成真实 Capture Bundle**。
+> **G11 的业务语义仍未解决**（结构层取证已收窄）—— 不推测、不写成任何业务结论。
 > 后端 Python 侧仍然**零网络**：没有 endpoint、没有认证处理、**不会自动发起 SYSU 请求**。
 >
 > ⚠️ **导航纠错**：「**选课**」与「**全校开设课程**」是**两个独立模块**；
@@ -33,10 +37,13 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 真实 smoke run（认证 + 第 1 页请求）                 ✅ 已执行（same-origin 成功；认证不再是 blocker）
 结构诊断入口 schedule presence diagnostic（2B-2C1B） ✅ 已完成并**由负责人真实运行**
                                                     （第 1 页 200 条：39 missing / 161 非空 / 其余 0）
-相关性诊断入口 missing schedule correlation（2B-2C1C） ⏳ 代码已完成，等待 Reviewer；
-                                                    真实运行由负责人手动执行，**结果待回填**
+相关性诊断入口 missing schedule correlation（2B-2C1C） ✅ 代码已完成
+                                                    ✅ Reviewer 已批准并 merge
+                                                    ✅ **已由负责人真实运行**
+                                                    ✅ **真实聚合结果已回填**（见 §4.7.1 / 下表）
 真实完整学期程序化采集                              ⏳ 未完成（因缺字段 fail closed 而中止）
 完整 semester snapshot                              ⏳ 未取得
+G11 业务语义确认（下一步，待派单 2B-2C1D）           ⏳ 未开始（结构层取证已完成）
 ```
 
 ### 真实 smoke run 已确认的事实
@@ -54,6 +61,46 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 | 当前 `collect()` 的处置 | **按设计 fail closed**（缺字段即整体失败） |
 | 是否已生成真实 Capture Bundle | ❌ **尚未生成** |
 | 是否已取得 complete semester snapshot | ❌ **尚未取得** |
+
+### C1C 真实相关性诊断结果（已回填）
+
+**出处**：仍为 `OFFERING-002`；**负责人手动执行**
+`diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`（只请求第 1 页一次）。
+`total_rows = 200`；`compared_rows = 200`；`ungrouped_rows = 0`。
+
+| 字段 | `missing` 组（39 条） | `non_empty_string` 组（161 条） |
+|---|---|---|
+| `timePlaceId`（A 类） | `missing 38` / `non_empty_string 1` | `non_empty_string 161` |
+| `limitNumber`（A 类） | `number 39` | `number 161` |
+| `selectedNumber`（A 类） | `number 39` | `number 161` |
+| `weekDay`（B 类） | `missing 38` / `distinct_count 1` | `missing 12` / `distinct_count 49` / `values_suppressed = true` |
+| `openClass`（B 类） | 同一取值 × 39 | **同一取值 × 161（与 missing 组完全相同）** |
+| `teachProgressSubmitState`（B 类） | 2 个分类：38 / 1 | **同一组 2 个分类**：143 / 18 |
+| `courseCategoryName`（B 类） | `distinct_count 3`：12 / 2 / 25 | `distinct_count 5`：68 / 19 / 68 / 3 / 3 |
+| `examMode`（B 类） | 2 个分类：32 / 7 | **同一组 2 个分类**：110 / 51 |
+| `openingUnitName`（B 类） | `distinct_count 11` | `distinct_count 27`（suppressed） |
+
+**可以说的**：
+
+- 39 条缺 `teachingTimePlaceStr` 的记录**并非整条记录普遍残缺**：
+  `limitNumber` / `selectedNumber` 在 39 条中**均为数值型且完整存在**；
+- **结构差异集中在排课相关字段**：`timePlaceId` 38/39 缺失 vs 161/161 存在；
+  `weekDay` 38/39 缺失 vs 12/161 缺失；
+- **`openClass` 两组实际取值完全一致** → 该字段**不能区分两组**；
+- `teachProgressSubmitState` / `examMode` / `courseCategoryName`
+  **均未发现只属于 `missing` 组的独占分类**
+  （`courseCategoryName` 的 3 个分类**全部出现在** present 组，后者另有 2 个）。
+
+**⛔ 不能说的**：
+
+- ⛔ 只有**边际计数、无逐 row 交叉证据** → **不得**写成
+  "39 条中的 38 条**同时**缺 `weekDay` 和 `timePlaceId`"；
+- ⛔ **不登记任何真实 categorical 取值 / 分类名 / 单位名**（`openClass` /
+  `teachProgressSubmitState` / `examMode` 的真实值**一律不落文档**）；
+- ⛔ **不推断业务语义**、⛔ **不声称 G11 resolved**。
+
+> **G11 现状**：**structural evidence substantially narrowed —
+> business semantics still unresolved**（结构层取证已大幅收窄，业务语义仍未解决）。
 
 > ⚠️ **缺失字段的业务含义尚未确认**：现有证据**只**证明"第 1 页存在 39 条这样的 row"，
 > 且说明它**不是单条孤立现象**。
@@ -153,8 +200,9 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 >    （例如 `{ type: "number", value: "0", count: 32 }`）；
 > 4. **`distinct > 20` 时 `values` 全部 suppression**（`values = []`）。
 >
-> ⚠️ **本轮不含任何真实相关性数值**：本入口只是**取证工具**，
-> 真实结果由**负责人手动执行**后回填。**Builder 本轮实际 SYSU 请求数 = 0**。
+> ✅ **真实结果已由负责人手动执行并回填**（见上方「C1C 真实相关性诊断结果」与
+> `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` §4.7.1）；
+> **Builder 本轮实际 SYSU 请求数 = 0**（本轮仅为**文档证据同步**）。
 >
 > ⚠️ 对 `openClass` / `teachProgressSubmitState` / `weekDay` 等字段，
 > 只允许写"**原始值 X 在 missing 组出现 N 次 / 在 non_empty_string 组出现 M 次**"，
@@ -403,15 +451,24 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 当前阻塞
 
-- **真实数据结构阻塞（当前主 blocker）**：真实 smoke run 的第 1 页结构诊断已给出计数 ——
-  **200 条中有 39 条完全没有 `teachingTimePlaceStr`**（161 条非空，其余形态 0）；
-  当前 importer / parser 无法为这样的 row 构造 `meetings`
-  （公共契约要求 `CourseOffering.meetings` `minItems = 1`），
-  因此 `collect()` **按设计 fail closed**；
-  ⛔ **本轮不决定如何修复**，也**不修改**任何 Schema；
-  缺失的**原因 / 缺失 row 的业务类型 / 是否属于有效可选教学班 / 是否应进入 Planner /
-  全学期缺失比例 / 是否需要改契约** 均**待调查**（见缺口报告 **G11**）；
-  ⚠️ **39/200 只描述第 1 页样本，不得外推**；
+- **当前主 blocker = G11 的业务语义确认**（不是继续扩大结构诊断）：
+  - **结构层取证已完成**：第 1 页 200 条中 **39 条完全没有 `teachingTimePlaceStr`**
+    （161 条非空，其余形态 0）；C1C 相关性诊断进一步显示
+    **结构差异集中在排课相关字段**（`timePlaceId` 38/39 缺失 vs 161/161 存在；
+    `weekDay` 38/39 缺失 vs 12/161 缺失），而 `limitNumber` / `selectedNumber`
+    在 39 条中**完整存在**，分类字段**未发现 `missing` 组独占值**
+    （见 §4.7.1；**只有边际计数，无逐 row 交叉证据**）；
+  - **仍未解决**：缺 schedule 字段的**业务原因** / 这些记录的**业务类型** /
+    是否属于**有效可选教学班** / 是否应进入 Planner / **全学期缺失比例** /
+    是否应修改 `CourseOffering` 公共契约；
+  - **下一步应进入业务语义确认**（待 Architecture Lead 派单 2B-2C1D），
+    ⛔ **不继续扩大结构诊断**；
+  - 在语义确认之前，`collect()` 仍 **按设计 fail closed**
+    （公共契约 `CourseOffering.meetings` `minItems = 1`），
+    ⛔ **本轮不决定如何修复**，也**不修改**任何 Schema；
+  - ⚠️ **39/200 只描述第 1 页样本，不得外推**；
+  - ⛔ **不声称 G11 resolved**（**structural evidence substantially narrowed,
+    business semantics still unresolved**）；
 - **真实完整学期程序化采集未完成**：因上述数据阻塞而中止；
   后端 Python 侧仍然**零网络**（没有 endpoint、没有认证处理、不会自动发起请求）；
   ✅ 另：**认证不再是 blocker**（same-origin 请求已在「全校开设课程」模块内成功）；
@@ -434,9 +491,10 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
   本文件**不记录该样本的文件名**）；
 - **`OFFERING-002`** 只登记**汇总事实**（「全校开设课程」独立模块内 same-origin 请求成功、
   第 1 页响应成功进入采集器、第 1 页 `total_rows = 200` 且
-  `missing = 39` / `non_empty_string = 161` / 其余形态 0；⚠️ **仅第 1 页，不得外推**）；
+  `missing = 39` / `non_empty_string = 161` / 其余形态 0，以及 **C1C 两组字段的聚合分布**；
+  ⚠️ **仅第 1 页，不得外推**）；
   **不含任何 Raw row**、不含课程 / 教学班信息、教师、教室、内部 ID、`readObj`、
-  不含任何逐行信息与字段取值；
+  不含任何逐行信息，**也不含任何真实 categorical 取值 / 分类名 / 单位名**；
   **Raw 响应 / Capture Bundle 均未进入 Git**；
 - **本轮未生成任何真实 Capture Bundle**：仓库内**不含**真实采集产物；
   本地若产生，也属 **Real Sanitized Capture**，**不得进入 Git**；
@@ -448,28 +506,25 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 - ✅ **1 页结构诊断已完成**（2B-2C1B，由**负责人手动执行**）：
   `diagnoseSchedulePresence({ semester: "2026-1" })` 已返回第 1 页聚合计数
   （`total_rows = 200`，`missing = 39`，`non_empty_string = 161`，其余形态 0）；
-- **负责人手动 1 页相关性诊断**（Reviewer 合并后，2B-2C1C）：同样在本人已登录、已有权限的
-  「**全校开设课程**」模块页面加载 `tools/sysu_course_offering_collector.js`，显式调用
-  `await window.XuehangSysuCollector.diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`；
-  它**只请求第 1 页一次**，返回 `missing` 组与 `non_empty_string` 组的**字段聚合结构对照**：
-  **不返回** Raw row / 逐行数据 / 课程与教学班标识 / 教师 / 教室 / `teachingTimePlaceStr` 原文；
-  **Structural-only 字段不返回具体值**；
-  **Categorical 字段在 `distinct <= 20` 时返回聚合后的原始标量分类值 + `count`**，
-  `distinct > 20` 时 **`values` 全部 suppression**；
-  ⛔ **不产出数据文件**；
-  用于回答"缺字段的 row 是否存在**一致的结构特征**"，
-  ⛔ **不回答**它们的业务含义；
-- **G11 待调查项**（见 `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`）：
-  缺失**原因 / 缺失 row 的业务类型 / 是否属于有效可选教学班 / 是否应进入 Planner /
-  全学期缺失比例 / 是否需要改契约** 均未确认；
-  若证据表明现有契约覆盖不了真实数据，**下一轮按 `/AGENTS.md` 第 4 节提交
-  `【接口变更请求】`** —— ⛔ **本轮不预设方案、不改 Schema**；
+- ✅ **1 页相关性诊断已完成**（2B-2C1C，由**负责人手动执行**）：
+  `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })` 的真实聚合结果
+  **已回填**（见本文「C1C 真实相关性诊断结果」与缺口报告 §4.7.1）；
+  ⛔ **不再需要重复运行**这两个诊断；
+- **下一步：Phase 2B-2C1D — G11 Business Semantics Verification**
+  （**待 Architecture Lead 下达人工验证步骤**，本模块**不自行设计或实施**）；
+  目标是把 G11 从"结构层已收窄"推进到"**业务语义确认**"，
+  ⛔ **不是**继续扩大结构诊断；
+- **G11 仍未解决**（见 `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`）：
+  缺失**业务原因 / 这些记录的业务类型 / 是否属于有效可选教学班 / 是否应进入 Planner /
+  全学期缺失比例 / 是否应修改 `CourseOffering` 公共契约** 均未确认；
+  若后续证据表明现有契约覆盖不了真实数据，**下一轮按 `/AGENTS.md` 第 4 节提交
+  `【接口变更请求】`** —— ⛔ **本轮不预设方案、不改 Schema、不自行提出接口变更**；
 - 采集器与 Capture Bridge 目前**不接入** Integration / Planner / API / 前端产品 UI
   （真实 Capture Bundle 的导入 UI 属后续步骤）；
 - `max_pages` 是**内部安全阀**，不是学校侧参数；
   只能取得部分范围时**必须显式记录 completeness**，**不得宣称 complete**（C9）；
 - **完整 semester snapshot**：目标为 **2026-1**，取得后以 `OfferingSnapshot` 表达，
   并由 `SnapshotCourseDataProvider` 供 Integration 消费；
-- ⛔ 上述诊断与后续导入 UI 都属于后续任务书范围，**本轮不得自行开始**；
-  ⛔ **本轮 Builder 未登录 SYSU、未发任何真实请求、未生成真实数据**，
+- ⛔ 上述后续步骤（含 2B-2C1D）都属于后续任务书范围，**本轮不得自行开始**；
+  ⛔ **本轮 Builder 未登录 SYSU、未发任何真实请求、未生成真实数据、未修改任何代码**，
   也**不**把 `partial` snapshot 接入 Integration。

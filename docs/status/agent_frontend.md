@@ -1,8 +1,9 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C1C Missing Schedule Correlation Diagnostic**
-> 代码已完成、**Reviewer 修复 3 项已完成**，等待 Reviewer 复核；
-> `OFFERING-002` 已补录**第 1 页真实聚合证据**）
+> 最后更新：2026-10-01（**Phase 2B-2C1C 真实证据同步**：浏览器相关性诊断
+> **已由负责人真实执行完成**，**真实聚合结果已回填**；
+> 当前人工下一步为 **Phase 2B-2C1D — G11 Business Semantics Verification**
+> （**待 Architecture Lead 下达人工验证步骤**））
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应、私密脱敏样本与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
@@ -11,13 +12,14 @@
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
 > Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
 > 零网络分页采集核心、浏览器端授权采集器代码、Capture Bridge、结构诊断入口
-> 与相关性诊断入口**均已完成；
-> **已完成一次真实 smoke run + 一次真实结构诊断**（「全校开设课程」独立模块内
-> **same-origin 成功**，**认证不再是 blocker**）；
+> 与相关性诊断入口**均已完成，且**两个浏览器诊断均已在真实环境执行完成**；
+> **已完成一次真实 smoke run + 一次真实结构诊断 + 一次真实相关性诊断**
+> （「全校开设课程」独立模块内 **same-origin 成功**，**认证不再是 blocker**）；
 > 第 1 页 **200** 条真实 row 中 **39 条完全没有 `teachingTimePlaceStr`**、
 > **161 条非空**，其余形态 0（⚠️ **39/200 只描述第 1 页样本，不得外推**），
+> C1C 显示**结构差异集中在排课相关字段**（`limitNumber` / `selectedNumber` 完整存在），
 > 当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**、
-> **尚未取得 complete semester snapshot**；**缺失字段的业务含义尚未确认**；
+> **尚未取得 complete semester snapshot**；**G11 的业务语义仍未解决**；
 > **production Curriculum / Planner provider 仍未接入**，
 > 因此**没有**任何一条真实数据链路端到端跑通，**也未新增任何 API**。
 >
@@ -27,7 +29,8 @@
 
 ## 当前阶段
 
-**Phase 2B-2C1C 代码已完成 → 下一步由负责人手动 1 页相关性诊断**
+**Phase 2B-2C1C 已真实运行完成 → 下一步 Phase 2B-2C1D — G11 Business Semantics Verification
+（待 Architecture Lead 下达人工验证步骤）**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -41,10 +44,13 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                    →  ✅ SYSU 分页参数人工验证完成（first_page_no=1、单页上限 200、前两页 total=6892）
                    →  Phase 2B-2C1A ✅ 浏览器端授权采集器代码 + Capture Bridge
                    →  ✅ 真实 smoke run：same-origin 成功、认证不再是 blocker
-                   →  Phase 2B-2C1B ✅ 结构诊断入口（只取证）+ 负责人真实运行
+                   →  Phase 2B-2C1B ✅ 结构诊断入口 + 负责人真实运行
                       第 1 页 200 条：39 missing / 161 非空 / 其余 0（仅第 1 页，不得外推）
-                   →  Phase 2B-2C1C ✅ 相关性诊断入口（missing vs non_empty 字段聚合对照，只取证）
-                   →  【下一步】负责人手动运行相关性诊断 → 依据结果走正式【接口变更请求】
+                   →  Phase 2B-2C1C ✅ 相关性诊断入口 + Reviewer 批准并 merge
+                      + 负责人真实运行 + 真实聚合结果已回填
+                      （结构差异集中在排课相关字段；业务语义仍未解决）
+                   →  【下一步】Phase 2B-2C1D — G11 Business Semantics Verification
+                      （**待 Architecture Lead 下达人工验证步骤**，本模块不自行设计）
                    →  之后：真实 Capture 导入 UI → Phase 2B Integration 接真实 Provider
 ```
 
@@ -449,8 +455,8 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 |---|---|
 | `tools/sysu_course_offering_collector.js` | 新增 `diagnoseMissingScheduleCorrelation({ semester })`；字段级 summarizer `classifySchedulePresence` / `summarizeFieldShape` / `summarizeCategoricalValues` 为**内部实现，不暴露** |
 | `backend/tests/test_sysu_collector_guard.py` | 新增 C1C 静态守卫（15 条） |
-| `docs/data/DATA_SOURCE_REGISTRY.md` | `OFFERING-002` 补录第 1 页真实聚合证据（`missing 39` / `non_empty_string 161`，其余 0；**仅第 1 页**） |
-| `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` | G11 / §4.7 补录聚合证据 + 未确认清单 |
+| `docs/data/DATA_SOURCE_REGISTRY.md` | `OFFERING-002` 补录第 1 页真实聚合证据（`missing 39` / `non_empty_string 161`，其余 0；**仅第 1 页**）与 **C1C 相关性聚合结果** |
+| `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` | G11 / §4.7 补录聚合证据 + 未确认清单；**§4.7.1** 记录 C1C 真实相关性诊断结果 |
 
 **唯一目标**：在第 1 页同一份样本内，对 `missing` 组与 `non_empty_string` 组做
 **已有真实字段**的**聚合结构对照**，判断"缺字段的 row 是否表现出一致的结构特征"。
@@ -488,8 +494,20 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - ⛔ **本轮不改契约**：`CourseOffering.meetings` `minItems = 1` 保持不变；**G11 只登记、不裁决**；
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/`、
   `frontend/`、`backend/app/course_data/*.py` 均未修改；后端 **539 passed / 2 skipped**；
-- ⚠️ **本轮不含任何真实相关性数值**：真实结果由**负责人手动执行**后回填；
-  **Builder 实际 SYSU 请求数：0**。
+- ✅ **已在真实环境执行完成**（**负责人手动执行**，Builder 未发起任何请求）：
+  - `total_rows = 200`、`compared_rows = 200`、`ungrouped_rows = 0`；
+  - **结构差异集中在排课相关字段**：`timePlaceId` 在 `missing` 组 38/39 缺失、
+    在 `non_empty_string` 组 161/161 存在；`weekDay` 38/39 缺失 vs 12/161 缺失；
+  - `limitNumber` / `selectedNumber` 在 39 条中**完整存在**；
+  - `openClass` 两组**实际取值完全一致**（不能区分两组）；
+  - `teachProgressSubmitState` / `examMode` 两组**共享同一分类集合**（仅分布不同）；
+    `courseCategoryName` 的 3 个分类**全部出现在** present 组；
+  - ⚠️ **只有边际计数、无逐 row 交叉证据** → ⛔ **不得**写成
+    "38 条**同时**缺 `weekDay` 和 `timePlaceId`"；
+  - ⛔ **不登记任何真实 categorical 取值 / 分类名 / 单位名**；⛔ **不推断业务语义**；
+  - **G11**：**structural evidence substantially narrowed, business semantics still unresolved**
+    —— ⛔ **不声称 G11 resolved**；
+- **Builder 实际 SYSU 请求数：0**（本轮为**文档证据同步**）。
 
 ## Phase 2B-2C1A 结果（SYSU Authorized Browser Transport + Capture Bridge）
 
@@ -683,18 +701,14 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **等待 Reviewer 复核 Phase 2B-2C1C 的 3 项修复**（暴露面收口 / 严格白名单参数 /
-  返回口径表述；以及相关性诊断本身：是否只请求第 1 页一次、是否未产出 bundle、
-  是否未改动 `collect()` 与 2C1B、是否正确区分 A 类"只统计存在性/类型"与
-  B 类"有限分类值计数"、是否对高基数整体 suppression）
-- **合并后唯一的人工下一步**：**Reviewer 合并 Phase 2B-2C1C 之后**，
-  由**负责人手动执行一次** `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`，
-  依据第 1 页真实相关性结果决定是否走正式【接口变更请求】
-  （⛔ 本轮不预设方案、不改 Schema）；
-  ⛔ **不再要求重复运行 2B-2C1B 的 1 页结构诊断** —— 该诊断**已由负责人真实运行完成**，
-  结果已登记：第 1 页 `total_rows = 200`（同页 `reported_total = 6892`）、
-  `missing = 39`、`non_empty_string = 161`、`null` / `empty_string` / `other_type` 均为 0
-  （⚠️ **仅第 1 页，不得外推**）；
+- **浏览器侧诊断已全部真实执行完成**（2B-2C1B 结构诊断 + 2B-2C1C 相关性诊断，
+  均由**负责人手动执行**）：⛔ **不再需要重复运行任何一个诊断**；
+  两者的真实聚合结果均已登记（见 `docs/status/course_data.md` 与
+  `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` §4.7 / §4.7.1）；
+- **当前人工下一步：Phase 2B-2C1D — G11 Business Semantics Verification**
+  —— ⛔ **待 Architecture Lead 下达人工验证步骤**；
+  **本模块不自行设计、不自行实施 C1D**；
+  目标是回到**业务语义确认**（而不是继续扩大结构诊断）；
 - **真实 Capture Bundle 的导入 UI**（前端产品链路）属**后续步骤**，本轮不做；
 - **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
   `max_pages` 是**内部安全阀**，不是学校侧参数；
