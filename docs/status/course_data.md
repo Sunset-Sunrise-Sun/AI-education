@@ -1,12 +1,14 @@
 # Course Data 当前状态
 
-> 最后更新：2026-09-30（**Phase 2B-2C0：Course Data Pagination Core** 完成，等待 Reviewer）
+> 最后更新：2026-10-01（**Phase 2B-2C0：Course Data Pagination Core** 完成，等待 Reviewer）
 >
 > ⚠️ **准确表述（不得夸大）**：
-> **真实 Course Data 尚未完成**，**2026-1 全量 snapshot 尚未取得**，**未发起任何 SYSU 请求**。
+> **真实 Course Data 尚未完成**，**2026-1 全量 snapshot 尚未取得**。
+> **Phase 2B-2C0 Pagination Core 代码仍为零网络实现**，**没有实现、也不会自动发起 SYSU 请求**；
+> **负责人已在本人正常登录、已有权限的范围内完成少量人工分页参数验证**（见下）。
 > 本轮完成的是**零网络的分页采集核心**（把多页 Raw 逐页标准化 + 依据证据链判定 completeness），
 > `fetch_page` **仍由外部提供**（本轮只由测试 Fake 提供）。
-> **真实网络 Transport（登录 / 分页 / 请求规模确认）属于 Phase 2B-2C1，尚未实现。**
+> **真实网络 Transport（登录 / 授权导入 / 请求规模确认）属于 Phase 2B-2C1，尚未实现。**
 
 ## 阶段状态
 
@@ -201,10 +203,10 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 ## 当前阻塞
 
 - **真实网络 Transport 尚未实现**（Phase 2B-2C1）：还没有"用户明确触发授权导入"的网络通道；
-  本轮只做到**零网络**的分页采集核心（`fetch_page` 由外部提供）；
-- **完整 semester snapshot 未取得**：当前只有 D5 小规模侦察 + 私密脱敏样本
-  + 已验证的**前两页**分页参数；
-  **不是**完整快照；**本轮未发起任何 SYSU 请求**；
+  Phase 2B-2C0 的分页采集核心是**零网络实现**，**没有实现、也不会自动发起 SYSU 请求**
+  （`fetch_page` 由外部提供）；
+- **完整 semester snapshot 未取得**：当前只有 D5 小规模侦察、私密脱敏样本
+  和**前两页人工分页参数验证**，**尚未进行程序化完整学期采集**，因此**不是**完整 snapshot；
 - ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（本阶段限制）；
 - ⛔ **`weekDay → weekday` 与 `openingSchoolName → campus` 仍然不做**（C11 待确认项）：
   `weekday` 一律来自 segment 自身，`campus` 只来自 segment 的 location 字段，

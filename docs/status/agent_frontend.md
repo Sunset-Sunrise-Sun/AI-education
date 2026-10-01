@@ -1,6 +1,6 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-09-30（**Phase 2B-2C0 Course Data Pagination Core** 完成，等待 Reviewer）
+> 最后更新：2026-10-01（**Phase 2B-2C0 Course Data Pagination Core** 完成，等待 Reviewer）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应与私密脱敏样本均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
