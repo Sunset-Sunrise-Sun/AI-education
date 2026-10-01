@@ -736,3 +736,96 @@
 - 下一步：等待 Reviewer 验收 **Data Gate-1**，随后由**负责人逐项裁决 DG-01 – DG-06**，
   并按 `DATA_GATE_DECISIONS.md` §12 的 **C1 – C11** 判定是否通过 Data Gate。
   ⚠️ **裁决前不得实施任何变更**；**不 merge**，Phase 2B Integration 保持暂停编码。
+
+---
+
+### 2026-09-30 - Data Gate-1 Reviewer 修复 + 架构裁决落档（docs-only）
+- 本次目标：把 **Architecture Lead 的六项架构裁决**写回 Data Gate 文档，
+  并修正 Reviewer 指出的 **3 处问题**。**不新建任务分支、不进入 Data Gate-2、
+  不修改 Schema / Interface / 代码。**
+- 起点：同一分支 `docs/data-gate-architecture`，head `c7556c81cded8ccc05b0b7182ba0629f031f66b9`。
+- **一、六项裁决全部落档**（新增「架构裁决总表」+ 每项 DG 后附「裁决」块）：
+  - **DG-01 = APPROVED WITH MODIFICATION**：采用 **`CourseOffering` 1 — N `Meeting`**
+    （嵌套 segment 数组方案 A）；**Data Gate-2 正式修改 `course_offering.schema.json`**；
+    **方案 B / C / D 不再作为待选方案**，改为**"已评估但驳回"**记录；
+    meeting 的 MVP 排课字段 = `weekday` / `start_section` / `end_section` / `weeks[]` /
+    `campus` / `classroom`；**教学班级 `teacher` MVP 暂保留**；
+    明确这是**有意的 breaking contract migration**（"现在还没有真实联调，正是该修的时候；
+    不能为了旧 Mock 保留一个错误的数据模型"）。新增 **§6.8 目标结构**（结构已锁定）。
+  - **DG-02 = DEFER PUBLIC CONTRACT**：概念成立，**MVP 不新增** `completed_course.schema.json`；
+    先作为 **Curriculum 内部规范化对象**；真实 D4 Sanitized Sample **可由负责人经非公开位置
+    交给 Curriculum 成员**；Curriculum 对外**仍只输出 `MakeupTask[]`**。
+  - **DG-03 = APPROVE CONCEPT, REUSE EXISTING CONTRACT**：**不新增** `CurrentEnrollment` Schema；
+    Planner 的 **`current_schedule` 直接使用现有公共类型 `CourseOffering[]`**，
+    语义 = **学生已选中的教学班子集**；必须在接口文档中与"学校全部供给"区分；
+    ⛔ **不允许用 `Preference.avoid_times[]` 冒充当前课表**（原"降级替代方案"**被驳回**）。
+  - **DG-04 = DEFER PUBLIC CONTRACT**：概念边界成立，**MVP 暂作为 Curriculum 内部模型**，
+    **不新增两个公共 Schema**；同时明确 `Course.course_type` / `Course.recommended_semester`
+    是**现有兼容字段**，**不能被解释为课程全局固有属性**；**跨学期区间**仍由
+    **Curriculum 内部结构**保留，现有 `recommended_semester` 不能无损表示。
+  - **DG-05 = NO NEW PUBLIC CONTRACT FOR MVP**：**不新增** `DependencyGraph`、
+    **不新增** `priority` 字段、**不新增** `PriorityResult`。
+  - **DG-06 = APPROVED**：下一阶段允许修正 `docs/interfaces/planner.md`，
+    并根据需要同步 `docs/interfaces/curriculum.md`；**本轮仍然不改 interfaces**。
+- **二、Reviewer 指出的 3 处问题已修正**：
+  1. **教师证据判断错误已更正**：删除原 §6.4 的结论
+     "**未观察到 segment 级教师字段，因此没有证据表明教师有 meeting-level 语义**" ——
+     该说法**不成立**。真实 D5 的 `teachingTimePlaceStr` **本身就是按 segment 组织的、
+     segment 项中包含教师信息**，且**已有样本表明 segment 与教师存在关联**。
+     改为：**meeting-level teacher association = 已知的真实语义**；
+     但**架构裁决为 Planner MVP 不依赖它**，因此**meeting 最小公共字段不纳入教师**，
+     顶层 `teacher` 暂作教学班汇总保留，并登记为
+     **known deferred representation gap（已知但暂缓的表达损失）**，
+     **而不是"无证据"**。
+  2. **DG-05 越界表述已改精确**（新增 **§7.3.1 权威边界**）：
+     原文"依赖图的构建（闭包 / 拓扑序）属 Planner 内部实现"改为三段式 ——
+     ```text
+     Curriculum：负责认定 / 产出 authoritative dependency edges
+     Planner：可以把已经收到的 prerequisites[] 转换成本地 adjacency / topological
+              representation 供确定性求解使用
+     Planner：不得新增、猜测、重写任何 prerequisite edge
+     ```
+     并补充：真实来源无法提供 prerequisite 时**标记未知 / 待人工确认，不得自动补齐**；
+     无正式 priority 时 **Planner 不得自行生成 priority**。
+  3. **通过条件计数已统一为 11 条**：`DATA_GATE_DECISIONS.md` 变更记录与
+     `docs/status/agent_frontend.md` 中误写的"**12 条 Data Gate 通过条件**"
+     更正为 **11 条（C1–C11）**。
+     （注：`docs/worklogs/agent_frontend.md` 第 232 行的"登记 12 条中山大学公开官方来源"
+     是**另一件事**（公开来源条数），**未改动**。）
+- **三、文档结构同步更新**：
+  - `DATA_GATE_DECISIONS.md`：文件状态由"草案（DRAFT）"改为
+    "**Architecture Lead 已完成 DG-01 – DG-06 架构裁决；等待 Reviewer 最终复验；公共契约尚未实施**"；
+    三条红线改为"契约实施统一在 Data Gate-2 / 不自行增删字段 / 未经授权不得提前实施"；
+    **§9 最小接口变更集合重写** —— **进入 Data Gate-2 实施的只有 DG-01 与 DG-06 两项**，
+    DG-02 / DG-03 / DG-04 / DG-05 列入"**不产生公共契约变更**"表；
+    §3 / §4 / §8 各实体的"当前是否公共契约 / 处置"列补上裁决后形态；
+    §5.2 私有数据表补"裁决后的公共表达"列；§7.2 / §7.4 补裁决结论；
+    §10 新增 **10.2 裁决确认**；§11.4 更新（DG-01 已裁决）；**§12 增加逐条"当前状态"列**；
+    §13 标题改为「接口变更请求**与裁决**」并保留原始请求文本以便追溯；§14、§15 同步。
+  - `docs/status/agent_frontend.md`：阶段图加入 **Data Gate-1 ✅ 架构裁决落档** 与
+    **Data Gate-2** 一环；实体边界表增"裁决后落地形态"列；DG 表重写为**裁决结果**；
+    新增 3 处修复说明；「已完成」新增本轮条目；「当前阻塞」改写 G9 与 DG 状态，
+    新增 **known deferred representation gap**；「下一步」改为等待 Reviewer 复验 →
+    **Data Gate-2 实施 DG-01 / DG-06**。
+  - `docs/data/MEMBER_DATA_HANDOFF.md`（**因 DG-02 / DG-03 / DG-04 / DG-05 直接影响而最小同步**）：
+    §2.2 三行数据补裁决后的交付口径；§6.2 / §6.3 改为 **DG-05 已裁决**的准确边界
+    （Planner 只能做本地 adjacency / topology，不得新增 / 猜测 / 重写 edge）；
+    §11 当前状态更新。**明确新增一句**：
+    **「裁决允许按需交付」≠「已经交付」** —— **逐行真实数据交接次数仍为 0**。
+- 修改文件：
+  - `docs/data/DATA_GATE_DECISIONS.md`
+  - `docs/status/agent_frontend.md`
+  - `docs/data/MEMBER_DATA_HANDOFF.md`（受裁决直接影响，最小修改）
+  - 本文件（**仅追加**）
+- 测试：docs-only，未改动任何代码，未复跑前后端
+- 公共接口是否变化：**否**（只是落档裁决，契约实施在 Data Gate-2）
+- **未做**：未修改 `/schemas/`、`/docs/interfaces/`、`AGENTS.md`、`backend/`、`frontend/`、`mock_data/`；
+  未写 parser / crawler / Adapter / Normalizer / `CourseDataProvider` / Integration；
+  未建数据库；**未调用 SYSU 接口（本轮零请求）**；**未提前实施已裁决的变更**；
+  **未自行进入 Data Gate-2**
+- 备注：`REAL_TO_SCHEMA_GAP_REPORT.md` 中我**上一轮**加入的 Data Gate 引用仍写着
+  "（**草案，未经批准**）"，现随裁决**已不准确**；但该文件**不在本轮允许修改范围内**，
+  故**本次未改**，作为**待同步的文档一致性问题**上报，不自行扩大修改范围。
+- 下一步：等待 Reviewer 最终复验。复验通过后由负责人决定是否发出 **Data Gate-2 任务书**
+  （实施 DG-01 契约变更与 DG-06 接口文档修正，并同步 Mock / 后端自检 / 前端类型等连带范围）。
+  ⚠️ **不 merge，不进入 Data Gate-2**，Phase 2B Integration 保持暂停编码。

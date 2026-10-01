@@ -1,11 +1,11 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-09-30（**Data Gate-1：架构决策草案整理**完成，等待 Reviewer）
+> 最后更新：2026-09-30（**Data Gate-1 Reviewer 修复 + 架构裁决落档**完成，等待 Reviewer 最终复验）
 > 数据状态：**核心业务数据仍全部为 Mock**；已取得 Case A 两份 **2025 级真实培养方案**、
 > **D4 已修课程脱敏样本** 与 **D5 教学班侦察样本**（均为认证来源），
 > 但**原始材料、逐行记录与 Raw 响应均不进入 public Git**
-> 契约状态：**`/schemas/` 与 `/docs/interfaces/` 本轮仍未修改**；
-> `DATA_GATE_DECISIONS.md` 中的 **DG-01 – DG-06 全部是草案，尚未批准**
+> 裁决状态：**Architecture Lead 已完成 DG-01 – DG-06 裁决**（见 `docs/data/DATA_GATE_DECISIONS.md`）；
+> **公共契约尚未实施** —— `/schemas/` 与 `/docs/interfaces/` 仍未修改
 
 ## 当前阶段
 
@@ -14,11 +14,12 @@
 ```text
 2B-0A ✅ 数据规划  →  2B-0B ✅ 公开政策 / 培养方案  →  2B-0B+ ✅ 认证来源培养方案
                    →  2B-0C ✅ 已修课程最小脱敏样本  →  2B-0D ✅ 教学班技术侦察
-                   →  Data Gate-1 ← 本轮（架构决策草案：实体边界 + DG-01–DG-06）
-                   →  负责人裁决  →  恢复 Phase 2B Integration / Orchestrator
+                   →  Data Gate-1 ✅ 架构决策草案 + 架构裁决落档
+                   →  Data Gate-2（实施 DG-01 契约变更 + DG-06 文档修正）
+                   →  恢复 Phase 2B Integration / Orchestrator
 ```
 
-- **Phase 2B（Integration / Orchestrator 集成骨架）暂停编码**，待真实样本通过 **数据 Gate** 后恢复；
+- **Phase 2B（Integration / Orchestrator 集成骨架）暂停编码**，待 **Data Gate** 通过后恢复；
   Phase 1 与 Phase 2A 成果不受影响。
 
 ## 2B-0D 侦察结果（Case A：2025级 遥感科学与技术 → 网络空间安全）
@@ -77,36 +78,41 @@
 > 现由**认证来源** `CURR-OLD-003` / `CURR-NEW-004` 补齐**总体证据**；
 > 本轮**没有**用旧版本、白皮书或研究生方案顶替。
 
-## Data Gate-1 本轮结果（架构决策草案）
+## Data Gate-1 结果（架构决策草案 + 架构裁决落档）
 
-新增 `docs/data/DATA_GATE_DECISIONS.md`（**草案，未经批准**）。本轮**不改代码、不改契约**。
+新增 `docs/data/DATA_GATE_DECISIONS.md`。**Architecture Lead 已完成 DG-01 – DG-06 裁决**；
+**公共契约尚未实施** —— 本轮**不改代码、不改契约**。
 
 **实体边界（7 个概念）**：
 
-| 实体 | 表示 | 关键红线 |
-|---|---|---|
-| `Course` | 课程基础身份 / 基础属性 | **不承担**学生修读结果，**不承担**培养方案上下文的"专必 / 专选" |
-| `CurriculumVersion` | 某专业 / 年级 / 版本的一份培养方案 | 方案级总量与适用年级无处承载（G1） |
-| `CurriculumCourse` | 某门 `Course` 在某方案中的**要求** | 承载 `course_type` / 推荐学期 / **课程分组** / 先修 |
-| `CompletedCourse` | 某学生**已经修过**某门课的事实 | **`semester` / `passed` 绝不能塞回 `Course`** |
-| `CurrentEnrollment` | 学生**当前已选 / 在读**的教学班 | 必须与 `CompletedCourse` / `CourseOffering` / `Preference` 分开；Planner 冲突检测需要它 |
-| `CourseOffering` | 某学期的一个教学班（**供给**） | 不等于"学生已选" |
-| `ScheduleSegment` / `Meeting` | 教学班内**一段**上课时间 / 地点 | `CourseOffering` 1 — N `ScheduleSegment` |
+| 实体 | 表示 | 关键红线 | 裁决后落地形态 |
+|---|---|---|---|
+| `Course` | 课程基础身份 / 基础属性 | **不承担**学生修读结果，**不承担**培养方案上下文的"专必 / 专选" | 保持公共契约 |
+| `CurriculumVersion` | 某专业 / 年级 / 版本的一份培养方案 | 方案级总量与适用年级无处承载（G1） | **Curriculum 内部**（DG-04） |
+| `CurriculumCourse` | 某门 `Course` 在某方案中的**要求** | 承载 `course_type` / 推荐学期 / **课程分组** / 先修 | **Curriculum 内部**（DG-04） |
+| `CompletedCourse` | 某学生**已经修过**某门课的事实 | **`semester` / `passed` 绝不能塞回 `Course`** | **Curriculum 内部规范化对象**（DG-02） |
+| `CurrentEnrollment` | 学生**当前已选 / 在读**的教学班 | 必须与 `CompletedCourse` / `CourseOffering` / `Preference` 分开；Planner 冲突检测需要它 | **不新增 Schema**；`current_schedule` 复用 `CourseOffering[]`（DG-03） |
+| `CourseOffering` | 某学期的一个教学班（**供给**） | 不等于"学生已选" | **改为承载 `meetings[]`**（DG-01） |
+| `ScheduleSegment` / `Meeting` | 教学班内**一段**上课时间 / 地点 | `CourseOffering` 1 — N `Meeting` | **进入公共契约**（DG-01） |
 
-**核心裁决草案（DG-01 – DG-06，全部待负责人裁决）**：
+**六项裁决（Architecture Lead，2026-09-30）**：
 
-| 编号 | 主题 | 要点 |
+| 编号 | 主题 | 裁决 |
 |---|---|---|
-| **DG-01** | `CourseOffering` multi-segment（**G9，本轮最重要**） | 给出概念关系、6 项 segment 量、`teacher` 层级结论与 **4 个候选方案**；**明确禁止**"只保存第一段"与"拆成多个可独立选择的 `CourseOffering`" |
-| **DG-02** | `CompletedCourse` | 建议正式化"学生修读事实"公共对象；**同时列出"作为 Curriculum 模块内部输入、不进公共契约"这一可行替代方案** |
-| **DG-03** | `CurrentEnrollment` | 建议独立对象；**替代方案** = 用现有 `Preference.avoid_times[]` 降级近似（语义不足，需裁决） |
-| **DG-04** | `CurriculumVersion` / `CurriculumCourse` | 建议引入；**兼容 / 迁移策略与 `Course.course_type` / `recommended_semester` 的处置待裁决** |
-| **DG-05** | Curriculum → Planner 依赖 / 优先级 | **倾向不新增 `DependencyGraph`**（`MakeupTask.prerequisites[]` 可能已足够）；`priority` 只提方向，**字段名 / 类型 / 取值域 / 枚举一律待裁决** |
-| **DG-06** | `planner.md` 与 AGENTS 职责冲突 | `docs/interfaces/planner.md` 把"课程依赖图 / 补修优先级与风险"写成 Planner 职责，**与 `/AGENTS.md` 第 5 节冲突** → 登记为**接口文档债务**，本轮**不修改该文件** |
+| **DG-01** | `CourseOffering` multi-segment（**G9，最重要**） | **APPROVED WITH MODIFICATION** —— 采用**嵌套 `meetings[]`（方案 A）**；`CourseOffering` 1 — N `Meeting`；每段 = `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom`；`teacher` 暂留**教学班级**（汇总 / 展示）；**方案 B / C / D 转为"已评估但驳回"**；**Data Gate-2 正式改契约**；仍**明确禁止**"只保存第一段"与"拆成多个可独立选择的 `CourseOffering`" |
+| **DG-02** | `CompletedCourse` | **DEFER PUBLIC CONTRACT** —— 概念成立，**MVP 不新增公共 Schema**，作为 **Curriculum 内部规范化对象**；D4 Sanitized Sample 由负责人经**非公开位置**交 Curriculum；对外**仍只输出 `MakeupTask[]`** |
+| **DG-03** | `CurrentEnrollment` | **APPROVE CONCEPT, REUSE EXISTING CONTRACT** —— **不新增 Schema**；Planner 的 `current_schedule` **直接使用 `CourseOffering[]`**，语义 = 学生已选中的教学班子集；⛔ **不得用 `Preference.avoid_times[]` 冒充当前课表** |
+| **DG-04** | `CurriculumVersion` / `CurriculumCourse` | **DEFER PUBLIC CONTRACT** —— **MVP 暂留 Curriculum 内部模型**，不新增两个公共 Schema；`Course.course_type` / `recommended_semester` 是**现有兼容字段**，**不得被解释为课程全局固有属性**；跨学期区间由 Curriculum 内部结构保留 |
+| **DG-05** | dependency / priority | **NO NEW PUBLIC CONTRACT FOR MVP** —— 不新增 `DependencyGraph` / `priority` / `PriorityResult`；**Curriculum 认定并产出 dependency edges**，Planner 只能把已收到的 `prerequisites[]` 转成**本地** adjacency / topology，**不得新增 / 猜测 / 重写 edge**；**无正式 priority 时 Planner 不得自行生成优先级** |
+| **DG-06** | `planner.md` 与 AGENTS 职责冲突 | **APPROVED** —— Data Gate-2 修正 `docs/interfaces/planner.md`，必要时同步 `curriculum.md`；本轮**仍不改 interfaces** |
+
+> **进入 Data Gate-2 实施的契约变更只有 2 项**：**DG-01**（`course_offering.schema.json`，
+> **有意的 breaking migration**）与 **DG-06**（接口文档修正）。
+> **DG-02 / DG-03 / DG-04 / DG-05 本阶段均不产生公共契约变更。**
 
 **其他产出**：实体所有者表；**Shared / Private / Derived** 分类（含"用户适用的 `CurriculumVersion` reference 属私有"）；
 **暂缓字段分类**（A / B / C / D，见下）；**Course Data 获取边界**链路与红线；
-**Data Gate 通过条件 C1–C11**。
+**Data Gate 通过条件 11 条（C1–C11）**。
 
 **暂不进入公共契约的字段**：
 
@@ -116,11 +122,18 @@
   全部内部 ID / 计数（`class_ID` / `courseId` / `outLineId` / `timePlaceId` 等，**不记录取值**）
 - **D（语义未知，继续待确认）**：`teachProgressSubmitState`、`openClass`、`outlineTypeNum`、
   `openingSchoolName` / `weekDay`（**与 `campus` / `weekday` 的转换关系待确认**）、D4 的 `cultivation_type`
-- **归属转移**：`courseCategoryName`（样本"专必"）→ **培养方案上下文属性**，归 **DG-04**，**不进入 `CourseOffering`**
+- **归属转移**：`courseCategoryName`（样本"专必"）→ **培养方案上下文属性**，随 DG-04 暂留 **Curriculum 内部模型**，
+  **不进入 `CourseOffering`**
 
-> ⚠️ **本轮未裁决任何一项**；⚠️ **未修改 `/schemas/`、`/docs/interfaces/`、`AGENTS.md`、`backend/`、`frontend/`、`mock_data/`**；
+> ⚠️ **本轮已落档裁决，但未实施任何一项**（契约实施在 **Data Gate-2**）；
+> ⚠️ **未修改 `/schemas/`、`/docs/interfaces/`、`AGENTS.md`、`backend/`、`frontend/`、`mock_data/`**；
 > ⚠️ **未写 parser / crawler / Adapter / CourseDataProvider / Integration**，**未建数据库**，**未调用 SYSU 接口**（本轮**零请求**）；
 > ⚠️ **未自行进入 Data Gate-2**。
+
+> **本轮 Reviewer 修复的 3 处**：① **教师证据修正** —— 删除"没有证据表明教师有 meeting-level 语义"，
+> 改为"**meeting-level teacher association = 已知真实语义**，但 Planner MVP 不依赖它"，
+> 登记为 **known deferred representation gap**；② **DG-05 权威边界表述改精确**（Curriculum 认定 / 产出 edges，
+> Planner 只做本地转换，**不得新增 / 猜测 / 重写 edge**）；③ **通过条件计数由"12 条"更正为 11 条（C1–C11）**。
 
 ## 已完成
 - 模块边界和依赖接口已定义
@@ -162,13 +175,21 @@
   整理 **7 个核心实体边界**（`Course` / `CurriculumVersion` / `CurriculumCourse` /
   `CompletedCourse` / `CurrentEnrollment` / `CourseOffering` / `ScheduleSegment`）、
   **实体所有者**、**Shared / Private / Derived** 分类、**Course Data 获取边界**与
-  **12 条 Data Gate 通过条件**；对 **G9 多 segment** 给出概念关系与 4 个候选方案（含 2 个**被禁止**方案）；
+  **11 条 Data Gate 通过条件（C1–C11）**；对 **G9 多 segment** 给出概念关系与 4 个候选方案（含 2 个**被禁止**方案）；
   分析 **Curriculum → Planner 契约**（`prerequisites[]` 是否足够、优先级是否进契约）；
   提交 **DG-01 – DG-06** 六项 `【接口变更请求】`**草案**；
   更新 `docs/data/MEMBER_DATA_HANDOFF.md`（新增"可直接共享 / 按需交接 / 禁止交接"三层清单，
   澄清"已有真实证据 ≠ 已交付逐行数据"，**真实逐行数据交接次数仍为 0**）；
   `REAL_TO_SCHEMA_GAP_REPORT.md` 仅小幅补 **Data Gate 引用**（缺口状态不变）。
-  **未修改 Schema / Interface / 代码，未调用 SYSU 接口（本轮零请求），未做任何裁决**
+  **未修改 Schema / Interface / 代码，未调用 SYSU 接口（零请求）**
+- **Data Gate-1 架构裁决落档（Architecture Lead）**：DG-01 – DG-06 **全部裁决完毕并写入
+  `docs/data/DATA_GATE_DECISIONS.md`** —— **DG-01 APPROVED WITH MODIFICATION**、
+  **DG-02 / DG-04 DEFER PUBLIC CONTRACT**、**DG-03 REUSE EXISTING CONTRACT**、
+  **DG-05 NO NEW PUBLIC CONTRACT**、**DG-06 APPROVED**；
+  同步**修正教师证据**（meeting 级教师关联 = **已知真实语义**，登记为 **known deferred representation gap**）、
+  **精确化 DG-05 权威边界**（Planner 只能做本地 adjacency / topology 转换）、
+  **更正通过条件计数为 11 条**。
+  **仍未修改 Schema / Interface / 代码；契约实施统一在 Data Gate-2**
 
 ## 当前接口
 - 读取：`MakeupTask[]`、`CourseOffering[]`、`Preference`、`PlanResult`（当前来自 Mock）
@@ -195,27 +216,35 @@
   其中**仅 2024〔159号〕→2025〔1号〕有正文直接证据**，
   **2025〔1号〕→2026〔62号〕的正式替代关系尚未确认**（本轮未能读到 2026〔62号〕正文）；
   Case A 转专业时点适用哪一版需人工判定。另：转专业实施办法（`POLICY-002`）现行性未确认
-- **G9 结构缺口已进入 Data Gate-1，但尚未裁决**：一个教学班可有**多个上课时间 / 地点 segment**，
-  当前 `CourseOffering` **无法无损表达**；`DATA_GATE_DECISIONS.md` 已给出概念关系与 4 个候选方案，
-  **最终表示方式仍待负责人裁决**（DG-01）
-- **DG-01 – DG-06 全部待负责人裁决**：本轮只提交**草案**，**未批准任何一项**，**未修改任何契约**
+- **G9 已裁决，待 Data Gate-2 实施**：一个教学班可有**多个上课时间 / 地点 segment**，
+  当前 `CourseOffering` **无法无损表达**；**DG-01 裁决为 `CourseOffering` 1 — N `Meeting`（嵌套 `meetings[]`，方案 A）**，
+  **Data Gate-2 正式修改 `course_offering.schema.json`**（**有意的 breaking migration**）
+- **DG-01 – DG-06 已全部裁决，尚未实施**：本轮只**落档裁决**，**未修改任何契约**；
+  进入 Data Gate-2 实施的只有 **DG-01（Schema）** 与 **DG-06（接口文档）**
 - **上游 Curriculum / Course Data / Planner 均未产出真实结果**，前端只能展示 Mock
 - **集成骨架尚未建立**：上游模块暂时没有正式的接入点
 - **五类真实样本已齐备，但尚未通过 Data Gate**：Phase 2B Integration 仍暂停编码
-- **接口文档债务**：`docs/interfaces/planner.md` 的职责描述与 `/AGENTS.md` 第 5 节冲突（DG-06），
-  本轮**未修改**该文件
+- **接口文档债务已批准修正**：`docs/interfaces/planner.md` 的职责描述与 `/AGENTS.md` 第 5 节冲突（DG-06），
+  **Data Gate-2 执行修正**；本轮**仍未修改**该文件
 - **`prerequisites[]` 尚无真实证据**：真实培养方案样本中**未发现明确的先修字段**，
-  该字段"可被真实数据填充"目前**无证据**（不构成"学校无先修制度"的结论）
+  该字段"可被真实数据填充"目前**无证据**（不构成"学校无先修制度"的结论）；
+  裁决要求：来源无法提供时**标记未知 / 待人工确认，不得自动补齐**
+- **meeting 级教师关联为已知的表达损失**：`teachingTimePlaceStr` 的 segment **本身包含教师项**，
+  但 **MVP 的 `meetings[]` 不承载教师**；`teacher` 暂留教学班级作为汇总 / 展示字段，
+  登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **Data Gate-1 完成，等待 Reviewer 验收**
-- **Reviewer / 负责人需逐项裁决 DG-01 – DG-06**，并按 `DATA_GATE_DECISIONS.md` 第 12 节
-  的 **C1 – C11** 判定是否通过 Data Gate
-- 裁决顺序建议（仅供 Reviewer 参考，**不构成本轮结论**）：
-  **DG-01（多 segment，P0）→ DG-03（`CurrentEnrollment`，P0）→ DG-02 / DG-04 / DG-05（P1）→ DG-06（P2 文档）**
-- ⚠️ **在负责人裁决前不得开始实施**：不得改 `/schemas/` 或 `/docs/interfaces/`、
+- **Data Gate-1 架构裁决已落档，等待 Reviewer 最终复验**
+- **Reviewer 复验后进入 Data Gate-2**：实施 **DG-01**（`course_offering.schema.json` 改为
+  `CourseOffering` 1 — N `Meeting`，**有意的 breaking migration**，需同步
+  `mock_data/course_offerings.json`、`backend/app/models/contracts.py`、`frontend` 类型与展示）
+  与 **DG-06**（修正 `docs/interfaces/planner.md`，必要时同步 `curriculum.md`）
+- 并按 `DATA_GATE_DECISIONS.md` 第 12 节的 **C1 – C11（11 条）** 判定是否通过 Data Gate
+- **DG-02 / DG-03 / DG-04 / DG-05 本阶段不产生契约变更**（分别留 Curriculum 内部 / 复用
+  `CourseOffering[]` / 留 Curriculum 内部 / 不新增对象）
+- ⚠️ **在 Reviewer 复验与新一轮任务书之前不得实施任何变更**：不得改 `/schemas/` 或 `/docs/interfaces/`、
   不得写 Course Data Adapter / `CourseDataProvider`、不得进入 Integration。
-  **不得自行进入 Data Gate-2**，必须等新一轮任务书
+  **不得自行进入 Data Gate-2**
 - 2B-0 全程遵守 `docs/data/DATA_ACQUISITION_PLAN.md` 的三层数据模型与红线：
   **Raw 不进 Git；D4 的 Raw 与逐行脱敏样本均不得进入 public 仓库；`/mock_data/` 保持人工虚构**
 - **Phase 2B（Integration / Orchestrator 集成骨架）暂停编码**，待**Data Gate 通过**后恢复

@@ -1,20 +1,46 @@
 # Data Gate-1 架构决策草案
 
-> **状态：草案（DRAFT）。**
-> 本文档**不是**裁决结果，**不是**已批准的接口变更，也**不是**公共契约的一部分。
-> 其中的每一项都需要 **Reviewer + 负责人**逐条裁决（批准 / 驳回 / 修改）后才可能生效。
+> **状态：Architecture Lead 已完成 DG-01 – DG-06 架构裁决；等待 Reviewer 最终复验。**
+> **公共契约尚未实施** —— 本文档**不是**公共契约的一部分，裁决**尚未**落到
+> `/schemas/`、`/docs/interfaces/` 或任何代码。
+> 全部实施统一在 **Data Gate-2** 进行；本文档**不实施任何变更**。
 >
 > ## 本文件的三条红线
 >
-> 1. **不修改 `/schemas/`、不修改 `/docs/interfaces/`。** 本文档只是**提出请求**。
-> 2. **不自行决定字段名、字段类型、取值域与枚举。** 凡涉及具体字段形状的地方，一律标记
->    **待裁决**，由负责人决定。
-> 3. **不自行进入 Data Gate-2。** 本轮只做整理，不做实施。
+> 1. **不修改 `/schemas/`、不修改 `/docs/interfaces/`。** 契约实施统一在 **Data Gate-2**。
+> 2. **不自行增删字段、不改变字段含义。** 字段级细节以**架构裁决给出的目标结构**与
+>    Data Gate-2 契约文本为准；本文档**不发明**新字段。
+> 3. **未获授权不得提前实施，不得自行进入 Data Gate-2。**
 >
 > 配套文档：
 > `DATA_SOURCE_REGISTRY.md`（来源登记）、`REAL_TO_SCHEMA_GAP_REPORT.md`（缺口登记）、
 > `SYSU_CASE_A_PUBLIC_EVIDENCE.md` / `SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md` /
 > `SYSU_CASE_A_COMPLETED_COURSES_EVIDENCE.md` / `SYSU_COURSE_OFFERING_RECON.md`（D1–D5 证据）。
+
+---
+
+## 架构裁决总表（Architecture Lead，2026-09-30）
+
+> 本节是六项 `【接口变更请求】` 草案的**裁决结果**。
+> **裁决 ≠ 实施**：公共契约**尚未修改**，实施统一在 **Data Gate-2**。
+> 裁决目标：**只修改现在确实阻塞真实 Course Data / Planner 联调的契约**，
+> **不趁 Data Gate 把整个项目重构成一套大型领域模型**。
+
+| DG | 主题 | 裁决 | MVP 处置 | 是否变更公共契约 |
+|---|---|---|---|---|
+| **DG-01** | `CourseOffering` 多 segment | **APPROVED WITH MODIFICATION** | 采用"**一个 `CourseOffering` 内含多个 meeting / segment**"的方案；**Data Gate-2 正式修改 `course_offering.schema.json`** | **是**（`course_offering.schema.json`；**有意的 breaking migration**） |
+| **DG-02** | `CompletedCourse` | **DEFER PUBLIC CONTRACT** | 概念成立；**MVP 不新增** `completed_course.schema.json`，先作为 **Curriculum 内部规范化对象**；真实 D4 由负责人经**非公开位置**交 Curriculum；Curriculum 对外**仍只输出 `MakeupTask[]`** | **否** |
+| **DG-03** | `CurrentEnrollment` | **APPROVE CONCEPT, REUSE EXISTING CONTRACT** | 概念保留；**不新增** `CurrentEnrollment` Schema；Planner 的 `current_schedule` **直接使用现有公共类型 `CourseOffering[]`**，语义为"**学生已选中的教学班子集**" | **否** |
+| **DG-04** | `CurriculumVersion` / `CurriculumCourse` | **DEFER PUBLIC CONTRACT** | 概念边界成立；**MVP 暂作为 Curriculum 内部模型**，**不新增两个公共 Schema**；同时明确 `Course.course_type` / `Course.recommended_semester` **不得被解释为课程全局固有属性** | **否** |
+| **DG-05** | dependency / priority | **NO NEW PUBLIC CONTRACT FOR MVP** | **不新增** `DependencyGraph`、**不新增** `priority` 字段、**不新增** `PriorityResult`；Curriculum 认定并产出 dependency edges；Planner 只消费 `MakeupTask.prerequisites[]` | **否** |
+| **DG-06** | `planner.md` 职责冲突 | **APPROVED** | Data Gate-2 修正 `docs/interfaces/planner.md`，必要时同步 `docs/interfaces/curriculum.md`，使其与 `/AGENTS.md` 第 5 节一致 | **是**（**文档修正**，非字段变更） |
+
+**因此：进入 Data Gate-2 实施的契约变更只有两项** ——
+**DG-01（`course_offering.schema.json`）** 与 **DG-06（`planner.md` / `curriculum.md` 文档修正）**。
+**DG-02 / DG-03 / DG-04 / DG-05 本阶段均不产生公共契约变更。**
+
+> ⚠️ **Data Gate-1 的"最小接口变更集合"因此比原草案更小**（见 §9）：
+> 真实联调真正被阻塞的只有 **多 segment 建模** 与 **接口文档职责冲突** 两项。
 
 ---
 
@@ -38,18 +64,19 @@ Phase 2B-0B / 2B-0B+ / 2B-0C / 2B-0D 依次取得了 D2 / D3 / D4 / D5 的真实
 | | 内容 |
 |---|---|
 | **做** | 把已确认的真实事实整理为**实体边界**；区分 Shared / Private / Derived；对多 segment、Curriculum → Planner 契约等关键问题给出**候选方案与权衡**；提交 **DG-01 – DG-06 接口变更请求草案**；明确 Course Data 获取边界；给出 **Data Gate 通过条件** |
-| **不做** | 不改 Schema、不改接口文档、不写代码、不写 parser / crawler / Adapter / CourseDataProvider / Integration、不建数据库、不调 SYSU 接口、不裁决 |
+| **不做** | 不改 Schema、不改接口文档、不写代码、不写 parser / crawler / Adapter / CourseDataProvider / Integration、不建数据库、不调 SYSU 接口、**不实施裁决**（实施在 Data Gate-2） |
 
 ### 1.3 本轮性质
 
 ```text
 D1–D5 真实证据  →  缺口登记（REAL_TO_SCHEMA_GAP_REPORT）
-                →  【本轮】Data Gate-1：决策草案 + 接口变更请求草案
-                →  负责人裁决
-                →  （若批准）契约更新  →  恢复 Phase 2B Integration / Course Data MVP
+                →  Data Gate-1：决策草案 + 接口变更请求草案（已完成）
+                →  架构裁决：DG-01 – DG-06 全部裁决完毕（Architecture Lead）
+                →  【下一步】Data Gate-2：实施 DG-01 / DG-06 契约变更
+                →  恢复 Phase 2B Integration / Course Data MVP
 ```
 
-**只有负责人裁决通过的项，才可能在后续轮次实施。本文档本身不产生任何生效变更。**
+**裁决已完成，但契约尚未实施。本文档本身不产生任何生效变更。**
 
 ---
 
@@ -90,7 +117,7 @@ D1–D5 真实证据  →  缺口登记（REAL_TO_SCHEMA_GAP_REPORT）
 ## 3. 核心实体边界
 
 > 本节只定义**概念边界**（"这个实体表示什么、不表示什么"）。
-> **不定义字段清单** —— 字段级设计一律待裁决。
+> **不定义字段清单** —— 字段级设计以**架构裁决给出的目标结构**与 Data Gate-2 契约文本为准。
 >
 > 核心原则（已由负责人确定，本轮继承）：
 >
@@ -119,6 +146,7 @@ D1–D5 真实证据  →  缺口登记（REAL_TO_SCHEMA_GAP_REPORT）
 | **为什么需要** | D2 / D3 两份文档的**标题本身**就写明"25级 遥感科学与技术"、"25级 网络空间安全"，且各自带有**培养方案级**的总学分（147.0 / 153.0）、实践教学学分（37.1 / 38.5）、培养类别学分口径与适用年级 —— 这些**都是"方案级"的量**，不是单门课的属性 |
 | **当前承载** | **无**（`/schemas/` 下没有任何文件）→ **G1**，已由两份 2025 级真实培养方案确认存在 |
 | **边界要点** | `CurriculumVersion` 是**共享数据**（学校侧产物），但**"某学生适用哪一版"是用户私有信息**（见 §5） |
+| **裁决** | **DG-04：MVP 暂留 Curriculum 内部模型**，不新增公共 Schema；培养方案级总量、课程分组等由 Curriculum 内部结构承载 |
 
 ### 3.3 `CurriculumCourse` —— 某门课在某份培养方案中的要求
 
@@ -141,6 +169,7 @@ D1–D5 真实证据  →  缺口登记（REAL_TO_SCHEMA_GAP_REPORT）
 | **最关键的红线** | **`semester` / `passed` 绝对不能塞回 `Course`。**<br>`semester` 是**学生实际修读学期**，与 `Course.recommended_semester`（**培养方案建议学期**）**语义完全不同**，**不可互相替代**；<br>`passed` 是**学生的一次修读事实**，**不是课程固有属性** —— 同一门课由不同学生、在不同学期修读，结果可能不同 |
 | **当前承载** | **无** → **G2**，已由 `TRANSCRIPT-001` 验证 |
 | **数据所有权** | **用户私有数据**（见 §5） |
+| **裁决** | **DG-02：DEFER PUBLIC CONTRACT** —— **MVP 不新增公共 Schema**，先作为 **Curriculum 内部规范化对象**；D4 Sanitized Sample 由负责人经**非公开位置**交 Curriculum；Curriculum 对外**仍只输出 `MakeupTask[]`** |
 
 ### 3.5 `CurrentEnrollment` —— 学生当前已选 / 正在修读的教学班
 
@@ -151,6 +180,7 @@ D1–D5 真实证据  →  缺口登记（REAL_TO_SCHEMA_GAP_REPORT）
 | **为什么必须要这个概念** | Planner 的**当前课表冲突检测**需要的正是"学生现在已占用哪些时间段"。若用 `CourseOffering` 代替，就等于把"学校开设的全部教学班"当成"我的课表"，冲突检测会**完全失真** |
 | **当前承载** | **无** → **G4**（`docs/interfaces/planner.md` 把"当前课表"列为 Planner 输入，但 `/schemas/` 下没有对应文件）。⚠️ G4 **尚未用真实样本验证**，目前是"接口文档与 Schema 不一致"这一**文档级事实** |
 | **数据所有权** | **用户私有数据**（见 §5） |
+| **裁决** | **DG-03：APPROVE CONCEPT, REUSE EXISTING CONTRACT** —— **不新增 Schema**；Planner 的 `current_schedule` **直接使用 `CourseOffering[]`**，语义 = **学生已选中的教学班子集**。⚠️ 必须在接口文档中与"学校全部供给"区分；⛔ **不得用 `Preference.avoid_times[]` 冒充当前课表** |
 
 ### 3.6 `CourseOffering` —— 某学期的一个教学班（供给）
 
@@ -160,7 +190,7 @@ D1–D5 真实证据  →  缺口登记（REAL_TO_SCHEMA_GAP_REPORT）
 | **不表示** | 学生是否选了它；学生是否修过它；课程在培养方案中的身份（`courseCategoryName` 带方案上下文，**不得**当成课程全局属性） |
 | **当前承载** | `schemas/course_offering.schema.json` |
 | **真实证据** | `courseNum → course_id`、`courseName → course_name`、`classNumber → class_id`、`yearTerm → semester`、`limitNumber → capacity` 为 **A**；`score → credit` 为 **B**（字符串数字）；`remaining_capacity` 为 **B 派生值** |
-| **已知结构缺口** | **G9：一个教学班可有多个上课时间 / 地点 segment，当前一个 `CourseOffering` 只能表达一组 → 无法无损表达**（见 §6 / DG-01） |
+| **已知结构缺口** | **G9：一个教学班可有多个上课时间 / 地点 segment，当前一个 `CourseOffering` 只能表达一组 → 无法无损表达**（见 §6 / DG-01）。**已裁决（DG-01 APPROVED WITH MODIFICATION）：改为 `CourseOffering 1 — N Meeting`，Data Gate-2 实施** |
 
 ### 3.7 `ScheduleSegment` / `Meeting` —— 教学班下的一段上课时间 / 地点
 
@@ -170,7 +200,8 @@ D1–D5 真实证据  →  缺口登记（REAL_TO_SCHEMA_GAP_REPORT）
 | **概念关系** | `CourseOffering` **1 —— N** `ScheduleSegment` |
 | **至少需要表达（真实 D5 已存在的量）** | `weekday`、`start_section`、`end_section`、`weeks[]`、`campus`、`classroom` |
 | **当前承载** | **无独立对象** —— 这 6 项目前是 `CourseOffering` 的**直接字段**，一个对象只能装一组 |
-| **注意** | 这是一个**概念**。它是否成为**公共契约对象**、以什么形态存在，**待裁决**（见 DG-01）。⚠️ **不得理解为本文档已经设计了该对象。** |
+| **裁决** | **已裁决（DG-01 APPROVED WITH MODIFICATION）：本概念成为公共契约的目标结构**，形态为 `CourseOffering.meetings[]`（嵌套 segment 数组），**Data Gate-2 实施**。见 §6.8 目标结构 |
+| **注意** | 本文档**只记录裁决与目标结构**，**不在本轮修改任何 Schema**。⚠️ **不得把本节理解为"契约已经改好"。** |
 
 ### 3.8 边界一句话总结
 
@@ -186,6 +217,12 @@ ScheduleSegment   —— 一个教学班内的一段上课时间 / 地点
 
 **四类信息互不替代**：课程身份 / 方案要求 / 修读事实 / 当前占用。
 
+> **裁决后的落地形态（一句话版）**：
+> `Course` 保持公共契约；`CurriculumVersion` / `CurriculumCourse` **留 Curriculum 内部**（DG-04）；
+> `CompletedCourse` **留 Curriculum 内部规范化对象**（DG-02）；
+> `CurrentEnrollment` **不新增 Schema，复用 `CourseOffering[]` 作为 `current_schedule`**（DG-03）；
+> `CourseOffering` **改为承载 `meetings[]`**（DG-01，Data Gate-2 实施）。
+
 ---
 
 ## 4. 实体所有者
@@ -193,20 +230,20 @@ ScheduleSegment   —— 一个教学班内的一段上课时间 / 地点
 > "所有者"= **负责定义并生产该数据**的模块。所有者为 Curriculum / Course Data 的实体，
 > 其他模块**只消费**，不得自行重写（`/AGENTS.md` 第 5 节）。
 
-| 实体 | 所有者模块 | 消费方 | 当前是否公共契约 | 本文档建议（待裁决） |
+| 实体 | 所有者模块 | 消费方 | 当前是否公共契约 | 裁决结论（2026-09-30） |
 |---|---|---|---|---|
-| `Course` | **Curriculum**（课程基础身份可视为共享基础） | Course Data、Planner、Agent / Frontend | **是**（`course.schema.json`） | 保留为公共契约；`course_type` / `recommended_semester` 的归属见 DG-04 |
-| `CurriculumVersion` | **Curriculum** | Planner（间接）、Agent / Frontend | **否**（G1） | 见 DG-04 |
-| `CurriculumCourse` | **Curriculum** | Planner（间接）、Course Data（`courseCategoryName` 对齐）、Agent / Frontend | **否**（G1） | 见 DG-04 |
-| `CompletedCourse` | **Curriculum**（由负责人私密侧产出的脱敏样本派生） | Agent / Frontend | **否**（G2） | 见 DG-02 |
-| `CurrentEnrollment` | **Integration / Agent**（用户侧课表）× **Planner**（消费） | Planner | **否**（G4） | 见 DG-03 |
-| `CourseOffering` | **Course Data** | Planner、Agent / Frontend | **是**（`course_offering.schema.json`） | 多 segment 表示见 DG-01 |
-| `ScheduleSegment` / `Meeting` | **Course Data** | Planner | **否** | 见 DG-01 |
-| `Preference` | **Agent / Integration**（由用户真实需求转换） | Planner | **是**（`preference.schema.json`） | 本轮不变 |
-| `MakeupTask` | **Curriculum** | Planner、Agent / Frontend | **是**（`makeup_task.schema.json`） | 依赖 / 优先级见 DG-05 |
+| `Course` | **Curriculum**（课程基础身份可视为共享基础） | Course Data、Planner、Agent / Frontend | **是**（`course.schema.json`） | 保留为公共契约；`course_type` / `recommended_semester` 是**现有兼容字段**，**不得被解释为课程全局固有属性**（DG-04） |
+| `CurriculumVersion` | **Curriculum** | Planner（间接）、Agent / Frontend | **否**（G1） | **MVP 暂留 Curriculum 内部模型**，不新增公共 Schema（DG-04） |
+| `CurriculumCourse` | **Curriculum** | Planner（间接）、Course Data（`courseCategoryName` 对齐）、Agent / Frontend | **否**（G1） | **MVP 暂留 Curriculum 内部模型**，不新增公共 Schema（DG-04） |
+| `CompletedCourse` | **Curriculum**（由负责人私密侧产出的脱敏样本派生） | **MVP 阶段仅 Curriculum 内部** | **否**（G2） | **MVP 不新增公共 Schema**，作为 **Curriculum 内部规范化对象**；D4 Sanitized Sample 由负责人经**非公开位置**交给 Curriculum（DG-02） |
+| `CurrentEnrollment` | **Integration / Agent**（用户侧课表）× **Planner**（消费） | Planner | **否**（G4） | **不新增 Schema**；Planner 的 `current_schedule` **复用现有公共类型 `CourseOffering[]`**，语义 = 学生已选中的教学班子集（DG-03） |
+| `CourseOffering` | **Course Data** | Planner、Agent / Frontend | **是**（`course_offering.schema.json`） | **批准修改**：改为承载 `meetings[]`（多 segment）；Data Gate-2 正式改契约（DG-01） |
+| `ScheduleSegment` / `Meeting` | **Course Data** | Planner | **否** → **是（Data Gate-2 起）** | **已裁决进入公共契约**，形态为 `CourseOffering.meetings[]`（DG-01） |
+| `Preference` | **Agent / Integration**（由用户真实需求转换） | Planner | **是**（`preference.schema.json`） | 本轮不变；⚠️ **不得用 `avoid_times[]` 冒充"当前课表"**（DG-03） |
+| `MakeupTask` | **Curriculum** | Planner、Agent / Frontend | **是**（`makeup_task.schema.json`） | 依赖 / 优先级**均不新增字段**；Planner 只消费已有 `prerequisites[]`（DG-05） |
 | `PlanResult` | **Planner** | Agent / Frontend | **是**（`plan_result.schema.json`） | 本轮不变（G5 未验证，暂不处理） |
-| 学业优先级 / 风险 | **Curriculum** | Planner（消费，不得自行重算） | **否** | 见 DG-05 |
-| 课程依赖结果 | **Curriculum** | Planner | **否**（但 `MakeupTask.prerequisites[]` 已存在） | 见 DG-05 |
+| 学业优先级 / 风险 | **Curriculum** | Planner（消费，不得自行重算） | **否** | **暂不新增 `priority` 字段**；无正式 priority 时 **Planner 不得自行生成优先级**（DG-05） |
+| 课程依赖结果 | **Curriculum** | Planner | **否**（但 `MakeupTask.prerequisites[]` 已存在） | **不新增 `DependencyGraph`**；Curriculum 认定并产出 dependency edges，Planner 只做本地 adjacency / topology 转换（DG-05） |
 
 ### 4.1 边界红线（沿用 `/AGENTS.md` 第 5 节）
 
@@ -241,12 +278,15 @@ ScheduleSegment   —— 一个教学班内的一段上课时间 / 地点
 
 **归属具体学生**，只能在授权范围内使用，**不得进入 public 仓库**（含脱敏逐行样本）。
 
-| 数据 | 说明 |
-|---|---|
-| `CompletedCourse` | 已修课程事实（含实际修读学期、是否通过） |
-| `CurrentEnrollment` | 当前已选 / 在读教学班 |
-| `Preference` | 用户偏好与约束意愿 |
-| **用户适用的 `CurriculumVersion` reference** | "**这个学生**适用哪一版培养方案"是一个**指向共享数据的私有引用**：培养方案本身是共享的，**但"该生适用哪一版"是私有信息**（由学籍异动时点、年级、专业决定，见 D1 政策） |
+| 数据 | 说明 | 裁决后的公共表达 |
+|---|---|---|
+| `CompletedCourse` | 已修课程事实（含实际修读学期、是否通过） | **MVP 不进公共契约**；作为 **Curriculum 内部规范化对象**（DG-02） |
+| `CurrentEnrollment` | 当前已选 / 在读教学班 | **MVP 不新增 Schema**；Planner 的 `current_schedule` **复用 `CourseOffering[]`**，语义 = 学生已选中的子集（DG-03） |
+| `Preference` | 用户偏好与约束意愿 | 公共契约；⚠️ **不得用 `avoid_times[]` 冒充当前课表** |
+| **用户适用的 `CurriculumVersion` reference** | "**这个学生**适用哪一版培养方案"是一个**指向共享数据的私有引用**：培养方案本身是共享的，**但"该生适用哪一版"是私有信息**（由学籍异动时点、年级、专业决定，见 D1 政策） | 私有引用；培养方案本体**MVP 不进公共契约**（DG-04） |
+
+> ⚠️ **用户私有 ≠ 可以脱敏后进 public 仓库**：逐行样本（含 D4）一律**不得进入 public Git**，
+> 只能通过**负责人控制的非公开位置**按需交接（见 `MEMBER_DATA_HANDOFF.md`）。
 
 ### 5.3 派生结果（Derived）
 
@@ -304,45 +344,111 @@ CourseOffering = 一个时间段        ❌（当前 Schema 的形态，无法�
 > ⚠️ **MVP 最小设计原则**：不要因为真实 JSON 里有字段就全部加入公共 Schema。
 > 上表 6 项之所以入选，是因为它们**已经有对应的公共语义**，只是"位置"从教学班级降到了 segment 级。
 
-### 6.4 `teacher` 是否存在 meeting-level 语义 —— 本轮结论
+### 6.4 `teacher` 与 meeting 的关系 —— 事实与裁决
 
-| 检查项 | 本轮可确认的事实 | 结论 |
-|---|---|---|
-| 真实 D5 样本中 `teachingName`（授课教师）出现的位置 | 出现在**教学班层级**，未观察到 segment 级的教师字段 | **没有证据**表明教师是 meeting 级语义 |
-| 一个教学班内不同 segment 是否可能由不同教师授课 | **未观察到**，也未做进一步侦察 | **无法确认**；属**语义待确认** |
-| `weekDay`（星期）与 segment 的对应关系 | 侦察记录已标记为**待确认** | 不猜 |
+> ⚠️ **本节曾出现一处不准确的表述，已在 Reviewer 修复中更正**：
+> 原文写"未观察到 segment 级教师字段，因此没有证据表明教师有 meeting-level 语义" ——
+> **该说法不成立，已删除。**
 
-**本轮建议（待裁决）**：
+| 检查项 | 真实事实 |
+|---|---|
+| 真实 D5 的 `teachingTimePlaceStr` | 该**原始串本身就是按 segment 组织的，且 segment 项中包含教师信息** —— 即 **segment 与教师是有关联的** |
+| 一个教学班内多个 segment 与教师的关联 | **已有样本表明 segment 与教师存在关联**（不同 segment 可对应教师信息） |
+| 因此能否说"没有证据" | **不能。** 准确表述是：**meeting-level 教师关联 = 已知的真实语义** |
 
-- **MVP 阶段 `teacher` 保持在教学班级**（沿用现有公共字段），**不将其下放到 segment**；
-- **不新增 segment 级教师字段**；
-- 若将来证实"同一教学班内不同 segment 由不同教师授课"，再按 `/AGENTS.md` 第 4 节走
+**架构裁决（DG-01）**：
+
+- ✅ **meeting-level teacher association = 已知真实语义**，**不是"无证据"**；
+- ⛔ **但 Planner MVP 不依赖它** —— 因此 **meeting 的最小公共字段不包含教师**；
+- ✅ 现有**教学班级 `teacher` 暂作为"教学班汇总 / 展示"字段保留**（顶层，不下放到 meeting）；
+- ✅ 该表达限制明确登记为 **known deferred representation gap（已知但暂缓的表达损失）**：
+  MVP 的 `meetings[]` **无法表达"某一段具体由哪位教师授课"** ——
+  这是**已知的表达损失**，**不是"该语义不存在"**。
+- 后续若 Planner 或前端确实需要 meeting 级教师关联，再按 `/AGENTS.md` 第 4 节走
   `【接口变更请求】`。
 
-### 6.5 候选方案与权衡（**本轮不作最终决定**）
+### 6.5 候选方案与权衡（**已裁决：采纳方案 A**）
 
-| 方案 | 形态 | 优点 | 代价 / 风险 |
-|---|---|---|---|
-| **A. 在教学班内引入 segment 数组** | `CourseOffering` 增加一个 segment 数组（字段名 / 类型待裁决），原 6 个单值字段退役或改为"兼容视图" | 概念最清晰，与 6.2 的关系一致；Planner 可精确比较两个教学班的**全部**时间占用 | **破坏性**：现有 `course_offering.schema.json` 的 `weekday` / `start_section` / `end_section` / `weeks` 是**必填**；`mock_data/course_offerings.json`、`backend/app/models/contracts.py`、`frontend` 类型与展示、启动自检都会受影响 |
-| **B. 保留单段字段，另加可选的段数组** | 原字段保留（作为"第一段"或"合并视图"），新增可选 segment 数组 | 对旧数据向后兼容（旧数据仍合法） | **双份表示**：同一信息两处存放，容易出现"字段与数组不一致"；Planner 必须同时读两处，语义不清晰 |
-| **C. 同一 `class_id` 多行（扁平化）** | 一个 segment 一行，多行共享同一 `class_id` | **完全不改 Schema** | ① 与"`class_id` 标识一个教学班"的现有隐含假设冲突；② `PlanResult.selected_classes[]` 只引用 `course_id` + `class_id`，**无法区分同一教学班的哪一段**；③ 消费方必须自行聚合，等于把契约问题推给每个下游 |
-| **D. Course Data 内部保留完整 segment，对外只暴露合并后的时间占用** | 公共契约不变 | 完全不改 Schema | **丢失 segment 身份**：Planner 做"教学班替换"时无法精确比较"换掉这一段是否解决冲突"，Path Repair 质量下降 |
+> **裁决结果：采用方案 A**（在教学班内引入嵌套 segment 数组，即 `meetings[]`）。
+> **Data Gate-2 不再讨论方案 B / C / D** —— 下表保留为**已评估但驳回的方案**记录，
+> 以便后来者理解为何不采用。
+
+| 方案 | 形态 | 优点 | 代价 / 风险 | 裁决 |
+|---|---|---|---|---|
+| **A. 在教学班内引入 segment 数组** | `CourseOffering` 增加 `meetings[]`；原 6 个单值字段不再作为排课真相 | 概念最清晰，与 6.2 的关系一致；Planner 可精确比较两个教学班的**全部**时间占用 | **破坏性**：现有 `course_offering.schema.json` 的 `weekday` / `start_section` / `end_section` / `weeks` 是**必填**；`mock_data/course_offerings.json`、`backend/app/models/contracts.py`、`frontend` 类型与展示、启动自检都会受影响 | ✅ **采纳** |
+| **B. 保留单段字段，另加可选的段数组** | 原字段保留（作为"第一段"或"合并视图"），新增可选 segment 数组 | 对旧数据向后兼容（旧数据仍合法） | **双份表示**：同一信息两处存放，容易出现"字段与数组不一致"；Planner 必须同时读两处，语义不清晰 | ❌ **驳回**（不为一个错误的数据模型保留兼容层） |
+| **C. 同一 `class_id` 多行（扁平化）** | 一个 segment 一行，多行共享同一 `class_id` | **完全不改 Schema** | ① 与"`class_id` 标识一个教学班"的现有隐含假设冲突；② `PlanResult.selected_classes[]` 只引用 `course_id` + `class_id`，**无法区分同一教学班的哪一段**；③ 消费方必须自行聚合，等于把契约问题推给每个下游 | ❌ **驳回** |
+| **D. Course Data 内部保留完整 segment，对外只暴露合并后的时间占用** | 公共契约不变 | 完全不改 Schema | **丢失 segment 身份**：Planner 做"教学班替换"时无法精确比较"换掉这一段是否解决冲突"，Path Repair 质量下降 | ❌ **驳回** |
+
+**为什么在这里接受破坏性变更**：
+
+> 这是一次**有意的 breaking contract migration**。
+> **现在还没有真实联调，正是该修的时候。**
+> **不能为了旧 Mock 保留一个错误的数据模型。**
+
+⚠️ 破坏性变更的**实施与回归范围**（`mock_data/`、`backend` 启动自检、`frontend` 类型与展示）
+统一在 **Data Gate-2** 处理，**本轮不动任何文件。**
 
 ### 6.6 明确禁止的两个方案
 
-> 以下两条是**负责人已经明确禁止**的，本轮不得作为候选方案：
+> 以下两条**任何情况下都不允许**：
 
 1. ❌ **只保存第一个 segment**（丢弃其他时间段）—— 直接**丢失真实排课信息**，
    使冲突检测产生**假阴性**（漏检冲突），Planner 会输出**不可执行的方案**；
 2. ❌ **把一个教学班拆成多个可独立选择的 `CourseOffering`** —— 会凭空造出**学校并不存在的可选教学班**，
    学生"替换教学班"时会选到一个实际不存在的班，属**捏造数据**。
 
-### 6.7 与"是否引入 `meetings[]`"的关系
+### 6.7 与 `meetings[]` 的关系：已裁决
 
-`REAL_TO_SCHEMA_GAP_REPORT.md` 明确记录：本轮**未设计 `meetings[]`、未修改 Schema**。
-本文件同样**不设计 `meetings[]`** —— §6.5 的方案 A 只是**候选方向**，
-**字段名、类型、是否必填、命名（`meetings` / `segments` / 其它）一律待裁决**。
-**最终表示方式由负责人裁决，见 DG-01。**
+`REAL_TO_SCHEMA_GAP_REPORT.md` 记录的是 **Data Gate-1 之前**的状态：
+当时**未设计 `meetings[]`、未修改 Schema** —— 这一事实**至今未变**（本轮仍未修改 Schema）。
+
+变化的是**裁决**：**架构裁决已采纳方案 A（嵌套 segment 数组）**，
+**Data Gate-2 将正式按此修改 `course_offering.schema.json`**。
+
+### 6.8 目标结构（架构裁决锁定）
+
+> **重点不是字段名现在 100% 定死，而是结构已经定了：教学班 ≠ 时间段。**
+
+```text
+CourseOffering
+├─ course_id
+├─ course_name
+├─ class_id
+├─ semester
+├─ teacher?              # MVP 暂保留：教学班汇总 / 展示字段
+├─ credit?
+├─ capacity?
+├─ remaining_capacity?
+├─ source?
+├─ data_source
+└─ meetings[]
+     ├─ weekday
+     ├─ start_section
+     ├─ end_section
+     ├─ weeks[]
+     ├─ campus?
+     └─ classroom?
+```
+
+**关系**：
+
+```text
+CourseOffering   1
+                 ↓
+                 N
+Meeting
+```
+
+**每段 meeting 的 MVP 排课字段**：`weekday` / `start_section` / `end_section` /
+`weeks[]` / `campus` / `classroom`。
+
+**⚠️ 不得由 Agent 自行调整的地方**：
+
+- 不得新增 meeting 级教师字段（见 §6.4，已登记为 **known deferred representation gap**）；
+- 不得把 `teacher` 下放到 meeting；
+- 不得改变 `CourseOffering` 与 `Meeting` 的 **1 — N** 关系；
+- 字段级最终文本以 **Data Gate-2 的契约变更**为准；本文档**不修改任何 Schema**。
 
 ---
 
@@ -382,7 +488,11 @@ Planner 只是**消费方**。而 `/AGENTS.md` 第 17 节规定：**当两者冲
 等于绕过 Curriculum 的业务规则 —— 这正是 `/AGENTS.md` 第 5 节明令禁止的行为。
 
 **处置**：登记为**接口文档债务**，修正请求见 **DG-06**。
-⚠️ **本轮不修改 `docs/interfaces/planner.md`**（该目录属公共契约，`/AGENTS.md` 第 4 节）。
+
+**裁决（DG-06 APPROVED）**：**Data Gate-2 允许修正 `docs/interfaces/planner.md`**，
+并根据需要同步 `docs/interfaces/curriculum.md`，使其与 `/AGENTS.md` 第 5 节一致。
+
+⚠️ **本轮仍然不修改 interfaces** —— 本轮只**落档裁决**（`/AGENTS.md` 第 4 节）。
 
 ### 7.3 `MakeupTask.prerequisites[]` 是否已足够？（重点分析）
 
@@ -393,12 +503,37 @@ Planner 只是**消费方**。而 `/AGENTS.md` 第 17 节规定：**当两者冲
 |---|---|
 | Planner MVP 需要什么依赖信息？ | ① "补修 A 之前必须先补 B"的**先后关系**（跨学期路径排序）；② 冲突检测**不需要**依赖图（冲突只需时间 / 周次信息） |
 | `prerequisites[]` 能表达什么？ | 它是**课程号字符串数组**，可表达"这门课的**直接**先修课程集合" → 足以构成**直接的依赖边** |
-| 是否足够？ | **很可能足够**（待裁决）：<br>① **不需要新增 `DependencyGraph` 公共 Schema** —— Planner 可由 `MakeupTask[]` 中每条任务的 `prerequisites[]` **自行重建**邻接关系（只要相关课程都在同一 `MakeupTask[]` 中）；<br>② 它是**已存在的公共字段**，无需任何契约变更；<br>③ `recommended_semester` / `deadline_semester` 已可承载"时间先后"的粗粒度约束 |
-| 可能的不足 | ① 只有**一级邻接**，不表达传递闭包（但可由消费方计算）；② **无"依赖类型"**（强先修 / 建议先修 / 并修），当前**无真实证据**支持需要区分；③ 无**优先级**（另见 7.4）；④ ⚠️ **最重要**：真实培养方案样本中**未发现明确的先修字段**，因此 `prerequisites[]` **能否被真实数据填充，目前尚无证据** |
-| **本轮建议方向（待裁决）** | **优先不新增 `DependencyGraph` 公共 Schema。** MVP 由 `MakeupTask[]` + `prerequisites[]` 承载依赖；依赖图的**构建**留在 Planner 内部（消费 Curriculum 已给定的先修关系），**不新增跨模块对象** |
+| 是否足够？ | **裁决：足够，不新增 `DependencyGraph`。**<br>① **不需要新增 `DependencyGraph` 公共 Schema** —— Planner 可由 `MakeupTask[]` 中每条任务的 `prerequisites[]` 构造**本地**邻接表示（只要相关课程都在同一 `MakeupTask[]` 中）；<br>② 它是**已存在的公共字段**，无需任何契约变更；<br>③ `recommended_semester` / `deadline_semester` 已可承载"时间先后"的粗粒度约束 |
+| 可能的不足 | ① 只有**一级邻接**，不表达传递闭包（但可由**本地**图计算得到）；② **无"依赖类型"**（强先修 / 建议先修 / 并修），当前**无真实证据**支持需要区分；③ 无**优先级**（另见 7.4，**裁决为暂不新增**）；④ ⚠️ **最重要**：真实培养方案样本中**未发现明确的先修字段**，因此 `prerequisites[]` **能否被真实数据填充，目前尚无证据** |
+| **裁决（DG-05）** | **不新增 `DependencyGraph` 公共 Schema。** MVP 由 `MakeupTask[]` + **已有** `prerequisites[]` 承载依赖边；权威边界见 §7.3.1 |
 
-> ⚠️ **区分两件事**：Planner **自己计算依赖图的闭包 / 拓扑序** ≠ Planner **自行认定哪些课是先修**。
-> 前者是确定性算法，属 Planner；后者是**学业规则**，属 Curriculum。`/AGENTS.md` 禁止的是后者。
+#### 7.3.1 权威边界（架构裁决，DG-05）
+
+> 原草案写作"依赖图的**构建**（闭包 / 拓扑序）留在 Planner 内部"，
+> **该表述不够精确，容易重新越界**。裁决后的准确边界如下：
+
+```text
+Curriculum：
+  负责认定 / 产出 authoritative dependency edges（先修关系）
+
+Planner：
+  可以把已经收到的 prerequisites[]
+  转换成本地 adjacency / topological representation
+  供确定性求解使用
+
+Planner：
+  不得新增、猜测、重写任何 prerequisite edge
+```
+
+| 角色 | 允许 | 不允许 |
+|---|---|---|
+| **Curriculum** | **认定**先修关系，产出 dependency edges / `prerequisites[]` | —— |
+| **Planner** | 把**已经收到的** `prerequisites[]` 构造成求解所需的**本地** adjacency / topology | **新增 / 猜测 / 重写**任何 prerequisite edge |
+| **Planner** | 在**本地表示**上做确定性图计算（闭包 / 拓扑序 / 邻接查询） | 自行认定"哪门课应当是先修" —— 那是**学业规则**，属 Curriculum |
+| **任何人** | 真实来源**无法提供** prerequisite 时，标记 **未知 / 待人工确认** | **自动补齐**，或用推断填补缺失的先修关系 |
+
+> ⚠️ 这与 `/AGENTS.md` 第 5 节一致：Planner **消费** Curriculum 的依赖结果，
+> **不得为求解方便自行重写课程认定或学业优先级规则**。
 
 ### 7.4 "已确认优先级"是否需要进入公共契约？
 
@@ -407,15 +542,19 @@ Planner 只是**消费方**。而 `/AGENTS.md` 第 17 节规定：**当两者冲
 
 | 候选 | 分析 |
 |---|---|
-| **① 新增 `priority` 一类字段（方向性建议）** | 最能直接满足 `/AGENTS.md` 第 5 节。<br>⚠️ **字段名、类型（整数 / 枚举 / 序数）、取值范围、枚举取值、是否必填 —— 一律不得由 Agent 决定，全部待裁决**（见 DG-05） |
+| **① 新增 `priority` 一类字段（方向性建议）** | 最能直接满足 `/AGENTS.md` 第 5 节。<br>⛔ **裁决：MVP 暂不新增**。字段名、类型、取值范围、枚举取值、是否必填**均未被定义**，将来须由负责人裁决（见 DG-05） |
 | **② 用 `MakeupTask[]` 的数组顺序承载优先级** | 不改 Schema。但 **Schema 从未定义数组顺序的语义**，属**隐式约定**；`/AGENTS.md` 第 5 节禁止"只有两边懂的私有格式"，且下游可能重排数组 → **不可靠** |
 | **③ 用 `recommended_semester` + `deadline_semester` 承载** | 不改 Schema。能表达"时间紧迫性"，但**不能表达学业优先级**（两门课可以同一学期、同一 deadline，优先级不同） |
 | **④ 用 `reason` 自由文本承载** | **不可用于求解** —— `/AGENTS.md` 要求确定性判断不得交给 LLM / 自由文本，违反第 1、5 节 |
 | **⑤ 优先级留在 Curriculum 内部，Planner 不做排序** | **不改任何接口**，可能符合 MVP。前提是负责人确认 **Planner MVP 是否真的需要跨模块优先级**；若 Planner 只需按 Curriculum 给出的顺序求解，则该字段可以暂不引入 |
 
-**本轮建议方向（待裁决）**：把 ① 作为**方向**提交（DG-05），
-但**明确保留 ⑤ 这一"不改接口"的替代方案** ——
-是否需要该字段，本质上取决于**负责人对 Planner MVP 职责范围的确认**。
+**裁决（DG-05：NO NEW PUBLIC CONTRACT FOR MVP）**：
+
+- ⛔ **暂不新增 `priority` 字段**，也**不新增** `PriorityResult` 一类对象；
+- ⛔ **没有正式 priority 数据时，Planner 不得自行生成优先级** ——
+  不得用启发式打分、LLM 判断或自定义排序替代 Curriculum 的学业优先级；
+- ✅ 候选 ⑤（**优先级留在 Curriculum 内部**）**被采纳为 MVP 现状**；
+- ✅ **后续 Curriculum 真正实现明确的优先级规则时，再走 `【接口变更请求】`**。
 
 ---
 
@@ -423,42 +562,56 @@ Planner 只是**消费方**。而 `/AGENTS.md` 第 17 节规定：**当两者冲
 
 | 编号 | 缺口 | 证据等级 | 影响模块 | 处置 |
 |---|---|---|---|---|
-| **G1** | 培养方案 / 版本 / 课程分组**无正式表示** | **已由 `CURR-OLD-003` / `CURR-NEW-004` 确认** | Curriculum（+ Course Data / Planner 间接） | **DG-04** |
-| **G2** | 已完成课程 / 修读事实**无正式表示** | **已由 `TRANSCRIPT-001` 验证** | Curriculum、Agent / Frontend | **DG-02** |
+| **G1** | 培养方案 / 版本 / 课程分组**无正式表示** | **已由 `CURR-OLD-003` / `CURR-NEW-004` 确认** | Curriculum（+ Course Data / Planner 间接） | **DG-04** → 裁决：**MVP 暂留 Curriculum 内部，不新增公共 Schema** |
+| **G2** | 已完成课程 / 修读事实**无正式表示** | **已由 `TRANSCRIPT-001` 验证** | Curriculum、Agent / Frontend | **DG-02** → 裁决：**MVP 不新增公共 Schema**，作为 **Curriculum 内部规范化对象** |
 | **G3** | 学分差额无结构化表达 | **未验证** | Curriculum / Agent | 本轮不处理，留缺口报告 |
-| **G4** | "当前课表"`planner.md` 列为输入，但无 Schema；`CourseOffering` ≠ 学生已选 | **文档级事实**（未用真实样本验证） | Planner、Integration | **DG-03** |
+| **G4** | "当前课表"`planner.md` 列为输入，但无 Schema；`CourseOffering` ≠ 学生已选 | **文档级事实**（未用真实样本验证） | Planner、Integration | **DG-03** → 裁决：**不新增 Schema**；Planner 的 `current_schedule` **复用 `CourseOffering[]`** |
 | **G5** | `PlanResult` 无冲突对象（只能从 `changes[].reason` 文本读出） | **未验证** | Planner / Agent | 本轮不处理，留缺口报告 |
 | **G6** | `StudentProfile` | **已裁决**（不是可用契约，不得依赖） | 全部 | 已关闭（见缺口报告 §4.1） |
-| **G7** | `CourseOffering` 无课程类别 / 开课单位 | **已由 `OFFERING-001` 验证** | Course Data / Planner | 见 §10（暂缓字段） |
-| **G8** | `Preference` 无法表达"已经有什么" | **未验证** | Agent / Planner | 本轮不处理；⚠️ 若 DG-02 / DG-03 通过，该缺口可能**自然缓解**（"已有什么"由 `CompletedCourse` / `CurrentEnrollment` 表达，不再压到 `Preference` 上） |
-| **G9** | **一个教学班多个 segment 无法无损表达** | **已由 `OFFERING-001` 验证** | Course Data / Planner | **DG-01**（本轮最重要） |
-| **G10** | D5 另有多个字段无表示 | **已由 `OFFERING-001` 验证** | Course Data / Planner | 见 §10 |
-| **新-1** | `docs/interfaces/planner.md` 职责描述与 `/AGENTS.md` 第 5 节**冲突** | **文档级事实**（可立即核实） | Planner / Curriculum | **DG-06** |
-| **新-2** | "已确认优先级"无承载位置 | `/AGENTS.md` 第 5 节要求 + Schema 无字段 | Curriculum / Planner | **DG-05** |
-| **新-3** | 课程依赖结果无正式公共对象 | `/AGENTS.md` 第 5 节要求 + 无 Schema | Curriculum / Planner | **DG-05**（倾向**不新增**，见 7.3） |
-| **新-4** | `Course` 上的 `course_type` / `recommended_semester` **位置不当**（带方案上下文） | 2B-0C Review 已改判 | Curriculum | **DG-04**（兼容 / 迁移策略待裁决） |
-| **新-5** | 推荐学期**跨学期区间**无法用单个整数表达 | `CURR-OLD-003` / `CURR-NEW-004` | Curriculum | 并入 **DG-04** |
+| **G7** | `CourseOffering` 无课程类别 / 开课单位 | **已由 `OFFERING-001` 验证** | Course Data / Planner | 见 §10 → 裁决：**均不进入公共契约** |
+| **G8** | `Preference` 无法表达"已经有什么" | **未验证** | Agent / Planner | 本轮不处理；⚠️ 裁决后 `CompletedCourse` / `CurrentEnrollment` **不作为公共契约**，但明确 **不得用 `Preference.avoid_times[]` 冒充当前课表**（DG-03） |
+| **G9** | **一个教学班多个 segment 无法无损表达** | **已由 `OFFERING-001` 验证** | Course Data / Planner | **DG-01** → 裁决：**APPROVED WITH MODIFICATION**，采用 `CourseOffering.meetings[]`，**Data Gate-2 实施** |
+| **G10** | D5 另有多个字段无表示 | **已由 `OFFERING-001` 验证** | Course Data / Planner | 见 §10 → 裁决：**均不进入公共契约** |
+| **新-1** | `docs/interfaces/planner.md` 职责描述与 `/AGENTS.md` 第 5 节**冲突** | **文档级事实**（可立即核实） | Planner / Curriculum | **DG-06** → 裁决：**APPROVED**，Data Gate-2 修正 `planner.md`，必要时同步 `curriculum.md` |
+| **新-2** | "已确认优先级"无承载位置 | `/AGENTS.md` 第 5 节要求 + Schema 无字段 | Curriculum / Planner | **DG-05** → 裁决：**MVP 暂不新增 `priority` 字段**；**Planner 不得自行生成优先级** |
+| **新-3** | 课程依赖结果无正式公共对象 | `/AGENTS.md` 第 5 节要求 + 无 Schema | Curriculum / Planner | **DG-05** → 裁决：**不新增 `DependencyGraph`**；权威边界见 §7.3.1 |
+| **新-4** | `Course` 上的 `course_type` / `recommended_semester` **位置不当**（带方案上下文） | 2B-0C Review 已改判 | Curriculum | **DG-04** → 裁决：**MVP 暂留 Curriculum 内部**；两者是**现有兼容字段**，**不得被解释为课程全局固有属性** |
+| **新-5** | 推荐学期**跨学期区间**无法用单个整数表达 | `CURR-OLD-003` / `CURR-NEW-004` | Curriculum | 并入 **DG-04** → 裁决：由 **Curriculum 内部结构**保留；现有 `recommended_semester` **不能无损表示** |
 
 **⚠️ 缺口 ≠ 必须新增 Schema。** 每条都可能是：数据侧转换 / 模块内部输入 / 数据不应进系统 /
 确属契约承载不了。§13 的每项请求都单独回答"是否存在不修改接口的替代方案"。
 
 ---
 
-## 9. 最小接口变更集合
+## 9. 最小接口变更集合（裁决后）
 
 > **最小化原则**：能用现有字段表达的，不新增字段；能作为模块内部输入消化的，不进公共契约；
 > 只有确属"契约承载不了"的，才进入变更请求。
+>
+> **裁决让这个集合比原草案更小**：真实联调真正被阻塞的只有 **多 segment 建模**，
+> 外加一项**纯文档职责修正**。
 
-| 优先级 | 项 | 为什么属于"最小必要" |
+### 9.1 进入 Data Gate-2 实施的契约变更（**2 项**）
+
+| 项 | 变更对象 | 性质 | 为什么必须 |
+|---|---|---|---|
+| **DG-01** | `schemas/course_offering.schema.json` | **结构性 / breaking migration** | 真实教学班数据**无法无损进入系统**；冲突检测、教学班替换、Path Repair 全部建立在教学班的时间占用上。当前契约下只能丢信息或造数据 |
+| **DG-06** | `docs/interfaces/planner.md`（必要时 `curriculum.md`） | **纯文档，无字段变更** | 消除接口文档与 `/AGENTS.md` 第 5 节的冲突，防止 Planner 成员越界自建依赖图与优先级 |
+
+**连带影响（Data Gate-2 必须一并处理，但不算新增契约）**：
+`mock_data/course_offerings.json`、`backend/app/models/contracts.py`（启动自检按 JSON Schema 校验原始 JSON）、
+`frontend` 类型与展示 —— 均因 **DG-01 的 breaking migration** 需要同步。
+
+### 9.2 裁决为"不产生公共契约变更"的项（**4 项**）
+
+| DG | 裁决 | MVP 形态 |
 |---|---|---|
-| **P0（不解决则无法进入真实联调）** | **DG-01 `CourseOffering` multi-segment** | 真实教学班数据**无法无损进入系统**；冲突检测、教学班替换、Path Repair 全部建立在教学班的时间占用上。当前契约下只能丢信息或造数据 |
-| **P0** | **DG-03 `CurrentEnrollment`** | Planner 的**核心功能就是冲突检测**；没有"学生当前占用"的概念，冲突检测无输入（DG-03 另有"不改接口"的降级替代方案，见 §13） |
-| **P1（Curriculum 真实输出所必需）** | **DG-02 `CompletedCourse`** | Curriculum 要把"已修课程"变成 `MakeupTask`；`semester` / `passed` 在 `Course` 中**无位置**，且**严禁**塞回 `Course` |
-| **P1** | **DG-04 `CurriculumVersion` / `CurriculumCourse`** | 培养方案级总量、课程分组、方案上下文 `course_type`、跨学期区间**都无承载位置**；且直接决定 `Course.course_type` 的归属 |
-| **P1** | **DG-05 依赖 / 优先级** | `/AGENTS.md` 第 5 节要求 Planner 消费"课程依赖结果"与"已确认优先级"；依赖**倾向不新增对象**，优先级**可能可暂不引入** |
-| **P2（文档一致性，无字段变更）** | **DG-06 `planner.md` 职责修正** | 不改 Schema，只消除接口文档与 `/AGENTS.md` 的冲突，防止 Planner 成员越界实现 |
+| **DG-02** `CompletedCourse` | DEFER PUBLIC CONTRACT | **Curriculum 内部规范化对象**；D4 Sanitized Sample 由负责人经**非公开位置**交 Curriculum；对外**仍只输出 `MakeupTask[]`** |
+| **DG-03** `CurrentEnrollment` | REUSE EXISTING CONTRACT | Planner 的 `current_schedule` **复用现有公共类型 `CourseOffering[]`**，语义 = 学生已选中的教学班子集 |
+| **DG-04** `CurriculumVersion` / `CurriculumCourse` | DEFER PUBLIC CONTRACT | **Curriculum 内部模型**；`Course.course_type` / `recommended_semester` 保持为**现有兼容字段**，**不得被解释为课程全局固有属性** |
+| **DG-05** dependency / priority | NO NEW PUBLIC CONTRACT | **不新增** `DependencyGraph` / `priority` / `PriorityResult`；Planner 只消费 `MakeupTask.prerequisites[]` |
 
-### 9.1 本轮不进入变更集合的项
+### 9.3 本轮不进入变更集合的项
 
 - **G3 学分差额**（未验证）；
 - **G5 `PlanResult` 冲突对象**（未验证；MVP 可由 `changes[].reason` + `unresolved[]` 粗略承载，但**不足以计数 / 分类**，留待验证）；
@@ -477,7 +630,7 @@ Planner 只是**消费方**。而 `/AGENTS.md` 第 17 节规定：**当两者冲
 |---|---|---|---|
 | `selectedNumber`（已选人数） | **B** | **不要求直接进公共契约**；`remaining_capacity` 作为**派生结果**（`limitNumber - selectedNumber`）。⚠️ **不得声称学校接口直接提供剩余容量** | 现有 `remaining_capacity` 已能满足 Planner 对"还有没有名额"的需求，无需暴露原始计数 |
 | `openingUnitName`（开课单位） | **B** | **不因真实存在就自动进公共 Schema**。若 Course Data 内部需要（数据质量 / 去重 / 归属判断）可内部保留；**MVP 无跨模块消费者** | G7 已验证其存在，但"存在"≠"公共契约需要" |
-| `courseCategoryName`（课程类别，样本"专必"） | **B（且归属需转移）** | **培养方案上下文属性，不能当课程全局属性** → 归属见 **DG-04**（`CurriculumCourse`），**不进入 `CourseOffering`**。⚠️ 取值体系与粒度**待人工确认** | 与 D4 的 `course_type` **同源问题**；真实培养方案中该信息以**分区标题 / 行内"课程性质"列**形态出现 |
+| `courseCategoryName`（课程类别，样本"专必"） | **B（且归属需转移）** | **培养方案上下文属性，不能当课程全局属性** → **裁决：MVP 随 DG-04 暂留 Curriculum 内部模型**，**不进入 `CourseOffering`**。⚠️ 取值体系与粒度**待人工确认** | 与 D4 的 `course_type` **同源问题**；真实培养方案中该信息以**分区标题 / 行内"课程性质"列**形态出现 |
 | `examMode`（考核方式） | **C** | 当前不进入系统 | **Planner MVP 当前非必需** |
 | `readObj`（修读对象） | **C（＋待确认）** | 当前不进入系统。⚠️ **未来可能影响"可选资格"**（学生能否选这个教学班），但**当前规则不足**，不得据此判断资格；**完整文本不入库** | 语义已知、**规则不足**；需人工确认后才能升级 |
 | `teachProgressSubmitState` | **D** | **语义未知，继续待确认** | ⚠️ **不得根据 0/1 值自行解释** |
@@ -497,6 +650,16 @@ Planner 只是**消费方**。而 `/AGENTS.md` 第 17 节规定：**当两者冲
 2. **语义未确认的字段一律不得正式化。** `teachProgressSubmitState` / `openClass` / `outlineTypeNum`
    保持"字段存在，业务语义待确认"，**不解释 0/1**。
 3. **上下文属性不得下放到全局对象。** `courseCategoryName` / `course_type` 属培养方案上下文。
+
+### 10.2 裁决确认
+
+本节全部字段的**"不进入公共契约"处置已随 DG-01 – DG-06 裁决一并确认**：
+
+- ⛔ 这些字段**不因真实存在**而自动进入任何公共 Schema；
+- ⛔ **不得**用 `Preference.avoid_times[]` 冒充"当前课表"（DG-03）——
+  `avoid_times` 是**偏好回避**，**不是**学生已选教学班的事实表达；
+- ⛔ **D 类字段**（`teachProgressSubmitState` / `openClass` / `outlineTypeNum` /
+  `openingSchoolName` / `weekDay` / `cultivation_type`）在**语义确认前**一律不得正式化。
 
 ---
 
@@ -542,29 +705,34 @@ Planner                            （冲突检测 / 替换 / 求解）
 **完整 2026-1 开课数据获取属于 Data Gate 之后的 Course Data MVP，不在本轮范围。**
 
 当前 D5 只有**小规模人工侦察**（`CSE202` / `2026-1` → 2 个教学班）。
-正式获取必须等：① DG-01 的表示方式定了；② 采集范围经负责人批准；③ 合规边界确认。
+正式获取必须等：① ~~DG-01 的表示方式定了~~ → **已裁决（嵌套 `meetings[]`）**，
+待 **Data Gate-2 实施契约变更**；② 采集范围经负责人批准；③ 合规边界确认。
 （人工技术侦察**已到此结束**，不再继续查询更多课程。）
 
 ---
 
 ## 12. Data Gate 通过条件
 
+> **本节共 11 条：C1 – C11。**
 > 以下条件**全部满足**，才视为通过 Data Gate，可以恢复 Phase 2B Integration / Course Data MVP。
 > 任一条未满足，**Phase 2B Integration 保持暂停编码**。
+>
+> **当前进度**：**C1 的"裁决"部分已完成**（Architecture Lead，见开头裁决总表）；
+> C4 / C6 / C7 / C8 的**方向已由裁决确定**，**实施与确认仍在 Data Gate-2**。
 
-| # | 条件 | 判定方 |
-|---|---|---|
-| **C1** | **DG-01 – DG-06 逐项裁决完毕**（批准 / 驳回 / 修改），且裁决结论**书面记录**在本文件或负责人指定的位置 | 负责人 |
-| **C2** | **实体边界与所有者无异议**：Curriculum / Course Data / Planner / Integration / Frontend 五方对 §3 / §4 的划分达成一致 | 负责人 + 各模块 |
-| **C3** | **Shared / Private / Derived 分类确认**（§5），特别是"用户适用的 `CurriculumVersion` reference 属私有"这一条 | 负责人 |
-| **C4** | **多 segment 表示方式确定**（§6 / DG-01），且明确**未**采用"只保留第一段"与"拆成多个可独立选择的 `CourseOffering`"两个被禁方案 | 负责人 + Course Data + Planner |
-| **C5** | **契约变更（如有）已走完流程**：`/AGENTS.md` 第 4 节的 `【接口变更请求】` → 人工确认 → **才**修改 `/schemas/` 与 `/docs/interfaces/`；并**同步**评估对 `mock_data/`、`backend/app/models/contracts.py`（启动自检）、`frontend` 类型与展示的影响与回归测试范围 | 负责人 + 各模块 |
-| **C6** | **暂缓字段清单确认**（§10）：`teachProgressSubmitState` / `openClass` / `outlineTypeNum` 等**不进入公共契约**，保持待确认 | 负责人 |
-| **C7** | **Curriculum → Planner 契约确定**（§7 / DG-05）：明确 Planner MVP 是否引入优先级；明确依赖信息由 `MakeupTask.prerequisites[]` 承载（或另有裁决） | 负责人 + Curriculum + Planner |
-| **C8** | **接口文档债务修正决定**（DG-06）：`docs/interfaces/planner.md` 是否按 `/AGENTS.md` 第 5 节修正，及由谁执行 | 负责人 |
-| **C9** | **Course Data 获取边界与合规确认**（§11）：采集范围、授权方式、标准化责任、`data_source` 标记规则 | 负责人 + Course Data |
-| **C10** | **数据交接方式确认**：`MEMBER_DATA_HANDOFF.md` 已更新为当前状态（GitHub 可直接共享 / 非公开按需交接 / 禁止交接三层），且**真实逐行数据的交接次数如实记录** | 负责人 |
-| **C11** | **真实数据未使用的字段风险已知悉**：`prerequisites[]` 无真实证据支持可填充（§2.2）、`weekDay` / `openingSchoolName` 映射待确认 | 负责人 |
+| # | 条件 | 当前状态 | 判定方 |
+|---|---|---|---|
+| **C1** | **DG-01 – DG-06 逐项裁决完毕**（批准 / 驳回 / 修改），且裁决结论**书面记录**在本文件 | ✅ **已完成**（Architecture Lead）；⏳ 待 Reviewer 最终复验 | 负责人 |
+| **C2** | **实体边界与所有者无异议**：Curriculum / Course Data / Planner / Integration / Frontend 五方对 §3 / §4 的划分达成一致 | ⏳ 待确认 | 负责人 + 各模块 |
+| **C3** | **Shared / Private / Derived 分类确认**（§5），特别是"用户适用的 `CurriculumVersion` reference 属私有"这一条 | ⏳ 待确认 | 负责人 |
+| **C4** | **多 segment 表示方式确定**（§6 / DG-01），且明确**未**采用"只保留第一段"与"拆成多个可独立选择的 `CourseOffering`"两个被禁方案 | ✅ **已确定**：**嵌套 `meetings[]`（方案 A）**；⏳ Data Gate-2 实施 | 负责人 + Course Data + Planner |
+| **C5** | **契约变更已走完流程**：`/AGENTS.md` 第 4 节的 `【接口变更请求】` → 人工确认 → **才**修改 `/schemas/` 与 `/docs/interfaces/`；并**同步**评估对 `mock_data/`、`backend/app/models/contracts.py`（启动自检）、`frontend` 类型与展示的影响与回归测试范围 | ⏳ **Data Gate-2 执行**（DG-01 / DG-06） | 负责人 + 各模块 |
+| **C6** | **暂缓字段清单确认**（§10）：`teachProgressSubmitState` / `openClass` / `outlineTypeNum` 等**不进入公共契约**，保持待确认 | ✅ **已确认**（随裁决一并确认） | 负责人 |
+| **C7** | **Curriculum → Planner 契约确定**（§7 / DG-05）：优先级**不新增字段**、Planner 不得自行生成；依赖由 `MakeupTask.prerequisites[]` 承载，权威边界见 §7.3.1 | ✅ **已确定** | 负责人 + Curriculum + Planner |
+| **C8** | **接口文档债务修正决定**（DG-06）：`docs/interfaces/planner.md` 按 `/AGENTS.md` 第 5 节修正，**必要时同步 `curriculum.md`** | ✅ **已批准**；⏳ Data Gate-2 执行 | 负责人 |
+| **C9** | **Course Data 获取边界与合规确认**（§11）：采集范围、授权方式、标准化责任、`data_source` 标记规则 | ⏳ 待确认 | 负责人 + Course Data |
+| **C10** | **数据交接方式确认**：`MEMBER_DATA_HANDOFF.md` 已更新为当前状态（GitHub 可直接共享 / 非公开按需交接 / 禁止交接三层），且**真实逐行数据的交接次数如实记录**（DG-02 已允许 D4 Sanitized Sample 经非公开位置交 Curriculum） | ⏳ 待确认 | 负责人 |
+| **C11** | **真实数据未使用的字段风险已知悉**：`prerequisites[]` 无真实证据支持可填充（§2.2）、`weekDay` / `openingSchoolName` 映射待确认、**meeting 级教师关联为 known deferred representation gap**（§6.4） | ⏳ 待确认 | 负责人 |
 
 ### 12.1 通过 Gate 之前，任何模块不得
 
@@ -576,10 +744,11 @@ Planner                            （冲突检测 / 替换 / 求解）
 
 ---
 
-## 13. 接口变更请求草案（DG-01 – DG-06）
+## 13. 接口变更请求与裁决（DG-01 – DG-06）
 
-> ⚠️ **以下全部是草案，不代表批准。**
-> ⚠️ **凡涉及字段名 / 类型 / 取值域 / 枚举 / 是否必填，一律不在此处锁定**，由负责人裁决。
+> 本节保留 Data Gate-1 提交的**原始请求文本**（便于追溯），并在每项之后附上
+> **裁决（Architecture Lead，2026-09-30）**。
+> ⚠️ **裁决 ≠ 实施**：公共契约**尚未修改**，实施统一在 **Data Gate-2**。
 > ⚠️ 格式遵循 `/AGENTS.md` 第 4 节。
 
 ### DG-01 `CourseOffering` multi-segment（G9）
@@ -636,6 +805,21 @@ Planner                            （冲突检测 / 替换 / 求解）
   → 结论：存在"不改接口"的方案，但都有实质代价，需负责人权衡后裁决。
 ```
 
+#### 裁决（Architecture Lead，2026-09-30）：**DG-01 = APPROVED WITH MODIFICATION**
+
+- ✅ 采用方案 A：**`CourseOffering` 1 — N `Meeting` / `ScheduleSegment`**；
+  **Data Gate-2 将正式修改 `schemas/course_offering.schema.json`**；
+- ⛔ **不再保留 B / C / D 为待选方案** —— 三者作为**已评估但驳回**的方案记录（见 §6.5）；
+- ✅ **最终选择 = 嵌套 segment 数组方案**；目标结构见 **§6.8**；
+- ✅ 每个 segment 的 MVP 排课字段：`weekday` / `start_section` / `end_section` /
+  `weeks[]` / `campus` / `classroom`；
+- ✅ 现有**教学班级 `teacher` MVP 暂保留**（教学班汇总 / 展示字段）；
+- ⚠️ **修正教师证据**：**不得**再写"没有证据表明教师存在 meeting-level 语义"。
+  真实 D5 的 `teachingTimePlaceStr` **segment 本身包含教师项**，且**已有样本表明 segment 与教师存在关联**。
+  裁决为：**meeting-level teacher association = 已知真实语义**，但 **Planner MVP 不依赖它**，
+  因此**暂不纳入本轮 meeting 最小公共字段**；登记为 **known deferred representation gap**（见 §6.4）；
+- ⚠️ 这是一次**有意的 breaking contract migration**；实施与回归范围在 **Data Gate-2** 处理。
+
 ### DG-02 `CompletedCourse`
 
 ```text
@@ -681,6 +865,17 @@ Planner                            （冲突检测 / 替换 / 求解）
   → 是否正式化，取决于负责人对"已修课程是否需要跨模块可见"的裁决。
 ```
 
+#### 裁决（Architecture Lead，2026-09-30）：**DG-02 = DEFER PUBLIC CONTRACT**
+
+- ✅ **概念成立**：`CompletedCourse` 表示"某学生已经修过某门课的事实"；
+- ⛔ **MVP 不新增** `schemas/completed_course.schema.json`；
+- ✅ **先作为 Curriculum 内部规范化对象**存在；
+- ✅ **真实 D4 Sanitized Sample 可以由负责人通过非公开位置交给 Curriculum 成员**
+  （仍须走 `MEMBER_DATA_HANDOFF.md` 的交接 Checklist；**不得进入 public 仓库**）；
+- ✅ Curriculum **对外继续只输出 `MakeupTask[]`**；
+- 🔁 **后续若 Integration / Frontend 确实需要跨模块消费 `CompletedCourse`，再重新走接口变更。**
+- ⚠️ 红线不变：**`semester` / `passed` 绝不塞回 `Course`**。
+
 ### DG-03 `CurrentEnrollment`
 
 ```text
@@ -724,6 +919,24 @@ Planner                            （冲突检测 / 替换 / 求解）
        （禁止私有的跨模块格式）。
   → 结论：`avoid_times` 可作为 MVP 降级方案，但语义不足；需负责人裁决。
 ```
+
+#### 裁决（Architecture Lead，2026-09-30）：**DG-03 = APPROVE CONCEPT, REUSE EXISTING CONTRACT**
+
+- ✅ **概念保留**：`CurrentEnrollment` 表示"学生当前已选 / 正在修读的教学班"；
+- ⛔ **MVP 不新增 `CurrentEnrollment` Schema**，**避免重复一套等价结构**；
+- ✅ Planner 接口中的 **`current_schedule` 直接使用现有公共类型 `CourseOffering[]`**，
+  语义上表示"**学生已选中的教学班子集**"；
+- ⚠️ **接口文档中必须明确区分**：
+
+  ```text
+  CourseOffering[]                     —— 学校全部供给
+  current_schedule: CourseOffering[]   —— 学生已经选择的子集
+  ```
+
+  两者**类型相同、语义不同**，**不得混用**；
+- ⛔ **不允许使用 `Preference.avoid_times[]` 冒充当前课表** ——
+  该字段是**偏好回避**，不是"已选教学班"的事实表达（因此 §13 原"降级替代方案"**被驳回**）；
+- ✅ 该语义区分应在 **Data Gate-2 的 `planner.md` 修正**中写清（DG-06）。
 
 ### DG-04 `CurriculumVersion` / `CurriculumCourse`
 
@@ -787,6 +1000,17 @@ Planner                            （冲突检测 / 替换 / 求解）
      是否正式化，取决于负责人对 MVP 范围与语义正确性的权衡。
 ```
 
+#### 裁决（Architecture Lead，2026-09-30）：**DG-04 = DEFER PUBLIC CONTRACT**
+
+- ✅ **概念边界成立**：`CurriculumVersion`（某专业 / 年级 / 版本的一份方案）与
+  `CurriculumCourse`（某门课在该方案中的**要求**）的划分被确认；
+- ⛔ **MVP 不新增这两个公共 Schema**，**暂作为 Curriculum 内部模型**；
+- ✅ **同时明确记录**：`Course.course_type` 与 `Course.recommended_semester` 是
+  **现有兼容字段**，**不能被解释为课程全局固有属性**；
+- ✅ **跨学期区间**（如 `2025-1~2025-2`）**仍不能由现有 `recommended_semester` 无损表示**，
+  应由 **Curriculum 内部结构**保留；
+- 🔁 若将来需要跨模块消费培养方案结构，再重新走接口变更。
+
 ### DG-05 Curriculum → Planner 的 priority / dependency
 
 ```text
@@ -847,6 +1071,31 @@ Planner                            （冲突检测 / 替换 / 求解）
      若最终依赖信息无处可得，Planner 的依赖排序将只能基于**人工确认**的输入。
 ```
 
+#### 裁决（Architecture Lead，2026-09-30）：**DG-05 = NO NEW PUBLIC CONTRACT FOR MVP**
+
+- ⛔ **不新增** `DependencyGraph` Schema；
+- ⛔ **不新增** `priority` 字段；
+- ⛔ **不新增** `PriorityResult`（或同类对象）；
+- ✅ 权威边界（**必须按此表述**）：
+
+  ```text
+  Curriculum：
+    负责认定 / 产出 authoritative dependency edges（先修关系）
+
+  Planner：
+    可以把已经收到的 prerequisites[]
+    转换成本地 adjacency / topological representation
+    供确定性求解使用
+
+  Planner：
+    不得新增、猜测、重写任何 prerequisite edge
+  ```
+
+- ✅ 若真实来源**无法提供** prerequisite → 标记 **未知 / 待人工确认**，**不得自动补齐**；
+- ⛔ **目前没有正式 priority 数据时，Planner 不得自行生成 priority**；
+- 🔁 **后续 Curriculum 真正实现明确的优先级规则时，再走接口变更。**
+- ⚠️ §7.3.1 给出同一权威边界的完整表格版本。
+
 ### DG-06 `docs/interfaces/planner.md` 与 `/AGENTS.md` 职责冲突修正
 
 ```text
@@ -894,17 +1143,24 @@ Planner                            （冲突检测 / 替换 / 求解）
   → 建议按上述 ①–④ 修正，但**由负责人裁决**。
 ```
 
+#### 裁决（Architecture Lead，2026-09-30）：**DG-06 = APPROVED**
+
+- ✅ **下一阶段允许修正** `docs/interfaces/planner.md`；
+- ✅ 并根据需要**同步** `docs/interfaces/curriculum.md`，使其与 `/AGENTS.md` 第 5 节一致；
+- ⚠️ **本轮仍然不要改 `docs/interfaces/`** —— 本轮只**落档裁决**；
+- ✅ 执行窗口：**Data Gate-2**（与 DG-01 的 Schema 变更一并处理）。
+
 ---
 
 ## 14. 本文件不做什么
 
-- 不修改 `/schemas/`、`/docs/interfaces/`、`/AGENTS.md`；
+- 不修改 `/schemas/`、`/docs/interfaces/`、`/AGENTS.md`（**契约实施统一在 Data Gate-2**）；
 - 不修改 `backend/`、`frontend/`、`mock_data/`；
 - 不写 parser、crawler、Adapter、Normalizer、`CourseDataProvider`、Integration；
 - 不建数据库、不写 ORM / migration、不设计 PostgreSQL 表；
-- 不调用 SYSU 接口（本轮**零请求**）;
-- 不锁定任何字段名 / 类型 / 取值域 / 枚举；
-- 不代替负责人做最终裁决；
+- 不调用 SYSU 接口（本轮**零请求**）；
+- **不自行增删字段、不改变字段含义**（字段级细节以裁决给出的**目标结构**与 Data Gate-2 契约文本为准）；
+- **不提前实施已裁决的变更**（DG-01 的 Schema 变更与 DG-06 的文档修正均在 Data Gate-2）；
 - 不自行进入 Data Gate-2。
 
 ---
@@ -913,4 +1169,5 @@ Planner                            （冲突检测 / 替换 / 求解）
 
 | 日期 | 变更 | 说明 |
 |---|---|---|
-| 2026-09-30 | **建立本文件（Data Gate-1）** | 依据 D1–D5 真实证据与 `REAL_TO_SCHEMA_GAP_REPORT.md`（G1–G10）：① 整理 7 个核心实体边界（`Course` / `CurriculumVersion` / `CurriculumCourse` / `CompletedCourse` / `CurrentEnrollment` / `CourseOffering` / `ScheduleSegment`）；② 给出实体所有者、Shared / Private / Derived 分类与 Course Data 获取边界；③ 对 **G9 多 segment** 给出概念关系、6 项 segment 量、`teacher` 层级结论与 4 个候选方案（含明确禁止的 2 个方案）；④ 分析 `Curriculum → Planner` 契约（`prerequisites[]` 是否足够、"已确认优先级"是否进契约）并登记 `docs/interfaces/planner.md` 的**接口文档债务**；⑤ 提交 **DG-01 – DG-06** 六项 `【接口变更请求】` **草案**与 **12 条 Data Gate 通过条件**。**未修改 Schema / Interface / 代码，未调用 SYSU 接口，未裁决任何一项。** |
+| 2026-09-30 | **建立本文件（Data Gate-1）** | 依据 D1–D5 真实证据与 `REAL_TO_SCHEMA_GAP_REPORT.md`（G1–G10）：① 整理 7 个核心实体边界（`Course` / `CurriculumVersion` / `CurriculumCourse` / `CompletedCourse` / `CurrentEnrollment` / `CourseOffering` / `ScheduleSegment`）；② 给出实体所有者、Shared / Private / Derived 分类与 Course Data 获取边界；③ 对 **G9 多 segment** 给出概念关系、6 项 segment 量、`teacher` 层级结论与 4 个候选方案（含明确禁止的 2 个方案）；④ 分析 `Curriculum → Planner` 契约（`prerequisites[]` 是否足够、"已确认优先级"是否进契约）并登记 `docs/interfaces/planner.md` 的**接口文档债务**；⑤ 提交 **DG-01 – DG-06** 六项 `【接口变更请求】` **草案**与 **11 条 Data Gate 通过条件（C1–C11）**。**未修改 Schema / Interface / 代码，未调用 SYSU 接口；当时尚未裁决任何一项。** |
+| 2026-09-30 | **架构裁决落档（Architecture Lead）** | ① 新增**架构裁决总表**：**DG-01 APPROVED WITH MODIFICATION**（采用 `CourseOffering` 1 — N `Meeting`，Data Gate-2 改契约；方案 B/C/D 转为"已评估但驳回"）、**DG-02 DEFER PUBLIC CONTRACT**（Curriculum 内部规范化对象，D4 经非公开位置交接）、**DG-03 APPROVE CONCEPT, REUSE EXISTING CONTRACT**（`current_schedule` 复用 `CourseOffering[]`）、**DG-04 DEFER PUBLIC CONTRACT**（Curriculum 内部模型；`Course.course_type` / `recommended_semester` 不得解释为全局固有属性）、**DG-05 NO NEW PUBLIC CONTRACT FOR MVP**（不新增 `DependencyGraph` / `priority` / `PriorityResult`）、**DG-06 APPROVED**（Data Gate-2 修正 `planner.md`，必要时同步 `curriculum.md`）；② **进入 Data Gate-2 实施的契约变更只有 DG-01 与 DG-06 两项**（§9 重写）；③ **修正教师证据**：删除"没有证据表明教师存在 meeting-level 语义"的说法，改为"**meeting-level teacher association = 已知真实语义**，但 Planner MVP 不依赖它"，并登记为 **known deferred representation gap**（§6.4）；④ **§6.8 锁定目标结构**（`meetings[]`：`weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom`）；⑤ **修正 DG-05 权威边界表述**：Curriculum 认定 / 产出 edges，Planner 只做**本地** adjacency / topology 转换，**不得新增 / 猜测 / 重写 edge**（§7.3.1）；⑥ **修正通过条件计数**：由"12 条"更正为 **11 条（C1–C11）**；⑦ §12 增加逐条**当前状态**。**仍未修改 Schema / Interface / 代码，未调用 SYSU 接口（零请求），未进入 Data Gate-2。** |

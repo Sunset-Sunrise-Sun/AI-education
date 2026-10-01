@@ -68,12 +68,14 @@
 
 | 数据 | 层级 | 交付形态与限制 |
 |---|---|---|
-| **D4 Sanitized Sample**（已修课程脱敏**逐行**记录） | Sanitized Sample | 仅课程号 / 课程名 / 学分 / 修读学期 / 是否通过 / 必要课程性质；**必须先脱敏**并经负责人确认标准；**仅可用于 Schema 承载能力与 Curriculum 逻辑验证，不得对外展示** |
-| **后续 D5 normalized / sanitized sample** | Sanitized Sample | 需**先完成 Data Gate 对"一个教学班多个 segment"表示的裁决**（`DATA_GATE_DECISIONS.md` DG-01），否则交付形态不稳定、下游会各自发挥 |
-| **培养方案结构化输出**（若最终裁决为"模块内部输入 / 不进公共契约"） | Sanitized Sample 或模块内部输入 | 由负责人决定形态与交付方式；⚠️ **不得**被当作跨模块公共契约使用 |
+| **D4 Sanitized Sample**（已修课程脱敏**逐行**记录） | Sanitized Sample | 仅课程号 / 课程名 / 学分 / 修读学期 / 是否通过 / 必要课程性质；**必须先脱敏**并经负责人确认标准；**仅可用于 Schema 承载能力与 Curriculum 逻辑验证，不得对外展示**。<br>✅ **DG-02 裁决：可以由负责人通过非公开位置交给 Curriculum 成员**（`CompletedCourse` 作为 **Curriculum 内部规范化对象**，不进公共契约） |
+| **后续 D5 normalized / sanitized sample** | Sanitized Sample | **DG-01 已裁决**为 `CourseOffering` 1 — N `Meeting`（嵌套 `meetings[]`）；**交付形态待 Data Gate-2 实施契约变更后再确定**，否则下游会各自发挥 |
+| **培养方案结构化输出** | Sanitized Sample 或**模块内部输入** | **DG-04 裁决：MVP 作为 Curriculum 内部模型**（不新增公共 Schema）；由负责人决定交付形态与方式；⚠️ **不得**被当作跨模块公共契约使用 |
 
 > ⚠️ **截至本文件更新，上述逐行样本的交接次数仍为 `0`。**
 > 已有的是"**汇总事实**"（在 public 仓库），**不是"已交付的逐行数据"**。
+> ⚠️ **"裁决允许按需交付" ≠ "已经交付"** —— DG-02 只是**打开了交付通道**，
+> 是否交付、何时交付仍由负责人决定，并须走第 9 节 Checklist。
 
 ### 2.3 禁止交接（任何情况下都不得交付）
 
@@ -157,24 +159,33 @@
 
 ### 6.2 目前没有正式表示的
 
-- `/AGENTS.md` 第 5 节还要求 **Planner 消费 Curriculum 提供的"课程依赖结果"与"已确认优先级"**；
-- 但这两者**目前没有正式的公共 Schema**（`/schemas/` 下没有对应文件），
+- `/AGENTS.md` 第 5 节要求 **Planner 消费 Curriculum 提供的"课程依赖结果"与"已确认优先级"**；
+- 但这两者**没有正式的公共 Schema**（`/schemas/` 下没有对应文件），
   在 `docs/interfaces/planner.md` 中它们也只以"来自 Curriculum"的方式被提及。
 - ⚠️ 另外，`docs/interfaces/planner.md` 目前把"课程依赖图 / 补修优先级与风险"写成
   **Planner 自己的职责**，**与 `/AGENTS.md` 第 5 节冲突** ——
-  该**接口文档债务**已登记在 `DATA_GATE_DECISIONS.md` 的 **DG-06**，等待负责人裁决。
-- 依赖方面：`MakeupTask.prerequisites[]` **已存在**，可能已足够承载 MVP 所需依赖
-  （见 `DATA_GATE_DECISIONS.md` §7.3 / DG-05）。
+  该**接口文档债务**已登记为 **DG-06**，**裁决结果：APPROVED**，
+  由 **Data Gate-2 修正** `planner.md`（必要时同步 `curriculum.md`）。
+- **DG-05 裁决（NO NEW PUBLIC CONTRACT FOR MVP）**：
+  - ⛔ **不新增** `DependencyGraph` Schema、**不新增** `priority` 字段、**不新增** `PriorityResult`；
+  - 依赖方面：`MakeupTask.prerequisites[]` **已存在且承认为 MVP 依据**
+    （见 `DATA_GATE_DECISIONS.md` §7.3 / §7.3.1）；
+  - ✅ **Curriculum 负责认定 / 产出 dependency edges**；
+    **Planner 只能把已经收到的 `prerequisites[]` 转成求解所需的本地 adjacency / topology**，
+    ⛔ **不得新增、猜测、重写任何 prerequisite edge**；
+  - ⛔ **没有正式 priority 数据时，Planner 不得自行生成优先级**。
 
 ### 6.3 因此当前的硬性约束
 
-- 这两项**当前不得作为跨模块交付物**；
+- 依赖与优先级**仍不作为独立公共对象交付**（裁决明确不新增）；
+  Planner 只消费 `MakeupTask[]` 中**已经存在**的字段；
 - **任何成员都不得自行设计私有的跨模块格式**（例如在代码里定义一套只有两边懂的中间结构，
   再私下传递）——那等于绕过公共契约；
 - 处理方式：该缺口已登记在 `REAL_TO_SCHEMA_GAP_REPORT.md`，
-  决策草案见 `DATA_GATE_DECISIONS.md`；
-  如确需成为正式契约，由负责人决定是否发起 `【接口变更请求】`；
-- **在缺口解决之前，Planner 只能依赖 `MakeupTask[]` 中已存在的字段**，
+  裁决记录见 `DATA_GATE_DECISIONS.md`；
+  如后续确需成为正式契约（例如 Curriculum 真正实现明确的优先级规则），
+  由负责人决定是否发起新的 `【接口变更请求】`；
+- **Planner 只能依赖 `MakeupTask[]` 中已存在的字段**，
   不得依赖任何未定义的私有结构。
 
 ---
@@ -264,13 +275,16 @@ source_id（对应 DATA_SOURCE_REGISTRY）：
   - DATA_GATE_DECISIONS.md
   - /mock_data/（人工虚构）
 已向组员交付的逐行真实数据：无
-  - D4 Sanitized Sample：待按需交接（交接次数 0）
-  - D5 normalized / sanitized sample：待 DG-01 裁决后再定交付形态（交接次数 0）
+  - D4 Sanitized Sample：DG-02 已裁决允许由负责人经非公开位置交 Curriculum；
+    实际交付仍待负责人决定（交接次数 0）
+  - D5 normalized / sanitized sample：DG-01 已裁决为 CourseOffering 1—N Meeting，
+    交付形态待 Data Gate-2 实施契约后确定（交接次数 0）
+  - 培养方案结构化输出：DG-04 裁决为 Curriculum 内部模型，不进公共契约
 已交付 Curriculum 的真实数据：无
 已交付 Planner 的真实数据：无
-最近更新：2026-09-30（Data Gate-1：新增第 2 节"当前数据清单"，
-          明确区分「GitHub 可直接共享 / 负责人非公开按需交接 / 禁止交接」三层，
-          并澄清「已有真实证据」≠「已交付逐行数据」）
+Data Gate-1 架构裁决：DG-01 – DG-06 已全部裁决；公共契约尚未实施
+最近更新：2026-09-30（Data Gate-1 架构裁决落档：同步 DG-02 / DG-03 / DG-04 / DG-05
+          对交接的影响；明确「裁决允许按需交付」≠「已经交付」，交接次数仍为 0）
 ```
 
 > Phase 2B-0A 只做规划，**不获取、不交接任何真实数据**；
