@@ -377,11 +377,12 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 ## 6. 当前登记状态
 
 ```text
-已登记来源数：17（**全部已确认，无"待填写"**）
+已登记来源数：17（**均已完成来源登记 / 状态判定，无"待填写"项**）
   POLICY-001..008、CURR-OLD-001/002/003、CURR-NEW-001/002/003/004、
   TRANSCRIPT-001、OFFERING-001
 访问类型分布：Public Official 12 ｜ Authenticated Official 4 ｜ 公开搜索记录 1
-证据等级分布：Confirmed 7 ｜ Partial 7 ｜ Not Found 1 ｜ Historical 1 ｜ 不适用 1
+证据等级分布（**注意：并非全部来源都是 Confirmed**）：
+  Confirmed 7 ｜ Partial 7 ｜ Not Found 1 ｜ Historical 1 ｜ 不适用 1
 已获取数据文件：0 进入仓库
   （公开来源未下载；认证来源的原始 docx、D4 逐行样本、D5 Raw response 均由负责人保管，**均不入库**）
 含个人信息的已入库数据：0（且必须永远保持为 0）

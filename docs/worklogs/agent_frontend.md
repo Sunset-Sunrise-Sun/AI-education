@@ -577,3 +577,46 @@
 - 下一步：等待 Reviewer 验收 **2B-0D**。通过后进入 **Data Gate**
   （处理 G9 多 segment 建模与 `Course` / `CurriculumCourse` / `CompletedCourse` 的架构边界）。
   ⚠️ **不得自行开始**。**不 merge**，Phase 2B Integration 保持暂停编码。
+
+---
+
+### 2026-09-30 - Phase 2B-0D Reviewer 修复：§3.2 字段来源 + 登记表状态措辞（docs-only）
+- 本次目标：只修 2 个 Reviewer blocker。**不再查询教务系统、不进入 Data Gate、
+  不写 parser、不建数据库、不写 Adapter、不改 Schema / Interface / 代码 / Mock。**
+- Blocker 1：**修正 `REAL_TO_SCHEMA_GAP_REPORT.md` §3.2 的真实字段来源**
+  - 问题：原表在「真实 D5 字段」列里误列了
+    `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` ——
+    **这些是公共 `CourseOffering` 的目标字段，不是 SYSU Response 的真实字段**，
+    且被错误判为"C 当前无正式表示"（它们其实**在现有 Schema 中已经存在**）；
+  - 处理：**删除该行**，改为以**实际 Response 字段**为源：
+    `teachingTimePlaceStr`、`openingSchoolName`、`weekDay`；
+  - **`teachingTimePlaceStr` 明确区分两层**（已写入表格与表下说明）：
+    ① **单个 schedule segment** → 可解析为 `weeks` / `weekday` / `start_section` / `end_section` /
+    `campus` / `classroom` → 属**数据转换层能力（B）**；
+    ② **整个教学班** → 该字段**可包含多个 segment**，而当前一个 `CourseOffering` **只能表达一组**
+    → **无法无损映射（C）→ G9**；
+  - `openingSchoolName` / `weekDay` 标为 **B 待确认**：**字段真实存在**，
+    分别与 `campus` / `weekday` **有关联**，但**具体转换 / 对应关系待确认**（多 segment 时如何取值不明）；
+    **不猜**；
+  - 表下新增「**真实 D5 字段」列的填写纪律**说明：该列**只列 Response 中实际出现的字段**，
+    目标字段不得混入。
+  - **保持**：不修改 Schema、不设计 `meetings[]`、不实现 parser。
+- Blocker 2：**修正 `DATA_SOURCE_REGISTRY.md` 状态措辞**
+  - 问题：原文"已登记来源数：17（**全部已确认，无"待填写"**）"会与
+    **Evidence Grade = Confirmed** 混淆；
+  - 改为："已登记来源数：17（**均已完成来源登记 / 状态判定，无"待填写"项**）"；
+  - 并**保留并强化**真实证据等级分布，加注"注意：并非全部来源都是 `Confirmed`"：
+    **Confirmed 7 ｜ Partial 7 ｜ Not Found 1 ｜ Historical 1 ｜ 不适用 1**；
+  - 明确：**不得**把这 17 个来源全部描述成 Evidence Grade = Confirmed。
+- 未改动的文件：`docs/status/agent_frontend.md` 与各 Evidence 文档**本轮未改**
+  （复查后确认其中不含上述两类问题，**不为凑修改范围而改**）。
+- 修改文件：
+  - `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - `docs/data/DATA_SOURCE_REGISTRY.md`
+  - 本文件（**仅追加**）
+- 测试：docs-only，未改动任何代码，未复跑前后端
+- 公共接口是否变化：否 ｜ 是否修改 backend / frontend / mock_data：否
+- 未做：**未再查询教务系统**、未保存 Cookie/Session/Token、未采集 HAR、未写 crawler、
+  未实现 parser、未建数据库、未写 Adapter、未改 Schema / Interface、**未进入 Data Gate**、
+  未进入 Integration
+- 下一步：等待 Reviewer 复验。**不 merge，不进入 Data Gate**，Phase 2B Integration 保持暂停编码。

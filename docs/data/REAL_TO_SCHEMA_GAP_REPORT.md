@@ -119,13 +119,30 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | `limitNumber`（容量上限） | **A 可直接映射** | `capacity` | —— | 同上 | 同上 | —— |
 | `selectedNumber`（已选人数） | **C 当前无直接字段** | —— | `CourseOffering` 没有"已选人数"字段 | 同上 | 同上 | 见 G10 |
 | `limitNumber - selectedNumber`（剩余容量） | **B 派生值** | `remaining_capacity` | **必须有明确说明：学校接口并未直接提供 `remaining_capacity`，它是两个字段相减得到的派生值** | 同上 | 同上 | **不得声称接口直接提供该字段** |
-| `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` | **C 当前无正式表示（结构层面）** | —— | 真实接口用 `teachingTimePlaceStr` 等文本承载上课时间地点，**需结构化解析**；且**一个教学班可含多个 segment**，当前只能表达一组 —— **无法无损表达**，见 **G9** | 同上 | 同上 | **本轮不实现 parser** |
+| `teachingTimePlaceStr`（上课时间地点**原始文本串**） | **单个 segment：B 可转换后映射**；**整个教学班：C 无法无损映射** | 单个 segment → `weeks` / `weekday` / `start_section` / `end_section` / `campus` / `classroom` | **必须分两层看（见下方说明）**：<br>① **单个 schedule segment** 可解析为 `weeks` / `weekday` / `start_section` / `end_section` / `campus` / `classroom` → 属**数据转换层能力（B）**；<br>② **整个教学班**：该字段**可包含多个 segment**，而当前一个 `CourseOffering` **只能表达一组** → **无法无损映射（C）→ G9** | Course Data / Planner | `OFFERING-001` | **本轮不实现 parser**；**原始串不入库** |
+| `openingSchoolName`（开课校区 / 学校） | **B 待确认** | 与 `campus` 相关 | **字段真实存在**，与 `campus` **有关联**；**具体转换关系待确认** | 同上 | 同上 | **不猜** |
+| `weekDay`（星期） | **B 待确认** | 与 `weekday` 相关 | **字段真实存在**，与 `weekday` **有关联**；**它与 segment 的对应关系待确认**（多 segment 时如何取值不明） | 同上 | 同上 | **不猜** |
 | `openingUnitName`（开课单位） | **C 当前无正式表示** | —— | `CourseOffering` 无"开课单位"字段 | 同上 | 同上 | 见 **G7**（本轮升级）与 G10 |
 | `courseCategoryName`（课程类别） | **C 当前无正式表示** | —— | 无对应字段；⚠️ **且带培养方案 / 上下文语义**（与 D4 的 `course_type` 同源问题），**不得认定为课程全局固有属性** | 同上 | 同上 | 见 G10 |
 | `examMode`（考核方式） | **C 当前无正式表示** | —— | 无对应字段 | 同上 | 同上 | 见 G10 |
 | `readObj`（修读对象） | **C 当前无正式表示** | —— | 无对应字段；**完整文本不入库** | 同上 | 同上 | 见 G10 |
 | `teachProgressSubmitState` / `openClass` | **C 当前无正式表示** | —— | 无对应字段；**业务语义待确认** | 同上 | 同上 | **不根据 0/1 自行解释** |
 | 内部 ID / 计数：`class_ID`、`sumClassesID`、`sumClassesNum`、`courseId`、`outLineId`、`outlineTypeNum`、`timePlaceId` | **不映射** | —— | **不等于**公共 `course_id` / `class_id`；**只记录其存在**，本轮**不设计对应字段**，**不记录其值** | 同上 | 同上 | —— |
+
+> ⚠️ **本表「真实 D5 字段」列的填写纪律**：该列**只列 SYSU Response 中实际出现的字段**。
+> `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` 是
+> **公共 `CourseOffering` 的目标字段**，**不是** Response 的真实字段，因此**不得**出现在该列
+> （早期版本曾误列，**已删除**）。
+>
+> **`teachingTimePlaceStr` 的两层区分（重要）**：
+>
+> 1. **单个 schedule segment** → 可解析为 `weeks` / `weekday` / `start_section` / `end_section` /
+>    `campus` / `classroom`，**属数据转换层能力**；
+> 2. **整个教学班** → 该字段**可包含多个 segment**，而当前一个 `CourseOffering` **只能表达一组**
+>    → **无法无损映射**（**G9**）。
+>
+> ⚠️ **不得**把 `weekday` / `weeks` / `campus` 等写成"当前无正式表示" ——
+> 这些字段**在现有 Schema 中已经存在**；真正的缺口是**多 segment 无法在一个 `CourseOffering` 中容纳**。
 
 ### 3.3 `makeup_task.schema.json`（MakeupTask）
 
