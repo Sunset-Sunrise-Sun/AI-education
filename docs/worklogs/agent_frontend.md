@@ -1013,3 +1013,62 @@
   breaking migration 完整性与"未偷偷新增暂缓字段"）。
   Data Gate 已关闭；下一步 **Course Data MVP**（真实 2026-1 snapshot）**须等新一轮任务书**。
   ⚠️ **不 merge，不自行开始 Course Data MVP**。
+
+---
+
+### 2026-09-30 - Data Gate-2 Reviewer 最终一致性修复（`course_data.md` 同步，docs-only）
+- 本次目标：修掉 Reviewer 指出的**唯一 blocker** ——
+  `docs/interfaces/course_data.md` **没有同步** `CourseOffering → meetings[]` 的 breaking migration。
+  **不重新修改 DG-01 实现**（Schema / Backend / Mock / Frontend / Planner / Curriculum 均已通过 Reviewer），
+  **不开始 Course Data MVP**。
+- 起点：同一分支 `refactor/data-gate-2-course-offering-meetings`，
+  head `f945004f65f08c46ff0bad536f2ed4379bb0efaa`。
+- **修改 `docs/interfaces/course_data.md`**：
+  - **保留原职责链**：授权读取 → 清洗 → 时间 / 周次 / 校区标准化 → 去重 / 同步 → 输出 `CourseOffering[]`；
+  - 文件开头加注：Data Gate-2（DG-01）已把契约从"一个 `CourseOffering` = 一个时间段"
+    改为 **`CourseOffering` 1 — N `Meeting`**；
+  - **新增"公共结构"说明**：
+    `CourseOffering` = 一个教学班；`CourseOffering.meetings[]` = 该教学班**全部**上课时间 / 地点段；
+  - 在 `normalize_offering(raw) -> CourseOffering` **附近**明确：
+    **Normalizer 必须聚合同一教学班的所有 meeting，不能只解析第一个 segment**，
+    并说明理由（只取第一段会让下游冲突检测产生**假阴性**，输出**不可执行方案**）；
+  - **"关键标准"重写**为至少包含：
+    ① 一个 `CourseOffering` 表示一个教学班、不表示一个时间段；
+    ② `meetings` 必须至少包含 1 个 `Meeting`；
+    ③ 每个真实教学班的**所有** schedule segment 都必须进入 `meetings[]`；
+    ④ ⛔ 不得只保留第一段；
+    ⑤ ⛔ 不得把同一教学班的多个 segment 拆成多个可独立选择的 `CourseOffering`；
+    ⑥ `meetings[].weekday`：1=周一 … 7=周日；
+    ⑦ `meetings[].start_section` / `end_section`：整数节次；
+    ⑧ `meetings[].weeks`：展开为实际周次数组；
+    ⑨ `meetings[].campus` / `classroom`：该时间段对应地点；
+    ⑩ `data_source`：必须明确 mock / real；
+  - **保留 Data Gate 已确认的 deferred gap**：meeting 级教师关联**已知存在**
+    （`teachingTimePlaceStr` 的 segment 项本身含教师信息），
+    但**当前公共 `Meeting` 不表达**；`teacher` 暂为 `CourseOffering` **顶层汇总 / 展示字段**；
+    并写明这**不是"该语义不存在"**，本模块**不得**自行加字段，后续须走 `【接口变更请求】`；
+  - **安全边界原样保留**：正常登录 / 已授权范围 / 不保存密码 / 不绕过认证与 CAPTCHA /
+    不越权 / 不提交 Cookie·Session·Token；并补一句"批量导入须先确认 `pageSize` 与请求规模，
+    只能取得部分范围时必须显式记录 completeness，不得宣称 complete"（与 C9 一致）；
+  - **未新增任何 Schema 字段**，**未添加任何真实 SYSU 请求代码**。
+- **最小同步 `docs/status/agent_frontend.md`**（仅两处）：
+  ① Data Gate-2 结果的 DG-06 条目补上"并同步 `docs/interfaces/course_data.md`"；
+  ② "接口文档债务"一行补记 `course_data.md` 已同步。
+- 修改文件：
+  - `docs/interfaces/course_data.md`
+  - `docs/status/agent_frontend.md`（**最小**，仅上述两处状态句）
+  - 本文件（**仅追加**）
+- 测试（按要求确认未误改代码）：
+  - `cd backend && python -m pytest` → **133 passed / 2 skipped**（全部通过）
+  - `cd frontend && npm run build`（含 `vue-tsc --noEmit`）→ **成功**
+  - 本轮**未改动任何代码**，以上仅为回归确认。
+- 公共接口是否变化：**否**（本轮只同步**接口文档描述**，未改任何 Schema 字段 / API 路径）
+- 未执行：**未调用 SYSU API（零请求）**、未写 crawler、未写 Course Data Adapter / Normalizer /
+  `CourseDataProvider`、未进入 Integration、未建数据库；
+  **未重新修改 DG-01 实现**（`schemas/` / `backend/` / `frontend/` / `mock_data/` /
+  `planner.md` / `curriculum.md` 一律未再动）；**未开始 Course Data MVP**。
+- 上一轮上报的遗留已清零：`docs/interfaces/course_data.md` 的旧结构描述**已按本轮授权同步**，
+  当前**无已知的接口文档一致性问题**。
+- 下一步：等待 Reviewer 复验。Data Gate 已关闭；下一步 **Course Data MVP**
+  （真实 2026-1 semester offering snapshot）**须等新一轮任务书**。
+  ⚠️ **不 merge，不自行开始 Course Data MVP**。

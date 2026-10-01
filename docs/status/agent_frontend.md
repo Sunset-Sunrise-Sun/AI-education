@@ -330,6 +330,9 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   ⑥ **DG-06 已实施** —— `docs/interfaces/planner.md` 与 `curriculum.md` 按 `/AGENTS.md` 第 5 节修正
   （删除 `build_dependency_graph` / `calculate_priority`；写明 `current_schedule` 语义与
   "全部供给 ≠ 已选子集"；写明优先级**当前无**公共契约）；
+  并同步 `docs/interfaces/course_data.md`（DG-01 的 breaking migration：
+  一个 `CourseOffering` = 一个教学班，`meetings[]` = 全部上课段；`normalize_offering` 必须聚合全部 meeting，
+  不得只解析第一段；登记 meeting 级教师关联为 deferred gap）；
   ⑦ **Data Gate 收口** —— **C5 完成，C1–C11 全部完成 → Data Gate PASSED / CLOSED**；
   **G9 更新为「已通过 DG-01 / Data Gate-2 完成公共契约修复」**（原缺口描述保留）。
   ⚠️ **全程零 SYSU 请求；未写 crawler / Adapter / Provider / Integration；未建数据库；未进入 Course Data MVP**
@@ -369,7 +372,8 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - **集成骨架尚未建立**：上游模块暂时没有正式的接入点
 - ~~五类真实样本尚未通过 Data Gate~~ ✅ **Data Gate PASSED / CLOSED**；
   **Phase 2B Integration 仍暂停编码**（等 Course Data MVP 之后按任务书恢复）
-- ~~接口文档债务~~ ✅ **DG-06 已实施**：`planner.md` 与 `curriculum.md` 已与 `/AGENTS.md` 第 5 节一致
+- ~~接口文档债务~~ ✅ **DG-06 已实施**：`planner.md` 与 `curriculum.md` 已与 `/AGENTS.md` 第 5 节一致；
+  ~~`course_data.md` 未同步 `meetings[]`~~ ✅ **已同步**（DG-01 breaking migration 已写入该文件）
 - **`prerequisites[]` 尚无真实证据**：真实培养方案样本中**未发现明确的先修字段**，
   该字段"可被真实数据填充"目前**无证据**（不构成"学校无先修制度"的结论）；
   裁决要求：来源无法提供时**标记未知 / 待人工确认，不得自动补齐**
