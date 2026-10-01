@@ -14,7 +14,8 @@
     "credit": {"type": ["number", "null"], "minimum": 0},
     "meetings": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 0,
+      "description": "该教学班的排课段。空数组仅表示当前来源快照没有能够形成公共 Meeting 的可用排课信息；不表示没有上课时间、不表示异步教学、不表示时间自由、也不表示没有时间冲突。",
       "items": {
         "type": "object",
         "additionalProperties": false,

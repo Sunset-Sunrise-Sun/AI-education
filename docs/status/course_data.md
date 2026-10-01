@@ -1,8 +1,16 @@
 # Course Data 当前状态
 
-> 最后更新：2026-10-01（**DG-07 架构裁决已落档**：**APPROVED WITH MODIFICATION /
-> IMPLEMENTATION PENDING**（**契约方向已批准，尚未实施**）；
+> 最后更新：2026-10-01（**DG-07A — Contract Migration 已实施、待 Reviewer**：
+> 公共契约 `CourseOffering.meetings` 的 `minItems` 已由 **1 → 0**（`required` 不变），
+> `meetings = []` 成为**合法契约表示**；
+> ⛔ **DG-07 整体仍未完成**（DG-07B / DG-07C / DG-07D 未开始）；
 > **Data Gate 仍保持 Reopened**）
+>
+> ⚠️ **rollout gate（重要）**：`meetings = []` **已成为契约合法状态**，但在
+> **DG-07B / DG-07C / DG-07D 完成前，生产真实数据链路不得主动产生或接入
+> empty-meeting `CourseOffering`**：
+> `mock_data/` 保持全部非空；本模块当前对"缺排课信息"仍 **fail closed**。
+> 这是**阶段性 rollout gate**，不是新的 Schema 字段。
 >
 > ⚠️ **准确表述（不得夸大）**：
 > **真实 Course Data 尚未完成**，**尚未取得 complete semester snapshot**。
@@ -19,7 +27,8 @@
 > C1D 人工核验（**n = 2**）显示：两条典型候选在官方 UI 中**均作为普通教学班行存在**，
 > 但**时间 / 周次 / 地点完全空白**且**无任何状态文字**；
 > 因此当前 `collect()` 仍**按设计 fail closed**，**尚未生成真实 Capture Bundle**。
-> **G11 仍未 resolved**：业务语义仅有**部分界面证据**，**契约缺口候选 DG-07 待架构裁决**。
+> **G11 仍未 resolved**：契约方向已裁决且**契约迁移已完成（DG-07A）**，
+> 但**下游实现待定**（DG-07B/C/D）、**学校侧业务原因仍未查明**。
 > 不推测、不写成任何业务结论。
 > 后端 Python 侧仍然**零网络**：没有 endpoint、没有认证处理、**不会自动发起 SYSU 请求**。
 >
@@ -47,8 +56,12 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 G11 业务语义最小核验（2B-2C1D，人工 UI，n = 2）      ✅ **已完成**（两条候选在官方 UI 中均为普通
                                                     教学班行；时间 / 周次 / 地点空白、无状态文字）
 契约缺口 DG-07（CourseOffering 空 meetings）     ✅ **APPROVED WITH MODIFICATION**
-                                                    （**2026-10-01 批准**；⛔ **IMPLEMENTATION
-                                                    PENDING**，本轮未实施；Data Gate 仍 Reopened）
+                                                    （**2026-10-01 批准**；DG-07 整体
+                                                    **IMPLEMENTATION PENDING**）
+契约迁移 DG-07A                                 ✅ **已实施、待 Reviewer**
+                                                    （`meetings` `minItems: 1 → 0`，`required` 不变；
+                                                    Pydantic 镜像 + 接口语义 + 契约级测试已同步）
+Course Data 空 meetings 归一化 DG-07B             ⏳ **未开始**（本模块仍 fail closed）
 真实完整学期程序化采集                              ⏳ 未完成（因缺字段 fail closed 而中止）
 完整 semester snapshot                              ⏳ 未取得
 ```
@@ -391,8 +404,13 @@ Frontend / Mock + tests，且须经 Reviewer 验收）；**本轮未开始任何
 
 ### 契约（Data Gate）
 - 公共输出为 `schemas/course_offering.schema.json`；
-- Data Gate-2（**DG-01**）已把 `CourseOffering` 改为 **1 — N `meetings[]`**：
-  一个教学班 = 一个 `CourseOffering`，`meetings[]` = 它的**全部**上课时间 / 地点段。
+- **DG-01** 建立了 `CourseOffering.meetings[]` 的**嵌套结构**（一个教学班不再等于一个时间段）；
+- **DG-07A 起**，**每个 `CourseOffering` 可以包含 0..N 个 `Meeting`**
+  （`meetings` 仍必填，`minItems: 0`）；
+- 一个教学班 = 一个 `CourseOffering`；
+  `meetings[]` = **当前来源快照中能够形成公共 `Meeting` 的全部已知排课段**；
+- `meetings = []` **仅**表示**当前来源快照没有可用排课信息**：
+  ⛔ **不表示无时间占用**，⛔ **也不表示 conflict-free**；
 
 ### Schedule parser + local import adapter（Phase 2B-2B，本轮）
 位置：`backend/app/course_data/`（**内部实现，不是跨模块公共契约**）
@@ -513,7 +531,10 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 当前接口
 
-- 输出：`CourseOffering[]`（符合 `schemas/course_offering.schema.json`，`meetings[]` 至少 1 段）；
+- 输出：`CourseOffering[]`（符合 `schemas/course_offering.schema.json`）；
+  `meetings` **必填**，**允许 0..N 段**（DG-07A 起 `minItems: 0`）——
+  `meetings = []` 表示**当前来源快照没有可用排课信息**（⛔ 不表示无课 / 异步 / 无冲突）；
+  ⚠️ **本模块当前仍不会产生空数组**（rollout gate；DG-07B 未实施）；
 - 跨模块公共边界：`CourseDataProvider.get_course_offerings(semester) -> list[CourseOffering]`
   （见 `docs/interfaces/integration.md`，**已冻结**，不得私自修改）；
 - **内部接口（非公共契约）**：`OpeningCoursesPageFetcher`（2B-2C0）——
@@ -522,7 +543,8 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 当前阻塞
 
-- **当前主 blocker = G11 的业务语义确认**（不是继续扩大结构诊断）：
+- **当前主 blocker = G11 下游实现（DG-07B / DG-07C / DG-07D）**
+  （不是继续扩大结构诊断）：
   - **结构层取证已完成**：第 1 页 200 条中 **39 条完全没有 `teachingTimePlaceStr`**
     （161 条非空，其余形态 0）；C1C 相关性诊断进一步显示
     **结构差异集中在排课相关字段**（`timePlaceId` 38/39 缺失 vs 161/161 存在；
@@ -532,23 +554,25 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
   - **业务语义已获得部分界面证据**（C1D，**n = 2**）：两条典型候选在官方 UI 中
     **均为普通教学班行**、时间 / 周次 / 地点**完全空白**且**无状态文字**
     （⚠️ **n = 2 不能代表全部 39 条**）；
-  - **仍未解决 / 仍待裁决**：缺 schedule 字段的**业务原因** / 这些记录的**业务类型** /
-    是否属于**有效可选教学班** / 是否应进入 Planner / **全学期缺失比例** /
-    是否应修改 `CourseOffering` 公共契约（→ 已形成 **`DG-07` 草案**，**待架构裁决**）；
-  - **当前 blocker = `DG-07` 待 Architecture Lead 裁决**；
+  - ✅ **契约方向已裁决并完成第一阶段实施**：**DG-07A Contract Migration 已实施 / 待 Reviewer**
+    （`meetings` `minItems: 1 → 0`，`required` 不变）；
+  - **仍未解决**：缺 schedule 字段的**学校侧业务原因** / 这些记录的**业务类型** /
+    是否属于**有效可选教学班** / 是否应进入 Planner / **全学期缺失比例**；
+  - **当前 blocker = DG-07B（本模块空 meetings 归一化）尚未开始**；
     ⛔ **不继续扩大结构诊断**，也⛔ **不实施**任何 workaround；
-  - 在**实施**落地之前，`collect()` 仍 **按设计 fail closed**
-    （公共契约 `CourseOffering.meetings` `minItems = 1`），
-    ⛔ **本轮未实施 DG-07**，也**未修改**任何 Schema；
+  - 在 **DG-07B** 落地之前，`collect()` 仍 **按设计 fail closed**
+    （`normalization.py` 仍要求至少 1 段），
+    ⛔ **本轮未实施** COURSE DATA 侧归一化，也**未修改** `course_data/*`；
   - ⚠️ **39/200 只描述第 1 页样本，不得外推**；**C1D 的 n = 2 同样不得外推**；
-  - ⛔ **不声称 G11 resolved**（**contract decision approved;
-    implementation pending; school-side business cause still unknown**）；
-- **DG-07 已批准、但契约本身仍未改变**：`DG-07` =
+  - ⛔ **不声称 G11 resolved**（**contract migration implemented in DG-07A;
+    downstream implementation pending; school-side business cause still unknown**）；
+- **DG-07A 已修改契约（待 Reviewer）**：`DG-07` =
   **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**，
-  **公共契约（`schemas/` / `docs/interfaces/`）本轮未被修改**，
-  `backend/app/models/contracts.py` 的 `min_length=1` 与既有回归测试
-  （锁定 `meetings: []` 必须失败）**均保持不变**，
-  ⛔ **在实施任务书下达前，任何代码都不得按 `meetings = []` 已生效来写**；
+  其中 **契约迁移已完成**（`schemas/course_offering.schema.json` 的 `meetings.minItems = 0`、
+  `contracts.py` 的 `min_length=0`、接口语义与契约级测试）；
+  ✅ `meetings = []` 现在**在契约层合法**，但 ⛔ **生产链路仍不得生成**：
+  `mock_data/` **未修改**（每班仍 ≥1 段），`normalization.py` 的"至少 1 段"**仍然有效**，
+  ⛔ **在 DG-07B 任务书下达前，本模块不得按 `meetings = []` 可产生来写**；
 - **真实完整学期程序化采集未完成**：因上述数据阻塞而中止；
   后端 Python 侧仍然**零网络**（没有 endpoint、没有认证处理、不会自动发起请求）；
   ✅ 另：**认证不再是 blocker**（same-origin 请求已在「全校开设课程」模块内成功）；
@@ -597,27 +621,34 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
   （`docs/data/DATA_GATE_DECISIONS.md` §17）；⛔ **不再要求重复人工核验**；
 - ✅ **DG-07 架构裁决已落档**（2026-10-01）：
   **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**
-  —— **契约处理方向已批准**（`meetings` `minItems: 1 → 0`，`required` 不变），
-  ⛔ **本轮未实施**（`schemas/` / `docs/interfaces/` **未被修改**）；
-- **下一步：等待 DG-07 的实施任务书**（**IMPLEMENTATION PENDING**）；
-  ⛔ **本模块不自行实施** DG-07（不改 Schema / Interface / 代码 / 测试），
-  也⛔ **不自行拆分或命名实施阶段**；
+  —— **契约处理方向已批准**（`meetings` `minItems: 1 → 0`，`required` 不变）；
+- ✅ **DG-07A — Contract Migration 已实施 / 待 Reviewer**（本轮）：
+  公共契约放宽为 `minItems: 0`、Pydantic 镜像 `min_length=0`（生成 `minItems: 0`）、
+  接口语义（`course_data` / `planner` / `integration`）与契约级测试已同步，
+  前端**仅注释**同步；⛔ `mock_data/` 与 `course_data/*` 实现**未动**；
+- **下一步：DG-07B — Course Data empty-meeting normalization**
+  （**待任务书**）：按已批准的 fail-closed 边界，**仅当 `teachingTimePlaceStr` 属性不存在**时
+  可规范化为 `meetings = []`；`null` / 空串 / 其它类型 / 无法解析 / malformed segment /
+  parser / importer / normalizer 异常**继续 fail closed**；
+  ⛔ **本模块不自行实施**，也不自行拆分 / 命名阶段；
   Data Gate **仍保持 Reopened**（⛔ **未 CLOSED**；⛔ **DG-01 – DG-06 不重新打开**），
   关闭前置条件见 `DATA_GATE_DECISIONS.md` §17.15；
 - **G11 仍未解决**（见 `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` §4.7.2）：
   **学校侧业务原因仍未查明**；缺失原因 / 这些记录的业务类型 /
   是否属于有效可选教学班 / 是否应进入 Planner / 全学期缺失比例 仍**未确认**；
-  ⛔ **不声称 G11 resolved**（**contract decision approved; implementation pending;
-  school-side business cause still unknown**）、⛔ **不推断学校业务状态**；
+  ⛔ **不声称 G11 resolved**（**contract migration implemented in DG-07A;
+  downstream implementation pending; school-side business cause still unknown**）、
+  ⛔ **不推断学校业务状态**；
 - 采集器与 Capture Bridge 目前**不接入** Integration / Planner / API / 前端产品 UI
   （真实 Capture Bundle 的导入 UI 属后续步骤）；
 - `max_pages` 是**内部安全阀**，不是学校侧参数；
   只能取得部分范围时**必须显式记录 completeness**，**不得宣称 complete**（C9）；
 - **完整 semester snapshot**：目标为 **2026-1**，取得后以 `OfferingSnapshot` 表达，
   并由 `SnapshotCourseDataProvider` 供 Integration 消费；
-- ⛔ 上述后续步骤（含 **DG-07 实施**）都属于后续任务书范围，**本轮不得自行开始**；
-  ⛔ **本轮 Builder 未登录 SYSU、未发任何真实请求、未生成真实数据、未修改任何代码**，
+- ⛔ 上述后续步骤（含 **DG-07B / DG-07C / DG-07D**）都属于后续任务书范围，**本轮不得自行开始**；
+  ⛔ **本轮 Builder 未登录 SYSU、未发任何真实请求、未生成真实数据**，
   也**不**把 `partial` snapshot 接入 Integration；
-  ⛔ **DG-07 仍为 `IMPLEMENTATION PENDING`**：在实施任务书下达前，
-  **不得**在代码中把 `meetings = []` 当作**已生效**的公共契约。
-- ⛔ **不得开始**任何实施阶段（亦**不得**自行命名 / 拆分实施阶段）。
+  ⛔ **DG-07 整体仍为 `IMPLEMENTATION PENDING`**：在 DG-07B 任务书下达前，
+  **本模块不得**在代码中把 `meetings = []` 当作**可产生**的结果
+  （契约层合法 ≠ 生产链路可以产生：rollout gate）。
+- ⛔ **不得开始**任何后续阶段（DG-07B/C/D；亦**不得**自行命名 / 拆分实施阶段）。

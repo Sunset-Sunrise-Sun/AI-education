@@ -96,6 +96,22 @@ class PlannerProvider(Protocol):
 - 是否 `feasible` / `partially_feasible` / `infeasible` **由 Planner 决定**，
   Integration **不得**代替 Planner 判断，也不得改写返回的 `PlanResult`。
 
+### 2.4 `CourseOffering.meetings = []` 的传递语义（DG-07A）
+
+`meetings = []` 是**合法的公共对象**（DG-07A 契约迁移；语义见
+`docs/interfaces/course_data.md`）。Integration **必须原样透明传递**：
+
+- ⛔ **不过滤**（不得把这样的 `CourseOffering` 丢掉）；
+- ⛔ **不补 `Meeting`**（不得凭空造排课信息）；
+- ⛔ **不把 `[]` 转换成其它值**（不得改成 `null` / 省略字段 / 占位对象）；
+- ⛔ **不推断原因**（不得判断它是"未排课 / 异步 / 时间自由"等业务状态）；
+- ✅ **原样交给 Planner**（`offerings` 与 `current_schedule` 一视同仁）；
+
+> ⛔ **Provider 方法签名一字不改**：`CurriculumProvider.get_makeup_tasks(...)`、
+> `CourseDataProvider.get_course_offerings(...)`、
+> `PlannerProvider.plan(...)`、`PlanningOrchestrator.run(...)` 的签名**保持不变**
+> —— 变化只在**数据契约语义**，不在接口形状。
+
 ## 3. `PlanningOrchestrator` 调用顺序
 
 ```python

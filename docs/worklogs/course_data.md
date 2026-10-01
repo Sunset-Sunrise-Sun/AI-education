@@ -928,3 +928,87 @@
 - 下一步：等待 **DG-07 实施任务书**（**IMPLEMENTATION PENDING**）。
   ⚠️ **不 merge，不自行开始 DG-07 实施**。
 
+### 2026-10-01 - DG-07A — Contract Migration（第一阶段实施）
+- 本次目标：按已批准裁决实施 **DG-07A — Contract Migration**：
+  **只做**公共契约 + 契约直接镜像 + 公共接口语义文档 + 契约级测试。
+  ⛔ **不实施** Course Data 归一化（DG-07B）、Planner safety（DG-07C）、
+  前端展示（DG-07D）。起点：`main` = `184bbd6e…`；
+  新建 `feature/dg07a-contract-migration`（**base 已核对一致**）。
+- **① Schema（唯一字段级修改）**：`schemas/course_offering.schema.json`
+  的 `meetings.minItems` 由 **1 → 0**；**`required` 保持不变**（`meetings` 仍必填）；
+  **未新增 / 未删除任何字段**、**`Meeting` 结构未变**、
+  **未新增 `schedule_status` / `schedule_known` / `schedule_state`**；
+  为 `meetings` 增加**非校验性 `description`**（空数组 **仅**表示当前来源快照
+  没有能够形成公共 `Meeting` 的可用排课信息；不表示无课 / 异步 / 时间自由 / **无冲突**）；
+  **公共 Schema 中未出现 `teachingTimePlaceStr`**（SYSU 来源字段不属公共业务 Schema）。
+  合法 / 非法边界：缺 `meetings` → 非法；`null` → 非法；`[]` → **合法**；`[Meeting]` → 合法。
+- **② Pydantic 镜像**：`backend/app/models/contracts.py` 的
+  `CourseOffering.meetings` 改为 **`min_length=0`**；
+  **实测 Pydantic 2.13.5 生成 `minItems: 0`**，与公共 Schema **精确对齐**，
+  因此防漂移测试（逐约束键比对，含 `minItems`）**通过** ——
+  ⛔ **未删除** drift test、⛔ **未放宽**比较规则、⛔ **未特判** `CourseOffering`、
+  ⛔ **未跳过** `minItems`；同步更新 `CourseOffering` 注释
+  （0..N、空数组语义、非 conflict-free、rollout gate）。
+- **③ 公共接口语义**：
+  - `docs/interfaces/course_data.md`：`meetings[]` = 当前来源快照中能够形成公共
+    `Meeting` 的**全部已知排课段**；写明**两种合法状态**；删除过时的
+    "`meetings` 必须至少包含 1 个 `Meeting`"；正式写入**已批准的 fail-closed 边界**
+    （`meetings=[]` **不能**作为解析失败 fallback；DG-07B 初始唯一允许来源形态 =
+    **`teachingTimePlaceStr` 属性不存在**；`null` / 空串 / 其它类型 / 无法解析 /
+    malformed segment / parser / importer / normalizer 异常**继续 fail closed**）；
+  - `docs/interfaces/planner.md`：`meetings` 非空 → **遍历全部 `Meeting`**；
+    `meetings = []` → **schedule unknown**、⛔ 绝不"没有时间占用"、⛔ 绝不 **conflict-free**；
+    **同一条规则覆盖 `offerings` 与 `current_schedule`**；⛔ 若 `current_schedule`
+    含 `meetings = []`，**不得**声明"已验证与当前课表无时间冲突"，
+    最多只能判断"与当前课表中**已知时间段**未发现冲突"，**整体状态仍含未知部分**；
+    `PlanResult.status` 取值 / `unresolved[].type` 最终命名 / `missing_schedule`
+    是否正式采用**仍 deferred**（**candidate convention only**）；
+  - `docs/interfaces/integration.md`：**Provider 签名一字不改**；
+    `meetings = []` **原样透明传递**（⛔ 不过滤 / ⛔ 不补 `Meeting` / ⛔ 不转换 /
+    ⛔ 不推断原因）。
+- **④ 前端**：`frontend/src/types/contracts.ts` **仅注释**同步
+  （`meetings: Meeting[]` 类型形状**未变**，`Meeting` 注释由"1 — N"改为"0 — N"）；
+  ⛔ **未修改**任何 Vue 组件 / CSS / 展示文案 / 业务行为。
+- **⑤ 契约级测试**：
+  - `backend/tests/test_contracts.py`：把"`meetings: []` **必须失败**"**翻转为
+    "必须通过"**（`test_empty_meetings_is_accepted`）；新增 `meetings: null` 拒绝、
+    数组内**非法 `Meeting`** 拒绝（`{}` / `weekday=0` / 缺 `weeks` / `weeks=[]`）、
+    未批准字段（`schedule_status` / `schedule_known` / `schedule_state`）拒绝；
+    **保留**缺 `meetings` 拒绝、旧顶层格式拒绝、`Meeting` 额外字段拒绝、
+    `weeks` 重复拒绝等全部既有严格性用例；
+  - `backend/tests/test_mock_data_schema.py`：新增 **Schema 层**用例
+    （`meetings: []` 合法；缺字段 / `null` / 非法元素 / 额外字段非法；
+    `meetings.minItems == 0` 锁定；`meetings` 仍在 `required`）与
+    **rollout-gate** 用例（产品 Mock 每班必须 ≥1 段）；
+    `_meetings_of` 的"非空"断言改为明确标注**这是 Mock / rollout-gate 要求**，
+    **不是**公共契约最小值；**未删除任何用例、未新增 skip**。
+- **⑥ rollout gate（本阶段关键）**：`meetings = []` **已成为契约合法状态**，
+  但在 **DG-07B / DG-07C / DG-07D 完成前**，
+  **生产真实数据链路不得主动产生或接入 empty-meeting `CourseOffering`**：
+  ✅ `mock_data/course_offerings.json` **未修改**（9 个教学班仍全部 ≥1 段）；
+  ✅ `backend/app/course_data/normalization.py` 的"至少 1 段"**仍然有效**
+  （DG-07B 之前本模块继续 fail closed）；
+  ⛔ 不把 `meetings = []` 送进产品链路。
+- 修改文件（**仅允许清单内**）：
+  - `schemas/course_offering.schema.json`
+  - `backend/app/models/contracts.py`
+  - `backend/tests/test_contracts.py`、`backend/tests/test_mock_data_schema.py`
+  - `docs/interfaces/course_data.md`、`docs/interfaces/planner.md`、`docs/interfaces/integration.md`
+  - `frontend/src/types/contracts.ts`（**仅注释**）
+  - `docs/data/DATA_GATE_DECISIONS.md`、`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - `docs/status/{course_data,planner,agent_frontend}.md`
+  - `docs/worklogs/{course_data,planner,agent_frontend}.md`
+- ⛔ **未修改**：`backend/app/course_data/*`、`backend/app/integration/*`、
+  Planner 实现、Vue 组件 / CSS、`mock_data/*`、
+  `tools/sysu_course_offering_collector.js`、API / `main.py`；
+  ⛔ **未实现** `teachingTimePlaceStr` 缺失 → `[]`；⛔ **未实现** `missing_schedule`；
+  ⛔ **未修改** `PlanResult` Schema；⛔ **未新增** `schedule_status`。
+- 测试：`cd backend && python -m pytest` → **550 passed / 2 skipped**
+  （基线 **539 passed / 2 skipped**；**未新增 skip、未删除测试换通过**）；
+  `cd frontend && npm run build`（含 `vue-tsc --noEmit`）→ **成功**。
+  特别核对：JSON Schema 与 Pydantic 对 **`minItems = 0`** 一致（防漂移测试通过）。
+- 使用数据：**Mock / 人工虚构**；**未生成真实 Capture Bundle**。
+- **Builder 实际 SYSU 请求数：0**。
+- 下一步：等待 Reviewer；之后等待 **DG-07B** 任务书。
+  ⚠️ **不 merge，不自行开始 DG-07B / C / D**。
+

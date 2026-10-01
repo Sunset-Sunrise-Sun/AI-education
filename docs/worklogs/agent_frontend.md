@@ -1558,3 +1558,25 @@
 - 公共接口是否变化：**否**（DG-07 **已批准但未实施**）。
 - 下一步：等待 **DG-07 实施任务书**（**IMPLEMENTATION PENDING**）。
   ⚠️ **不 merge，不自行开始 DG-07 实施**。
+
+### 2026-10-01 - DG-07A — Contract Migration（阶段同步）
+- 本次目标：同步 DG-07A 的**契约迁移结果**（主记录见 `docs/worklogs/course_data.md`）。
+  ⛔ 本模块**只改注释**，不改类型形状、不改组件 / CSS / 文案。
+- **契约变化**：`schemas/course_offering.schema.json` 的 `meetings.minItems`
+  **1 → 0**（`required` 不变）；`CourseOffering.meetings` 公共表示变为 **0..N**。
+- **前端改动（仅注释）**：`frontend/src/types/contracts.ts` ——
+  `CourseOffering` 注释写明 0..N 与空数组语义（"当前来源快照没有可用排课信息"，
+  ⛔ 不表示无课 / 异步 / 时间自由 / **无冲突**）+ rollout gate；
+  `Meeting` 注释由"1 — N"改为"0 — N"。**类型形状未变**（`meetings: Meeting[]`）。
+- **⛔ 未修改**：任何 Vue 组件、CSS、展示文案、业务行为；
+  ⛔ 也未新增 empty-meeting 展示（属 **DG-07D**）。
+- **rollout gate**：`meetings = []` 契约合法，但在 **DG-07B / DG-07C / DG-07D 完成前**，
+  产品链路**不得**接入 empty-meeting `CourseOffering`；`mock_data/` 保持全部非空。
+- 修改文件（本模块视角）：`frontend/src/types/contracts.ts`（仅注释）、
+  `docs/status/agent_frontend.md`、本文件（**仅追加**）。
+- 测试：`cd frontend && npm run build`（含 `vue-tsc --noEmit`）→ **成功**；
+  后端全量 `pytest` → **550 passed / 2 skipped**。
+- 公共接口是否变化：**是**（`meetings` 允许空数组；**Provider 签名未变**）。
+- **Builder 实际 SYSU 请求数：0**。
+- 下一步：等待 Reviewer；之后等待 **DG-07B / DG-07C / DG-07D** 任务书。
+  ⚠️ **不 merge，不自行开始任何后续阶段**。
