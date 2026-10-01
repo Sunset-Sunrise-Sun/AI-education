@@ -168,3 +168,89 @@
   （修复前 243 passed / 2 skipped；原测试全部继续通过，**未删除旧测试、未新增 skip**）。
 - 下一步：等待 Reviewer 复验。⚠️ **不 merge，不自行进入 2B-2B**。
 
+---
+
+### 2026-09-30 - Phase 2B-2B：Schedule Parser + Local Import Adapter
+- 本次目标：用负责人单独提供的**私密脱敏样本**作为**唯一证据**，实现
+  `teachingTimePlaceStr` parser 与**纯本地** Raw-response import adapter：
+  `Raw → ParsedScheduleSegment[] → Meeting[] → build_course_offering() → CourseOffering[] → OfferingSnapshot`。
+  **不联网、不登录、不写 fetch client、不写 Cookie / Session / Token、不做分页请求、不接 API / 前端。**
+- 起点：`main` = `266b11908ae47131e686a395f709dd4c46a60c5c`；
+  新建 `feature/course-data-schedule-import-core`。
+- **私密证据处理（重点合规项）**：
+  - 负责人提供的**私密脱敏样本**（Sanitized Sample，`source_id = OFFERING-001`）
+    仅在**本地**阅读；**未 `git add`、未提交、未复制进 tests fixture、未复制进 docs、未复制进 worklog**
+    （本文件也**不记录该样本的文件名**）；
+  - `git status` 与最终提交中**不含**该文件；
+  - 测试全部使用**人工虚构的结构等价样本**（`示例教师A` / `示例校区` / `示例教学楼-2108` 等）；
+  - 文档只记录**结构性汇总结论**（分隔符、字段数、是否存在地点、周次/节次形态），
+    **不含** Raw string、教师姓名、教室、内部 ID、`readObj`。
+- **新增 `backend/app/course_data/schedule_parser.py`**：
+  - `ParsedScheduleSegment(meeting, teacher, activity)`（frozen dataclass，**内部对象**）；
+  - `parse_teaching_time_place(text) -> list[ParsedScheduleSegment]`：
+    - `segment separator = ","`、`field separator = "/"`；
+    - 无地点 **5 字段**（weeks/weekday/sections/teacher/activity）；
+      有地点 **6 字段**（weeks/weekday/sections/**location**/teacher/activity）；
+    - **末尾逗号**产生的空 segment 忽略（多个末尾逗号也忽略）；
+      **中间空 segment**（`seg1,,seg2`）→ `CourseDataNormalizationError`（不静默忽略）；
+    - 字段数非 5/6 → fail closed；
+    - 输出顺序 == Raw 顺序（**不排序、不丢段、不合并**）；
+  - `parse_weekday()`：只接受 `星期一` … `星期日`；未知 token（`星期天` / `周一` / `Monday` / 空）失败；
+  - `parse_sections()`：`第N-M节`，`N ≥ 1` 且 **`M ≥ N`**（**允许 `M == N`**，`第4-4节` 合法）；
+  - 地点：只按**第一个 `-`** 切 → `campus` = 第一段、`classroom` = 其余完整文本；
+    缺 `-` / campus 空 / 教室空 → 失败；**不进一步猜 building / room**；
+  - `extract_meetings()`：只把 `Meeting[]` 投影给公共契约，丢弃 `teacher` / `activity`；
+  - ⛔ **`weekDay` 完全不参与**：`weekday` 一律来自 segment 自身
+    （样本显示 Raw `weekDay` 顺序**不能安全假设**与 segment 顺序一致，更不得按位置 zip）；
+  - ⛔ **`openingSchoolName` 不是 `campus` 的 fallback**（无地点 segment → `campus=None` / `classroom=None`）；
+  - **隐私卫生**：错误信息**不回显** location / teacher / activity 取值（只回显段序号、
+    字段数与 weeks/weekday/sections 这类非个人 token）。
+- **修改 `backend/app/course_data/normalization.py`**：
+  - `expand_weeks()` 依据**新证据**从"两个精确取值"扩为
+    **普通连续周次 `N-M周`（`N ≥ 1`、`M ≥ N`，含 `M == N`）** + **单周仍只允许 `1-17单周`**；
+  - ⛔ **单周不泛化**为任意 `N-M单周`（尚无证据）；
+  - 仍拒绝：双周、`1,3,5周`、`第1-17周`、`1~17周`、全角数字、`M < N`、`N < 1`、单个周次号等；
+  - 模块 docstring 同步（`teachingTimePlaceStr` 的解析位置指向 `schedule_parser.py`）。
+- **新增 `backend/app/course_data/importer.py`**：
+  - `import_opening_courses_response(payload, *, semester, source, completeness) -> OfferingSnapshot`；
+  - 校验 `code == 200`（整型、非 bool）、`data` 为对象、`data.total` 为非负整数（非 bool）、
+    `data.rows` 为对象数组（str/bytes 不算）；
+  - 逐行 `teachingTimePlaceStr` → `Meeting[]` → `build_course_offering()`；按 Raw 顺序；
+  - **任意一行失败 → 整体失败**（⛔ 不 fallback、不重试、不"尽力解析"、不跳过坏 row）；
+  - **`completeness` 由调用方明确给出**：**不因 `len(rows) == total` 自称 complete**；
+  - semester 一致性 / real-only / duplicate key / completeness **全部交由 `OfferingSnapshot`**，
+    adapter **不重复实现**；
+  - 错误信息不回显 Raw row 内容。
+- **`backend/app/course_data/__init__.py`**：导出新增符号并更新包说明（含 2B-2B 阶段边界）。
+- **新增测试**：
+  - `backend/tests/test_course_data_schedule_parser.py`：5/6 字段、多 segment 全保留且顺序不变、
+    末尾逗号忽略、**中间空段 FAIL**、字段数异常 FAIL、
+    周次 `1-5周` / `1-6周` / `1-8周` / `6-6周` / `7-8周` / `10-17周` / `1-17单周`、
+    单周不泛化 FAIL、星期映射与未知 token FAIL、`第1-2节`/`第4-4节` 合法与非法节次 FAIL、
+    地点切分 / 无地点 `None` / location 缺 `-` FAIL、teacher & activity 内部保留、
+    **公共 `Meeting` 无 `teacher`**、错误信息不回显敏感字段；
+  - `backend/tests/test_course_data_importer.py`：partial / complete、顺序保留、同课多班保留、
+    `data_source == real` 与 `source` 透传、多 segment 保留、
+    **`weekDay` 不用于 weekday**、**`openingSchoolName` 不用于 campus**、内部 ID / 暂缓字段不泄漏、
+    code / data / total / rows 各类畸形 FAIL、缺 `teachingTimePlaceStr` FAIL、
+    **坏 row 导致整体失败**、completeness 交由 `OfferingSnapshot`（不猜）、
+    duplicate key FAIL、semester mismatch FAIL、无 Mock fallback；
+  - `backend/tests/test_course_data_normalization.py`：周次测试按新证据重写。
+- 修改文件：
+  - 新增 `backend/app/course_data/schedule_parser.py`、`backend/app/course_data/importer.py`
+  - 修改 `backend/app/course_data/normalization.py`、`backend/app/course_data/__init__.py`
+  - 新增 `backend/tests/test_course_data_schedule_parser.py`、`backend/tests/test_course_data_importer.py`
+  - 修改 `backend/tests/test_course_data_normalization.py`
+  - 更新 `docs/data/SYSU_COURSE_OFFERING_RECON.md`（**新增 §7A 脱敏汇总结论**，无 Raw 内容）
+  - 更新 `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **355 passed / 2 skipped**
+  （本轮前 246 passed / 2 skipped；**旧测试全部继续通过，未删除旧测试、未新增 skip、未放宽校验**）。
+  `test_course_data_snapshot.py` 里的**包边界检查会自动覆盖新增模块**（零网络、无 endpoint、无凭据痕迹）。
+- 使用数据：**Mock**（测试全部为人工虚构样本）；真实证据只以**脱敏汇总**形式进入文档
+- 已知问题：**真实受控获取仍未实现**（Phase 2B-2C）；完整 2026-1 snapshot 未取得
+- 需要人工确认：无（未发现公共契约不足，本轮**无需**【接口变更请求】）
+- 对其他模块影响：**无公共接口变化**
+- 下一步：等待 Reviewer 验收 Phase 2B-2B。之后是 **Phase 2B-2C 真实受控获取**，
+  ⚠️ **须等新一轮任务书，不自行开始**。
+

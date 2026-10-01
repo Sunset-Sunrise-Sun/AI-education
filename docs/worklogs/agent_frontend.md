@@ -1245,3 +1245,32 @@
   （本轮前 147 passed / 2 skipped；原测试全部继续通过，未删除旧测试、未新增 skip）。
 - 公共接口是否变化：**否**（未改 `schemas/` / `docs/interfaces/` / Integration 签名 / API）
 - 下一步：等待 Reviewer 验收 **Phase 2B-2A**。⚠️ **不 merge，不自行进入 2B-2B**。
+
+---
+
+### 2026-09-30 - Phase 2B-2B：Schedule Parser + Local Import Adapter（阶段同步）
+- 本次目标：进入 **Course Data** 的 **Schedule Parser + 本地 import adapter**
+  （主记录见 `docs/worklogs/course_data.md`）。对 Agent / Frontend 来说本轮是**阶段同步**，无行为改动。
+- 起点：`main` = `266b11908ae47131e686a395f709dd4c46a60c5c`；
+  分支 `feature/course-data-schedule-import-core`。
+- 新增（Course Data 内部包，**不是跨模块公共契约**）：
+  `backend/app/course_data/{schedule_parser,importer}.py`；
+  修改 `normalization.py`（周次按新证据扩到 `N-M周`）与 `__init__.py`；
+  新增测试 `backend/tests/test_course_data_{schedule_parser,importer}.py`。
+- 关键边界（对 Integration / 前端侧的意义）：
+  - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/ports.py`、`orchestrator.py`、
+    `main.py`、`api/` **一律未修改**；`CourseDataProvider` 签名保持冻结；
+  - **零网络**：未发起任何 SYSU 请求；未写 fetch client / Cookie / Session / Token / 分页逻辑；
+    `test_course_data_snapshot.py` 的**包边界检查会自动覆盖新增模块**；
+  - **前端未改动**（本轮无前端相关接口变化），未跑 `npm run build`。
+- 隐私：私密脱敏样本只在**本地**阅读，**未进入 Git**；测试全部使用人工虚构样本。
+- 阶段影响：阶段图由"Phase 2B-2A 完成"推进为"**Phase 2B-2B 完成**"，
+  下一步为 **Phase 2B-2C 真实受控获取**（登录 / 分页 / 请求规模确认），**须等新任务书**。
+- 修改文件（本模块视角）：
+  - `docs/status/agent_frontend.md`（最小阶段同步：表头、阶段图、新增 Phase 2B-2B 结果小节、
+    「当前阻塞」「下一步」）
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **355 passed / 2 skipped**
+  （本轮前 246 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）。
+- 公共接口是否变化：**否**（未改 Schema / Interface / Integration 签名 / API）
+- 下一步：等待 Reviewer 验收 **Phase 2B-2B**。⚠️ **不 merge，不自行进入 2B-2C**。

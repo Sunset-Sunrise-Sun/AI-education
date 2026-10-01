@@ -1,22 +1,23 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-09-30（**Phase 2B-2A Course Data Normalization Core** 完成，等待 Reviewer）
+> 最后更新：2026-09-30（**Phase 2B-2B Schedule Parser + Local Import Adapter** 完成，等待 Reviewer）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
-> **原始材料、逐行记录与 Raw 响应均不进入 public Git**
+> **原始材料、逐行记录、Raw 响应与私密脱敏样本均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
 > **Data Gate 通过条件 C1–C11 全部完成**；**公共契约本轮未改**
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
-> Course Data 的**标准化内核 + 内部快照**已完成（**零网络**）；
+> Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter 与内部快照**均已完成
+> （**零网络**）；
 > 但 **production Curriculum / Planner provider 尚未接入**，
-> **真实 `teachingTimePlaceStr` parser、授权 import adapter、完整 semester snapshot 均未实现**，
+> **真实受控获取 adapter（网络）与完整 semester snapshot 仍未实现**，
 > 因此**没有**任何一条真实数据链路端到端跑通，**也未新增任何 API**。
 >
 > 详见 `docs/status/course_data.md`。
 
 ## 当前阶段
 
-**Phase 2B-2A 已完成 → 下一步 Phase 2B-2B（真实 parser / 授权 adapter，尚未开工）**
+**Phase 2B-2B 已完成 → 下一步 Phase 2B-2C（真实受控获取，尚未开工）**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -25,8 +26,8 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                    →  ✅ Data Gate PASSED / CLOSED
                    →  Phase 2B-1 ✅ Integration / Provider Skeleton（Provider 边界 + Orchestrator）
                    →  Phase 2B-2A ✅ Course Data Normalization Core（字段映射 + 快照 + Provider 落点）
-                   →  【下一步，需新任务书】Phase 2B-2B 真实 teachingTimePlaceStr parser /
-                      授权 import adapter / 完整 2026-1 snapshot
+                   →  Phase 2B-2B ✅ Schedule Parser + Local Import Adapter（纯本地、零网络）
+                   →  【下一步，需新任务书】Phase 2B-2C 真实受控获取（登录 / 分页 / 请求规模确认）
                    →  之后：Phase 2B Integration / Orchestrator 接真实 Provider
 ```
 
@@ -319,6 +320,32 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/ports.py`、`orchestrator.py` 均未修改；
   后端 **246 passed / 2 skipped**。
 
+## Phase 2B-2B 结果（Schedule Parser + Local Import Adapter）
+
+**纯本地、零网络**：依据负责人单独提供的**私密脱敏样本**（Sanitized Sample，**未进入 Git**）
+实现 `teachingTimePlaceStr` parser 与 Raw-response import adapter。详见 `docs/status/course_data.md`。
+
+| 产出 | 内容 |
+|---|---|
+| `backend/app/course_data/schedule_parser.py` | `parse_teaching_time_place()`、`ParsedScheduleSegment`、`extract_meetings()`、`parse_weekday()`、`parse_sections()` |
+| `backend/app/course_data/importer.py` | `import_opening_courses_response(payload, *, semester, source, completeness)` |
+| `backend/app/course_data/normalization.py` | `expand_weeks()` 依据新证据扩到 `N-M周`（`N ≥ 1`、`M ≥ N`，含 `M == N`） |
+| `backend/tests/test_course_data_{schedule_parser,importer}.py` | 新增测试 |
+
+**关键边界**：
+
+- segment 分隔符 `,`、字段分隔符 `/`；无地点 **5 字段** / 有地点 **6 字段**；末尾逗号忽略、**中间空段失败**；
+- ⛔ **`weekday` 只来自 segment 自身**（`星期一`…`星期日`）；Raw `weekDay` **完全不使用**（样本显示其顺序不可安全假设）；
+- 节次 `第N-M节`，**允许 `M == N`**（`第4-4节`）；
+- 地点只按**第一个 `-`** 切；⛔ **`openingSchoolName` 不是 `campus` 的 fallback**；
+- **teacher / activity 内部保留**（`ParsedScheduleSegment`），⛔ **未修改任何 Schema**（仍是 deferred gap）；
+- importer **任意一行失败即整体失败**（不 fallback / 不重试 / 不跳过坏 row）；
+  **completeness 由调用方给出**，adapter 不因 `len(rows) == total` 自称 complete；
+  semester 一致性 / real-only / duplicate key / completeness **全部交由 `OfferingSnapshot`**；
+- 错误信息**不回显** Raw 串或其中任何字段取值；**包内仍零网络**（边界测试自动覆盖新增文件）；
+- **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/` 均未修改；
+  后端 **355 passed / 2 skipped**。
+
 ## 已完成
 - 模块边界和依赖接口已定义
 - **前端技术栈已由负责人确认：Vue 3 + TypeScript + Vite**（`/docs/ARCHITECTURE.md` 已同步）
@@ -460,8 +487,9 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   原缺口（一个教学班无法表达多个时间段）**已消除**，历史记录保留在缺口报告 §4.5 / §4.6
 - ~~**DG-01 – DG-06 尚未实施**~~ ✅ **DG-01 与 DG-06 均已实施**；其余四项按裁决不产生契约变更
 - ~~**上游 Curriculum / Course Data / Planner 均未产出真实结果**~~ →
-  **Course Data 已完成本地标准化内核与快照落点**（Phase 2B-2A，零网络），
-  但**真实数据仍未取得**；Curriculum / Planner 仍未产出真实结果，前端只能展示 Mock
+  **Course Data 已完成本地标准化内核、`teachingTimePlaceStr` parser、本地 import adapter 与快照落点**
+  （Phase 2B-2A / 2B-2B，**零网络**），但**真实数据仍未取得**；
+  Curriculum / Planner 仍未产出真实结果，前端只能展示 Mock
 - ~~集成骨架尚未建立~~ ✅ **Provider 边界与 Orchestrator skeleton 已完成**（Phase 2B-1）；
   ⚠️ 但 **production Curriculum / Planner provider 尚未接入**；
   Course Data 侧只有 `SnapshotCourseDataProvider`（**需要外部先喂入真实快照**），
@@ -477,12 +505,12 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **等待 Reviewer 验收 Phase 2B-2A**（Course Data Normalization Core；
-  重点看"是否猜了未确认格式""是否有网络 / fallback / 越界映射"）
-- **下一步是 Phase 2B-2B**：真实 `teachingTimePlaceStr` parser（**需先取得脱敏真实 Raw string**）、
-  授权 import adapter、完整 **2026-1** semester snapshot，
+- **等待 Reviewer 验收 Phase 2B-2B**（parser + 本地 import adapter；
+  重点看"是否只实现有证据的结构""是否用了 `weekDay` / `openingSchoolName`""是否跳过坏 row""是否猜 completeness"）
+- **下一步是 Phase 2B-2C**：真实**受控获取**（网络 adapter：用户本人正常登录、已有权限、
+  用户明确触发授权导入）与完整 **2026-1** semester snapshot，
   ⚠️ **本轮不得自行开始**，须等新一轮任务书
-- **adapter 启动前必须先确认**：合理 `pageSize` / 请求规模；
+- **2B-2C 启动前必须先确认**：合理 `pageSize` / 请求规模；
   **partial snapshot 必须显式记录 completeness，不得宣称 complete**（C9）
 - **仍不允许实现层自行补齐**：`prerequisites[]` / `weekDay` / `openingSchoolName → campus` /
   meeting-level teacher 四项保持"待确认"或"已知暂缓"（C11）
