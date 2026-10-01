@@ -261,14 +261,23 @@ ScheduleSegment   —— 一个教学班内的一段上课时间 / 地点
 
 ### 5.1 学校共享数据（School-shared）
 
-来源为学校侧，**不含个人身份信息**，原则上可跨成员共享。
+**School-shared 的含义**：表示"**可在同一学校用户场景中复用的学校侧数据**"。
+
+> ⚠️ **它不代表天然不含人员信息，也不代表可以公开发布。**
+
+- `CourseOffering` 等数据**可能包含教师等人员信息**（真实 D5 中 `teachingName` 即为一例）；
+- **Real / Raw 数据仍须遵守数据最小化、来源授权和非公开处理规则**；
+- **"是否 School-shared" 与 "是否可以公开" 是两个独立问题** ——
+  前者描述**数据归属与复用范围**，后者描述**披露与发布边界**；
+- ⚠️ **不得把教师信息归为 Student-private**：教师信息属**学校侧**数据，
+  但**同样不得进入 public 仓库**，其处理口径由数据最小化与来源授权规则决定。
 
 | 数据 | 说明 |
 |---|---|
 | `Course` | 课程基础身份与基础属性 |
 | `CurriculumVersion` | 培养方案（专业 / 年级 / 版本） |
 | `CurriculumCourse` | 课程在该方案中的要求（类别 / 推荐学期 / 分组 / 先修） |
-| `CourseOffering` | 某学期教学班（供给） |
+| `CourseOffering` | 某学期教学班（供给）。⚠️ **可含教师等人员信息** |
 | **semester offering snapshot** | 某学期的**开课快照**（"这一学期学校开了什么"的时点切片） |
 
 ⚠️ 即使属共享数据，**认证来源的原始材料（docx、Raw JSON）仍不进入 public Git**，
@@ -687,12 +696,53 @@ Planner                            （冲突检测 / 替换 / 求解）
 
 | 角色 | 必须 | 不得 |
 |---|---|---|
-| **Planner** | 消费符合 `course_offering.schema.json` 的 `CourseOffering` | **不接触学校接口**；不知道 Cookie / 认证方式 / endpoint / 分页参数 |
+| **Planner** | 消费符合 `course_offering.schema.json` 的 `CourseOffering[]` | **不接触学校接口**；不知道 Cookie / 认证方式 / endpoint / 分页参数 |
 | **Integration** | 通过 `CourseDataProvider` 读取标准化结果 | **不知道 Cookie、SYSU endpoint、分页规则**等实现细节 |
 | **Course Data** | 在授权范围内获取、清洗、标准化、去重、记录来源与 `data_source` | 不判断学生是否需要补修；不决定补修优先级；不越过 `docs/interfaces/course_data.md` 的安全边界 |
 | **任何人** | —— | 不绕过登录、不破解验证码、不越权访问、不枚举未授权数据、不保存密码 / Cookie / Session / Token、不提交 HAR |
 
-### 11.3 本轮明确不做
+### 11.3 C9 裁决：目标与获取边界（Architecture Lead 已确认 ✅）
+
+**目标**：**2026-1 semester offering snapshot**（某学期的完整开课快照）。
+
+**获取边界（硬性）**：
+
+- ✅ 用户**本人正常登录**；
+- ✅ **已有权限**（只取本人有权查看的数据）；
+- ✅ **用户明确触发**的授权导入；
+- ⛔ **不保存**密码 / Cookie / Session / Token；
+- ⛔ **不绕过**认证 / CAPTCHA；
+- ⛔ **不越权**；
+- ⛔ **不在未确认请求规模前进行高频批量调用**。
+
+**角色分工（C9 明确）**：
+
+```text
+Course Data：
+  获取 / 导入 → 解析 → 标准化 → 去重
+  → 记录 source / data_source → semester snapshot
+
+Integration：
+  只通过 CourseDataProvider 使用标准化结果
+  不知道 SYSU endpoint / Cookie / pagination
+
+Planner：
+  只消费标准化 CourseOffering[]
+```
+
+> ⚠️ **`pageSize` / 请求规模**：**批量导入实现时必须确认合理的 `pageSize` 与请求规模**，
+> 不得在未确认规模前发起批量抓取。
+
+**⚠️ Completeness（完整性）纪律**：
+
+- **"目标是一学期完整 Snapshot" ≠ "当前已取得完整数据"**；
+- 当前实际只有 **D5 小规模人工侦察**（`CSE202` / `2026-1` → 2 个教学班），
+  **远不是**完整快照；
+- 若批量导入**只能取得部分范围**，**必须显式记录 completeness**
+  （例如覆盖的课程数 / 是否全量 / 截断原因）；
+- ⛔ **不得把 partial snapshot 宣称为 complete。**
+
+### 11.4 本轮明确不做
 
 - ❌ **不实现** Course Data Adapter / Importer / Normalizer / Provider；
 - ❌ **不写** crawler / 抓取脚本；
@@ -700,13 +750,13 @@ Planner                            （冲突检测 / 替换 / 求解）
 - ❌ **不建**数据库、**不写** ORM / migration；
 - ❌ **不进入** Integration。
 
-### 11.4 完整 2026-1 开课数据获取的定位
+### 11.5 完整 2026-1 开课数据获取的定位
 
 **完整 2026-1 开课数据获取属于 Data Gate 之后的 Course Data MVP，不在本轮范围。**
 
 当前 D5 只有**小规模人工侦察**（`CSE202` / `2026-1` → 2 个教学班）。
 正式获取必须等：① ~~DG-01 的表示方式定了~~ → **已裁决（嵌套 `meetings[]`）**，
-待 **Data Gate-2 实施契约变更**；② 采集范围经负责人批准；③ 合规边界确认。
+待 **Data Gate-2 实施契约变更**；② 采集范围经负责人批准；③ 合规边界确认（**C9 已确认方向**）。
 （人工技术侦察**已到此结束**，不再继续查询更多课程。）
 
 ---
@@ -717,22 +767,23 @@ Planner                            （冲突检测 / 替换 / 求解）
 > 以下条件**全部满足**，才视为通过 Data Gate，可以恢复 Phase 2B Integration / Course Data MVP。
 > 任一条未满足，**Phase 2B Integration 保持暂停编码**。
 >
-> **当前进度**：**C1 的"裁决"部分已完成**（Architecture Lead，见开头裁决总表）；
-> C4 / C6 / C7 / C8 的**方向已由裁决确定**，**实施与确认仍在 Data Gate-2**。
+> **当前进度（Architecture Lead 已确认）**：
+> **C1 / C2 / C3 / C4 / C6 / C7 / C8 / C9 / C10 / C11 已确认**；
+> **仅 C5 待 Data Gate-2 执行**（契约变更流程与连带回归范围）。
 
 | # | 条件 | 当前状态 | 判定方 |
 |---|---|---|---|
-| **C1** | **DG-01 – DG-06 逐项裁决完毕**（批准 / 驳回 / 修改），且裁决结论**书面记录**在本文件 | ✅ **已完成**（Architecture Lead）；⏳ 待 Reviewer 最终复验 | 负责人 |
-| **C2** | **实体边界与所有者无异议**：Curriculum / Course Data / Planner / Integration / Frontend 五方对 §3 / §4 的划分达成一致 | ⏳ 待确认 | 负责人 + 各模块 |
-| **C3** | **Shared / Private / Derived 分类确认**（§5），特别是"用户适用的 `CurriculumVersion` reference 属私有"这一条 | ⏳ 待确认 | 负责人 |
+| **C1** | **DG-01 – DG-06 逐项裁决完毕**（批准 / 驳回 / 修改），且裁决结论**书面记录**在本文件 | ✅ **已确认**（Architecture Lead） | 负责人 |
+| **C2** | **实体边界与所有者无异议**：Curriculum / Course Data / Planner / Integration / Frontend 五方对 §3 / §4 的划分达成一致 | ✅ **已确认**（实体边界与所有者确认） | 负责人 + 各模块 |
+| **C3** | **Shared / Private / Derived 分类确认**（§5），特别是"用户适用的 `CurriculumVersion` reference 属私有"这一条 | ✅ **已确认**（分类确认；⚠️ 注意 §5.1：**School-shared ≠ 可以公开**，**不得把教师信息归为 Student-private**） | 负责人 |
 | **C4** | **多 segment 表示方式确定**（§6 / DG-01），且明确**未**采用"只保留第一段"与"拆成多个可独立选择的 `CourseOffering`"两个被禁方案 | ✅ **已确定**：**嵌套 `meetings[]`（方案 A）**；⏳ Data Gate-2 实施 | 负责人 + Course Data + Planner |
-| **C5** | **契约变更已走完流程**：`/AGENTS.md` 第 4 节的 `【接口变更请求】` → 人工确认 → **才**修改 `/schemas/` 与 `/docs/interfaces/`；并**同步**评估对 `mock_data/`、`backend/app/models/contracts.py`（启动自检）、`frontend` 类型与展示的影响与回归测试范围 | ⏳ **Data Gate-2 执行**（DG-01 / DG-06） | 负责人 + 各模块 |
+| **C5** | **契约变更已走完流程**：`/AGENTS.md` 第 4 节的 `【接口变更请求】` → 人工确认 → **才**修改 `/schemas/` 与 `/docs/interfaces/`；并**同步**评估对 `mock_data/`、`backend/app/models/contracts.py`（启动自检）、`frontend` 类型与展示的影响与回归测试范围 | ⏳ **Data Gate-2 执行**（DG-01 / DG-06）—— **唯一未完成项** | 负责人 + 各模块 |
 | **C6** | **暂缓字段清单确认**（§10）：`teachProgressSubmitState` / `openClass` / `outlineTypeNum` 等**不进入公共契约**，保持待确认 | ✅ **已确认**（随裁决一并确认） | 负责人 |
 | **C7** | **Curriculum → Planner 契约确定**（§7 / DG-05）：优先级**不新增字段**、Planner 不得自行生成；依赖由 `MakeupTask.prerequisites[]` 承载，权威边界见 §7.3.1 | ✅ **已确定** | 负责人 + Curriculum + Planner |
 | **C8** | **接口文档债务修正决定**（DG-06）：`docs/interfaces/planner.md` 按 `/AGENTS.md` 第 5 节修正，**必要时同步 `curriculum.md`** | ✅ **已批准**；⏳ Data Gate-2 执行 | 负责人 |
-| **C9** | **Course Data 获取边界与合规确认**（§11）：采集范围、授权方式、标准化责任、`data_source` 标记规则 | ⏳ 待确认 | 负责人 + Course Data |
-| **C10** | **数据交接方式确认**：`MEMBER_DATA_HANDOFF.md` 已更新为当前状态（GitHub 可直接共享 / 非公开按需交接 / 禁止交接三层），且**真实逐行数据的交接次数如实记录**（DG-02 已允许 D4 Sanitized Sample 经非公开位置交 Curriculum） | ⏳ 待确认 | 负责人 |
-| **C11** | **真实数据未使用的字段风险已知悉**：`prerequisites[]` 无真实证据支持可填充（§2.2）、`weekDay` / `openingSchoolName` 映射待确认、**meeting 级教师关联为 known deferred representation gap**（§6.4） | ⏳ 待确认 | 负责人 |
+| **C9** | **Course Data 获取边界与合规方向确认**（§11.3）：目标 **2026-1 semester offering snapshot**；边界 = 本人正常登录 / 已有权限 / 用户明确触发授权导入 / 不保存密码·Cookie·Session·Token / 不绕过认证·CAPTCHA / 不越权 / 未确认请求规模前不高频批量调用；Course Data 负责 获取→解析→标准化→去重→`source`/`data_source`→snapshot，Integration 只经 `CourseDataProvider`，Planner 只消费标准化 `CourseOffering[]`；**必须确认合理 `pageSize` / 请求规模**；**partial snapshot 必须显式记录 completeness，不得宣称 complete** | ✅ **已确认**（获取边界与合规方向） | 负责人 + Course Data |
+| **C10** | **数据交接方式确认**：`MEMBER_DATA_HANDOFF.md` 已更新为当前状态（GitHub 可直接共享 / 非公开按需交接 / 禁止交接三层），且**真实逐行数据的交接次数如实记录**（DG-02 已允许 D4 Sanitized Sample 经非公开位置交 Curriculum） | ✅ **已确认**；**真实逐行数据交接次数 = 0**（不变） | 负责人 |
+| **C11** | **真实数据未使用的字段风险已知悉**：① `prerequisites[]` **暂无真实来源证据**；② `weekDay` 对应关系**待确认**；③ `openingSchoolName → campus` **待确认**；④ **meeting-level teacher 为 known deferred representation gap** | ✅ **已确认**；⛔ **不允许实现层自行补齐** | 负责人 |
 
 ### 12.1 通过 Gate 之前，任何模块不得
 
@@ -1171,3 +1222,4 @@ Planner                            （冲突检测 / 替换 / 求解）
 |---|---|---|
 | 2026-09-30 | **建立本文件（Data Gate-1）** | 依据 D1–D5 真实证据与 `REAL_TO_SCHEMA_GAP_REPORT.md`（G1–G10）：① 整理 7 个核心实体边界（`Course` / `CurriculumVersion` / `CurriculumCourse` / `CompletedCourse` / `CurrentEnrollment` / `CourseOffering` / `ScheduleSegment`）；② 给出实体所有者、Shared / Private / Derived 分类与 Course Data 获取边界；③ 对 **G9 多 segment** 给出概念关系、6 项 segment 量、`teacher` 层级结论与 4 个候选方案（含明确禁止的 2 个方案）；④ 分析 `Curriculum → Planner` 契约（`prerequisites[]` 是否足够、"已确认优先级"是否进契约）并登记 `docs/interfaces/planner.md` 的**接口文档债务**；⑤ 提交 **DG-01 – DG-06** 六项 `【接口变更请求】` **草案**与 **11 条 Data Gate 通过条件（C1–C11）**。**未修改 Schema / Interface / 代码，未调用 SYSU 接口；当时尚未裁决任何一项。** |
 | 2026-09-30 | **架构裁决落档（Architecture Lead）** | ① 新增**架构裁决总表**：**DG-01 APPROVED WITH MODIFICATION**（采用 `CourseOffering` 1 — N `Meeting`，Data Gate-2 改契约；方案 B/C/D 转为"已评估但驳回"）、**DG-02 DEFER PUBLIC CONTRACT**（Curriculum 内部规范化对象，D4 经非公开位置交接）、**DG-03 APPROVE CONCEPT, REUSE EXISTING CONTRACT**（`current_schedule` 复用 `CourseOffering[]`）、**DG-04 DEFER PUBLIC CONTRACT**（Curriculum 内部模型；`Course.course_type` / `recommended_semester` 不得解释为全局固有属性）、**DG-05 NO NEW PUBLIC CONTRACT FOR MVP**（不新增 `DependencyGraph` / `priority` / `PriorityResult`）、**DG-06 APPROVED**（Data Gate-2 修正 `planner.md`，必要时同步 `curriculum.md`）；② **进入 Data Gate-2 实施的契约变更只有 DG-01 与 DG-06 两项**（§9 重写）；③ **修正教师证据**：删除"没有证据表明教师存在 meeting-level 语义"的说法，改为"**meeting-level teacher association = 已知真实语义**，但 Planner MVP 不依赖它"，并登记为 **known deferred representation gap**（§6.4）；④ **§6.8 锁定目标结构**（`meetings[]`：`weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom`）；⑤ **修正 DG-05 权威边界表述**：Curriculum 认定 / 产出 edges，Planner 只做**本地** adjacency / topology 转换，**不得新增 / 猜测 / 重写 edge**（§7.3.1）；⑥ **修正通过条件计数**：由"12 条"更正为 **11 条（C1–C11）**；⑦ §12 增加逐条**当前状态**。**仍未修改 Schema / Interface / 代码，未调用 SYSU 接口（零请求），未进入 Data Gate-2。** |
+| 2026-09-30 | **最终同步修复（Data Gate-1 收尾）** | ① **§5.1 隐私措辞收紧**：删除过强的"来源为学校侧，**不含个人身份信息**，原则上可跨成员共享"，改为 **School-shared = "可在同一学校用户场景中复用的学校侧数据"**，并明确**不代表天然不含人员信息、不代表可以公开发布**；补注 `CourseOffering` 等**可能包含教师等人员信息**、Real / Raw 仍须遵守**数据最小化 / 来源授权 / 非公开处理**，以及 **"是否 School-shared" 与 "是否可以公开" 是两个独立问题**；⚠️ **不得把教师信息归为 Student-private**。② **新增 §11.3 C9 裁决**：目标 **2026-1 semester offering snapshot**；7 条获取边界；Course Data / Integration / Planner 三方分工；**批量导入须先确认合理 `pageSize` / 请求规模**；**completeness 纪律** —— "目标是完整 Snapshot"**≠**"已取得完整数据"，**partial snapshot 必须显式记录 completeness，不得宣称 complete**（§11.4 / §11.5 顺延）。③ **§12 同步**：**C2 / C3 / C9 / C10 / C11 全部标记为 ✅ 已确认**，进度更新为"**仅 C5 待 Data Gate-2 执行**"；C10 保留 **真实逐行数据交接次数 = 0**；C11 明确四项风险（`prerequisites[]` 暂无真实来源证据、`weekDay` 待确认、`openingSchoolName → campus` 待确认、meeting-level teacher 为 known deferred representation gap），并写明 **不允许实现层自行补齐**。**仍未修改 Schema / Interface / 代码，未调用 SYSU 接口（零请求），未进入 Data Gate-2。** |

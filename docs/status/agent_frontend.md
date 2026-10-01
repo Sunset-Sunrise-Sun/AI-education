@@ -1,10 +1,12 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-09-30（**Data Gate-1 Reviewer 修复 + 架构裁决落档**完成，等待 Reviewer 最终复验）
+> 最后更新：2026-09-30（**Data Gate-1 最终同步修复**完成 —— 架构内容已通过 Reviewer；等待 Reviewer 收尾确认）
 > 数据状态：**核心业务数据仍全部为 Mock**；已取得 Case A 两份 **2025 级真实培养方案**、
 > **D4 已修课程脱敏样本** 与 **D5 教学班侦察样本**（均为认证来源），
 > 但**原始材料、逐行记录与 Raw 响应均不进入 public Git**
 > 裁决状态：**Architecture Lead 已完成 DG-01 – DG-06 裁决**（见 `docs/data/DATA_GATE_DECISIONS.md`）；
+> **通过条件 C1–C11 中已有 10 项确认**（**C1 / C2 / C3 / C4 / C6 / C7 / C8 / C9 / C10 / C11**），
+> **仅 C5 待 Data Gate-2 执行**；
 > **公共契约尚未实施** —— `/schemas/` 与 `/docs/interfaces/` 仍未修改
 
 ## 当前阶段
@@ -135,6 +137,53 @@
 > 登记为 **known deferred representation gap**；② **DG-05 权威边界表述改精确**（Curriculum 认定 / 产出 edges，
 > Planner 只做本地转换，**不得新增 / 猜测 / 重写 edge**）；③ **通过条件计数由"12 条"更正为 11 条（C1–C11）**。
 
+### Data Gate-1 最终同步（架构内容已通过 Reviewer）
+
+**① §5.1 隐私措辞收紧（School-shared）**
+
+- ❌ 删除过强表述"来源为学校侧，**不含个人身份信息**，原则上可跨成员共享"；
+- ✅ 改为：**School-shared = "可在同一学校用户场景中复用的学校侧数据"**，
+  **不代表天然不含人员信息，也不代表可以公开发布**；
+- ✅ 明确 `CourseOffering` 等数据**可能包含教师等人员信息**；
+  Real / Raw 仍须遵守**数据最小化、来源授权、非公开处理**；
+  **"是否 School-shared" 与 "是否可以公开"是两个独立问题**；
+- ⚠️ **不得把教师信息归为 Student-private**（教师信息属学校侧，但同样不得进 public 仓库）。
+
+**② C9 裁决已写入 §11.3（目标与获取边界）**
+
+- **目标**：**2026-1 semester offering snapshot**；
+- **边界**：本人正常登录 / 已有权限 / **用户明确触发授权导入** /
+  ⛔ 不保存密码·Cookie·Session·Token / ⛔ 不绕过认证·CAPTCHA / ⛔ 不越权 /
+  ⛔ **未确认请求规模前不高频批量调用**；
+- **分工**：Course Data = 获取·导入 → 解析 → 标准化 → 去重 → `source` / `data_source` → snapshot；
+  Integration = **只经 `CourseDataProvider`**，不知道 SYSU endpoint / Cookie / pagination；
+  Planner = **只消费标准化 `CourseOffering[]`**；
+- ⚠️ 批量导入**必须先确认合理 `pageSize` / 请求规模**；
+- ⚠️ **completeness 纪律**：「目标是一学期完整 Snapshot」**≠**「当前已取得完整数据」（当前只有 2 个教学班的侦察样本）；
+  **若只能取得部分范围，必须显式记录 completeness，不得把 partial snapshot 宣称为 complete**。
+
+**③ 通过条件 C1–C11 状态同步**
+
+| 条件 | 状态 |
+|---|---|
+| C1 裁决完成 | ✅ 已确认 |
+| **C2 实体边界与所有者** | ✅ **已确认** |
+| **C3 Shared / Private / Derived 分类** | ✅ **已确认**（含 §5.1 措辞修正） |
+| C4 多 segment 表示方式 | ✅ 已确定（`meetings[]`；Data Gate-2 实施） |
+| **C5 契约变更流程** | ⏳ **唯一未完成项**（Data Gate-2 执行） |
+| C6 暂缓字段清单 | ✅ 已确认 |
+| C7 Curriculum → Planner 契约 | ✅ 已确定 |
+| C8 接口文档债务修正决定 | ✅ 已批准（Data Gate-2 执行） |
+| **C9 Course Data 获取边界与合规方向** | ✅ **已确认**（见 §11.3） |
+| **C10 数据交接方式** | ✅ **已确认**；**真实逐行数据交接次数 = 0（不变）** |
+| **C11 已知未覆盖字段风险** | ✅ **已确认**：`prerequisites[]` **暂无真实来源证据**、`weekDay` 对应关系**待确认**、`openingSchoolName → campus` **待确认**、**meeting-level teacher = known deferred representation gap**；⛔ **不允许实现层自行补齐** |
+
+**④ `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` 状态同步（仅状态，不改历史分析）**
+
+- §4.5 引用块与变更记录中的 `DATA_GATE_DECISIONS.md`（**草案，未经批准**）
+  → 改为「**Data Gate-1 架构裁决已完成；公共契约尚未实施，实施进入 Data Gate-2**」；
+- **G1–G10 的历史分析与 A/B/C 映射结论一字未改**。
+
 ## 已完成
 - 模块边界和依赖接口已定义
 - **前端技术栈已由负责人确认：Vue 3 + TypeScript + Vite**（`/docs/ARCHITECTURE.md` 已同步）
@@ -190,6 +239,14 @@
   **精确化 DG-05 权威边界**（Planner 只能做本地 adjacency / topology 转换）、
   **更正通过条件计数为 11 条**。
   **仍未修改 Schema / Interface / 代码；契约实施统一在 Data Gate-2**
+- **Data Gate-1 最终同步修复**：**§5.1 School-shared 隐私措辞收紧**（不再声称"不含个人身份信息"，
+  明确 School-shared ≠ 可公开、`CourseOffering` 可能含教师等人员信息、
+  **不得把教师信息归为 Student-private**）；**新增 §11.3 C9 裁决**（目标 2026-1 snapshot、
+  7 条获取边界、三方分工、`pageSize` / 请求规模须先确认、**partial snapshot 必须显式记录 completeness**）；
+  **§12 同步 C2 / C3 / C9 / C10 / C11 为 ✅ 已确认**（进度＝**仅 C5 待 Data Gate-2**，
+  C10 保留**交接次数 = 0**，C11 明确四项风险且**不允许实现层自行补齐**）；
+  `REAL_TO_SCHEMA_GAP_REPORT.md` **仅同步 Data Gate 状态**（**G1–G10 历史分析一字未改**）。
+  **未修改 Schema / Interface / 代码，未调用 SYSU 接口（零请求），未进入 Data Gate-2**
 
 ## 当前接口
 - 读取：`MakeupTask[]`、`CourseOffering[]`、`Preference`、`PlanResult`（当前来自 Mock）
@@ -234,14 +291,18 @@
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **Data Gate-1 架构裁决已落档，等待 Reviewer 最终复验**
-- **Reviewer 复验后进入 Data Gate-2**：实施 **DG-01**（`course_offering.schema.json` 改为
+- **Data Gate-1 最终同步完成，等待 Reviewer 收尾确认**
+- **随后进入 Data Gate-2**：实施 **DG-01**（`course_offering.schema.json` 改为
   `CourseOffering` 1 — N `Meeting`，**有意的 breaking migration**，需同步
   `mock_data/course_offerings.json`、`backend/app/models/contracts.py`、`frontend` 类型与展示）
-  与 **DG-06**（修正 `docs/interfaces/planner.md`，必要时同步 `curriculum.md`）
-- 并按 `DATA_GATE_DECISIONS.md` 第 12 节的 **C1 – C11（11 条）** 判定是否通过 Data Gate
+  与 **DG-06**（修正 `docs/interfaces/planner.md`，必要时同步 `curriculum.md`），
+  即完成 **C5**（**C1–C11 中唯一未完成项**）
 - **DG-02 / DG-03 / DG-04 / DG-05 本阶段不产生契约变更**（分别留 Curriculum 内部 / 复用
   `CourseOffering[]` / 留 Curriculum 内部 / 不新增对象）
+- **C9 落地时**：批量导入前必须先确认合理 `pageSize` / 请求规模；
+  只能取得部分范围时**必须显式记录 completeness**，**不得宣称 complete**
+- **C11 落地时**：`prerequisites[]` / `weekDay` / `openingSchoolName → campus` /
+  meeting-level teacher 四项风险保持"待确认"或"已知暂缓"，**不允许实现层自行补齐**
 - ⚠️ **在 Reviewer 复验与新一轮任务书之前不得实施任何变更**：不得改 `/schemas/` 或 `/docs/interfaces/`、
   不得写 Course Data Adapter / `CourseDataProvider`、不得进入 Integration。
   **不得自行进入 Data Gate-2**

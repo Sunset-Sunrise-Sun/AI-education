@@ -829,3 +829,68 @@
 - 下一步：等待 Reviewer 最终复验。复验通过后由负责人决定是否发出 **Data Gate-2 任务书**
   （实施 DG-01 契约变更与 DG-06 接口文档修正，并同步 Mock / 后端自检 / 前端类型等连带范围）。
   ⚠️ **不 merge，不进入 Data Gate-2**，Phase 2B Integration 保持暂停编码。
+
+---
+
+### 2026-09-30 - Data Gate-1 最终同步修复（docs-only）
+- 本次目标：**只做最终文档同步**。架构内容已通过 Reviewer ——
+  **不重新讨论 DG-01 – DG-06、不进入 Data Gate-2、不改代码与契约。**
+- 起点：同一分支 `docs/data-gate-architecture`，head `7f4f9f43460715d50eaab36b7bde754fe823baf4`。
+- **修复 1：School-shared 隐私措辞（`DATA_GATE_DECISIONS.md` §5.1）**
+  - 问题：原文"来源为学校侧，**不含个人身份信息**，原则上可跨成员共享"**表述过强**；
+  - 改为：**School-shared = "可在同一学校用户场景中复用的学校侧数据"**，
+    **不代表天然不含人员信息，也不代表可以公开发布**；
+  - 明确：`CourseOffering` 等数据**可能包含教师等人员信息**（真实 D5 的 `teachingName` 即为一例）；
+    Real / Raw 数据仍须遵守**数据最小化、来源授权和非公开处理规则**；
+    **"是否 School-shared" 与 "是否可以公开" 是两个独立问题**；
+  - ⚠️ 特别写明：**不得把教师信息归成 Student-private** ——
+    教师信息属**学校侧**数据，但**同样不得进入 public 仓库**。
+- **修复 2：`REAL_TO_SCHEMA_GAP_REPORT.md` 的 Data Gate 状态（允许最小修改）**
+  - §4.5 引用块与 §7 变更记录中上一轮加入的
+    `DATA_GATE_DECISIONS.md`（**草案，未经批准**）
+    → 改为语义「**Data Gate-1 架构裁决已完成；公共契约尚未实施，实施进入 Data Gate-2**」；
+  - **只同步状态**：**G1–G10 的历史分析与 A/B/C 映射结论一字未改**；
+    新增变更记录行说明"仅状态同步"。
+- **同步 C2 / C3 / C9 / C10 / C11（Architecture Lead 已确认）**
+  - **C2** ✅ 实体边界与所有者确认；
+  - **C3** ✅ Shared / Private / Derived 分类确认（并指向 §5.1 的新措辞）；
+  - **C9** ✅ Course Data 获取边界与合规方向确认 —— **新增 §11.3 完整记录**：
+    - 目标：**2026-1 semester offering snapshot**；
+    - 获取边界：用户本人正常登录 / 已有权限 / **用户明确触发授权导入** /
+      ⛔ 不保存密码 · Cookie · Session · Token / ⛔ 不绕过认证 · CAPTCHA / ⛔ 不越权 /
+      ⛔ **不在未确认请求规模前进行高频批量调用**；
+    - 分工：Course Data = **获取·导入 → 解析 → 标准化 → 去重 → `source` / `data_source` → snapshot**；
+      Integration = **只通过 `CourseDataProvider` 使用标准化结果**，
+      **不知道 SYSU endpoint / Cookie / pagination**；
+      Planner = **只消费标准化 `CourseOffering[]`**；
+    - ⚠️ **"目标是一学期完整 Snapshot" ≠ "当前已取得完整数据"** ——
+      当前实际只有 D5 小规模人工侦察（`CSE202` / `2026-1` → **2 个教学班**）；
+    - ⚠️ 批量导入实现时**必须确认合理 `pageSize` / 请求规模**；
+      若只能取得部分范围，**必须显式记录 completeness**，
+      **不得把 partial snapshot 宣称为 complete**；
+    - 原 §11.3 / §11.4 顺延为 §11.4 / §11.5。
+  - **C10** ✅ 数据交接方式确认；**真实逐行数据交接次数 = 0（继续保留）**；
+  - **C11** ✅ 已知未覆盖字段风险确认，逐项写明：
+    ① `prerequisites[]` **暂无真实来源证据**；② `weekDay` 对应关系**待确认**；
+    ③ `openingSchoolName → campus` **待确认**；④ **meeting-level teacher = known deferred
+    representation gap**；⛔ **不允许实现层自行补齐**；
+  - §12 进度更新为：**C1–C11 中 10 项已确认，仅 C5 待 Data Gate-2 执行**。
+- 修改文件：
+  - `docs/data/DATA_GATE_DECISIONS.md`（§5.1 措辞、新增 §11.3、§11.4/§11.5 顺延、§12 状态、§15 变更记录）
+  - `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`（**仅** §4.5 引用块 + §7 变更记录的状态同步）
+  - `docs/status/agent_frontend.md`（表头裁决状态、新增「Data Gate-1 最终同步」小节、
+    「已完成」「下一步」同步）
+  - `docs/data/MEMBER_DATA_HANDOFF.md`（**仅**因 C10 状态同步而最小修改：§11 标记 C10 已确认、
+    重申交接次数 0）
+  - 本文件（**仅追加**）
+- 测试：docs-only，未改动任何代码，未复跑前后端
+- 公共接口是否变化：**否**
+- **未做**：未修改 `/schemas/`、`/docs/interfaces/`、`AGENTS.md`、`backend/`、`frontend/`、`mock_data/`；
+  未写 parser / crawler / Adapter / Normalizer / `CourseDataProvider` / Integration；
+  未建数据库；**未调用 SYSU 接口（本轮零请求）**；**未重新讨论任何 DG 裁决**；
+  **未进入 Data Gate-2**
+- 遗留已清零：上一轮上报的 `REAL_TO_SCHEMA_GAP_REPORT.md` 中"（草案，未经批准）"
+  **已在本轮按授权同步修正**。
+- 下一步：等待 Reviewer 收尾确认。之后由负责人决定是否发出 **Data Gate-2 任务书**
+  （实施 DG-01 契约变更与 DG-06 接口文档修正，即完成 **C5**）。
+  ⚠️ **不 merge，不进入 Data Gate-2**，Phase 2B Integration 保持暂停编码。
