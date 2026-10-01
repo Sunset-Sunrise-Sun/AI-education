@@ -147,13 +147,15 @@
    *   6 fields: weeks / weekday / sections / location / teacher / activity
    *
    * 其余字段（weeks / weekday / sections / location / activity）**原样保留**。
+   *
+   * `humanRowNo` 为**从 1 开始**的人类行号，只用于错误信息（见 `minimizeRow`）。
    */
-  function redactSegmentTeacher(segment, pageNo, rowIndex) {
+  function redactSegmentTeacher(segment, pageNo, humanRowNo) {
     var fields = segment.split(FIELD_SEPARATOR);
 
     if (fields.length !== 5 && fields.length !== 6) {
       fail(
-        "第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr " +
+        "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
           "出现不支持的字段数（" + fields.length + "）。本采集器不猜格式，已整体停止。"
       );
     }
@@ -167,7 +169,7 @@
     // 错误信息不回显 teacher 取值。
     if (typeof teacher !== "string" || teacher.trim() === "") {
       fail(
-        "第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr " +
+        "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
           "中 teacher 字段为空或不是字符串。本采集器不写入脱敏占位符来掩盖该问题，已整体停止。"
       );
     }
@@ -181,10 +183,12 @@
    * 对整条 teachingTimePlaceStr 脱敏，并保持全部已确认结构：
    * segment 顺序、`/`、`,`、**最多一个** trailing comma、
    * location 原文、weeks / weekday / sections / activity 原文。
+   *
+   * `humanRowNo` 为**从 1 开始**的人类行号，只用于错误信息（见 `minimizeRow`）。
    */
-  function redactTeachingTimePlace(text, pageNo, rowIndex) {
+  function redactTeachingTimePlace(text, pageNo, humanRowNo) {
     if (typeof text !== "string" || text === "") {
-      fail("第 " + pageNo + " 页第 " + rowIndex + " 条记录缺少可用的 teachingTimePlaceStr。");
+      fail("第 " + pageNo + " 页第 " + humanRowNo + " 条记录缺少可用的 teachingTimePlaceStr。");
     }
 
     var segments = text.split(SEGMENT_SEPARATOR);
@@ -200,7 +204,7 @@
 
     if (trailingEmpty > 1) {
       fail(
-        "第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr " +
+        "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
           "出现多个末尾逗号。已整体停止。"
       );
     }
@@ -211,17 +215,17 @@
     }
 
     if (segments.length === 0) {
-      fail("第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr 没有有效 segment。");
+      fail("第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr 没有有效 segment。");
     }
 
     var redacted = segments.map(function (segment) {
       if (segment.trim() === "") {
         fail(
-          "第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr " +
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
             "出现中间空 segment。已整体停止。"
         );
       }
-      return redactSegmentTeacher(segment, pageNo, rowIndex);
+      return redactSegmentTeacher(segment, pageNo, humanRowNo);
     });
 
     return redacted.join(SEGMENT_SEPARATOR) + (hadTrailingComma ? SEGMENT_SEPARATOR : "");
@@ -231,16 +235,25 @@
   // 数据最小化
   // ---------------------------------------------------------------------
 
-  function minimizeRow(row, pageNo, rowIndex) {
+  /**
+   * 取一条 row 的最小化副本：只保留 `KEPT_ROW_FIELDS`，
+   * 并把 `teachingTimePlaceStr` 覆盖为脱敏后的文本。
+   *
+   * ⚠️ **`humanRowNo` 是从 1 开始的人类行号，只用于错误信息**。
+   * 调用方在第 1 页对第 1 条记录报告"第 1 条"，
+   * 因此 `collect()` 传入的是 `Array.prototype.map` 的 **0-based** 下标 **加 1**。
+   * 这样错误信息可以直接和浏览器里看到的行号对齐；**报告的是行数，不是数组下标**。
+   */
+  function minimizeRow(row, pageNo, humanRowNo) {
     if (!row || typeof row !== "object" || Array.isArray(row)) {
-      fail("第 " + pageNo + " 页第 " + rowIndex + " 条记录不是对象。");
+      fail("第 " + pageNo + " 页第 " + humanRowNo + " 条记录不是对象。");
     }
 
     var minimized = {};
     for (var i = 0; i < KEPT_ROW_FIELDS.length; i += 1) {
       var field = KEPT_ROW_FIELDS[i];
       if (!Object.prototype.hasOwnProperty.call(row, field)) {
-        fail("第 " + pageNo + " 页第 " + rowIndex + " 条记录缺少字段：" + field);
+        fail("第 " + pageNo + " 页第 " + humanRowNo + " 条记录缺少字段：" + field);
       }
       minimized[field] = row[field];
     }
@@ -249,7 +262,7 @@
     minimized.teachingTimePlaceStr = redactTeachingTimePlace(
       row.teachingTimePlaceStr,
       pageNo,
-      rowIndex
+      humanRowNo
     );
 
     return minimized;
@@ -431,8 +444,10 @@
         );
       }
 
+      // 报告给用户的行号从 1 开始：map 的下标是 0-based，因此显式 + 1。
+      // 不改变顺序、不跳过任何 row、不做任何字段修补。
       var minimizedRows = data.rows.map(function (row, rowIndex) {
-        return minimizeRow(row, currentPageNo, rowIndex);
+        return minimizeRow(row, currentPageNo, rowIndex + 1);
       });
 
       pages.push({

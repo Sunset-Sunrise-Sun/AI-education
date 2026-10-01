@@ -104,7 +104,8 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 | `CURR-NEW-003` | D3 | Public Official | 中山大学网络空间安全学院 | 网络空间安全学院2025-2春季学期本科生课程表 | **Partial** | 已登记，未展开核对 |
 | **`CURR-NEW-004`** | D3 | **Authenticated Official** | 中山大学本科教务系统 | **25级 网络空间安全 本科培养方案** | **Confirmed** | **本轮新增**；原始 docx 不入库 |
 | **`TRANSCRIPT-001`** | D4 | **Authenticated Official** | 中山大学本科教务系统 | **已完成课程记录（已修课程）脱敏样本** | **Confirmed** | **本轮登记**；Raw 与逐行 Sanitized **均不入库** |
-| **`OFFERING-001`** | D5 | **Authenticated Official** | 中山大学本科教务系统 | **课程开设 / 教学班真实样本（小规模人工侦察）** | **Confirmed** | **本轮登记**；Raw 响应**不入库** |
+| **`OFFERING-001`** | D5 | **Authenticated Official** | 中山大学本科教务系统 | **课程开设 / 教学班真实样本（小规模人工侦察）** | **Confirmed** | 已登记；Raw 响应**不入库** |
+| **`OFFERING-002`** | D5 | **Authenticated Official** | 中山大学本科教务系统 | **「全校开设课程」独立模块第 1 页真实结构 smoke** | **Confirmed** | **本轮新增**；只登记汇总事实，**无 Raw row** |
 
 ---
 
@@ -356,6 +357,31 @@ OFFERING-###      课程开设 / 教学班数据（D5）
   已登记结构缺口 **G9**（多 segment 无法无损表达）与 **G10**（多个字段无表示），
   并据此把 **G7 升级为已验证**。
 
+### `OFFERING-002` — 「全校开设课程」独立模块第 1 页真实结构 smoke（D5，认证来源）
+
+- 数据类别：**D5**
+- 来源机构：**中山大学本科教务系统**
+- **访问类型：Authenticated Official**
+- 是否官方：**是** ｜ 是否公开：**否** ｜ 是否需要登录：**是（仅本人正常权限）**
+- **范围**：**2026-1**；**「全校开设课程」独立模块**（与「选课」是**两个独立模块**）；
+  **第 1 页**真实结构 smoke（由负责人显式触发浏览器端采集器，**非批量、非枚举**）
+- **已确认事实（只登记这些）**：
+  1. **same-origin 请求成功**；
+  2. **第 1 页响应成功进入 Collector**；
+  3. **第 1 页至少 1 条 row 缺少 `teachingTimePlaceStr`**
+     （**只登记"至少 1 条"这一存在性事实，不登记精确条数、不登记行号**）。
+- **证据等级：Confirmed**
+- 已获取数据的层级：**结构事实（字段存在性 / 形态）**；**不含任何 Raw row**
+- **必须注明的约束**：
+  1. **不登记 Raw row**；
+  2. **不登记课程 / 教学班信息、教师、教室、内部 ID、`readObj`**；
+  3. **Cookie / Session / Token、完整 Request Headers、HAR 均不得进入 Git**；
+  4. 缺失字段的**业务含义未确认**（不得据此写成"缺排课 / 未排课课程 / 异步课程 / 暂无教室"）。
+- 备注：用于把 **G11**（部分真实 `CourseOffering` row 缺少 `teachingTimePlaceStr`）
+  登记为**有真实来源**的待调查项；详见 `REAL_TO_SCHEMA_GAP_REPORT.md` §4.7 与
+  `docs/status/course_data.md`。取证工具为 `tools/sysu_course_offering_collector.js` 的
+  `diagnoseSchedulePresence({ semester })`（**只请求第 1 页一次**，只返回聚合计数）。
+
 ---
 
 ## 5. 填写规则
@@ -377,17 +403,17 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 ## 6. 当前登记状态
 
 ```text
-已登记来源数：17（**均已完成来源登记 / 状态判定，无"待填写"项**）
+已登记来源数：18（**均已完成来源登记 / 状态判定，无"待填写"项**）
   POLICY-001..008、CURR-OLD-001/002/003、CURR-NEW-001/002/003/004、
-  TRANSCRIPT-001、OFFERING-001
-访问类型分布：Public Official 12 ｜ Authenticated Official 4 ｜ 公开搜索记录 1
+  TRANSCRIPT-001、OFFERING-001/002
+访问类型分布：Public Official 12 ｜ Authenticated Official 5 ｜ 公开搜索记录 1
 证据等级分布（**注意：并非全部来源都是 Confirmed**）：
-  Confirmed 7 ｜ Partial 7 ｜ Not Found 1 ｜ Historical 1 ｜ 不适用 1
+  Confirmed 8 ｜ Partial 7 ｜ Not Found 1 ｜ Historical 1 ｜ 不适用 1
 已获取数据文件：0 进入仓库
-  （公开来源未下载；认证来源的原始 docx、D4 逐行样本、D5 Raw response 均由负责人保管，**均不入库**）
+  （公开来源未下载；认证来源的原始 docx、D4 逐行样本、D5 Raw response / Capture Bundle 均由负责人保管，**均不入库**）
 含个人信息的已入库数据：0（且必须永远保持为 0）
-最近更新：2026-09-30（**Phase 2B-0D**：登记 `OFFERING-001`（D5 课程开设 / 教学班真实样本，
-          认证来源，**小规模人工侦察**，范围 2026-1）；**Raw 响应不入库**）
+最近更新：2026-10-01（**Phase 2B-2C1B**：登记 `OFFERING-002`（D5「全校开设课程」独立模块
+          第 1 页真实结构 smoke，认证来源）；**只登记汇总事实，无 Raw row，Raw 响应 / Capture Bundle 不入库**）
 ```
 
 ---
@@ -403,3 +429,4 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 | 2026-09-30 | **Phase 2B-0B+（认证来源）** | ① 新增 **`CURR-OLD-003`**（25级 遥感科学与技术 本科培养方案）与 **`CURR-NEW-004`**（25级 网络空间安全 本科培养方案），来源为**中山大学本科教务系统（本人正常权限）**；② 新增字段「**访问类型**」：`Public Official` / `Authenticated Official`，并明确"公开性"与"证据真实性"分开记录；③ `CURR-NEW-001`（公开搜索未找到）**保留为历史记录**，不改造成新来源；④ 原始 docx **不入库**，仓库内不含课程表 |
 | 2026-09-30 | **Phase 2B-0C 登记（D4）** | **登记 `TRANSCRIPT-001`**（已完成课程记录，**Authenticated Official**，证据等级 **Confirmed**）：来源 = A. 申请成绩转换 → 实修课程成绩 + B. 本科生成绩单；**未创建新的 D4 `source_id`**；样本 24 条、8 字段 100% 覆盖；**Raw 成绩单与逐行脱敏记录均不入库**，Git 仅登记汇总事实与字段覆盖 |
 | 2026-09-30 | **Phase 2B-0D 登记（D5）** | **登记 `OFFERING-001`**（课程开设 / 教学班真实样本，**Authenticated Official**，证据等级 **Confirmed**）：范围 **2026-1**、**小规模人工侦察**（单一课程）；只登记**结构化证据**（字段名 + 语义 + 映射结论 + 汇总事实）；**Raw response / Cookie / Session / Token / 完整 Request Headers / HAR 均不入库**；不记录教师姓名、修读对象完整文本、内部长 ID 取值、完整逐行记录。据此把 **G7 升级为已验证**，并新增 **G9**（多 segment 结构缺口）与 **G10**（多个字段无表示） |
+| 2026-10-01 | **Phase 2B-2C1B 登记（D5 结构 smoke）** | **新增 `OFFERING-002`**（「全校开设课程」独立模块第 1 页真实结构 smoke，**Authenticated Official**，证据等级 **Confirmed**）：来源为负责人在**真正的「全校开设课程」独立模块**（与「选课」是**两个独立模块**）内显式触发的浏览器端采集器；**只登记汇总事实** —— same-origin 请求成功、第 1 页响应成功进入 Collector、**第 1 页至少发现 1 条 row 缺少 `teachingTimePlaceStr`**；**不登记任何 Raw row**（不含课程 / 教学班信息、教师、教室、内部 ID、`readObj`）；**Cookie / Session / Token / 完整 Request Headers / HAR / Capture Bundle 均不入库**；**缺失字段的业务含义未确认**。据此把 **G11** 登记为**有真实来源**的待调查项；**未修改** `schemas/` / `docs/interfaces/`；**Builder 未发起任何真实 SYSU 请求** |

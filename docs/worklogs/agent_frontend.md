@@ -1359,7 +1359,7 @@
 - 本次目标：同步新增的**结构诊断入口**（主记录见 `docs/worklogs/course_data.md`）。
 - **新事实（负责人已确认）**：真实 smoke run 在真正的「**全校开设课程**」独立模块内
   **same-origin 请求成功**、**认证不再是 blocker**；
-  但**第 1 页第 16 条 row 缺少 `teachingTimePlaceStr`**，当前 `collect()` **按设计 fail closed**；
+  但**第 1 页至少 1 条 row 缺少 `teachingTimePlaceStr`**，当前 `collect()` **按设计 fail closed**；
   **尚未生成真实 Capture Bundle**、**尚未取得 complete semester snapshot**。
 - **导航纠错**：「**选课**」与「**全校开设课程**」是**两个独立模块**（旧层级描述作废）。
 - 新增：`tools/sysu_course_offering_collector.js` 的 `diagnoseSchedulePresence({ semester })`
@@ -1375,3 +1375,24 @@
   （本轮前 515 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）。
 - 公共接口是否变化：**否**
 - 下一步：等待 Reviewer 验收 **Phase 2B-2C1B**。⚠️ **不 merge，不自行开始诊断或完整采集**。
+
+### 2026-10-01 - Phase 2B-2C1B Reviewer 修复（6 项，阶段同步）
+- 本次目标：按 Reviewer 意见修正**证据边界与行号口径**（主记录见 `docs/worklogs/course_data.md`）。
+- **① 来源登记**：`docs/data/DATA_SOURCE_REGISTRY.md` 新增 **`OFFERING-002`**
+  （「全校开设课程」独立模块第 1 页真实结构 smoke，**Authenticated Official / Confirmed**）；
+  §6 汇总同步 **18 / Authenticated Official 5 / Confirmed 8**，最近更新 **2026-10-01**。
+- **② 删除"第 1 页第 N 条"式表述**（来自 JS 0-based `rowIndex`，说法不成立）→ 统一为
+  "**第 1 页至少 1 条** row 缺少 `teachingTimePlaceStr`"，并注明**只登记"至少 1 条"**；
+- **③ G11 补样本出处 `OFFERING-002`**；**④** 缺口报告表头补
+  `Phase 2B-2C1B 真实 smoke 结构证据`；
+- **⑤ 行号口径 1-based**：`tools/sysu_course_offering_collector.js`
+  调用点 `minimizeRow(row, currentPageNo, rowIndex + 1)`，三个函数的第三参数改名 `humanRowNo`
+  并写入 JSDoc（**只用于错误信息**）；⛔ **未改** fail-closed / 字段检查 / 数据行为 / 诊断统计；
+- **⑥ 新增守卫**：`test_collector_reports_one_based_human_row_numbers`、
+  `test_collector_row_number_is_only_for_messages`；
+- 修改文件（本模块视角）：`docs/status/agent_frontend.md`、本文件（**仅追加**）；
+- 测试：`cd backend && python -m pytest` → **524 passed / 2 skipped**（上一轮 522 passed / 2 skipped）；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**。
+- 公共接口是否变化：**否**；**实际 SYSU 请求数：0**。
+- 下一步：等待 Reviewer 复核本修复；之后由**负责人手动执行 1 页诊断**。
+  ⚠️ **不 merge，不自行开始**。

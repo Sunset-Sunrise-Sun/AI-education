@@ -1,12 +1,13 @@
 # Course Data 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C1B：Schedule Presence Diagnostic** 完成，等待 Reviewer）
+> 最后更新：2026-10-01（**Phase 2B-2C1B：Schedule Presence Diagnostic** 完成，
+> **Reviewer 修复 6 项已完成**，等待 Reviewer 复核）
 >
 > ⚠️ **准确表述（不得夸大）**：
 > **真实 Course Data 尚未完成**，**尚未取得 complete semester snapshot**。
 > **已完成一次真实 smoke run**（在真正的「**全校开设课程**」独立模块内）：
 > **same-origin 请求成功**、**认证不再是当前 blocker**；
-> 但发现**至少一条真实 row 缺少 `teachingTimePlaceStr`**（第 1 页第 16 条），
+> 但发现**第 1 页至少 1 条真实 row 缺少 `teachingTimePlaceStr`**，
 > 因此当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**。
 > **缺失字段的业务含义尚未确认** —— 不推测、不写成任何业务结论。
 > 后端 Python 侧仍然**零网络**：没有 endpoint、没有认证处理、**不会自动发起 SYSU 请求**。
@@ -38,7 +39,7 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 | 在真正的「**全校开设课程**」独立模块内发起 same-origin 请求 | ✅ **成功** |
 | 第 1 页响应成功进入 Collector | ✅ **成功** |
 | **认证不再是当前 blocker** | ✅ 已确认 |
-| 第 1 页第 16 条 row **缺少 `teachingTimePlaceStr`** | ✅ 已确认（至少 1 条） |
+| 第 1 页至少发现 1 条 row **缺少 `teachingTimePlaceStr`** | ✅ 已确认（计数为「至少 1 条」，**非精确条数**） |
 | 当前 `collect()` 的处置 | **按设计 fail closed**（缺字段即整体失败） |
 | 是否已生成真实 Capture Bundle | ❌ **尚未生成** |
 | 是否已取得 complete semester snapshot | ❌ **尚未取得** |
@@ -85,6 +86,22 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 
 > **定位**：诊断是**取证**，**不是** workaround。若结论表明现有契约覆盖不了真实数据，
 > **下一轮再走正式 `【接口变更请求】`**。
+
+#### Reviewer 修复（2026-10-01，6 项）
+
+| # | 修复 | 结果 |
+|---|---|---|
+| 1 | 把「全校开设课程」独立模块的真实结构 smoke **登记为 `OFFERING-002`** | `docs/data/DATA_SOURCE_REGISTRY.md`：新增登记表行、**新增 §4.1 明细块**、§6 汇总同步为 **已登记 18 ｜ Authenticated Official 5 ｜ Confirmed 8**（最近更新 2026-10-01）、追加变更记录；**只登记汇总事实，无 Raw row** |
+| 2 | **删除"第 1 页第 N 条"这类不成立的精确条数表述**（原写法来自 JS 0-based `rowIndex`） | 全部改为"**第 1 页至少 1 条** row 缺少 `teachingTimePlaceStr`"，并显式注明**只登记"至少 1 条"、不登记精确条数**（`status/*`、`worklogs/*`、缺口报告） |
+| 3 | 给 **G11** 补**样本出处** | G11 表行与 **§4.7** 均写明 **样本出处：`OFFERING-002`** |
+| 4 | 缺口报告表头补齐证据阶段 | `分析框架 ＋ 四轮真实材料验证` → `分析框架 ＋ 四轮真实材料验证 ＋ **Phase 2B-2C1B 真实 smoke 结构证据**` |
+| 5 | **错误信息行号口径改为 1-based** | `collect()` 调用点改为 `minimizeRow(row, currentPageNo, rowIndex + 1)`；`minimizeRow` / `redactTeachingTimePlace` / `redactSegmentTeacher` 的第三参数统一改名为 `humanRowNo`，JSDoc 写明"**从 1 开始的人类行号**，只用于错误信息"（`map` 的 0-based 下标 **+ 1**）。⛔ **未改** fail-closed 行为、字段检查、数据行为、诊断统计 |
+| 6 | 新增守卫测试锁住行号口径 | `test_collector_reports_one_based_human_row_numbers`（调用点必须含 `rowIndex + 1`、不得出现裸下标透传、文档必须写明"从 1 开始"）与 `test_collector_row_number_is_only_for_messages`（行号**不得**进入最小化结果 / 数据字段） |
+
+- 回归：`cd backend && python -m pytest` → **526 collected / 2 skipped（= 524 passed）**，exit 0；
+  `node --check tools/sysu_course_offering_collector.js` → exit 0；
+- ⛔ 本轮修复**未改**任何公共契约（`schemas/` / `docs/interfaces/` 未修改），
+  **未发起任何真实 SYSU 请求**（实际请求数：**0**），**未生成真实 Capture Bundle**。
 
 ### 浏览器端授权采集器 + Capture Bridge（Phase 2B-2C1A）
 **只做"显式触发的浏览器采集 + 本地回放桥"，不接 Integration / Planner / API / 前端产品 UI。**
@@ -326,7 +343,7 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 ## 当前阻塞
 
 - **真实数据结构阻塞（当前主 blocker）**：真实 smoke run 已证明
-  **至少一条真实 row 缺少 `teachingTimePlaceStr`**（第 1 页第 16 条）；
+  **第 1 页至少 1 条真实 row 缺少 `teachingTimePlaceStr`**；
   当前 importer / parser 无法为这样的 row 构造 `meetings`
   （公共契约要求 `CourseOffering.meetings` `minItems = 1`），
   因此 `collect()` **按设计 fail closed**；
@@ -352,6 +369,10 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 - 负责人提供的**私密脱敏样本**（`OFFERING-001`）**只在本地阅读**，
   **未进入 Git**（未 `git add` / 未进测试 fixture / 未进 docs / 未进 worklog；
   本文件**不记录该样本的文件名**）；
+- **`OFFERING-002`** 只登记**汇总事实**（「全校开设课程」独立模块内 same-origin 请求成功、
+  第 1 页响应成功进入采集器、**第 1 页至少 1 条** row 缺少 `teachingTimePlaceStr`）；
+  **不含任何 Raw row**、不含课程 / 教学班信息、教师、教室、内部 ID、`readObj`；
+  **Raw 响应 / Capture Bundle 均未进入 Git**；
 - **本轮未生成任何真实 Capture Bundle**：仓库内**不含**真实采集产物；
   本地若产生，也属 **Real Sanitized Capture**，**不得进入 Git**；
 - 仓库内**不含**真实教师姓名、真实教室、内部长 ID 取值、`readObj`、Raw JSON、

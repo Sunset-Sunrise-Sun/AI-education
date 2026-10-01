@@ -447,3 +447,40 @@ def test_collect_still_fails_closed_on_missing_schedule_field(collector_source: 
 
     for workaround in ("continue;", "meetings: []", "meetings:[]", "return null", "catch"):
         assert workaround not in minimize, f"minimizeRow 不得出现 workaround：{workaround}"
+
+
+# ---------------------------------------------------------------------------
+# Reviewer 修复：错误信息里的行号必须是 1-based 人类行号
+# ---------------------------------------------------------------------------
+
+
+def test_collector_reports_one_based_human_row_numbers(collector_source: str) -> None:
+    """⛔ 错误信息里的行号必须是**人类可读的 1-based 行号**。
+
+    `Array.prototype.map` 的回调下标是 **0-based**；若直接透传，
+    第 1 条记录会被报成"第 0 条"，和浏览器里看到的行号对不上。
+    因此调用点必须显式 `+ 1`，并且参数名 / 文档必须说明它是 1-based 行号。
+    """
+
+    # ① 调用点：0-based 下标显式 + 1
+    assert "minimizeRow(row, currentPageNo, rowIndex + 1)" in collector_source
+
+    # ② 不得再出现"裸下标直接透传"的写法
+    assert "minimizeRow(row, currentPageNo, rowIndex)" not in collector_source
+
+    # ③ 参数名与文档必须写明"从 1 开始"
+    assert "humanRowNo" in collector_source
+    assert "从 1 开始" in collector_source
+
+
+def test_collector_row_number_is_only_for_messages(collector_source: str) -> None:
+    """行号只用于错误信息：**不得**进入最小化结果 / 数据字段 / 诊断统计。"""
+
+    start = collector_source.index("function minimizeRow(")
+    end = collector_source.index("function validatePagePayload(")
+    minimize = collector_source[start:end]
+
+    # 断言值只被拼进错误信息，不写进 minimized 对象
+    assert "minimized[humanRowNo]" not in minimize
+    assert "row_no" not in minimize
+    assert "row_no" not in collector_source

@@ -1,6 +1,7 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C1B Schedule Presence Diagnostic** 完成，等待 Reviewer）
+> 最后更新：2026-10-01（**Phase 2B-2C1B Schedule Presence Diagnostic** 完成，
+> **Reviewer 修复 6 项已完成**，等待 Reviewer 复核）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应、私密脱敏样本与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
@@ -10,7 +11,7 @@
 > Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
 > 零网络分页采集核心、浏览器端授权采集器代码、Capture Bridge 与结构诊断入口**均已完成；
 > **已完成一次真实 smoke run**（「全校开设课程」独立模块内 **same-origin 成功**，
-> **认证不再是 blocker**），但**至少一条真实 row 缺少 `teachingTimePlaceStr`**（第 1 页第 16 条），
+> **认证不再是 blocker**），但**第 1 页至少 1 条真实 row 缺少 `teachingTimePlaceStr`**，
 > 当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**、
 > **尚未取得 complete semester snapshot**；**缺失字段的业务含义尚未确认**；
 > **production Curriculum / Planner provider 仍未接入**，
@@ -417,7 +418,21 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - ⛔ **不改** `collect()` 的 fail-closed 行为（缺字段仍整体失败，不跳过 / 不补空 / 不造占位 `Meeting`）；
 - ⛔ **本轮不改契约**：`CourseOffering.meetings` `minItems = 1` 保持不变；**G11 只登记、不裁决**；
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/`、`frontend/` 均未修改；
-  后端 **522 passed / 2 skipped**。
+  后端 **524 passed / 2 skipped**。
+
+**Reviewer 修复（2026-10-01，本阶段 6 项）**：
+
+- 真实结构 smoke **登记为 `OFFERING-002`**（`DATA_SOURCE_REGISTRY.md`；只登记汇总事实、无 Raw row）；
+- 删除**不成立的精确条数**表述（原写作"第 1 页第 N 条"，来自 JS 0-based 下标）→ 统一为"**第 1 页至少 1 条** row 缺少
+  `teachingTimePlaceStr`"（**只登记"至少 1 条"**）；**G11** 补 **样本出处 `OFFERING-002`**；
+  缺口报告表头补 `Phase 2B-2C1B 真实 smoke 结构证据`；
+- **错误信息行号口径 = 1-based**：`collect()` 调用点 `minimizeRow(row, currentPageNo, rowIndex + 1)`
+  （`map` 的 0-based 下标 + 1），`minimizeRow` / `redactTeachingTimePlace` / `redactSegmentTeacher`
+  第三参数统一为 `humanRowNo` 并写入 JSDoc（**只用于错误信息**）；
+  ⛔ **未改** fail-closed、字段检查、数据行为、诊断统计；⛔ 未改任何契约 / 前端产品 UI；
+- 新增守卫：`test_collector_reports_one_based_human_row_numbers`、
+  `test_collector_row_number_is_only_for_messages`；回归 **524 passed / 2 skipped**、
+  `node --check` exit 0；**实际 SYSU 请求数：0**。
 
 ## Phase 2B-2C1A 结果（SYSU Authorized Browser Transport + Capture Bridge）
 
@@ -611,9 +626,10 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **等待 Reviewer 验收 Phase 2B-2C1B**（结构诊断；
-  重点看"是否只请求第 1 页一次""是否只输出聚合统计""是否未产出 bundle"
-  "是否未改动 `collect()` 的 fail-closed 行为"）
+- **等待 Reviewer 复核 Phase 2B-2C1B 的 6 项修复**（结构诊断本身 +
+  证据边界 / 行号口径修正；重点看"是否只请求第 1 页一次""是否只输出聚合统计"
+  "是否未产出 bundle""是否未改动 `collect()` 的 fail-closed 行为"
+  "是否只登记'至少 1 条'而非精确条数"）
 - **下一步是负责人手动 1 页结构诊断**（Reviewer 合并后）：在本人已登录、已有权限的
   「**全校开设课程**」模块页面显式调用
   `diagnoseSchedulePresence({ semester: "2026-1" })`；
