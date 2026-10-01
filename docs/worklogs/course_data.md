@@ -869,3 +869,62 @@
 - 下一步：等待 **Architecture Lead** 对 **DG-07** 的裁决。
   ⚠️ **不 merge，不自行开始 DG-07 实施**。
 
+### 2026-10-01 - DG-07 Architecture Decision Sync（docs-only）
+- 本次目标：把项目负责人的**正式裁决**回写文档：
+  **DG-07 = `APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**
+  （由 `PROPOSED / WAITING FOR ARCHITECTURE REVIEW` 更新）。
+  ⛔ **本轮只写文档，不开始 Implementation**；起点：HEAD `7a11781`（未 merge）。
+- **"WITH MODIFICATION" 的准确含义（已写明）**：**不是**只批准
+  `meetings` 的 `minItems: 1 → 0`，而是 **Schema 放宽** 与
+  **Course Data fail-closed 不变量**、**Planner 安全不变量（含 `current_schedule`）**
+  **必须同时成立**。
+- **已批准的公共契约方向（仅记录，未实施）**：
+  `CourseOffering.meetings`：`required` **保持不变**、`type: array`、
+  **`minItems: 1 → 0`** → 未来允许 `"meetings": []`；
+  ⛔ **本轮未修改** `schemas/`（`schemas/course_offering.schema.json` 仍是 `minItems: 1`）。
+- **已批准的精确定义**：`meetings = []` **仅**表示"当前来源快照没有提供能够形成
+  公共 `Meeting` 的可用排课信息"；⛔ 不表示：无上课时间 / 异步课程 / 时间自由 /
+  无时间冲突 / 学校确认尚未排课 / 无效教学班 / 应过滤。
+- **已批准的 Course Data fail-closed 不变量**：初始实施阶段**唯一**可生成 `meetings = []`
+  的来源形态 = **`teachingTimePlaceStr` 属性不存在**；
+  `null` / `empty_string` / `other_type` / 非空但格式无法解析 / malformed segment /
+  **parser / importer / normalization 异常** 一律**继续 fail closed**；
+  ⛔ **明确禁止** `try: parse schedule … except: meetings = []` ——
+  **`meetings = []` 绝不能成为解析错误的 fallback**。
+- **已批准的 Planner 核心不变量**：**`meetings = []` ≠ conflict-free**；
+  对 `offerings` 与 `current_schedule` **使用同一规则**（任意 `meetings = []`
+  → schedule unknown）；若 `current_schedule` 中存在 `meetings = []`，
+  ⛔ **不得**声明其它候选"**已验证与当前课表无时间冲突**"，
+  最多只能判断"**与已知时间段未发现冲突**"，整体时间冲突状态**仍含未知部分**。
+- **本轮未批准**：**不新增** `schedule_status` / `schedule_known` / `schedule_state`。
+- **仍 deferred 到 Planner Implementation Review**：`PlanResult.status` 如何取值、
+  `unresolved[].type` 最终命名、`missing_schedule` 是否正式采用 →
+  当前 **`missing_schedule` = candidate convention only**。
+- **G11 状态更新为**：**`contract decision approved; implementation pending;
+  school-side business cause still unknown`** ——
+  **契约处理方向已裁决 ≠ 学校业务原因已查明**；⛔ **仍不写 resolved**。
+- **Data Gate 状态**：**仍保持 Reopened**（⛔ **未 CLOSED**）；
+  新增 **§17.15「关闭 Data Gate 的前置条件」**：
+  **DG-07 Contract Migration + Course Data + Planner safety + Frontend / Mock + tests**
+  全部完成并经 **Reviewer 验收**后，才允许登记 `DG-07 IMPLEMENTED` 并回到 CLOSED；
+  ⛔ 本轮**未开始**任何实施阶段，也**未自行命名 / 拆分**实施阶段。
+- 修改文件（**仅既有 7 个 docs 文件**，本轮实际改动 6 个）：
+  - `docs/data/DATA_GATE_DECISIONS.md`（文件头 / 架构裁决总表指针 / §12.3 / §15 /
+    §17 头部 / 新增 **§17.5.1 裁决** / §17.7 / §17.8 / §17.9 / §17.12 / §17.12.1 /
+    §17.13 / §17.14 / 新增 **§17.15**）
+  - `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`（文件头 / G11 行 / §4.7.2 尾 / 变更记录）
+  - `docs/data/DATA_SOURCE_REGISTRY.md`（OFFERING-002 备注 + 变更记录行）
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - `docs/worklogs/agent_frontend.md`（阶段同步，**仅追加**）
+  - 本文件（**仅追加**）
+- ⛔ **未修改** `schemas/` / `docs/interfaces/` / 任何代码 / 任何测试 / `mock_data/`；
+  ⛔ **未实施** `minItems = 0`；⛔ **未开始** DG-07 的任何实施阶段
+  （⛔ 也未开始 / 命名 `DG-07A`–`DG-07D` 等阶段）；
+  ⛔ **未认定** G11 resolved；⛔ **未推断**学校业务状态。
+- 回归（仅确认无副作用，**未修改任何测试**）：
+  `cd backend && python -m pytest` → **539 passed / 2 skipped**；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**。
+- **Builder 实际 SYSU 请求数：0**。
+- 下一步：等待 **DG-07 实施任务书**（**IMPLEMENTATION PENDING**）。
+  ⚠️ **不 merge，不自行开始 DG-07 实施**。
+

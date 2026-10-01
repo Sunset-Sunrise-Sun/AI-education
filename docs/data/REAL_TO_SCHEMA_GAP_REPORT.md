@@ -1,7 +1,7 @@
 # 真实数据 → 公共 Schema 承载能力分析（框架）
 
 > **状态：分析框架 ＋ 四轮真实材料验证 ＋ Phase 2B-2C1B / 2B-2C1C 真实结构证据
-> ＋ Phase 2B-2C1D 人工界面核验（n = 2，见 4.7.2）。**
+> ＋ Phase 2B-2C1D 人工界面核验（n = 2，见 4.7.2）＋ DG-07 契约裁决（已批准、未实施）。**
 > Phase 2B-0B 取得部分公开官方材料（见 `SYSU_CASE_A_PUBLIC_EVIDENCE.md`）；
 > **Phase 2B-0B+ 取得 Case A 两份 2025 级真实培养方案（认证来源，见
 > `SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md`）** → **G1 升级为「由 Case A 两份
@@ -22,8 +22,9 @@
 > 但 **G11 的业务语义仍未解决**；
 > **Phase 2B-2C1D 完成人工界面最小核验**（**n = 2**，见 4.7.2）：
 > 两条典型候选在官方 UI 中均作为**普通教学班行**存在、时间 / 周次 / 地点空白且**无状态文字**，
-> 据此**识别出契约缺口候选 `DG-07`**（`DATA_GATE_DECISIONS.md` §17，
-> **`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**，**尚未批准**）；
+> 据此**识别出契约缺口 `DG-07`**（`DATA_GATE_DECISIONS.md` §17），
+> 状态 **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**
+> （**2026-10-01 批准，尚未实施**）；
 > 其余观察（G3 / G4 / G5 / G8）**仍未验证**，保持「待验证」。
 >
 > ## 红线（本文件最重要的两条）
@@ -252,7 +253,7 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | G8 | **`Preference` 无法表达"已经有什么"**：偏好只表达"想要什么"，不表达已修学分 / 已修课程 | `preference.schema.json` 字段清单 | Agent / Planner | 待验证 |
 | **G9** | **一个教学班可以拥有多个独立的上课时间 / 地点 segment，当前 `CourseOffering` 无法在一个对象中无损表达**：真实接口中 `CSE202` 的**每个教学班都有多个 schedule segment**（例如"1-17周 星期一 第 3-4 节 某教室" ＋ "1-17单周 星期三 第 5-6 节 某教室"），而 `CourseOffering` 只有一组 `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。⚠️ **原缺口描述保留如上**（历史上 `CourseOffering` 确实无法表达多 segment）。**Data Gate-2 已按 DG-01 完成公共契约修复**：`CourseOffering` 改为 1 — N `meetings[]`（见 4.6） |
 | **G10** | **D5 还有多个真实字段在现有 `CourseOffering` 中没有任何表示**：`selectedNumber`（已选人数）、`openingUnitName`（开课单位）、`courseCategoryName`（课程类别）、`examMode`（考核方式）、`readObj`（修读对象）、`teachProgressSubmitState` / `openClass`（**业务语义待确认**） | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。**只登记、不设计字段**；`teachProgressSubmitState` / `openClass` **不根据 0/1 值自行解释** |
-| **G11** | **部分真实 `CourseOffering` row 缺少 `teachingTimePlaceStr`**：**第 1 页 200 条真实 row 中有 39 条完全没有该字段**（同页 `non_empty_string = 161`，`null` / `empty_string` / `other_type` 均为 0）；当前 `importer` / `parser` 无法为这样的 row 构造 `meetings`，而公共契约要求 `CourseOffering.meetings` **`minItems = 1`**。**样本出处：`OFFERING-002`（仅第 1 页，`reported_total = 6892`）** | **负责人真实 smoke run + 结构诊断 + C1C 相关性诊断**（2026-10-01，在「全校开设课程」独立模块内，第 1 页；来源登记 `OFFERING-002`） | Course Data / Planner | **已由真实第 1 页聚合计数观察**（见 4.7）。**结构层取证已大幅收窄**（见 4.7.1）：差异集中在**排课相关字段**（`timePlaceId` 38/39 缺失 vs 161/161 存在；`weekDay` 38/39 缺失 vs 12/161 缺失），而 `limitNumber` / `selectedNumber` 在 39 条中**完整存在**，分类字段**未发现 `missing` 组独占值**。⚠️ **业务语义仍未解决**：缺失**业务原因** / **记录业务类型** / **是否属于有效可选教学班** / **是否应进入 Planner** / **全学期缺失比例** / **是否需要修改公共契约** 全部未确认；**已由 C1D 取得部分界面证据**（**n = 2** 条典型候选在官方 UI 中均为普通教学班行、时间 / 周次 / 地点空白且无状态文字，见 4.7.2）→ **契约缺口候选已识别为 `DG-07`**（`DATA_GATE_DECISIONS.md` §17，`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`）。⛔ **本轮不裁决 Schema、不预设修复方案、不声称 G11 resolved** |
+| **G11** | **部分真实 `CourseOffering` row 缺少 `teachingTimePlaceStr`**：**第 1 页 200 条真实 row 中有 39 条完全没有该字段**（同页 `non_empty_string = 161`，`null` / `empty_string` / `other_type` 均为 0）；当前 `importer` / `parser` 无法为这样的 row 构造 `meetings`，而公共契约要求 `CourseOffering.meetings` **`minItems = 1`**。**样本出处：`OFFERING-002`（仅第 1 页，`reported_total = 6892`）** | **负责人真实 smoke run + 结构诊断 + C1C 相关性诊断**（2026-10-01，在「全校开设课程」独立模块内，第 1 页；来源登记 `OFFERING-002`） | Course Data / Planner | **已由真实第 1 页聚合计数观察**（见 4.7）。**结构层取证已大幅收窄**（见 4.7.1）：差异集中在**排课相关字段**（`timePlaceId` 38/39 缺失 vs 161/161 存在；`weekDay` 38/39 缺失 vs 12/161 缺失），而 `limitNumber` / `selectedNumber` 在 39 条中**完整存在**，分类字段**未发现 `missing` 组独占值**。⚠️ **业务语义仍未解决**：缺失**业务原因** / **记录业务类型** / **是否属于有效可选教学班** / **是否应进入 Planner** / **全学期缺失比例** 全部未确认（**契约处理方向已另行裁决**，见 4.7.2）；**已由 C1D 取得部分界面证据**（**n = 2** 条典型候选在官方 UI 中均为普通教学班行、时间 / 周次 / 地点空白且无状态文字，见 4.7.2）→ **契约缺口 `DG-07`**（`DATA_GATE_DECISIONS.md` §17，**`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**，**2026-10-01 批准、本轮未实施**）。⛔ **本轮不裁决 Schema、不预设修复方案、不声称 G11 resolved** |
 
 > 对 G1 / G2 / G4 的补充说明：这三条说的是"**当前没有明确的跨模块公共 Schema / 正式表示**"，
 > 而**不是**"一定要新增公共 Schema"。
@@ -501,30 +502,35 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 
 **G11 现状（本轮口径）**：
 
-> **business semantics partially evidenced;
-> contract gap candidate identified;
-> architecture decision pending**
+> **contract decision approved;
+> implementation pending;
+> school-side business cause still unknown**
 >
 > 即：**结构层取证已大幅收窄**（C1C：差异集中在排课相关字段；
 > `limitNumber` / `selectedNumber` 完整；分类字段未发现 missing 组独占值）；
 > **业务语义获得部分界面证据**（C1D，**n = 2**，见 4.7.2）；
-> **契约缺口候选已识别** → **DG-07**（`DATA_GATE_DECISIONS.md` §17，
-> 状态 `PROPOSED / WAITING FOR ARCHITECTURE REVIEW`）。
-> ⛔ **G11 仍不能写 resolved**：缺失原因 / 记录类型 / 是否有效可选教学班 /
-> Planner 适用性 / 全学期比例 / 是否需要改契约**仍未由架构裁决**。
-> 下一步是**架构裁决该契约缺口**，而**不是继续扩大结构诊断**。
+> **契约处理方向已裁决** → **DG-07**（`DATA_GATE_DECISIONS.md` §17.5.1）
+> 状态 **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**；
+> ⏳ **implementation pending**：`schemas/` / `docs/interfaces/` / 代码 / 测试**尚未迁移**，
+> **Data Gate 仍未回到 CLOSED**；
+> ⛔ **G11 仍不能写 resolved**：**学校侧业务原因仍未查明** ——
+> 「契约处理方向已经裁决」**≠**「学校业务原因已经查明」；
+> 缺失原因 / 记录类型 / **是否属于有效可选教学班** / **是否应进入 Planner** /
+> 全学期比例 仍是未确认项。
+> 下一步是**按任务书实施 DG-07**，而**不是继续扩大结构诊断**。
 
 **未确认（继续保留）**：
 
-- 缺 schedule 字段的**业务原因**；
+- 缺 schedule 字段的**学校侧业务原因**（**仍未查明**）；
 - 这些记录**究竟是什么业务类型**；
 - **是否属于有效可选教学班**；
 - **是否应进入 Planner**；
-- **是否应修改 `CourseOffering` 公共契约**（→ 已形成 **DG-07 草案**，**待架构裁决**）；
 - **全学期缺失比例**（当前只有第 1 页证据，**不得外推**）。
 
-> ⚠️ **本轮不修改** `schemas/`、`docs/interfaces/`，也**不实施**任何修复方案；
-> DG-07 只是**接口变更请求草案**，是否批准由 **Architecture Lead / 负责人**裁决。
+> ⚠️ **契约方向已批准、但本轮未实施**：`schemas/` 与 `docs/interfaces/`
+> **仍未被修改**；DG-07 的**实施**须等单独任务书，
+> 并在完成回归与 Reviewer 验收后才允许 `DG-07 IMPLEMENTED` / 关闭 Data Gate
+> （`DATA_GATE_DECISIONS.md` §12.3 / §17.15）。
 
 > **取证工具**（均由**负责人手动执行**，Builder **不发起任何真实请求**）：
 >
@@ -589,9 +595,10 @@ Builder **未访问学校系统**（**实际 SYSU 请求数 = 0**）。
 - ⚠️ **必须注明**：这是**基于当前已观察真实样本**提出的**契约表达问题**，
   **不是对学校业务状态的命名**。
 
-**→ 已形成契约缺口候选**：**DG-07**
-（`docs/data/DATA_GATE_DECISIONS.md` §17）；
-状态 **`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**（**尚未批准**）。
+**→ 契约缺口 `DG-07`**（`docs/data/DATA_GATE_DECISIONS.md` §17）；
+状态 **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**
+（**2026-10-01 由项目负责人批准**；⛔ **本轮未实施**：
+`schemas/` 与 `docs/interfaces/` **未被修改**，Data Gate **仍保持 Reopened**）。
 
 ---
 
@@ -645,3 +652,4 @@ Builder **未访问学校系统**（**实际 SYSU 请求数 = 0**）。
 | 2026-10-01 | **Phase 2B-2C1C：G11 补录第 1 页真实聚合证据 + 相关性诊断（代码准备）** | ① **G11 与 §4.7 补录**负责人**手动执行** `diagnoseSchedulePresence` 得到的第 1 页真实聚合结果：`total_rows = 200`（`reported_total = 6892`）／`missing = 39`／`non_empty_string = 161`／`null` `empty_string` `other_type` 均为 0；⚠️ **明确限定 39/200 = 19.5% 只描述第 1 页这 200 条样本，不代表 6892 条整体的比例，不得外推**；② 把**未确认**清单细化为：**为什么缺失 / 缺失 row 的业务类型 / 是否属于有效可选教学班 / 是否应进入 Planner / 全学期缺失比例 / 是否需要修改公共契约**；③ 明确**不得**写成"缺排课 / 未排课课程 / 未排课教学班 / 时间待定 / 异步课程 / 无需排课 / 异常数据 / 暂无教室"；④ 新增**同源同页**的相关性诊断入口 `diagnoseMissingScheduleCorrelation({ semester })`（**只请求第 1 页一次**；对 `missing` 组与 `non_empty_string` 组做**已有真实字段**的聚合结构对照，⛔ 只做相关性取证、**不做业务语义解释**）；⑤ **只记录事实，不做任何 Schema 裁决**，**未修改** `schemas/` / `docs/interfaces/` / Python 数据链路；⑥ **本轮不含任何真实相关性数值**（结果待负责人手动运行后回填）。**G1–G10 的历史分析与结论一字未改**；**Builder 未发起任何真实 SYSU 请求（请求数 = 0）** |
 | 2026-10-01 | **Phase 2B-2C1C 真实证据同步（docs-only）** | ① **新增 §4.7.1「C1C 真实相关性诊断结果」**：回填负责人**手动执行** `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })` 的真实聚合结果 —— `total_rows = 200`／`compared_rows = 200`／`ungrouped_rows = 0`；**A 类字段**（只登记存在性 / 类型计数）：`missing` 组 `timePlaceId` = `missing 38` / `non_empty_string 1`，`limitNumber` 与 `selectedNumber` = `number 39`，`non_empty_string` 组三字段分别 `non_empty_string 161` / `number 161` / `number 161`；**B 类字段**（只登记聚合分布、⛔ 无真实取值 / 分类名 / 单位名）：`weekDay` 两组 `missing 38` vs `12`、`openClass` 两组实际取值完全一致（**不能区分两组**）、`teachProgressSubmitState` 与 `examMode` 两组**共享同一分类集合**（仅分布不同、**无 missing 组独占分类**）、`courseCategoryName` 的 3 个分类**全部出现在** present 组（后者另有 2 个）、`openingUnitName` **只登记 `distinct_count`** 11 / 27；② **G11 说明列更新为"结构层取证已大幅收窄、业务语义仍未解决"**（差异集中在**排课相关字段**；`limitNumber` / `selectedNumber` 在 39 条中完整存在）；③ 明确 **G11 structural evidence substantially narrowed — business semantics still unresolved**，⛔ **不声称 G11 resolved**；④ 明确**只有边际计数、无逐 row 交叉证据**：⛔ **不得**写成"39 条中的 38 条**同时**缺 `weekDay` 和 `timePlaceId`"；⑤ `OFFERING-002` **继续复用、未创建新 `source_id`**；⛔ **不登记任何真实 categorical 取值**、不推断业务含义；⑥ **未修改** `schemas/` / `docs/interfaces/` / 代码 / 测试；**Builder 实际 SYSU 请求数 = 0** |
 | 2026-10-01 | **Phase 2B-2C1D 人工界面核验 + DG-07 契约缺口候选（docs-only）** | ① **新增 §4.7.2「C1D 人工业务界面核验」**：由 Architecture Lead 指导负责人从第 1 页本地定位 **2 条**典型候选（条件：`teachingTimePlaceStr` / `weekDay` / `timePlaceId` 三者均不存在），由**负责人本人**在「全校开设课程」UI 人工检查 —— **n = 2**、两条均可在 UI 中正常找到、时间 / 周次 / 地点**完全空白**、**无明确状态文字**、容量 / 已选人数等信息**正常显示**、**与普通教学班为同一种表格行**、**无解释空白原因的详情 / tooltip**；⛔ 只登记 `candidate A` / `candidate B`，**不登记课程名 / 课程号 / 教学班号**；② 明确 **n = 2 不能代表全部 39 条**；③ **事实判断**：当前证据**已不足以支持**"缺 schedule 字段的记录都是无效记录、应直接过滤"的简单处理（39 条仍有完整容量 / 已选人数信息；`openClass` 无法区分两组；其它 categorical 无 missing 组独占值；2 条候选在官方 UI 中仍是普通教学班行），因此**契约表达问题成立**（现行强制 ≥1 `Meeting` 无法表示已观察状态）；⚠️ 同时注明这是**契约表达问题**，**不是对学校业务状态的命名**；④ **G11 现状改为「business semantics partially evidenced; contract gap candidate identified; architecture decision pending」**，⛔ **仍不写 resolved**；⑤ **契约缺口候选登记为 `DG-07`**（`DATA_GATE_DECISIONS.md` §17，**`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**）；⑥ ⛔ **未修改** `schemas/` / `docs/interfaces/` / 代码 / 测试 / `mock_data/`；**Builder 实际 SYSU 请求数 = 0**（UI 核验由负责人本人完成） |
+| 2026-10-01 | **DG-07 架构裁决落档（docs-only）**：**G11 契约方向已批准、实施待定** | ① **G11 现状更新为**：**`contract decision approved; implementation pending; school-side business cause still unknown`** —— 即**契约处理方向已裁决**（**DG-07 = `APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**，见 `DATA_GATE_DECISIONS.md` §17.5.1），但**实施尚未开始**，且**学校侧业务原因仍未查明**；⛔ **G11 仍未 resolved**：缺失原因 / 记录类型 / **是否属于有效可选教学班** / **是否应进入 Planner** / 全学期比例仍是未确认项。② 明确 **`meetings` 的 `minItems: 1 → 0`（`required` 不变）** 是**已批准方向**、**本轮未实施**：`schemas/` 与 `docs/interfaces/` **未被修改**；③ 明确 **"WITH MODIFICATION"** 的含义：Schema 放宽 与 **Course Data fail-closed 不变量**、**Planner 安全不变量（含 `current_schedule`）** **必须同时成立**；④ 明确 **`meetings = []` 的精确定义**（仅表示"当前来源快照没有提供能够形成公共 `Meeting` 的可用排课信息"，⛔ 不表示无课 / 异步 / 时间自由 / 无冲突 / 学校确认未排课 / 无效教学班 / 应过滤）；⑤ 明确 **Planner 不变量**：`meetings = []` **≠ conflict-free**，`offerings` 与 `current_schedule` **同一规则**；⑥ **Data Gate 仍保持 Reopened**（**未 CLOSED**），关闭前置条件见 §17.15；⑦ ⛔ **本轮未修改** `schemas/` / `docs/interfaces/` / 代码 / 测试；**Builder 实际 SYSU 请求数 = 0**，**未开始任何实施阶段** |

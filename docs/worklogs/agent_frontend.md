@@ -1529,3 +1529,32 @@
 - 公共接口是否变化：**否**（DG-07 仍为 **PROPOSED**，**未实施**）。
 - 下一步：等待 **Architecture Lead** 对 **DG-07** 的裁决。
   ⚠️ **不 merge，不自行开始 DG-07 实施**。
+
+### 2026-10-01 - DG-07 Architecture Decision Sync（docs-only，阶段同步）
+- 本次目标：把项目负责人的**正式裁决**回写文档（主记录见 `docs/worklogs/course_data.md`）。
+  **DG-07 = `APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**；
+  ⛔ **本轮只写文档，不开始 Implementation**。
+- **"WITH MODIFICATION"**：**不是**只批准 `meetings` 的 `minItems: 1 → 0`，
+  而是 **Schema 放宽** 与 **Course Data fail-closed 不变量**、
+  **Planner 安全不变量（含 `current_schedule`）** **必须同时成立**。
+- **批准方向（仅记录，未实施）**：`meetings` `required` 不变、`minItems: 1 → 0`；
+  ⛔ 本轮**未修改** `schemas/` / `docs/interfaces/`。
+- **批准的不变量**：① `meetings = []` 只能来自**来源层确实没有提供**排课信息
+  （初始边界：**仅 `teachingTimePlaceStr` 属性不存在**），⛔ **不得**作为
+  parser / importer / normalizer 解析失败的 fallback；
+  ② **`meetings = []` ≠ conflict-free**，`offerings` 与 `current_schedule` **同一规则**，
+  `current_schedule` 含空 meetings 时⛔ 不得声明"已验证与当前课表无时间冲突"。
+- **未批准**：`schedule_status` / `schedule_known` / `schedule_state`（不新增）；
+  `PlanResult.status` 取值与 `unresolved[].type` 最终命名**仍 deferred**。
+- **G11**：更新为 **contract decision approved; implementation pending;
+  school-side business cause still unknown** —— ⛔ **仍不写 resolved**。
+- **Data Gate 仍保持 Reopened**（⛔ 未 CLOSED）；关闭前置条件见
+  `docs/data/DATA_GATE_DECISIONS.md` **§17.15**。
+- **Browser / 本模块视角**：⛔ **未新增或修改任何诊断入口**；
+  ⛔ **不需要重复运行** C1B / C1C / C1D；**Builder 实际 SYSU 请求数 = 0**。
+- 修改文件（本模块视角）：`docs/status/agent_frontend.md`、本文件（**仅追加**）；
+- 回归：`cd backend && python -m pytest` → **539 passed / 2 skipped**；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**（未改测试）。
+- 公共接口是否变化：**否**（DG-07 **已批准但未实施**）。
+- 下一步：等待 **DG-07 实施任务书**（**IMPLEMENTATION PENDING**）。
+  ⚠️ **不 merge，不自行开始 DG-07 实施**。

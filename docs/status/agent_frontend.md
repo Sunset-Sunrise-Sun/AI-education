@@ -1,13 +1,13 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C1D 人工界面核验已完成（n = 2）**；
-> **DG-07 契约缺口草案已提交**（`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`）；
-> Data Gate **Reopened narrowly for DG-07 only**）
+> 最后更新：2026-10-01（**DG-07 架构裁决已落档**：
+> **APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING**（**契约方向已批准，尚未实施**）；
+> **Data Gate 仍保持 Reopened**）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应、私密脱敏样本、截图与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
 > **Data Gate 通过条件 C1–C11 全部完成**；**公共契约本轮未改**
-> （DG-07 仅 **`PROPOSED`**，**未修改任何 Schema / Interface**）
+> （DG-07 已**批准**但**未实施**：`schemas/` / `docs/interfaces/` **未被修改**）
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
 > Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
@@ -32,7 +32,8 @@
 
 ## 当前阶段
 
-**G11 证据链已完成（C1B / C1C / C1D）→ 下一步：等待 Architecture Lead 裁决 `DG-07`**
+**DG-07 已批准（APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING）
+→ 下一步：等待 DG-07 实施任务书（本模块不自行实施）**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -53,9 +54,10 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                       （结构差异集中在排课相关字段）
                    →  Phase 2B-2C1D ✅ 人工界面最小核验（n = 2，负责人本人完成）
                       两条候选在官方 UI 中均为普通教学班行、时间区域空白、无状态文字
-                   →  ⚠️  Data Gate Reopened narrowly for DG-07 only
-                   →  ⏳  DG-07（CourseOffering 空 meetings）PROPOSED /
-                      WAITING FOR ARCHITECTURE REVIEW（本模块不自行实施）
+                   →  ⚠️  Data Gate Reopened narrowly for DG-07 only（仍保持 Reopened）
+                   →  ✅  DG-07（CourseOffering 空 meetings）
+                      APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING
+                      （契约方向已批准；⛔ 尚未实施，本模块不自行实施）
                    →  之后：真实 Capture 导入 UI → Phase 2B Integration 接真实 Provider
 ```
 
@@ -517,12 +519,12 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 ## Phase 2B-2C1D 结果（G11 人工界面最小核验 + DG-07 草案）
 
 **由 Architecture Lead 指导定位候选，由负责人本人在官方 UI 人工检查（n = 2）**；
-本轮交付的是**契约缺口草案**，不是实施。详见 `docs/status/course_data.md`。
+本阶段产出**契约缺口**并已获裁决，**不是实施**。详见 `docs/status/course_data.md`。
 
 | 产出 | 内容 |
 |---|---|
-| `docs/data/DATA_GATE_DECISIONS.md` | **新增 §17 `DG-07`**（`CourseOffering` 空 `meetings` / 未知排课信息）：完整 `【接口变更请求】` 草案 + 4 个替代方案比较 + 安全不变量的提案；**状态 `PROPOSED / WAITING FOR ARCHITECTURE REVIEW`** |
-| `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` | **新增 §4.7.2**（C1D 人工核验）与 G11 状态更新 |
+| `docs/data/DATA_GATE_DECISIONS.md` | **新增 §17 `DG-07`**（`CourseOffering` 空 `meetings` / 未知排课信息）：完整 `【接口变更请求】` + 4 个替代方案比较 + 安全不变量 + **§17.5.1 裁决**；**状态 `APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**（**2026-10-01 批准，尚未实施**） |
+| `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` | **新增 §4.7.2**（C1D 人工核验）+ G11 状态更新（**contract decision approved; implementation pending; school-side business cause still unknown**） |
 | `docs/data/DATA_SOURCE_REGISTRY.md` | `OFFERING-002` 补 **C1D 汇总事实（n = 2）** |
 
 **核验结果（两条候选一致）**：UI 中可正常找到 ｜ 时间 / 周次 / 地点**完全空白** ｜
@@ -535,13 +537,17 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - ⛔ **不登记**候选的课程名 / 课程号 / 教学班号，也不登记截图；
 - ⛔ **不得**使用"未排课课程 / 未排课教学班 / 时间待定课程 / 异步课程 / 无需排课课程 /
   停开课程 / 无效教学班 / 自由时间教学班"等**学校未提供**的业务标签；
-- ⛔ **不推断学校业务状态**、⛔ **不声称 G11 resolved**；
-- **DG-07 含两条必须同时批准的组成部分**：① **fail-closed 不变量** ——
+- ⛔ **不推断学校业务状态**、⛔ **不声称 G11 resolved**（**学校侧业务原因仍未查明**）；
+- **DG-07 已批准（`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`）**，
+  含两条**必须同时成立**的组成部分：① **fail-closed 不变量** ——
   `meetings = []` 只能来自**来源层确实没有提供**排课信息（初始边界：**仅
   `teachingTimePlaceStr` 属性不存在**），⛔ **不得**当作 parser / importer / normalizer
   解析失败的 fallback；② **Planner 安全规则同时覆盖 `offerings` 与 `current_schedule`**
   （同为 `CourseOffering[]`）：任何 `meetings = []` 的 schedule 均为 unknown，
   ⛔ 且 `current_schedule` 含空 meetings 时**不得**声明"已验证与当前课表无时间冲突"；
+- ⛔ **`schedule_status` / `schedule_known` / `schedule_state` 本轮未获批准**（不新增）；
+  `PlanResult.status` 取值与 `unresolved[].type` 最终命名**仍 deferred 到
+  Planner Implementation Review**（`missing_schedule` = **candidate convention only**）；
 - ⛔ **本轮未修改** `schemas/` / `docs/interfaces/` / 任何代码 / 任何测试 /
   `mock_data/`；DG-07 **未实施**；
 - **Browser 侧**：⛔ **没有新增任何诊断入口**，⛔ **不再需要重复运行** C1B / C1C；
@@ -743,10 +749,12 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   均由**负责人手动执行**）：⛔ **不再需要重复运行任何一个诊断**；
   两者的真实聚合结果均已登记（见 `docs/status/course_data.md` 与
   `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` §4.7 / §4.7.1）；
-- **当前人工下一步：等待 Architecture Lead 裁决 `DG-07`**
-  （`docs/data/DATA_GATE_DECISIONS.md` §17，**`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**）；
-  Data Gate **仅**为 DG-07 **narrow reopen**（⛔ DG-01 – DG-06 不重新打开）；
-  ⛔ **本模块不自行实施** DG-07（不改 Schema / Interface / 代码 / 测试）；
+- **当前人工下一步：等待 DG-07 的实施任务书**
+  （`docs/data/DATA_GATE_DECISIONS.md` §17，状态
+  **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**）；
+  ⛔ **DG-07 已批准但未实施**：公共契约（`schemas/` / `docs/interfaces/`）**未被修改**；
+  Data Gate **仍保持 Reopened**（⛔ 未 CLOSED；⛔ DG-01 – DG-06 不重新打开）；
+  ⛔ **本模块不自行实施** DG-07，也**不自行命名 / 拆分实施阶段**；
   ⛔ **不再要求重复** C1B / C1C 诊断或 C1D 人工核验；
 - **真实 Capture Bundle 的导入 UI**（前端产品链路）属**后续步骤**，本轮不做；
 - **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
