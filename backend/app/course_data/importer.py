@@ -25,6 +25,13 @@ OfferingSnapshot
 **任意一行失败 → 本次 import 整体失败**（异常直接向上抛）。
 不存在"跳过坏 row 继续"的路径 —— 那会让不完整的数据被当成完整快照。
 
+⚠️ **DG-07B 的两类状态必须严格分开**（见 `_build_offering_from_row`）：
+
+- `teachingTimePlaceStr` **属性不存在** → 该教学班规范化为 `meetings = []`
+  （来源快照没有可用排课信息），**row 仍被保留并计入 `loaded_count`**；
+- `teachingTimePlaceStr` **存在**（含 `null` / 空串 / 非字符串 / 畸形 / 无法解析）
+  → **整体失败**，⛔ **不会**被吞成 `meetings = []`。
+
 ## completeness 由调用方决定
 
 Adapter **不会**因为 `len(rows) == data.total` 就自己宣布 `complete`：
@@ -43,7 +50,10 @@ from collections.abc import Mapping, Sequence
 from typing import Literal
 
 from app.course_data.errors import CourseDataNormalizationError
-from app.course_data.normalization import build_course_offering
+from app.course_data.normalization import (
+    build_course_offering,
+    build_course_offering_from_missing_schedule_field,
+)
 from app.course_data.schedule_parser import extract_meetings, parse_teaching_time_place
 from app.course_data.snapshot import OfferingSnapshot
 from app.models.contracts import CourseOffering
@@ -122,8 +132,20 @@ def _require_rows(data: Mapping[str, object]) -> list[Mapping[str, object]]:
 
 
 def _build_offering_from_row(row: Mapping[str, object], *, source: str) -> CourseOffering:
+    """把一条 Raw row 转成 `CourseOffering`。
+
+    ⛔ **两类状态必须严格分开**（DG-07B 的核心）：
+
+    - **`teachingTimePlaceStr` 属性不存在** → 来源快照没有提供可形成公共 `Meeting`
+      的排课信息 → 走**窄语义** normalizer，`meetings = []`；
+    - **字段存在** → **原样**交给 `parse_teaching_time_place()`；
+      `null` / 空串 / 非字符串 / 畸形 / 无法解析 → **整体失败**。
+
+    ⛔ 这里**没有** `try/except`：解析异常**不会**被吞成 `meetings = []`。
+    """
+
     if _SCHEDULE_FIELD not in row:
-        raise CourseDataNormalizationError(f"Raw row 缺少 `{_SCHEDULE_FIELD}` 字段")
+        return build_course_offering_from_missing_schedule_field(row, source=source)
 
     segments = parse_teaching_time_place(row[_SCHEDULE_FIELD])  # type: ignore[arg-type]
     meetings = extract_meetings(segments)

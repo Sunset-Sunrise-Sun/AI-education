@@ -276,14 +276,95 @@ def test_non_mapping_payload_is_rejected() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_missing_schedule_field_is_rejected() -> None:
+def test_missing_schedule_field_produces_empty_meetings() -> None:
+    """DG-07B：单 row **真的没有** `teachingTimePlaceStr` → import 成功且 `meetings == []`。
+
+    ⚠️ 这是"来源快照没有可用排课信息"，**不是**学校业务状态；row **不被跳过**。
+    """
+
     row = _row()
     del row["teachingTimePlaceStr"]
+    assert "teachingTimePlaceStr" not in row
+
+    snapshot = _import([row], total=1)
+
+    assert snapshot.loaded_count == 1
+    assert len(snapshot.offerings) == 1
+    assert snapshot.offerings[0].meetings == []
+    assert snapshot.offerings[0].data_source is DataSource.REAL
+
+
+def test_missing_schedule_row_is_kept_in_order_and_counted() -> None:
+    """normal / missing / normal：**三条全部保留**、**顺序不变**、`loaded_count == 3`。
+
+    ⛔ 缺排课信息的 row **不得被跳过**：否则 completeness 会被破坏。
+    """
+
+    missing = _row(classNumber="6200100120260102")
+    del missing["teachingTimePlaceStr"]
+
+    snapshot = _import(
+        [
+            _row(classNumber="6200100120260101"),
+            missing,
+            _row(classNumber="6200100120260103"),
+        ],
+        total=3,
+        completeness="complete",
+    )
+
+    assert snapshot.loaded_count == 3
+    assert [item.class_id for item in snapshot.offerings] == [
+        "6200100120260101",
+        "6200100120260102",
+        "6200100120260103",
+    ]
+    assert snapshot.offerings[0].meetings != []
+    assert snapshot.offerings[1].meetings == []
+    assert snapshot.offerings[2].meetings != []
+    assert snapshot.completeness == "complete"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "", "   ", 42, 3.5, True, {"a": 1}, ["x"]],
+    ids=["null", "empty-string", "blank-string", "number", "float", "boolean", "object", "list"],
+)
+def test_present_schedule_field_with_unusable_value_is_rejected(value: object) -> None:
+    """⛔ 字段**存在**但取值不可用（含 `null` / 空串 / 其它类型）→ **整体失败**。
+
+    这些属于"字段存在但无可用排课信息（或类型不对）"，**不**等于"属性不存在"，
+    因此**一律不得**转成 `meetings = []`。
+    """
 
     with pytest.raises(CourseDataNormalizationError) as excinfo:
-        _import([_row(), row])
+        _import([_row(teachingTimePlaceStr=value)])
 
     assert "teachingTimePlaceStr" in str(excinfo.value)
+
+
+def test_present_schedule_field_with_malformed_text_is_rejected() -> None:
+    """⛔ 非空但 malformed → **整体失败**（parser 原样抛错）。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([_row(teachingTimePlaceStr="只有一段没有分隔符的文本")])
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([_row(teachingTimePlaceStr="1-8周/星期五/第5-6节,")])  # 字段数不足
+
+
+def test_parser_exception_is_never_converted_into_empty_meetings() -> None:
+    """⛔ importer **没有** `except -> meetings=[]`：解析失败必须整体失败。
+
+    反向证明：同一批数据里混入一条 malformed row 时，**整批**失败，
+    不会产出"部分成功 + 空 meetings"的结果。
+    """
+
+    good = _row(classNumber="6200100120260101")
+    bad = _row(classNumber="6200100120260102", teachingTimePlaceStr="坏格式")
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([good, bad], total=2)
 
 
 def test_bad_row_fails_the_entire_import() -> None:

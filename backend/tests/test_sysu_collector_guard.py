@@ -446,22 +446,136 @@ def test_diagnostic_summary_buckets_are_exhaustive(collector_source: str) -> Non
         assert forbidden not in slice_
 
 
-def test_collect_still_fails_closed_on_missing_schedule_field(collector_source: str) -> None:
-    """⛔ 诊断不得改动 `collect()` 的 fail-closed 行为。
+def _minimize_row_code(collector_source: str) -> str:
+    """`minimizeRow` 的**纯代码**（去掉 JSDoc 与行注释）。
 
-    `minimizeRow` 仍要求 8 个必要字段齐备，缺任何一个都整体失败。
+    ⚠️ 行注释里会出现"不放行 `null` / 空串"这类**说明性**文字，
+    因此"不得出现占位写法"类断言必须只看代码，不能看注释。
     """
+
+    body = _js_function_slice(
+        collector_source, "function minimizeRow(", "function validatePagePayload("
+    )
+
+    return "\n".join(line.split("//")[0] for line in body.splitlines())
+
+
+def test_collect_allows_only_missing_schedule_field(collector_source: str) -> None:
+    """⛔ DG-07B：`collect()` **只**允许 `teachingTimePlaceStr` **属性不存在**。
+
+    这是原 `test_collect_still_fails_closed_on_missing_schedule_field` 的**翻转替代**：
+    该用例锁定的"8 个字段全必需"不变量已被 DG-07B 取代，但**不是**放宽为"缺任何字段都行"。
+
+    锁定：
+
+    - A. 基础必需字段集合**恰好是 7 个**（不含排课字段）；
+    - B. 最小化循环遍历的是 `REQUIRED_ROW_FIELDS`（缺任一 → FAIL）；
+    - C. 排课字段用 `hasOwnProperty` 判定：**不存在就直接返回**（key 保持不存在）；
+    - D. 属性**存在**时仍调用原 `redactTeachingTimePlace(`；
+    - E. 不得出现占位值（`null` / `""` / `UNKNOWN` / `N/A`）；
+    - F. `minimizeRow` 内没有 catch / fallback / skip row。
+    """
+
+    minimize = _minimize_row_code(collector_source)
+
+    # A. 基础必需字段恰好 7 个，且**不含** teachingTimePlaceStr
+    required_start = collector_source.index("var REQUIRED_ROW_FIELDS = [")
+    required_end = collector_source.index("];", required_start)
+    required_block = collector_source[required_start:required_end]
+
+    for field in (
+        "courseNum",
+        "courseName",
+        "classNumber",
+        "yearTerm",
+        "score",
+        "limitNumber",
+        "selectedNumber",
+    ):
+        assert f'"{field}"' in required_block, f"REQUIRED_ROW_FIELDS 缺少：{field}"
+
+    assert '"teachingTimePlaceStr"' not in required_block, (
+        "teachingTimePlaceStr 不得进入 REQUIRED_ROW_FIELDS（DG-07B 起它允许属性不存在）"
+    )
+
+    # B. 循环必须遍历 REQUIRED_ROW_FIELDS（不是 KEPT_ROW_FIELDS）
+    assert "REQUIRED_ROW_FIELDS.length" in minimize
+    assert "KEPT_ROW_FIELDS.length" not in minimize
+
+    # C. 只有**属性不存在**才提前返回，且不写入任何占位值
+    assert "if (!Object.prototype.hasOwnProperty.call(row, SCHEDULE_FIELD)) {" in minimize
+    assert "return minimized;" in minimize
+
+    # D. 属性存在 → 仍必须脱敏
+    assert "minimized[SCHEDULE_FIELD] = redactTeachingTimePlace(" in minimize
+
+    # E. 不得出现任何占位 / 伪造写法（只看代码）
+    for placeholder in (
+        "null",
+        '""',
+        "UNKNOWN",
+        "N/A",
+        "teachingTimePlaceStr:",
+        "meetings:",
+    ):
+        assert placeholder not in minimize, f"minimizeRow 不得出现占位写法：{placeholder}"
+
+    # F. 不得吞异常 / 跳过 row
+    for workaround in ("continue;", "catch", "try", "return null"):
+        assert workaround not in minimize, f"minimizeRow 不得出现 workaround：{workaround}"
+
+
+def test_collect_still_fails_closed_on_other_missing_base_fields(collector_source: str) -> None:
+    """⛔ 除排课字段外的 **7 个基础字段**缺任意一个仍必须整体失败。"""
 
     assert "条记录缺少字段：" in collector_source
     assert "Object.prototype.hasOwnProperty.call(row, field)" in collector_source
 
-    # 只检查 minimizeRow 内部：不得出现"缺字段 → 跳过 / 补空 / 占位"的写法
-    start = collector_source.index("function minimizeRow(")
-    end = collector_source.index("function validatePagePayload(")
-    minimize = collector_source[start:end]
+    minimize = _minimize_row_code(collector_source)
 
-    for workaround in ("continue;", "meetings: []", "meetings:[]", "return null", "catch"):
-        assert workaround not in minimize, f"minimizeRow 不得出现 workaround：{workaround}"
+    # 基础字段校验必须发生在"排课字段特例"之前
+    base_check = minimize.index("条记录缺少字段：")
+    schedule_exception = minimize.index(
+        "Object.prototype.hasOwnProperty.call(row, SCHEDULE_FIELD)"
+    )
+    assert base_check < schedule_exception, (
+        "基础字段校验必须早于排课字段特例，避免排课字段特例把基础字段也放行"
+    )
+
+
+def test_collect_does_not_duplicate_sensitive_field_sets(collector_source: str) -> None:
+    """⛔ DG-07B 未扩大采集字段集合：仍只保留 8 个字段，未新增任何字段。"""
+
+    start = collector_source.index("var KEPT_ROW_FIELDS = [")
+    end = collector_source.index("];", start)
+    kept_block = collector_source[start:end]
+
+    for field in (
+        "courseNum",
+        "courseName",
+        "classNumber",
+        "yearTerm",
+        "score",
+        "limitNumber",
+        "selectedNumber",
+        "teachingTimePlaceStr",
+    ):
+        assert f'"{field}"' in kept_block, f"KEPT_ROW_FIELDS 缺少：{field}"
+
+    for forbidden in (
+        "timePlaceId",
+        "weekDay",
+        "openingUnitName",
+        "readObj",
+        "openClass",
+        "teachProgressSubmitState",
+        "courseCategoryName",
+        "examMode",
+        "teachingName",
+    ):
+        assert f'"{forbidden}"' not in kept_block, f"不得采集字段：{forbidden}"
+
+    assert "sysu-opening-courses-capture-v1" in collector_source, "Capture 格式标识不得升级"
 
 
 # ---------------------------------------------------------------------------

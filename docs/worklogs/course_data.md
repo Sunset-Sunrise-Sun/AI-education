@@ -1012,3 +1012,95 @@
 - 下一步：等待 Reviewer；之后等待 **DG-07B** 任务书。
   ⚠️ **不 merge，不自行开始 DG-07B / C / D**。
 
+### 2026-10-01 - DG-07B — Course Data Empty-Meeting Normalization
+- 本次目标：实施 DG-07B —— **唯一**新增业务能力：
+  SYSU Raw row 的 `teachingTimePlaceStr` **属性真正不存在** → `CourseOffering.meetings = []`。
+  这是**数据可用性状态转换**，**不是**学校业务状态判断。
+  起点：`main` = `d330d1f1…`；新建 `feature/dg07b-course-data-empty-meetings`
+  （**base 已核对一致**）。
+- **`normalization.py`**：
+  - 抽出 private helper **`_build_common_offering_fields(raw, *, source)`**：
+    `courseNum` / `courseName` / `classNumber` / `yearTerm` / `score` /
+    `limitNumber` / `selectedNumber`（+ `teachingName` → `teacher`、`remaining_capacity` 派生值）
+    的构造**只有一份**；两条路径**共用** → ⛔ **未复制字段映射**；
+  - **普通 `build_course_offering()` 仍拒绝任意空 `meetings`**（`_require_meetings` 保留非空要求）；
+  - **新增窄语义 `build_course_offering_from_missing_schedule_field(raw, *, source)`**：
+    内部**再验证** `"teachingTimePlaceStr" not in raw`；key 存在（无论取值）→ **拒绝**
+    且**不回显取值**；成功时 `meetings = []`，`data_source` 仍为 `real`、`source` 仍由调用方给出；
+  - `__all__` 增加该内部函数名（**仍是 Course Data 内部实现**，不进 `docs/interfaces/` /
+    Provider / API / 公共 Schema）。
+- **`importer.py`**：`_build_offering_from_row()` 改为按 **key 是否存在**分流：
+  - key **不存在** → 窄语义 normalizer → `meetings = []`；
+  - key **存在** → **原样** `parse_teaching_time_place()` → `extract_meetings()` →
+    普通 `build_course_offering()`（`null` / 空串 / 非字符串 / 畸形 → **整体失败**）；
+  - ⛔ **没有** `try/except`；⛔ **没有** "parser 返回空 / 报错 → 自动认为 schedule unavailable"；
+  - ⛔ **不跳过**任何 row（缺排课信息的 row 仍参与 `loaded_count`）。
+- **`tools/sysu_course_offering_collector.js`**（Transport 同步，否则真实链路仍会在前端失败）：
+  - `KEPT_ROW_FIELDS` **仍为 8 个字段**（Capture row 允许出现的全集，**未新增字段**）；
+  - 新增 **`REQUIRED_ROW_FIELDS`（7 个基础字段）**，最小化循环改用它 ——
+    缺任意一个基础字段仍 **FAIL**；
+  - `teachingTimePlaceStr`：`hasOwnProperty` 为 false → **最小化对象中也不创建该 key**
+    （⛔ 不写 `null` / `""` / `UNKNOWN` / `N/A` / `[]`）；属性存在 → 仍调用原
+    `redactTeachingTimePlace()`（present + null / 空 / 非字符串 / 畸形 → **FAIL**）；
+  - **Capture 格式不升级**：仍是 `sysu-opening-courses-capture-v1`（顶层结构未变，
+    旧 v1 bundle 仍可读）。
+- **0 diff 实现**：`schedule_parser.py`、`pagination.py`、`captured_pages.py`、`snapshot.py`
+  **均未修改**（`git diff --name-only` 核对）；Provider 签名未变；
+  **未新增** `schedule_unknown_count` / `has_unknown_schedule` / `filter_unknown`。
+- **测试**（5 个文件，**未新增 skip**）：
+  - `test_course_data_normalization.py`：普通路径仍拒绝空数组；narrow path
+    A 缺 key → 成功且 `meetings == []`、B–E key 存在（`null` / `""` / `"   "` /
+    number / object / list）→ 拒绝、F 合法文本 → **仍不得**走 empty path；
+    另加"两条路径其它字段完全一致"、"窄路径仍校验 source 与基础字段"；
+  - `test_course_data_importer.py`：**翻转**原 `test_missing_schedule_field_is_rejected`
+    → `test_missing_schedule_field_produces_empty_meetings`；
+    新增 normal/missing/normal 三条全保留 + 顺序 + `loaded_count == 3` + `complete`；
+    present 不可用（8 种取值）→ FAIL；malformed → FAIL；
+    **parser 异常不被吞**（混入坏 row → 整批失败）；
+  - `test_course_data_pagination.py`：缺排课 row **计入 `loaded_count`**、order 保持、
+    `complete` / `partial` 判定不受破坏；present 不可用仍整批失败；
+  - `test_course_data_captured_pages.py`：**test-only** bundle 中 key absent →
+    `meetings == []` 且 row 数不减、`complete` 正常；跨页不丢 row；
+    present 不可用（6 种取值）→ FAIL；
+  - `test_sysu_collector_guard.py`：**翻转替代**原
+    `test_collect_still_fails_closed_on_missing_schedule_field` →
+    `test_collect_allows_only_missing_schedule_field`（A 基础字段恰好 7 个且不含排课字段、
+    B 循环用 `REQUIRED_ROW_FIELDS`、C 仅 absent 提前返回、D present 必脱敏、
+    E 无占位写法、F 无 catch/fallback/skip）+ 新增"7 个基础字段仍 fail closed"与
+    "未扩大采集字段集合 / Capture 格式未升级"两条守卫。
+- **本地合成校验（临时脚本、未入库、非真实请求）**：加载 Collector 并 stub `fetch` ——
+  三条 row（normal / missing / normal）全部保留；missing row 的输出**不含该 key**；
+  present row 仍 `REDACTED`；7 个基础字段逐个删除均 **FAIL**；
+  present + `null` / `""` / `"   "` / number / object / malformed **全部 FAIL**。
+- **修改文件（仅允许清单内）**：
+  - `backend/app/course_data/normalization.py`、`backend/app/course_data/importer.py`
+  - `tools/sysu_course_offering_collector.js`
+  - `backend/tests/test_course_data_{normalization,importer,pagination,captured_pages}.py`、
+    `backend/tests/test_sysu_collector_guard.py`
+  - `docs/interfaces/course_data.md`（**仅实现状态同步**）、
+    `docs/data/DATA_GATE_DECISIONS.md`、`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`、
+    `docs/status/course_data.md`、本文件
+- ⛔ **未修改**：`schemas/`（两个 schema 均未动）、`docs/interfaces/{planner,integration}.md`、
+  `schedule_parser.py` / `pagination.py` / `captured_pages.py` / `snapshot.py`（**0 diff**）、
+  Planner 实现、Integration 实现、API / `main.py`、`frontend/`、`mock_data/`；
+  ⛔ **未实现** `missing_schedule` / `unresolved` / `partially_feasible` / `infeasible` 规则；
+  ⛔ **未**新增 `schedule_status` / `schedule_known` / `schedule_state`。
+- 测试：目标 5 个文件全通过；`cd backend && python -m pytest` → **596 passed / 2 skipped**
+  （基线 **550 passed / 2 skipped**）；`node --check tools/sysu_course_offering_collector.js`
+  → **exit 0**。**新增 skip = 0**。
+- **新的 rollout gate（DG-07B 后）**：Course Data **内部**已可忠实表示 `meetings = []`，
+  但 **DG-07C（Planner safety）/ DG-07D（Frontend 展示）未完成前**，
+  **empty-meeting Offering 仍不得接入真实产品端到端链路**：
+  ⛔ 不新增真实 API、⛔ 不接 `PlanningOrchestrator`、⛔ 不交 Planner、⛔ 不送前端、
+  ⛔ 不改 Mock 让 Demo 提前出现 `[]`。
+- **G11**：更新为 **`contract migration implemented; Course Data empty-meeting
+  normalization implemented; Planner / Frontend downstream handling pending;
+  school-side business cause still unknown`** —— ⛔ **仍不写 resolved**；
+  「**支持保存 `meetings = []` ≠ 已经知道学校为什么没有 schedule**」；
+  仍不知道：是否属于有效可选教学班 / 是否应最终被 Planner 选择 / **全学期缺失比例**。
+- **Data Gate**：仍 **Reopened**（⛔ 未 CLOSED）；DG-07C / DG-07D **未开始**。
+- 使用数据：**Mock / 人工虚构**；**未生成真实 Capture Bundle / Raw JSON / 截图**。
+- **Builder 实际 SYSU 请求数：0**。
+- 下一步：等待 Reviewer；之后等待 **DG-07C** 任务书。
+  ⚠️ **不 merge，不自行开始 DG-07C / DG-07D**。
+

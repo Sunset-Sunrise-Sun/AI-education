@@ -10,9 +10,11 @@
 > **DG-07A（Contract Migration）** 起，`meetings` 允许为空数组
 > （`minItems: 0`，`required` 不变）：`meetings = []` 表示
 > **当前来源快照没有能够形成公共 `Meeting` 的可用排课信息**。
-> ⚠️ 契约层合法 ≠ 可以提前产生：本模块的 empty-meeting 归一化属 **DG-07B**，
-> 在 DG-07B / DG-07C / DG-07D 完成前，真实数据链路**不得**主动产生或接入
-> empty-meeting `CourseOffering`（rollout gate）。
+> ✅ **DG-07B** 起，本模块**已能忠实产生**该状态（唯一来源形态：Raw row **没有
+> `teachingTimePlaceStr` 这个 key**）。
+> ⚠️ 但 **Planner unknown-schedule safety（DG-07C）与前端 empty-meeting 展示（DG-07D）
+> 尚未实现**，因此 empty-meeting `CourseOffering` **仍不得接入真实产品端到端链路**
+> （新的 rollout gate）。
 
 ## 职责
 
@@ -47,16 +49,16 @@ CourseOffering.meetings[] = 当前来源快照中能够形成公共 Meeting 的*
 > ⛔ `meetings = []` **不表示**：没有上课时间、异步教学、时间自由、
 > **没有时间冲突**、学校确认尚未排课、该教学班无效、应被过滤。
 
-### fail-closed 边界（**已批准**，DG-07B 起才允许产生空数组）
+### fail-closed 边界（**已批准**；**DG-07B 已实现**）
 
 ⛔ **`meetings = []` 不能作为解析失败的 fallback。**
 解析异常、畸形输入、"看不懂的格式"一律**继续 fail closed**，
 绝不允许把**我们的解析缺陷**写成**学校的数据状态**。
 
-**初始实施阶段（DG-07B）唯一允许产生 `meetings = []` 的来源形态**：
+**唯一允许产生 `meetings = []` 的来源形态**：
 
 ```text
-teachingTimePlaceStr 属性不存在
+teachingTimePlaceStr 属性不存在（Raw row 里真的没有这个 key）
 ```
 
 ⛔ **以下形态一律不得映射为空数组**（继续 fail closed）：
@@ -70,10 +72,21 @@ teachingTimePlaceStr 属性不存在
 | malformed segment（字段数 / 分隔符 / 结构异常） | fail closed |
 | parser / importer / normalizer 抛异常 | fail closed（异常原样向上） |
 
+> ✅ **实现状态（DG-07B，2026-10-01）**：上述边界**已在 Course Data 内部落地**：
+>
+> - `importer` 按 `teachingTimePlaceStr` **key 是否存在**分流：
+>   key 不存在 → 走**窄语义** `build_course_offering_from_missing_schedule_field()`
+>   （该函数内部**再验证一次** key 真的不存在）→ `meetings = []`；
+>   key 存在 → **原样**交给 `parse_teaching_time_place()`，
+>   ⛔ **没有** `try/except`，解析失败**不会**被吞成空数组；
+> - `schedule_parser.py` **未修改**（语法接受范围不变）；
+> - 缺排课信息的 row **仍然被保留并计入 `loaded_count`**，**不被跳过**（completeness 不受破坏）；
+> - 浏览器 Collector **同步**：7 个基础字段仍必填，
+>   只有 `teachingTimePlaceStr` **属性不存在**时保持 **key absent**
+>   （⛔ 不写 `null` / `""` / 占位值）。
+>
+> ⚠️ 以上是 Course Data **内部实现**，**不新增**公共接口 / Provider / API / Schema。
 > ⛔ 该边界的**扩大**必须走**新的真实证据 + 架构裁决**，实现层不得自行放宽。
-> ⚠️ 本轮（DG-07A）只写公共语义与边界，**未修改** `parser` / `importer` /
-> `normalizer`：它们当前仍对上述**全部**情况（含属性不存在）fail closed，
-> 空数组归一化属 **DG-07B**。
 
 建议接口：
 

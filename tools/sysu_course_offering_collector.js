@@ -93,7 +93,13 @@
   /** Capture Bundle 格式标识（Course Data **内部**交换格式，不是公共 Schema）。 */
   var CAPTURE_FORMAT = "sysu-opening-courses-capture-v1";
 
-  /** 输出前**只保留** Python importer 真正需要的字段。 */
+  /**
+   * 输出前**只保留** Python importer 真正需要的字段 ——
+   * 这是 Capture row **允许出现**的全部字段（文档口径 + 守卫测试锚点）。
+   *
+   * ⚠️ 其中 `teachingTimePlaceStr` 是**条件字段**（DG-07B）：只有原属性存在时才出现，
+   * 因此实际最小化循环用的是下面的 `REQUIRED_ROW_FIELDS`。
+   */
   var KEPT_ROW_FIELDS = [
     "courseNum",
     "courseName",
@@ -103,6 +109,23 @@
     "limitNumber",
     "selectedNumber",
     "teachingTimePlaceStr"
+  ];
+
+  /**
+   * 其中**必须存在**的 7 个基础字段：缺任意一个 → 整体 FAIL。
+   *
+   * ⚠️ **DG-07B 起，`teachingTimePlaceStr` 不再属于"必须存在"集合**：
+   * 真实证据（C1B / C1C / C1D）表明该属性**可能真的不存在**（来源快照没有可用排课信息）。
+   * 该字段改为"**仅当属性存在时才写入**"，规则见 `minimizeRow()`。
+   */
+  var REQUIRED_ROW_FIELDS = [
+    "courseNum",
+    "courseName",
+    "classNumber",
+    "yearTerm",
+    "score",
+    "limitNumber",
+    "selectedNumber"
   ];
 
   /** 已确认的 segment / field 分隔符。 */
@@ -240,8 +263,17 @@
   // ---------------------------------------------------------------------
 
   /**
-   * 取一条 row 的最小化副本：只保留 `KEPT_ROW_FIELDS`，
-   * 并把 `teachingTimePlaceStr` 覆盖为脱敏后的文本。
+   * 取一条 row 的最小化副本：保留 7 个**基础必需字段**，
+   * 并在 `teachingTimePlaceStr` **属性存在时**写入脱敏后的文本。
+   *
+   * ⛔ **DG-07B：`teachingTimePlaceStr` 是唯一允许"属性不存在"的字段。**
+   *
+   *   - 属性**不存在** → 最小化对象中**也不创建该 key**（`hasOwnProperty` 仍为 false）；
+   *     ⛔ 不得写成 `null` / `""` / `placeholder` / `UNKNOWN` / `N/A` / `[]`；
+   *   - 属性**存在** → 仍必须走 `redactTeachingTimePlace(...)`：
+   *     `null` / 空串 / 其它类型 / 畸形字符串**一律 FAIL**（与 2C1B 之前一致）。
+   *
+   * 其余 7 个基础字段缺任意一个仍然**整体 FAIL**（不跳过、不补空）。
    *
    * ⚠️ **`humanRowNo` 是从 1 开始的人类行号，只用于错误信息**。
    * 调用方在第 1 页对第 1 条记录报告"第 1 条"，
@@ -254,17 +286,25 @@
     }
 
     var minimized = {};
-    for (var i = 0; i < KEPT_ROW_FIELDS.length; i += 1) {
-      var field = KEPT_ROW_FIELDS[i];
+
+    // 7 个基础字段：必须全部存在。
+    for (var i = 0; i < REQUIRED_ROW_FIELDS.length; i += 1) {
+      var field = REQUIRED_ROW_FIELDS[i];
       if (!Object.prototype.hasOwnProperty.call(row, field)) {
         fail("第 " + pageNo + " 页第 " + humanRowNo + " 条记录缺少字段：" + field);
       }
       minimized[field] = row[field];
     }
 
-    // 覆盖为脱敏后的文本（教师姓名不写入 Capture Bundle）。
-    minimized.teachingTimePlaceStr = redactTeachingTimePlace(
-      row.teachingTimePlaceStr,
+    // ⛔ 只有**真正的属性不存在**才放行；不放行 null / 空串 / 其它类型 / 畸形。
+    if (!Object.prototype.hasOwnProperty.call(row, SCHEDULE_FIELD)) {
+      // 不写任何占位值：key 保持不存在，交给下游按"排课信息不可用"处理。
+      return minimized;
+    }
+
+    // 属性存在 → 覆盖为脱敏后的文本（教师姓名不写入 Capture Bundle）。
+    minimized[SCHEDULE_FIELD] = redactTeachingTimePlace(
+      row[SCHEDULE_FIELD],
       pageNo,
       humanRowNo
     );

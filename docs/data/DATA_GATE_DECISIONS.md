@@ -8,12 +8,13 @@
 > Data Gate 已**仅在 DG-07 范围内临时 Reopen** —— **Reopened narrowly for DG-07 only**。
 > **DG-01 – DG-06 不重新打开**，其它已裁决完成的问题**不重新讨论**。
 > ⚠️ **Data Gate 仍保持 Reopened**：**尚未**回到 CLOSED
-> （DG-07 已批准；**DG-07A Contract Migration 已实施、待 Reviewer**；
-> Course Data / Planner safety / Frontend 与整体回归**尚未完成**）。
+> （DG-07 已批准；**DG-07A 已 Review 并 merge**；**DG-07B 已实施 / 待 Reviewer**；
+> Planner safety、Frontend 展示与整体回归**尚未完成**）。
 >
 > **DG-07 状态：`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**
 > （**2026-10-01 由项目负责人批准**）。
-> **DG-07A（Contract Migration）：已实施 / 待 Reviewer**（见 §12.3）。
+> **DG-07A（Contract Migration）：✅ IMPLEMENTED / REVIEWED**
+> **DG-07B（Course Data 空 meetings）：✅ IMPLEMENTED / WAITING REVIEW**（见 §12.3）。
 > ⚠️ **"WITH MODIFICATION" 的准确含义**：**不是**只批准把 `meetings` 的
 > `minItems: 1 → 0`，而是 **Schema 放宽** 与
 > **Course Data fail-closed 不变量（§17.12.1）**、
@@ -846,7 +847,10 @@ Data Gate-1 + Data Gate-2：PASSED / CLOSED
 处置：  Reopened narrowly for DG-07 only
 当前：  ⚠️ 仍保持 Reopened（DG-07 整体尚未实施完成 / 尚未完成回归 / 尚未验收）
 DG-07： APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING
-DG-07A（Contract Migration）：已实施，待 Reviewer
+DG-07A（Contract Migration）：      ✅ IMPLEMENTED / REVIEWED（已 merge）
+DG-07B（Course Data 空 meetings）： ✅ IMPLEMENTED / WAITING REVIEW
+DG-07C（Planner safety）：          ⏳ NOT STARTED
+DG-07D（Frontend 展示）：           ⏳ NOT STARTED
 ```
 
 - ✅ **只**为 **DG-07**（`CourseOffering` 空 `meetings` / 未知排课信息）重新开启；
@@ -855,7 +859,7 @@ DG-07A（Contract Migration）：已实施，待 Reviewer
   `CurrentEnrollment` / `CurriculumVersion` / dependency / priority / 接口文档债务）；
 - ✅ **DG-07 已获批准（2026-10-01）**：
   **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**（见 §17.5.1 裁决）；
-- ✅ **DG-07A — Contract Migration 已实施（待 Reviewer）**：
+- ✅ **DG-07A — Contract Migration 已实施 / 已 Review 并 merge**：
   `schemas/course_offering.schema.json` 的 `meetings.minItems` 已由 **1 → 0**
   （`required` 不变）、`backend/app/models/contracts.py` 已镜像
   （`min_length=0`，Pydantic 生成 `minItems: 0`，防漂移测试通过）、
@@ -863,17 +867,28 @@ DG-07A（Contract Migration）：已实施，待 Reviewer
   `frontend/src/types/contracts.ts` **仅注释**同步（类型形状未变）；
   契约级测试已迁移（`meetings: []` 由"必须失败"改为"必须通过"），
   **未新增 skip、未删除既有严格性用例**；
+- ✅ **DG-07B — Course Data Empty-Meeting Normalization 已实施（待 Reviewer）**：
+  **唯一**允许产生 `meetings = []` 的来源形态 = Raw row **没有**
+  `teachingTimePlaceStr` 这个 key；
+  `normalization.py` 保留普通路径（仍拒绝空数组）并新增**窄语义**
+  `build_course_offering_from_missing_schedule_field()`（内部**再验证** key 不存在）；
+  `importer.py` 按 key 是否存在分流，**没有** `try/except`（解析失败**不会**变成空数组）；
+  ⛔ `schedule_parser.py` / `pagination.py` / `captured_pages.py` / `snapshot.py` **0 diff**；
+  浏览器 Collector 同步（7 个基础字段仍必填；排课字段 absent 时**保持 key 不存在**，
+  ⛔ 不写 `null` / `""` / 占位值）；缺排课信息的 row **仍计入 `loaded_count`、不被跳过**；
 - ⛔ **DG-07 整体仍未完成**：⛔ **不得**写 `DG-07 IMPLEMENTED`、⛔ **Data Gate 仍保持 Reopened**；
   `mock_data/` **未修改**（全部教学班仍 ≥1 段 meeting）；
 - ⚠️ **Data Gate 只有在下述全部完成并经 Reviewer 验收后，才允许回到 CLOSED**
   （并登记 **DG-07 IMPLEMENTED**）：
-  1. ~~**DG-07 Contract Migration**~~ → ✅ **DG-07A 已实施（待 Reviewer）**；
-  2. **Course Data**（DG-07B：fail-closed 不变量落地：仅"属性不存在"可映射为 `[]`）；
+  1. ~~**DG-07 Contract Migration**~~ → ✅ **DG-07A 已实施 / 已 merge**；
+  2. ~~**Course Data**~~ → ✅ **DG-07B 已实施（待 Reviewer）**：
+     fail-closed 不变量落地（**仅"属性不存在"可映射为 `[]`**），
+     且缺排课信息的 row **不被跳过**；
   3. **Planner safety**（DG-07C：`meetings = []` ≠ conflict-free，含 `current_schedule`）；
   4. **Frontend / Mock**（DG-07D：类型与展示，文案候选「排课信息暂缺」）；
-  5. **tests**（各阶段随实现补齐；契约级用例已在 DG-07A 完成迁移）；
+  5. **tests**（各阶段随实现补齐；契约级用例见 DG-07A，Course Data 用例见 DG-07B）；
 - ⚠️ §12.1 的三条约束（含"改契约仍须走 `【接口变更请求】` → 人工确认"）**继续适用**；
-- ⛔ **DG-07B / DG-07C / DG-07D 尚未开始**：不得在本轮开始，也不得自行命名 / 拆分阶段。
+- ⛔ **DG-07C / DG-07D 尚未开始**：不得在本轮开始，也不得自行命名 / 拆分阶段。
 
 ---
 
@@ -1314,6 +1329,7 @@ DG-07A（Contract Migration）：已实施，待 Reviewer
 | 2026-10-01 | **DG-07 Reviewer 架构修复（3 项，docs-only）** | ① **删除"真实可选教学班"的过度表述**：C1D 只证明**真实教学班 / 开课记录存在**，**不证明**对当前学生**可选**；`过滤可能丢失真实可选教学班` → **`过滤可能丢失真实教学班记录`**（§17.5 / §17.6 共 4 处）。**"是否属于有效可选教学班"与"是否应进入 Planner"继续保留为未确认项**。② **新增 §17.12.1「Course Data fail-closed 不变量」**：明确 **`meetings = []` 只能表示来源层没有提供可形成 `Meeting` 的排课信息，⛔ 不得作为 parser / importer / normalizer 解析失败的 fallback**；**初始实施边界按现有证据写死** —— ✅ **已确认可映射为 `[]` 的来源形态只有一种：`teachingTimePlaceStr` 属性不存在**；⛔ `null` / `empty_string` / `other_type` / 非空但格式无法解析 / malformed segment / parser / normalization 异常**一律继续 fail closed**，除非将来有**独立真实证据 + 架构裁决**。③ **Planner 安全规则显式覆盖 `current_schedule`**（§17.9）：因 `offerings` 与 `current_schedule` **同为公共类型 `CourseOffering[]`**，故**对两者中任何 `meetings = []` 的 `CourseOffering`，schedule 都视为 unknown**；**若 `current_schedule` 中存在 `meetings = []`，Planner 不得把其它候选声明为"已验证与当前课表无时间冲突"**（最多只能说"与**已知**时段不冲突"）。④ **§17.5 建议修改**同步声明：**本提案的批准必须与上述两条不变量同时成立**，否则等于放行静默降级。⑤ `PlanResult.status` / `unresolved` 命名**仍留待 Planner implementation review**，⛔ 本轮不决定；**DG-07 状态仍为 `PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**（⛔ 未写 APPROVED）。⚠️ **仅修改现有 7 个 docs 文件**；**未修改** `schemas/` / `docs/interfaces/` / 代码 / 测试；**未实施** `minItems = 0`；**Builder 实际 SYSU 请求数 = 0**。 |
 | 2026-10-01 | **DG-07 架构裁决落档（项目负责人）**：**APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING** | ① **DG-07 由 `PROPOSED / WAITING FOR ARCHITECTURE REVIEW` 更新为 `APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**（新增 §17.5.1 裁决块；§12.3 与文件头同步）。② **批准方向（仅记录，未实施）**：`CourseOffering.meetings` **`required` 保持不变**、`type: array`、**`minItems: 1 → 0`** → 未来允许 `"meetings": []`；⛔ **本轮未修改** `schemas/`。③ **"WITH MODIFICATION" 的准确含义**：**不是**只批准 `minItems: 1 → 0`，而是 **Schema 放宽** 与 **§17.12.1 Course Data fail-closed 不变量**、**§17.9 Planner 安全不变量（含 `current_schedule`）** **必须同时成立**。④ **批准的精确定义**：`meetings = []` **仅**表示"当前来源快照没有提供能够形成公共 `Meeting` 的可用排课信息"；⛔ 不表示无上课时间 / 异步课程 / 时间自由 / 无时间冲突 / 学校确认尚未排课 / 无效教学班 / 应过滤。⑤ **批准的 fail-closed 不变量**：初始阶段**唯一**可生成 `[]` 的来源形态 = **`teachingTimePlaceStr` 属性不存在**；`null` / `empty_string` / `other_type` / 非空但无法解析 / malformed segment / **parser / importer / normalization 异常**一律**继续 fail closed**；⛔ 禁止 `try: parse schedule … except: meetings = []`。⑥ **批准的 Planner 不变量**：**`meetings = []` ≠ conflict-free**；`offerings` 与 `current_schedule` **同一规则**（任意 `meetings = []` → schedule unknown）；`current_schedule` 含 `meetings = []` 时⛔ **不得**声明其它候选"已验证与当前课表无时间冲突"，最多只能判断"**与已知时间段未发现冲突**"，**整体时间冲突状态仍含未知部分**。⑦ **本轮未批准**：不新增 `schedule_status` / `schedule_known` / `schedule_state`。⑧ **仍 deferred 到 Planner Implementation Review**：`PlanResult.status` 取值、`unresolved[].type` 最终命名、`missing_schedule` 是否正式采用 → 当前 **`missing_schedule` = candidate convention only**。⑨ **Data Gate 仍保持 Reopened**（**未 CLOSED**）：新增 §17.15 关闭前置条件（Contract Migration + Course Data + Planner safety + Frontend/Mock + tests，且须经 Reviewer 验收）；⛔ 本轮**未开始任何实施阶段**，也**未自行命名**实施阶段。⑩ **G11 状态更新为 `contract decision approved; implementation pending; school-side business cause still unknown`**（⛔ **不写 resolved**；"契约方向已裁决" ≠ "学校业务原因已查明"）。⚠️ **仅修改现有 7 个 docs 文件**（本轮实际改动其中 5 个，另 2 个无需变化）；**未修改** `schemas/` / `docs/interfaces/` / 代码 / 测试；**Builder 实际 SYSU 请求数 = 0**。 |
 | 2026-10-01 | **DG-07A — Contract Migration 已实施（待 Reviewer）** | ① **`schemas/course_offering.schema.json`**：`meetings` 的 **`minItems: 1 → 0`**，`required` **保持不变**（缺字段 / `null` 仍非法），**未新增 / 未删除任何字段**，**`Meeting` 结构未变**，**未新增 `schedule_status` / `schedule_known` / `schedule_state`**；并为 `meetings` 增加**非校验性 `description`**（空数组仅表示当前来源快照没有能够形成公共 `Meeting` 的可用排课信息；不表示无课、异步、时间自由或**无冲突**）；**公共 Schema 中未出现 `teachingTimePlaceStr`**（SYSU 来源字段不属公共业务 Schema）。② **Pydantic 镜像**：`backend/app/models/contracts.py` 的 `CourseOffering.meetings` 改为 **`min_length=0`**（Pydantic 2.13.5 实测生成 **`minItems: 0`**，与公共 Schema **精确对齐**；**未删除**防漂移测试、**未放宽**比较规则、**未特判** `CourseOffering`、**未跳过** `minItems`），并同步 `CourseOffering` 注释（空数组语义 + 非 conflict-free + rollout gate）。③ **公共接口语义**：`docs/interfaces/course_data.md`（两种合法状态 + 已批准的 fail-closed 边界 + DG-07B 唯一允许来源形态）、`docs/interfaces/planner.md`（`meetings` 非空 → 遍历全部 `Meeting`；`meetings = []` → schedule unknown、**绝不 conflict-free**；**同一规则覆盖 `offerings` 与 `current_schedule`**；`missing_schedule` 仍为 candidate convention only，`status` / `unresolved` 命名仍 deferred）、`docs/interfaces/integration.md`（**Provider 签名一字不改**；`meetings = []` 原样透明传递：不过滤 / 不补 `Meeting` / 不转换 / 不推断原因）。④ **前端**：`frontend/src/types/contracts.ts` **仅注释**同步（类型形状未变）；**未修改**任何 Vue 组件 / CSS / 业务行为。⑤ **契约级测试**：`test_contracts.py` 的"`meetings: []` 必须失败"**翻转为"必须通过"**，并新增 `null` / 非法 `Meeting` 元素 / 未批准状态字段拒绝用例；`test_mock_data_schema.py` 新增 Schema 层用例（`meetings: []` 合法；缺字段 / `null` / 非法元素 / 额外字段非法；`minItems == 0` 锁定）与 **rollout-gate** 用例（产品 Mock 必须保持非空）；**未删除任何既有严格性用例、未新增 skip**。⑥ **约束**：⛔ **未修改** `mock_data/`（产品 Mock 保持每班 ≥1 段，**不提前送入 `meetings=[]`**）；⛔ **未修改** `backend/app/course_data/*`（Course Data 仍对缺排课信息 fail closed）、Planner 实现、Integration 实现、API / `main.py`。⑦ **状态**：**DG-07A 已实施 / 待 Reviewer**；**DG-07 整体仍为 `IMPLEMENTATION PENDING`**（DG-07B/C/D 未开始）；**Data Gate 仍保持 Reopened**（⛔ 未 CLOSED）；**G11 状态更新为 `contract migration implemented in DG-07A; downstream implementation pending; school-side business cause still unknown`**（⛔ **不写 resolved**）。⑧ **验证**：后端 `pytest` **550 passed / 2 skipped**（基线 539/2）；前端 `npm run build`（含 `vue-tsc --noEmit`）**成功**；**Builder 实际 SYSU 请求数 = 0**。 |
+| 2026-10-01 | **DG-07B — Course Data Empty-Meeting Normalization 已实施（待 Reviewer）** | ① **唯一新增能力**：SYSU Raw row **真的没有** `teachingTimePlaceStr` 这个 key → `CourseOffering.meetings = []`（**数据可用性状态转换**，**不是**学校业务状态判断）。② **`normalization.py`**：抽出 private helper `_build_common_offering_fields()`（**只有一份**字段映射，两条路径共用，⛔ **未复制** `courseNum`/`courseName`/`classNumber`/`yearTerm`/`score`/`limitNumber`/`selectedNumber` 的转换）；**普通 `build_course_offering()` 仍然拒绝任意空 `meetings`**；**新增窄语义** `build_course_offering_from_missing_schedule_field()` —— 内部**再验证** `"teachingTimePlaceStr" not in raw`，key 存在（无论取值）→ 拒绝且**不回显取值**。③ **`importer.py`**：`_build_offering_from_row()` 按 key 是否存在分流 —— key 不存在 → 窄路径；**key 存在 → 原样** `parse_teaching_time_place()` + `extract_meetings()` + 普通 `build_course_offering()`；⛔ **没有** `try/except`（解析异常**绝不**被吞成 `[]`）；⛔ **不跳过**任何 row。④ **`schedule_parser.py` 未修改**（语法接受范围不变：`null`/空串/非字符串/畸形/未识别 weekday·weeks·sections 一律继续失败）。⑤ **浏览器 Collector 同步**：`KEPT_ROW_FIELDS` 仍为 8 个字段（未新增），但最小化循环改用 **`REQUIRED_ROW_FIELDS`（7 个基础字段）**；`teachingTimePlaceStr` **仅当属性存在**时才写入（属性不存在 → **保持 key absent**，⛔ 不写 `null` / `""` / 占位值）；属性存在时仍调用原 `redactTeachingTimePlace()`（`null`/空/其它类型/畸形一律 FAIL）。⑥ **Capture 格式不升级**：仍是 `sysu-opening-courses-capture-v1`（顶层结构未变）。⑦ **0 diff 实现**：`schedule_parser.py`、`pagination.py`、`captured_pages.py`、`snapshot.py` **均未修改**；⛔ **未新增** `schedule_unknown_count` / `has_unknown_schedule` / `filter_unknown` 等字段，Provider 签名不变。⑧ **测试**：normalization（narrow path A–F + 共用映射一致性 + source/基础字段校验）、importer（absent → `[]`；normal/missing/normal 三条全保留、顺序不变、`loaded_count == 3`；present `null`/`""`/`"   "`/number/object/list → FAIL；malformed → FAIL；parser 异常不被吞）、pagination（缺排课 row 计入 `loaded_count`、order 保持、`complete`/`partial` 判定不受破坏）、captured_pages（**test-only** bundle 中 key absent → `meetings == []`、row 不被丢弃；present 不可用 → FAIL）、collector guard（**翻转替代**原 `test_collect_still_fails_closed_on_missing_schedule_field`：只允许该字段属性缺失、7 个基础字段仍必需、absent 时输出**不含该 key**、present 时必须脱敏、无占位值、`minimizeRow` 内无 catch/fallback/skip）。**未新增 skip、未删除既有严格性用例（翻转 1 条）**。⑨ **验证**：`pytest` **596 passed / 2 skipped**（基线 550/2）；`node --check` **exit 0**。⑩ **状态**：**DG-07B = IMPLEMENTED / WAITING REVIEW**；**DG-07 整体仍 `IMPLEMENTATION PENDING`**（DG-07C/D 未开始）；**Data Gate 仍保持 Reopened**（⛔ 未 CLOSED）；**G11 仍不写 resolved**。⑪ ⛔ **未修改** `schemas/` / `docs/interfaces/{planner,integration}.md` / Planner 实现 / Integration 实现 / API / `main.py` / `frontend/` / `mock_data/`；**Builder 实际 SYSU 请求数 = 0**。 |
 
 ---
 
@@ -1390,10 +1406,12 @@ cd frontend && npm run build         →  成功（含 vue-tsc --noEmit 类型�
 
 > **状态：`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**
 > （**2026-10-01 由项目负责人批准**；裁决见 **§17.5.1**）
-> ✅ **已批准的是"方向 + 两条不变量必须同时成立"**，⛔ **不是**已实施：
-> 本轮**未修改** `schemas/`、`docs/interfaces/`、任何代码、任何测试。
-> ⛔ **IMPLEMENTATION PENDING**：实施须等**单独的 Implementation 任务书**，
-> 且完成回归与 Reviewer 验收后才允许登记 `DG-07 IMPLEMENTED` / 关闭 Data Gate（§12.3）。
+> ✅ 已批准的是"方向 + 两条不变量必须同时成立"；
+> ✅ **DG-07A（Contract Migration）已实施 / 已 merge**；
+> ✅ **DG-07B（Course Data 空 meetings 归一化）已实施 / 待 Reviewer**；
+> ⛔ **DG-07C（Planner safety）/ DG-07D（Frontend 展示）尚未开始**。
+> ⛔ **IMPLEMENTATION PENDING**：完成回归与 Reviewer 验收后才允许登记
+> `DG-07 IMPLEMENTED` / 关闭 Data Gate（§12.3）。
 
 ### 17.1 为什么 Data Gate 需要为这一项 Reopen
 
@@ -1806,8 +1824,9 @@ Course Data **应**（**实施阶段**落地）：
 ### 17.13 G11 状态（**不得升级为 resolved**）
 
 ```text
-contract migration implemented in DG-07A;
-downstream implementation pending;
+contract migration implemented;
+Course Data empty-meeting normalization implemented;
+Planner / Frontend downstream handling pending;
 school-side business cause still unknown
 ```
 
@@ -1817,11 +1836,17 @@ school-side business cause still unknown
   两条候选在官方 UI 中作为普通教学班行存在、时间区域空白且无状态文字；
 - ✅ **契约缺口候选已识别 → 契约处理方向已裁决**：**DG-07 =
   `APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**（§17.5.1）；
-- ✅ **契约迁移已实施**（**DG-07A**，待 Reviewer）：公共契约已允许
+- ✅ **契约迁移已实施**（**DG-07A**，已 merge）：公共契约已允许
   `meetings = []`（`minItems: 0`，`required` 不变），接口语义与契约级测试已同步；
-- ⏳ **downstream implementation pending**：Course Data 归一化（DG-07B）、
-  Planner safety（DG-07C）、Frontend / Mock（DG-07D）**尚未实施**，
+- ✅ **Course Data 空 meetings 归一化已实施**（**DG-07B**，待 Reviewer）：
+  **唯一**来源形态 = Raw row **没有** `teachingTimePlaceStr` key；
+  ⛔ 解析失败仍 fail closed，⛔ 缺排课信息的 row 不被跳过；
+- ⏳ **downstream handling pending**：Planner safety（DG-07C）、
+  Frontend / Mock（DG-07D）**尚未实施**，
   Data Gate **仍未回到 CLOSED**（§12.3 / §17.15）；
+- ⚠️ **支持保存 `meetings = []` ≠ 已经知道学校为什么没有 schedule**；
+  **仍不知道**：是否属于有效可选教学班、是否应最终被 Planner 选择、
+  **全学期缺失比例**；
 - ⛔ **school-side business cause still unknown**：**学校侧为什么为空仍未查明**；
   「契约处理方向已裁决」**≠**「学校业务原因已经查明」；
 - ⛔ **G11 仍不能写 resolved**；⛔ 也**不得**推断学校业务状态。
@@ -1854,12 +1879,15 @@ school-side business cause still unknown
    `backend/app/models/contracts.py`（`min_length=0`，生成 `minItems: 0`）、
    `frontend/src/types/contracts.ts` 注释同步、契约级测试迁移；
    ⚠️ **`mock_data/` 未迁移且本轮不需要迁移**（rollout gate 要求产品 Mock 保持 ≥1 段）；
-2. ⏳ **Course Data（DG-07B）未开始**：§17.12.1 fail-closed 不变量落地
+2. ✅ **Course Data（DG-07B）已实施（待 Reviewer）**：§17.12.1 fail-closed 不变量落地
    （**仅 `teachingTimePlaceStr` 属性不存在**可映射为 `[]`）；
+   `schedule_parser.py` / `pagination.py` / `captured_pages.py` / `snapshot.py` **0 diff**；
+   浏览器 Collector 同步（排课字段 absent 时保持 key absent）；
 3. ⏳ **Planner safety（DG-07C）未开始**：§17.9 不变量落地
    （`meetings = []` ≠ conflict-free，**含 `current_schedule` 一侧**）；
 4. ⏳ **Frontend / Mock（DG-07D）未开始**：展示支持 `meetings = []`（文案候选「排课信息暂缺」）；
-5. ⏳ **tests（随各阶段）**：DG-07B/C/D 的回归用例；
-   ✅ 契约级用例（含"`meetings: []` 必须失败"→"必须通过"的**翻转**）已在 DG-07A 完成。
+5. ⏳ **tests（随各阶段）**：DG-07C/D 的回归用例；
+   ✅ 契约级用例已在 DG-07A 完成（含"`meetings: []` 必须失败"→"必须通过"的**翻转**）；
+   ✅ Course Data 用例已在 DG-07B 完成（narrow path + absent/present 分流 + 不跳过 row）。
 
 ⛔ **在以上全部完成之前**：不得声称 `DG-07 IMPLEMENTED`、不得关闭 Data Gate。

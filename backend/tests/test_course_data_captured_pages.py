@@ -447,6 +447,87 @@ def test_parser_failure_fails_whole_bundle() -> None:
         collect_captured_pages_snapshot(bundle, source=SOURCE)
 
 
+# ---------------------------------------------------------------------------
+# DG-07B：Capture Bundle 中"属性不存在"的 row 也必须是合法输入
+# ---------------------------------------------------------------------------
+
+
+def _row_without_schedule_key(class_number: str) -> dict[str, object]:
+    """人工虚构（**test-only**）：完全不含 `teachingTimePlaceStr` key 的 Capture row。"""
+
+    row = _row(class_number)
+    del row["teachingTimePlaceStr"]
+    assert "teachingTimePlaceStr" not in row
+    return row
+
+
+def test_bundle_with_missing_schedule_key_yields_empty_meetings() -> None:
+    """row 完全没有该 key → Capture Bridge → Pagination Core → Importer → `meetings == []`。
+
+    ⛔ 不使用任何真实 Capture Bundle；row 数量不减少；completeness 仍按 `total` 正常判定。
+    """
+
+    bundle = _bundle(
+        [
+            (
+                1,
+                _response(
+                    [
+                        _row("6200100120260101"),
+                        _row_without_schedule_key("6200100120260102"),
+                    ],
+                    total=2,
+                ),
+            )
+        ]
+    )
+
+    snapshot = collect_captured_pages_snapshot(bundle, source=SOURCE)
+
+    assert snapshot.loaded_count == 2
+    assert snapshot.reported_total == 2
+    assert snapshot.completeness == "complete"
+    assert [item.meetings for item in snapshot.offerings][1] == []
+    assert [item.data_source for item in snapshot.offerings][1] is DataSource.REAL
+
+
+def test_bundle_missing_schedule_row_is_not_dropped_across_pages() -> None:
+    """跨页仍不丢 row：`partial` 判定与 row 顺序都不受"缺排课信息"影响。"""
+
+    bundle = _bundle(
+        [
+            (1, _response([_row_without_schedule_key("6200100120260101")], total=3)),
+            (2, _response([_row("6200100120260102")], total=3)),
+        ]
+    )
+
+    snapshot = collect_captured_pages_snapshot(bundle, source=SOURCE)
+
+    assert snapshot.loaded_count == 2
+    assert snapshot.completeness == "partial"
+    assert [item.class_id for item in snapshot.offerings] == [
+        "6200100120260101",
+        "6200100120260102",
+    ]
+    assert snapshot.offerings[0].meetings == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, "", "   ", 42, {"a": 1}, "不是合法格式"],
+    ids=["null", "empty-string", "blank-string", "number", "object", "malformed"],
+)
+def test_bundle_present_but_unusable_schedule_key_fails(value: object) -> None:
+    """⛔ key **存在**但不可用 → 仍整体失败（不得变成空 meetings）。"""
+
+    bundle = _bundle(
+        [(1, _response([_row("6200100120260101", teachingTimePlaceStr=value)], total=1))]
+    )
+
+    with pytest.raises(CourseDataNormalizationError):
+        collect_captured_pages_snapshot(bundle, source=SOURCE)
+
+
 def test_duplicate_class_across_pages_fails() -> None:
     bundle = _bundle(
         [
