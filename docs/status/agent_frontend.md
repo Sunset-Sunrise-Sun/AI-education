@@ -304,15 +304,14 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   **`remaining_capacity` 是 `limitNumber - selectedNumber` 的派生值**，不是接口直接给的；
 - **证据边界（实现能力不得超过真实证据）**：`score` **只接受字符串数字**
   （⛔ 数值型 `3` / `3.0` 尚无真实来源证据，当前拒绝）；
-  周次**必须满足「结束 > 开始」**（⛔ 退化区间如 `3-3周` 未确认，当前拒绝）；
+  **周次当前仅接受已经观察到的两个具体取值：`1-17周` / `1-17单周`**；
+  **其它范围即使形状相似、即使满足 `start < end`，也暂时拒绝**
+  （`3-4周`、`3-15单周`、`3-3周`、`2-18周` 等均拒绝；双周 / 组合 / 单个周次号同样拒绝）；
   `selectedNumber` 是 **narrow normalizer 基于已观察 D5 字段**要求的必要字段，
   **不代表"SYSU 所有记录必然都有它"** —— 若后续真实脱敏样本出现缺失，再据实调整内部实现；
 - ⛔ **不映射**内部 ID（`courseId` ≠ `course_id`、`class_ID` ≠ `class_id`）与全部暂缓字段；
 - ⛔ **不做** `weekDay → weekday`、`openingSchoolName → campus`（C11 待确认）；
 - ⛔ **不解析 `teachingTimePlaceStr`**（缺真实脱敏 Raw string，不猜分隔符）；`meetings` 只能由已解析的 `Meeting` 传入；
-- 周次：Phase 2B-2A **只接受已经观察到的两个具体取值** —— `1-17周` / `1-17单周`
-  （**精确匹配，不做形状泛化**）；`3-4周`、`3-15单周`、`3-3周` 等**形状相似但未被观察过**的区间
-  同样拒绝；其余形式（双周 / 组合 / 单个周次号）一律拒绝；
 - completeness 落代码：`complete` 必须 `reported_total == loaded_count`，
   否则不能声称完整快照（C9）；重复 `(semester, course_id, class_id)` 即失败；
 - `SnapshotCourseDataProvider` **结构上满足**已冻结的 `CourseDataProvider`（不继承、不修改），
