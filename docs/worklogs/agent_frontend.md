@@ -380,3 +380,42 @@
   3. Case A 转专业时点适用哪一版学籍管理规定。
 - 下一步：等待 Reviewer 验收 **2B-0B+**。通过后进入 **Phase 2B-0C：已修课程最小脱敏样本**。
   **不 merge，不进入 2B-0C / 2B-0D**，Phase 2B Integration 保持暂停编码。
+
+---
+
+### 2026-09-30 - Phase 2B-0B+ Reviewer 修复：文档表述与 recommended_semester 映射（docs-only）
+- 本次目标：只修 Reviewer 指出的 3 个文档 blocker + 1 处措辞收严。
+  **不进入 2B-0C，不碰 D4 / D5，不改任何代码 / Schema / Interface / 附件。**
+- 已完成：
+  1. **`DATA_SOURCE_REGISTRY.md` 顶部状态修正**：删除"只登记公开来源"的表述；
+     改为**已同时登记 `Public Official` 与 `Authenticated Official` 两类来源**；
+     并明确**已取得两份认证来源培养方案副本，但原始 docx 仅由负责人受控保存、不进入 public Git**。
+  2. **`docs/status/agent_frontend.md` 修正**：删除"D2 / D3 的公开来源缺口已解决"的说法，改为
+     "**D2 / D3 的总体证据缺口已由认证来源补齐；公开官网仍未找到对应的 2025 级正式培养方案，
+     Public Not Found 历史继续保留**"；同步改写本节顶部的 ⚠️ 提示。
+  3. **`REAL_TO_SCHEMA_GAP_REPORT.md` 的 `recommended_semester` 映射修正**（拆成两行，分别判定）：
+     - **单一学期值**（如 `2025-1`）：**B 可转换后映射**，前提是按 **2025 级培养进程**转换为
+       **整数序号**，**具体规则仍待确认**；
+     - **跨学期区间**（如 `2025-1~2025-2`、`2025-1~2028-2`）：**C 当前无法无损表示** ——
+       `recommended_semester` 只能存**单个 integer**，装不下"跨若干学期"的语义；
+     - **不设计新字段、不修改 Schema。**
+  4. **先修关系措辞收严**（`REAL_TO_SCHEMA_GAP_REPORT.md`、`SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md`
+     及 `DATA_SOURCE_REGISTRY.md` 的相应备注）：把"两份材料均无先修信息"改为
+     "**本次可检索文本中未发现明确的先修 / 前置课程字段或条款**"，
+     并显式写明"**这只是对本次材料的观察，不构成对学校制度的结论**"。
+     同时把小节标题由"附件中没有的信息"改为"**本次材料中未检索到的信息**"。
+- **对本文件历史条目的勘误说明**（因本文件只追加、不改写历史）：
+  上一条 2B-0B+ 记录中"两份材料**均不含**：先修关系…"的表述**过宽**，
+  应理解为"**本次可检索文本中未发现明确的先修 / 前置课程字段或条款**"，
+  **不构成对中山大学先修制度的有无判断**。以本条为准。
+- 修改文件：
+  - `docs/data/DATA_SOURCE_REGISTRY.md`
+  - `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - `docs/data/SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md`
+  - `docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：docs-only，未改动任何代码，未复跑前后端
+- 使用数据：Mock（业务数据）+ 认证来源的结构化事实（原始文件不入库）
+- 公共接口是否变化：否 ｜ 是否修改 backend / frontend / mock_data：否
+- 未做：未改 Schema / Interface / 附件；未进入 2B-0C / 2B-0D；未 merge
+- 下一步：等待 Reviewer 复验。**不 merge，不进入 2B-0C**，Phase 2B Integration 保持暂停编码。
