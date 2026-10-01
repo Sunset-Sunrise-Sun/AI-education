@@ -529,8 +529,9 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   原缺口（一个教学班无法表达多个时间段）**已消除**，历史记录保留在缺口报告 §4.5 / §4.6
 - ~~**DG-01 – DG-06 尚未实施**~~ ✅ **DG-01 与 DG-06 均已实施**；其余四项按裁决不产生契约变更
 - ~~**上游 Curriculum / Course Data / Planner 均未产出真实结果**~~ →
-  **Course Data 已完成本地标准化内核、`teachingTimePlaceStr` parser、本地 import adapter 与快照落点**
-  （Phase 2B-2A / 2B-2B，**零网络**），但**真实数据仍未取得**；
+  **Course Data 已完成本地标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、快照落点
+  与零网络分页采集核心**（Phase 2B-2A / 2B-2B / 2B-2C0，**零网络**），
+  但**完整真实 semester snapshot 尚未取得，真实数据尚未进入产品链路**；
   Curriculum / Planner 仍未产出真实结果，前端只能展示 Mock
 - ~~集成骨架尚未建立~~ ✅ **Provider 边界与 Orchestrator skeleton 已完成**（Phase 2B-1）；
   ⚠️ 但 **production Curriculum / Planner provider 尚未接入**；
