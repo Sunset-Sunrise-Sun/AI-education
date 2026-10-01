@@ -685,3 +685,65 @@
 - **实际 SYSU 请求数：0**。
 - 下一步：等待 Reviewer 复核本修复。⚠️ **不 merge，不自行开始下一阶段**。
 
+### 2026-10-01 - Phase 2B-2C1C：Real Correlation Evidence Sync（docs-only）
+- 本次目标：把**负责人本人已经手动取得**的 C1C 真实聚合结果**回填到文档**
+  （证据 / 状态 / worklog）。⛔ **本轮不写诊断代码、不改 Schema / Interface、
+  不改 Python 数据链路、不改 `collect()`、不新增诊断函数、不发起任何真实请求**。
+- 起点：`main` = `e3686bbee5c8638c54f1edcc946e0315870ddf52`；
+  新建 `docs/course-data-c1c-real-correlation-evidence`（**base 已核对一致**）。
+- **真实请求由负责人本人显式执行**：在本人已登录、已有权限的
+  「**全校开设课程**」模块页面显式调用
+  `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`（**只请求第 1 页一次**）；
+  **Builder 本轮实际 SYSU 请求数 = 0**（本轮只是**文档回填**）。
+- **来源登记**：继续复用 **`OFFERING-002`**，**未创建新的 `source_id`** ——
+  仍是同一学期（**2026-1**）/ 同一模块 / **同一第 1 页** / 同一 `pageSize = 200` /
+  同一 `reported_total = 6892`。
+- **回填的真实 C1C 结果**（`docs/data/DATA_SOURCE_REGISTRY.md` §4.1、
+  `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` §4.7.1）：
+  - `total_rows = 200`；五桶 = `missing 39` / `null 0` / `empty_string 0` /
+    `non_empty_string 161` / `other_type 0`；`compared_rows = 200`、`ungrouped_rows = 0`；
+  - **A 类（只登记存在性 / 类型计数）**：`missing` 组 `timePlaceId` = `missing 38` /
+    `non_empty_string 1`，`limitNumber` / `selectedNumber` = `number 39`；
+    `non_empty_string` 组三字段 = `non_empty_string 161` / `number 161` / `number 161`；
+  - **B 类（只登记聚合分布，⛔ 不登记真实取值 / 分类名 / 单位名）**：
+    `weekDay` 两组 `missing 38` vs `12`（present 组 `distinct_count 49`、suppressed）；
+    `openClass` 两组**实际取值完全一致** → 该字段**不能区分两组**；
+    `teachProgressSubmitState` 两组**共享同一组 2 个分类**（38/1 vs 143/18）；
+    `courseCategoryName` `missing` 组 3 个分类（12/2/25）**全部出现在** present 组
+    （后者 5 个分类：68/19/68/3/3）；`examMode` 两组**共享同一组 2 个分类**（32/7 vs 110/51）；
+    `openingUnitName` **只登记 `distinct_count`**（11 vs 27）。
+- **G11 口径（本轮更新）**：
+  - **可以写**：39 条缺 `teachingTimePlaceStr` 的记录**并非整条记录普遍残缺**
+    （`limitNumber` / `selectedNumber` 在 39 条中均为数值型且完整存在）；
+    **结构差异集中在排课相关字段**（`timePlaceId` 38/39 缺失 vs 161/161 存在；
+    `weekDay` 38/39 缺失 vs 12/161 缺失）；`openClass` 不能区分两组；
+    `teachProgressSubmitState` / `examMode` / `courseCategoryName`
+    **均未发现只属于 `missing` 组的独占分类**；
+    但仍**不能据此确认业务类型或 Planner 适用性**；
+  - **⛔ 不得写**："38 条**同时**缺 `weekDay` 和 `timePlaceId`"（**只有边际计数、
+    无逐 row 交叉证据**）；也不得写"未排课教学班 / 无排课课程 / 时间待定 /
+    暂未安排时间 / 异步课程 / 无需排课 / 无教室 / 异常数据 / 无效教学班 / 应过滤 /
+    应进入 Planner / 不应进入 Planner"；
+  - **⛔ 不声称 G11 resolved**：统一写
+    **"G11 structural evidence substantially narrowed — business semantics still unresolved"**。
+- **STATUS 同步**：`course_data.md` 阶段状态标为「代码已完成 / Reviewer 已批准并 merge /
+  **已由负责人真实运行** / **真实聚合结果已回填**」，**当前 blocker 改为
+  「G11 业务语义确认」**（下一步进入**业务语义确认**，**而不是继续扩大结构诊断**）；
+  `agent_frontend.md` 只同步"浏览器诊断已真实执行完成"，人工下一步改为
+  **Phase 2B-2C1D — G11 Business Semantics Verification**，且**只写"待 Architecture Lead
+  下达人工验证步骤"，不自行设计或实施 C1D**。
+- 修改文件（**仅 6 个 docs 文件**）：
+  - `docs/data/DATA_SOURCE_REGISTRY.md`、`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - `docs/worklogs/course_data.md`、`docs/worklogs/agent_frontend.md`（**仅追加**）
+- ⛔ **未修改** 代码 / 测试 / `schemas/` / `docs/interfaces/` / Python Course Data 链路 /
+  `collect()`；⛔ **未新增任何诊断函数**；⛔ **未生成真实 Capture Bundle**；
+  ⛔ **不登记任何 Raw row / 课程与教学班标识 / 教师 / 教室 / 内部 ID / 真实 categorical 取值**。
+- 回归（仅确认无副作用，**未为本轮修改任何测试**）：
+  `cd backend && python -m pytest` → **539 passed / 2 skipped**；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**。
+- 使用数据：**Mock / 人工虚构**（文档登记的是**汇总事实**）。
+- **Builder 实际 SYSU 请求数：0**。
+- 下一步：**Phase 2B-2C1D — G11 Business Semantics Verification**
+  （**待 Architecture Lead 下达人工验证步骤**）。⚠️ **不 merge，不自行开始下一阶段**。
+

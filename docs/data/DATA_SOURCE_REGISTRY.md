@@ -105,7 +105,7 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 | **`CURR-NEW-004`** | D3 | **Authenticated Official** | 中山大学本科教务系统 | **25级 网络空间安全 本科培养方案** | **Confirmed** | **本轮新增**；原始 docx 不入库 |
 | **`TRANSCRIPT-001`** | D4 | **Authenticated Official** | 中山大学本科教务系统 | **已完成课程记录（已修课程）脱敏样本** | **Confirmed** | **本轮登记**；Raw 与逐行 Sanitized **均不入库** |
 | **`OFFERING-001`** | D5 | **Authenticated Official** | 中山大学本科教务系统 | **课程开设 / 教学班真实样本（小规模人工侦察）** | **Confirmed** | 已登记；Raw 响应**不入库** |
-| **`OFFERING-002`** | D5 | **Authenticated Official** | 中山大学本科教务系统 | **「全校开设课程」独立模块第 1 页真实结构 smoke** | **Confirmed** | 已登记；含**第 1 页聚合计数**（`missing 39` / `non_empty_string 161`，其余 0；**仅第 1 页**），**无 Raw row** |
+| **`OFFERING-002`** | D5 | **Authenticated Official** | 中山大学本科教务系统 | **「全校开设课程」独立模块第 1 页真实结构 smoke** | **Confirmed** | 已登记；含**第 1 页聚合计数**（`missing 39` / `non_empty_string 161`，其余 0；**仅第 1 页**）与 **C1C 相关性聚合结果**（两组字段分布，无真实取值），**无 Raw row** |
 
 ---
 
@@ -381,20 +381,57 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 - **已确认的观察形态**：第 1 页中该字段**只出现两种实际形态**
   （`missing = 39` 与 `non_empty_string = 161`），`null` / `empty_string` / `other_type` 均为 0；
   这说明"缺字段"在第 1 页样本中**不是单条孤立现象**；但其**业务含义仍未确认**。
+- **C1C 相关性诊断的真实聚合结果**（Phase 2B-2C1C；由**负责人手动执行**
+  `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`，只请求第 1 页一次）：
+  - 同一 source_id / 同一学期 / 同一模块 / **同一第 1 页** / 同一 `pageSize = 200` /
+    同一 `reported_total = 6892`；
+  - `total_rows = 200`；`schedule_presence` 五桶 = `missing 39` / `null 0` /
+    `empty_string 0` / `non_empty_string 161` / `other_type 0`；
+    `compared_rows = 200`、`ungrouped_rows = 0`（两组已覆盖第 1 页全部 row）；
+  - **A 类（structural-only，只登记存在性 / 类型计数）**：
+    - `missing` 组（39 条）：`timePlaceId` = `missing 38` / `non_empty_string 1`（其余 0）；
+      `limitNumber` = `number 39`（其余 0）；`selectedNumber` = `number 39`（其余 0）；
+    - `non_empty_string` 组（161 条）：`timePlaceId` = `non_empty_string 161`（其余 0）；
+      `limitNumber` = `number 161`；`selectedNumber` = `number 161`；
+  - **B 类（categorical，只登记聚合分布，⛔ 不登记真实取值）**：
+    - `weekDay`：`missing` 组 `missing 38` / `scalar_count 1` / `distinct_count 1`；
+      `non_empty_string` 组 `missing 12` / `scalar_count 149` / `distinct_count 49` /
+      `values_suppressed = true`；
+    - `openClass`：**两组实际取值完全一致**（`missing` 组同一取值 × 39；
+      `non_empty_string` 组同一取值 × 161）→ **该字段不能区分两组**；⛔ 不登记该取值；
+    - `teachProgressSubmitState`：两组**共享同一组 2 个分类值**（`missing` 组 38 / 1；
+      `non_empty_string` 组 143 / 18）→ 分布不同，但**没有只属于 `missing` 组的独占分类**；
+      ⛔ 不登记真实取值；
+    - `courseCategoryName`：`missing` 组 `distinct_count 3`（计数 12 / 2 / 25）；
+      `non_empty_string` 组 `distinct_count 5`（计数 68 / 19 / 68 / 3 / 3）；
+      **`missing` 组的 3 个分类均出现在 `non_empty_string` 组**，后者另有 2 个额外分类；
+      ⛔ 不登记真实分类名；
+    - `examMode`：两组**共享同一组 2 个分类值**（`missing` 组 32 / 7；
+      `non_empty_string` 组 110 / 51）→ 分类集合相同，仅分布不同；⛔ 不登记真实取值；
+    - `openingUnitName`：**只登记 distinct 数量**（`missing` 组 `distinct_count 11`、
+      `values_suppressed = false`；`non_empty_string` 组 `distinct_count 27`、
+      `values_suppressed = true`）；⛔ **不登记任何单位 / 学院名称**。
+  - ⚠️ **只能按"边际计数"解读，不得交叉推断**：目前**没有逐 row 交叉证据**，
+    ⛔ **不得**写成"39 条中的 38 条**同时**缺 `weekDay` 和 `timePlaceId`"，
+    也不得声称两处缺失是**同一批 row**。
+  - ⚠️ 上述结果**只是结构层取证**：⛔ **不推断业务含义**、⛔ **不解决 G11**、
+    ⛔ **不预设**任何公共契约修改。
 - **证据等级：Confirmed**
-- 已获取数据的层级：**结构事实（字段存在性 / 形态 / 第 1 页聚合计数）**；**不含任何 Raw row**
+- 已获取数据的层级：**结构事实（字段存在性 / 形态 / 第 1 页聚合计数与聚合分布）**；**不含任何 Raw row**
 - **必须注明的约束**：
   1. **不登记 Raw row**；
   2. **不登记课程 / 教学班信息、教师、教室、内部 ID、`readObj`**；
   3. **Cookie / Session / Token、完整 Request Headers、HAR 均不得进入 Git**；
-  4. 缺失字段的**业务含义未确认**（不得据此写成"缺排课 / 未排课课程 / 异步课程 / 暂无教室"）。
+  4. **不登记任何真实 categorical 取值 / 分类名 / 单位名**（只登记计数与 distinct 数量）；
+  5. 缺失字段的**业务含义未确认**（不得据此写成"缺排课 / 未排课课程 / 异步课程 / 暂无教室"）。
 - 备注：用于把 **G11**（部分真实 `CourseOffering` row 缺少 `teachingTimePlaceStr`）
   登记为**有真实来源**的待调查项；详见 `REAL_TO_SCHEMA_GAP_REPORT.md` §4.7 与
   `docs/status/course_data.md`。取证工具为 `tools/sysu_course_offering_collector.js` 的
   `diagnoseSchedulePresence({ semester })`（**只请求第 1 页一次**，只返回聚合计数）；
   Phase 2B-2C1C 追加了**同源同页**的相关性诊断入口
   `diagnoseMissingScheduleCorrelation({ semester })`（同样只请求第 1 页一次，
-  只返回聚合结构对照）。**两个诊断均由负责人手动执行，Builder 不发起任何真实请求。**
+  只返回聚合结构对照）。**两个诊断均由负责人手动执行，Builder 不发起任何真实请求
+  （本轮 Builder 实际请求数 = 0）。**
 
 ---
 
@@ -426,9 +463,10 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 已获取数据文件：0 进入仓库
   （公开来源未下载；认证来源的原始 docx、D4 逐行样本、D5 Raw response / Capture Bundle 均由负责人保管，**均不入库**）
 含个人信息的已入库数据：0（且必须永远保持为 0）
-最近更新：2026-10-01（**Phase 2B-2C1C**：`OFFERING-002` 补录**第 1 页真实聚合计数**
-          （`missing 39` / `non_empty_string 161`，其余形态 0；39/200 仅限第 1 页样本）；
-          **仍只登记汇总事实：无 Raw row，Raw 响应 / Capture Bundle 不入库**）
+最近更新：2026-10-01（**Phase 2B-2C1C 真实证据同步**：`OFFERING-002` 补录**第 1 页真实聚合计数**
+          与 **C1C 相关性聚合结果**（`missing 39` / `non_empty_string 161`，其余形态 0；
+           两组字段聚合分布；39/200 仅限第 1 页样本）；**未创建新 `source_id`**；
+           **仍只登记汇总事实：无 Raw row、无真实 categorical 取值，Raw 响应 / Capture Bundle 不入库**）
 ```
 
 ---
@@ -446,3 +484,4 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 | 2026-09-30 | **Phase 2B-0D 登记（D5）** | **登记 `OFFERING-001`**（课程开设 / 教学班真实样本，**Authenticated Official**，证据等级 **Confirmed**）：范围 **2026-1**、**小规模人工侦察**（单一课程）；只登记**结构化证据**（字段名 + 语义 + 映射结论 + 汇总事实）；**Raw response / Cookie / Session / Token / 完整 Request Headers / HAR 均不入库**；不记录教师姓名、修读对象完整文本、内部长 ID 取值、完整逐行记录。据此把 **G7 升级为已验证**，并新增 **G9**（多 segment 结构缺口）与 **G10**（多个字段无表示） |
 | 2026-10-01 | **Phase 2B-2C1B 登记（D5 结构 smoke）** | **新增 `OFFERING-002`**（「全校开设课程」独立模块第 1 页真实结构 smoke，**Authenticated Official**，证据等级 **Confirmed**）：来源为负责人在**真正的「全校开设课程」独立模块**（与「选课」是**两个独立模块**）内显式触发的浏览器端采集器；**只登记汇总事实** —— same-origin 请求成功、第 1 页响应成功进入 Collector、**第 1 页至少发现 1 条 row 缺少 `teachingTimePlaceStr`**；**不登记任何 Raw row**（不含课程 / 教学班信息、教师、教室、内部 ID、`readObj`）；**Cookie / Session / Token / 完整 Request Headers / HAR / Capture Bundle 均不入库**；**缺失字段的业务含义未确认**。据此把 **G11** 登记为**有真实来源**的待调查项；**未修改** `schemas/` / `docs/interfaces/`；**Builder 未发起任何真实 SYSU 请求** |
 | 2026-10-01 | **Phase 2B-2C1C：`OFFERING-002` 补录第 1 页聚合证据** | 负责人**手动执行** `diagnoseSchedulePresence({ semester: "2026-1" })` 的真实聚合结果回填到 `OFFERING-002`：`reported_total = 6892`、第 1 页 `total_rows = 200`、`teachingTimePlaceStr` 五桶 = `missing 39` / `null 0` / `empty_string 0` / `non_empty_string 161` / `other_type 0`（第 1 页 **39/200 = 19.5%**）。⚠️ **明确限定：该比例只描述第 1 页 200 条样本，不代表 6892 条整体的比例，不得外推**。**不创建新 `source_id`**（同一数据源 / 同一学期 / 同一模块 / 同一页 / 同一取证目的）；**不登记任何 Raw row**、不登记逐行信息；同时新增**同源同页**的相关性诊断入口 `diagnoseMissingScheduleCorrelation({ semester })`（只请求第 1 页一次、只返回聚合结构对照）。**未修改** `schemas/` / `docs/interfaces/` / Python 数据链路；**Builder 未发起任何真实 SYSU 请求（请求数 = 0）** |
+| 2026-10-01 | **Phase 2B-2C1C 真实证据同步（docs-only）** | 负责人**手动执行** `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })` 的**真实 C1C 聚合结果**回填到**同一个 `OFFERING-002`**（**未创建新 `source_id`**；同一学期 / 同一「全校开设课程」模块 / 同一第 1 页 / 同一 `pageSize = 200` / 同一 `reported_total = 6892`）：`total_rows = 200`、五桶 = `missing 39` / 其余形态 0 + `non_empty_string 161`、`compared_rows = 200`、`ungrouped_rows = 0`；A 类字段**只登记存在性 / 类型计数**（`missing` 组 `timePlaceId` = `missing 38` / `non_empty_string 1`，`limitNumber` 与 `selectedNumber` 均为 `number 39`；`non_empty_string` 组三个字段分别为 `non_empty_string 161` / `number 161` / `number 161`）；B 类字段**只登记聚合分布、⛔ 不登记任何真实取值 / 分类名 / 单位名**（`weekDay` 两组 `missing 38` vs `12`；`openClass` 两组实际取值完全一致 → 不能区分两组；`teachProgressSubmitState` 与 `examMode` 两组共享同一分类集合、仅分布不同、**无 missing 组独占分类**；`courseCategoryName` 的 3 个分类**全部出现在** present 组、present 组另有 2 个；`openingUnitName` **只登记 `distinct_count`** 11 / 27）。⚠️ **只有边际计数，没有逐 row 交叉证据**：⛔ **不得**写成"38 条**同时**缺 `weekDay` 和 `timePlaceId`"。⛔ **不推断业务含义、不解决 G11、不预设契约修改**。**未修改** `schemas/` / `docs/interfaces/` / 代码 / 测试；**Builder 未发起任何真实 SYSU 请求（请求数 = 0）**，本轮**只做文档回填** |
