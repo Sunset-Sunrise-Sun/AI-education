@@ -1,14 +1,17 @@
 # 真实数据 → 公共 Schema 承载能力分析（框架）
 
-> **状态：分析框架 ＋ 三轮真实材料验证。**
+> **状态：分析框架 ＋ 四轮真实材料验证。**
 > Phase 2B-0B 取得部分公开官方材料（见 `SYSU_CASE_A_PUBLIC_EVIDENCE.md`）；
 > **Phase 2B-0B+ 取得 Case A 两份 2025 级真实培养方案（认证来源，见
 > `SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md`）** → **G1 升级为「由 Case A 两份
 > 2025 级真实培养方案确认存在」**（见 4.3），`Course` 字段映射按样本逐项判定 A/B/C（见 3.1）；
 > **Phase 2B-0C 取得 D4 真实已修课程脱敏样本（见 `SYSU_CASE_A_COMPLETED_COURSES_EVIDENCE.md`）**
-> → **G2 更新为「已由 Case A 真实 D4 样本验证」**（见 4.4），
-> 且 D4 的 8 个字段已逐项判定 A/B/C（见 3.6）；
-> 其余观察（G3 / G4 / G5 / G7 / G8）**仍未验证**，保持「待验证」。
+> → **G2 更新为「已由 Case A 真实 D4 样本验证」**（见 4.4），D4 的 8 个字段逐项判定 A/B/C（见 3.6）；
+> **Phase 2B-0D 取得 D5 真实教学班侦察样本（见 `SYSU_COURSE_OFFERING_RECON.md`）**
+> → **G7 升级为「已由真实 D5 样本验证」**（见 4.5），
+> **新增 G9**（一个教学班多个上课时间 / 地点 segment 无法无损表达）与
+> **G10**（D5 另有多个字段无表示）；`CourseOffering` 字段映射逐项判定 A/B/C（见 3.2）；
+> 其余观察（G3 / G4 / G5 / G8）**仍未验证**，保持「待验证」。
 >
 > ## 红线（本文件最重要的两条）
 >
@@ -105,9 +108,24 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 `weekday` · `start_section` · `end_section` · `weeks[]` · `campus?` · `classroom?` ·
 `capacity?` · `remaining_capacity?` · `source?` · `data_source`（全部必填项见 Schema）
 
-| 真实字段（待填写） | 映射结论 A/B/C | 目标 Schema 字段 | 潜在缺口（只描述缺什么） | 影响模块 | 样本出处 | 备注 |
+| 真实 D5 字段 | 映射结论 A/B/C | 目标 Schema 字段 | 潜在缺口（只描述缺什么） | 影响模块 | 样本出处 | 备注 |
 |---|---|---|---|---|---|---|
-| 待填写 | 待填写 | 待填写 | 待填写 | Course Data / Planner | 待填写 | |
+| `courseNum`（课程号） | **A 可直接映射** | `course_id` | —— | Course Data / Planner | `OFFERING-001` | 公共标识优先采用它，而非后台 `courseId` |
+| `courseName`（课程名称） | **A 可直接映射** | `course_name` | —— | 同上 | 同上 | —— |
+| `classNumber`（教学班号） | **A 可直接映射** | `class_id` | —— | 同上 | 同上 | 优先采用它，而非后台 `class_ID` |
+| `yearTerm`（学年-学期） | **A 可直接映射** | `semester` | —— | 同上 | 同上 | —— |
+| `score`（学分，**字符串数字**） | **B 可转换后映射** | `credit` | 需字符串 → number 转换 | 同上 | 同上 | —— |
+| `teachingName`（授课教师） | **A/B** | `teacher` | 语义可对应；**教师姓名不入库** | 同上 | 同上 | —— |
+| `limitNumber`（容量上限） | **A 可直接映射** | `capacity` | —— | 同上 | 同上 | —— |
+| `selectedNumber`（已选人数） | **C 当前无直接字段** | —— | `CourseOffering` 没有"已选人数"字段 | 同上 | 同上 | 见 G10 |
+| `limitNumber - selectedNumber`（剩余容量） | **B 派生值** | `remaining_capacity` | **必须有明确说明：学校接口并未直接提供 `remaining_capacity`，它是两个字段相减得到的派生值** | 同上 | 同上 | **不得声称接口直接提供该字段** |
+| `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` | **C 当前无正式表示（结构层面）** | —— | 真实接口用 `teachingTimePlaceStr` 等文本承载上课时间地点，**需结构化解析**；且**一个教学班可含多个 segment**，当前只能表达一组 —— **无法无损表达**，见 **G9** | 同上 | 同上 | **本轮不实现 parser** |
+| `openingUnitName`（开课单位） | **C 当前无正式表示** | —— | `CourseOffering` 无"开课单位"字段 | 同上 | 同上 | 见 **G7**（本轮升级）与 G10 |
+| `courseCategoryName`（课程类别） | **C 当前无正式表示** | —— | 无对应字段；⚠️ **且带培养方案 / 上下文语义**（与 D4 的 `course_type` 同源问题），**不得认定为课程全局固有属性** | 同上 | 同上 | 见 G10 |
+| `examMode`（考核方式） | **C 当前无正式表示** | —— | 无对应字段 | 同上 | 同上 | 见 G10 |
+| `readObj`（修读对象） | **C 当前无正式表示** | —— | 无对应字段；**完整文本不入库** | 同上 | 同上 | 见 G10 |
+| `teachProgressSubmitState` / `openClass` | **C 当前无正式表示** | —— | 无对应字段；**业务语义待确认** | 同上 | 同上 | **不根据 0/1 自行解释** |
+| 内部 ID / 计数：`class_ID`、`sumClassesID`、`sumClassesNum`、`courseId`、`outLineId`、`outlineTypeNum`、`timePlaceId` | **不映射** | —— | **不等于**公共 `course_id` / `class_id`；**只记录其存在**，本轮**不设计对应字段**，**不记录其值** | 同上 | 同上 | —— |
 
 ### 3.3 `makeup_task.schema.json`（MakeupTask）
 
@@ -188,8 +206,10 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | G4 | **"当前课表"当前没有明确的跨模块公共 Schema / 正式表示**：`docs/interfaces/planner.md` 把"当前课表"列为 Planner 的输入，但 `/schemas/` 下没有对应文件；`CourseOffering` 表示"学校开设什么"，不等于"学生已选什么" | `docs/interfaces/planner.md` 对外输入 | Planner | 待验证 |
 | G5 | **`PlanResult` 没有冲突对象**：冲突只能从 `changes[].reason` 的文本读出，无法计数或分类 | `plan_result.schema.json` 字段清单 | Planner / Agent | 待验证 |
 | G6 | **`StudentProfile`：`AGENTS.md` 第 4 节列出了该名称，但 `/schemas/` 下没有对应文件** | `AGENTS.md` 第 4 节 vs `/schemas/` 目录 | 全部 | **已裁决（见 4.1）** |
-| G7 | **`CourseOffering` 没有课程类别 / 开课学院**：`course_type` 只存在于 `Course`，教学班级别没有 | 两个 Schema 字段对比 | Course Data / Planner | 待验证 |
+| G7 | **`CourseOffering` 没有课程类别 / 开课单位**：`course_type` 只存在于 `Course`，教学班级别没有；`CourseOffering` 也没有"开课单位"字段 | 两个 Schema 字段对比 ＋ **真实 D5 样本 `OFFERING-001`**（出现 `courseCategoryName` 与 `openingUnitName`） | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5） |
 | G8 | **`Preference` 无法表达"已经有什么"**：偏好只表达"想要什么"，不表达已修学分 / 已修课程 | `preference.schema.json` 字段清单 | Agent / Planner | 待验证 |
+| **G9** | **一个教学班可以拥有多个独立的上课时间 / 地点 segment，当前 `CourseOffering` 无法在一个对象中无损表达**：真实接口中 `CSE202` 的**每个教学班都有多个 schedule segment**（例如"1-17周 星期一 第 3-4 节 某教室" ＋ "1-17单周 星期三 第 5-6 节 某教室"），而 `CourseOffering` 只有一组 `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。**未设计 `meetings[]`、未修改 Schema、未拆成多个可独立选择的 `CourseOffering`**；最终表示方式**留给 Data Gate** |
+| **G10** | **D5 还有多个真实字段在现有 `CourseOffering` 中没有任何表示**：`selectedNumber`（已选人数）、`openingUnitName`（开课单位）、`courseCategoryName`（课程类别）、`examMode`（考核方式）、`readObj`（修读对象）、`teachProgressSubmitState` / `openClass`（**业务语义待确认**） | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。**只登记、不设计字段**；`teachProgressSubmitState` / `openClass` **不根据 0/1 值自行解释** |
 
 > 对 G1 / G2 / G4 的补充说明：这三条说的是"**当前没有明确的跨模块公共 Schema / 正式表示**"，
 > 而**不是**"一定要新增公共 Schema"。
@@ -270,6 +290,41 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 
 ---
 
+### 4.5 D5 的真实数据验证（Phase 2B-0D，依据教学班侦察样本）
+
+**验证结论：G7 / G9 / G10 已由真实 D5 样本验证**（详见 `SYSU_COURSE_OFFERING_RECON.md`）。
+
+**样本范围**：单一课程、单一学期的**小规模人工侦察** —— `CSE202` 在 `2026-1` 返回
+**2 个真实教学班**；**不含** Raw JSON、教师姓名、内部长 ID 取值、完整逐行记录。
+
+| 观察 | 真实材料证据 | 验证到什么程度 |
+|---|---|---|
+| 课程 / 教学班 / 学期标识可直接对应公共字段 | `OFFERING-001` | `courseNum → course_id`、`courseName → course_name`、`classNumber → class_id`、`yearTerm → semester` 均为 **A**；**后台 `courseId` / `class_ID` 不等于**公共标识 |
+| `score`（学分）是**字符串数字** | `OFFERING-001` | `credit` 需做字符串 → number 转换（**B**） |
+| **`remaining_capacity` 不是接口直接提供的** | `OFFERING-001` | 它由 `limitNumber - selectedNumber` **派生**（**B**）。**不得声称学校接口直接提供剩余容量** |
+| **一个教学班可有多个上课时间 / 地点 segment** | `OFFERING-001`：`CSE202` 的每个教学班都有多个 segment | **G9 成立**：当前 `CourseOffering` **无法在一个对象中无损表达** |
+| `openingUnitName` / `courseCategoryName` 真实存在 | `OFFERING-001` | **G7 升级为「已由真实 D5 样本验证」** |
+| 另有多个字段在现有 Schema 中无表示 | `OFFERING-001` | **G10 成立**：`selectedNumber` / `openingUnitName` / `courseCategoryName` / `examMode` / `readObj` / `teachProgressSubmitState` / `openClass` |
+
+**⚠️ `courseCategoryName` 的语义警告**：样本中出现"**专必**"。
+它与 D4 的 `course_type` 属**同一类问题** —— **带培养方案 / 上下文语义**，
+**不得**自动认定为课程的**全局固有属性**（参见 §3.6 的归属分类）。
+
+**⚠️ 语义待确认字段**：`teachProgressSubmitState`、`openClass`、`outlineTypeNum` ——
+**字段存在，业务语义待确认**，**不根据 0/1 值自行解释**。
+
+**本轮明确不做**：
+
+- **不修改 Schema**、**不新增 `meetings[]`**、**不新增任何字段**；
+- **不实现正式 parser**（周次转换只做**结构记录**）；
+- **不把同一教学班拆成多个可独立选择的 `CourseOffering`**；
+- **不写** crawler、**不建**数据库、**不写** Course Data Adapter；
+- **不进入** Integration。
+
+**最终表示方式（多 segment 如何建模）留给 Data Gate。**
+
+---
+
 ## 5. 缺口处理流程
 
 ```text
@@ -312,3 +367,4 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | 2026-09-30 | **Phase 2B-0B+ 验证（认证来源）** | 依据 Case A 两份 **2025 级**真实培养方案（`CURR-OLD-003` / `CURR-NEW-004`，认证来源）：① **G1 升级为「已由 Case A 两份 2025 级真实培养方案确认存在」**（见 4.3）；② **§3.1 `Course` 字段映射按真实样本逐项判定 A/B/C**（A：课程号/课程名/学分；B：课程类别/推荐学期；C：学时、实验实践学时、培养方案总学分、实践教学学分、适用年级、专业、课程分组、英文名）；③ 记录**本次可检索文本中未发现**明确的先修 / 前置课程字段或条款（不构成对学校制度的结论）。**未设计新字段、未修改 Schema、未做课程等价判断** |
 | 2026-09-30 | **Phase 2B-0C 验证（D4 真实样本）** | 依据 `TRANSCRIPT-001`（D4，认证来源 + 负责人私密侧脱敏，24 条、8 字段 100% 覆盖）：① 新增 **§3.6**，把 `course_id` / `course_name` / `credit` / `course_type` / `semester` / `passed` / `offering_unit` / `cultivation_type` **逐项判定 A/B/C**；② 明确 **`semester` 不得映射到 `recommended_semester`**（实际修读学期 ≠ 培养方案建议学期）、**`passed` 不得塞入 `Course`**（学生修读事实 ≠ 课程固有属性）、**`cultivation_type` 不得当成 `course_type`**；③ **G2 更新为「已由 Case A 真实 D4 样本验证」**（见 4.4）。**只记录问题，未自行决定新增任何 Schema，未修改公共 Schema，未做课程等价判断** |
 | 2026-09-30 | **Reviewer 修复（`course_type` 归属 + 隐私口径）** | ① **修正 `course_type` 的语义归属**：由"课程固有属性"改为 **培养方案 / 上下文属性**，并明确"`Course.course_type` 能承载该字符串值"**不等于**"该字段归属已正确建模"。新的四类归属：**课程核心标识 / 基础属性**（`course_id` / `course_name` / `credit`）、**学生修读事实**（`semester` / `passed`）、**培养方案 / 上下文属性**（`course_type`）、**归属待确认**（`offering_unit` / `cultivation_type`）；§3.1 同步补注；② **收紧隐私口径**：不再记录 `passed` 的通过 / 未通过分布，只保留"覆盖率 24/24 + 类型 / 语义 = boolean"；`semester` 改为"覆盖两个学期"、`course_type` 只列取值种类不列数量；③ 明确 **G7 本轮不升级**（`offering_unit` 的存在**不能**证明教学班页面也提供该字段，须等 2B-0D） |
+| 2026-09-30 | **Phase 2B-0D 验证（D5 真实样本）** | 依据 `OFFERING-001`（D5，认证来源，**小规模人工侦察**；`CSE202` / `2026-1` 返回 **2 个真实教学班**）：① **§3.2 `CourseOffering` 字段映射逐项判定 A/B/C** —— A：`courseNum` / `courseName` / `classNumber` / `yearTerm` / `limitNumber`；B：`score` → `credit`（字符串数字转换）、`remaining_capacity` 为 `limitNumber - selectedNumber` 的**派生值**；C：`selectedNumber` / `openingUnitName` / `courseCategoryName` / `examMode` / `readObj` / `teachProgressSubmitState` / `openClass`；② **新增 G9**：一个教学班可有**多个上课时间 / 地点 segment**，当前 `CourseOffering` **无法在一个对象中无损表达**；③ **新增 G10**：D5 另有多个真实字段在现有 Schema 中无表示；④ **G7 升级为「已由真实 D5 样本验证」**（2B-0C 预留的"须等 2B-0D"条件已满足）。**未修改 Schema、未新增 `meetings[]`、未实现 parser、未写 crawler / DB / Adapter、未进入 Integration**。⚠️ **不得声称学校接口直接提供 `remaining_capacity`**；⚠️ `courseCategoryName`（样本为"专必"）**带培养方案边界上下文，不得认定为课程全局固有属性** |

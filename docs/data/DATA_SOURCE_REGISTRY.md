@@ -104,7 +104,7 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 | `CURR-NEW-003` | D3 | Public Official | 中山大学网络空间安全学院 | 网络空间安全学院2025-2春季学期本科生课程表 | **Partial** | 已登记，未展开核对 |
 | **`CURR-NEW-004`** | D3 | **Authenticated Official** | 中山大学本科教务系统 | **25级 网络空间安全 本科培养方案** | **Confirmed** | **本轮新增**；原始 docx 不入库 |
 | **`TRANSCRIPT-001`** | D4 | **Authenticated Official** | 中山大学本科教务系统 | **已完成课程记录（已修课程）脱敏样本** | **Confirmed** | **本轮登记**；Raw 与逐行 Sanitized **均不入库** |
-| `OFFERING-001` | D5 | 待填写 | 待填写 | 待填写 | —— | **未获取**（属 2B-0D） |
+| **`OFFERING-001`** | D5 | **Authenticated Official** | 中山大学本科教务系统 | **课程开设 / 教学班真实样本（小规模人工侦察）** | **Confirmed** | **本轮登记**；Raw 响应**不入库** |
 
 ---
 
@@ -335,10 +335,26 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 - 备注：本轮统计所用的逐行样本**仅存在于本地临时文件**，统计完成后**已删除**；
   详见 `SYSU_CASE_A_COMPLETED_COURSES_EVIDENCE.md`。
 
-### `OFFERING-001` — 课程开设 / 教学班数据（D5）
+### `OFFERING-001` — 课程开设 / 教学班数据（D5，认证来源）
 
-- 状态：**未获取**（属 **2B-0D**，本轮不处理）。
-- 约束：Raw 按**潜在含个人信息**处理；Raw 与真实 Sanitized 样本**当前都先不进 public Git**。
+- 数据类别：**D5**
+- 来源机构：**中山大学本科教务系统**
+- **访问类型：Authenticated Official**
+- 是否官方：**是** ｜ 是否公开：**否** ｜ 是否需要登录：**是（仅本人正常权限）**
+- **范围**：**2026-1**，**小规模真实教学班查询**（单一课程，非批量、非枚举）
+- 主查询入口：`POST /jwxt/schedule/agg/schoolOpeningCoursesSchedule/querySchoolOpeningCourses`
+  （**只记录路径**；**不记录** Cookie / Session / Token、完整 Request Headers、HAR）
+- 汇总事实：`CSE202` 在 `2026-1` 返回 **2 个真实教学班**；每个教学班含**多个上课时间 / 地点 segment**
+- **证据等级：Confirmed**
+- 已获取数据的层级：**结构化证据（字段名 + 语义 + 映射结论 + 汇总事实）**
+- **必须注明的约束**：
+  1. **Raw response 不进入 public Git**；
+  2. **Cookie / Session / Token、完整 Request Headers、HAR 均不得进入 Git**；
+  3. **不记录教师姓名、修读对象完整文本、内部长 ID 取值、完整教学班逐行记录**。
+- 备注：详见 `SYSU_COURSE_OFFERING_RECON.md`；本轮**只做结构分析**，
+  **未实现 parser、未建库、未写 Adapter、未进入 Integration**；
+  已登记结构缺口 **G9**（多 segment 无法无损表达）与 **G10**（多个字段无表示），
+  并据此把 **G7 升级为已验证**。
 
 ---
 
@@ -361,17 +377,16 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 ## 6. 当前登记状态
 
 ```text
-已登记来源数：17
+已登记来源数：17（**全部已确认，无"待填写"**）
   POLICY-001..008、CURR-OLD-001/002/003、CURR-NEW-001/002/003/004、
-  TRANSCRIPT-001（本轮登记）、OFFERING-001（待 2B-0D）
-访问类型分布：Public Official 12 ｜ Authenticated Official 3 ｜ 公开搜索记录 1 ｜ 待填写 1
-证据等级分布：Confirmed 6 ｜ Partial 7 ｜ Not Found 1 ｜ Historical 1 ｜ 不适用 1 ｜ 未获取 1
+  TRANSCRIPT-001、OFFERING-001
+访问类型分布：Public Official 12 ｜ Authenticated Official 4 ｜ 公开搜索记录 1
+证据等级分布：Confirmed 7 ｜ Partial 7 ｜ Not Found 1 ｜ Historical 1 ｜ 不适用 1
 已获取数据文件：0 进入仓库
-  （公开来源未下载；认证来源的原始 docx 与 D4 逐行样本均由负责人保管，**均不入库**）
+  （公开来源未下载；认证来源的原始 docx、D4 逐行样本、D5 Raw response 均由负责人保管，**均不入库**）
 含个人信息的已入库数据：0（且必须永远保持为 0）
-最近更新：2026-09-30（**Phase 2B-0C**：登记 `TRANSCRIPT-001`（D4 已完成课程记录，
-          认证来源 + 负责人私密侧脱敏，样本 24 条，8 字段 100% 覆盖）；
-          Raw 与逐行 Sanitized **均不入库**）
+最近更新：2026-09-30（**Phase 2B-0D**：登记 `OFFERING-001`（D5 课程开设 / 教学班真实样本，
+          认证来源，**小规模人工侦察**，范围 2026-1）；**Raw 响应不入库**）
 ```
 
 ---
@@ -386,3 +401,4 @@ OFFERING-###      课程开设 / 教学班数据（D5）
 | 2026-09-30 | **Reviewer 修复（政策版本链）** | ① 新增 `POLICY-008`（学籍管理规定 中大教务〔2025〕1号，官方全文页面）；② **修正 `POLICY-007`**：不再声称"已被〔2026〕62号直接取代"，改为"较早历史版本，逐版废止关系待确认"；③ 版本链细节见 `SYSU_CASE_A_PUBLIC_EVIDENCE.md`。**未推断 2026〔62号〕的废止关系** |
 | 2026-09-30 | **Phase 2B-0B+（认证来源）** | ① 新增 **`CURR-OLD-003`**（25级 遥感科学与技术 本科培养方案）与 **`CURR-NEW-004`**（25级 网络空间安全 本科培养方案），来源为**中山大学本科教务系统（本人正常权限）**；② 新增字段「**访问类型**」：`Public Official` / `Authenticated Official`，并明确"公开性"与"证据真实性"分开记录；③ `CURR-NEW-001`（公开搜索未找到）**保留为历史记录**，不改造成新来源；④ 原始 docx **不入库**，仓库内不含课程表 |
 | 2026-09-30 | **Phase 2B-0C 登记（D4）** | **登记 `TRANSCRIPT-001`**（已完成课程记录，**Authenticated Official**，证据等级 **Confirmed**）：来源 = A. 申请成绩转换 → 实修课程成绩 + B. 本科生成绩单；**未创建新的 D4 `source_id`**；样本 24 条、8 字段 100% 覆盖；**Raw 成绩单与逐行脱敏记录均不入库**，Git 仅登记汇总事实与字段覆盖 |
+| 2026-09-30 | **Phase 2B-0D 登记（D5）** | **登记 `OFFERING-001`**（课程开设 / 教学班真实样本，**Authenticated Official**，证据等级 **Confirmed**）：范围 **2026-1**、**小规模人工侦察**（单一课程）；只登记**结构化证据**（字段名 + 语义 + 映射结论 + 汇总事实）；**Raw response / Cookie / Session / Token / 完整 Request Headers / HAR 均不入库**；不记录教师姓名、修读对象完整文本、内部长 ID 取值、完整逐行记录。据此把 **G7 升级为已验证**，并新增 **G9**（多 segment 结构缺口）与 **G10**（多个字段无表示） |
