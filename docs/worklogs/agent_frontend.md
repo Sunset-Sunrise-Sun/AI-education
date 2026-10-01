@@ -315,3 +315,68 @@
   2. Case A 转专业时点适用哪一版学籍管理规定；
   3. D2 / D3 的 2025 级正式培养方案补充路径（沿用上一轮结论）。
 - 下一步：等待 Reviewer 验收。**不进入 2B-0B+ / 2B-0C / 2B-0D**，Phase 2B Integration 保持暂停编码。
+
+---
+
+### 2026-09-30 - Phase 2B-0B+：中大教务系统培养方案证据登记（docs-only）
+- 本次目标：只做四件事 —— ① 验证两份附件确为 Case A 的 2025 级本科培养方案；
+  ② 新增两个"认证系统来源"；③ 把 D2 / D3 从 Not Found 更新为 Confirmed via authenticated source；
+  ④ 用这两份 2025 级真实样本继续验证 Schema 承载能力。
+  **不开始课程差分、不生成 MakeupTask。**
+- 附件与安全扫描（**先做**）：
+  - 附件 `遥感方案.docx`、`网安方案.docx` 已由 Builder **实际解包读取正文**（非依据负责人摘要）；
+  - **个人身份信息扫描结果：未发现任何个人信息** —— 无「姓名 / 学号 / 考生号 / 身份证 / NetID」，
+    无 10 位以上连续数字串。**故未触发"发现身份信息即停止"的条件，任务继续。**
+- 已核实的真实事实（**以附件原文为准，未照抄负责人结论**）：
+  - `CURR-OLD-003`（遥感）：标题写明"**25级**遥感科学与技术专业培养方案"；"**本科培养方案**"；
+    **修业年限 4 年**；**毕业总学分 147.0**；实践教学学分要求 **37.1**；
+    培养类别 公必 39 / 专必 78 / 专选 22 / 公选 8（合计 147 ✓）；
+    附表一含 **128 个课程号单元格**（课程号 / 课程名 / 学分 / 学时 / 学期）；
+    附表二 学分学时分布情况表；附表三 实践教学环节(含实验)一览表。
+  - `CURR-NEW-004`（网安）：标题写明"**25级**网络空间安全…专业培养方案"；"**本科培养方案**"；
+    **修业年限 4 年**；**毕业总学分 153.0**；实践教学学分要求 **38.5**；
+    公必 39 / 专必 83 / 专选 23 / 公选 8（合计 153 ✓）；附表一含 **138 个课程号单元格**。
+  - **与负责人核对目标逐项比对：8 项全部一致**（年级 / 层次 / 修业年限 / 毕业总学分 × 两专业）。
+  - 两份材料**均不含**：先修关系（全文检索"先修"无命中）、教师、考核方式、开课单位。
+- 已完成：
+  1. 新增 `docs/data/SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md`
+     （与公开来源证据文档**分开保存**），记录 Case A、来源性质与访问边界、两份方案的
+     "能证明什么 / 不能证明什么"、与负责人核对目标的比对结果。
+  2. `docs/data/DATA_SOURCE_REGISTRY.md`：
+     - 新增 **`CURR-OLD-003`**（25级 遥感）与 **`CURR-NEW-004`**（25级 网安），**未复用任何已有 source_id**；
+     - 新增字段「**访问类型**」：`Public Official` / `Authenticated Official`，
+       并明确"**公开性**与**证据真实性**分开记录"；
+     - `CURR-NEW-001`（公开搜索未找到）**保留为历史记录，未删除、未改造成新来源**，
+       备注补充 *Public search remained Not Found; authenticated-source gap later resolved by `CURR-NEW-004`*；
+     - 登记数 13 → **15**；Confirmed 3 → **5**。
+  3. `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`：
+     - **§3.1 按两份真实 25 级样本逐项判定 `Course` 映射 A/B/C**：
+       A = 课程号 / 课程名 / 学分；B = 课程类别·模块、推荐修读学期（学年-学期含区间，Schema 只收整数）；
+       C = 学时、实验实践学时、培养方案总学分、实践教学学分、适用年级、专业、课程分组、英文课程名；
+     - **G1 升级**为「已由 Case A 两份 2025 级真实培养方案确认存在」（新增 4.3 节）；
+       **仍未自行判断"是否必须新增公共 Schema"**。
+  4. 更新 `docs/status/agent_frontend.md`（D2 / D3 → Confirmed via authenticated official source；
+     下一步 = 2B-0C 已修课程最小脱敏样本）、本文件。
+- 明确未做（红线）：
+  - **未做任何课程等价判断**（未写"某课=某课"、未写"可以抵认"）；
+  - **未开始** Curriculum Diff、**未生成** MakeupTask；
+  - **未登录**教务系统、未要求任何人提供账号密码、**未读取**成绩、**未处理** D4；
+  - **未观察** Network / Fetch / XHR、**未获取**教学班、**未处理** D5、未写抓取代码；
+  - **未修改** `/schemas/`、`/docs/interfaces/`、`backend`、`frontend`、`mock_data`；
+  - **未恢复** Integration。
+- 原始附件处理：两份 docx **不提交 public Git**，**不复制完整课程表进仓库**，**不放进 `mock_data`**；
+  仓库内只保存 `source_id`、来源性质、必要结构化事实与 Schema gap 结论。
+  本轮解包产生的中间文本文件**已从工作区删除**。
+- 修改文件：
+  - 新增 `docs/data/SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md`
+  - 更新 `docs/data/DATA_SOURCE_REGISTRY.md`、`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - 更新 `docs/status/agent_frontend.md`、本文件（**仅追加**）
+- 测试：docs-only，未改动任何代码，未复跑前后端
+- 使用数据：Mock（业务数据）+ **认证来源的真实培养方案结构化事实**（原始文件不入库）
+- 公共接口是否变化：否 ｜ 是否修改 backend / frontend / mock_data：否
+- 需要人工确认：
+  1. `SYSU_CASE_A_PUBLIC_EVIDENCE.md` 2.5 的**版本链**（2025〔1号〕→2026〔62号〕）仍待确认；
+  2. 附表一的**列语义**（第三个数值列是否为"实践/实验学时"）需人工确认；
+  3. Case A 转专业时点适用哪一版学籍管理规定。
+- 下一步：等待 Reviewer 验收 **2B-0B+**。通过后进入 **Phase 2B-0C：已修课程最小脱敏样本**。
+  **不 merge，不进入 2B-0C / 2B-0D**，Phase 2B Integration 保持暂停编码。
