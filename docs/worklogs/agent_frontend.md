@@ -219,3 +219,54 @@
   D5 技术侦察范围与频率（详见 `docs/data/DATA_ACQUISITION_PLAN.md` 第 7 节）
 - 下一步：等待 Reviewer 验收 2B-0A；通过后进入 **2B-0B 公开官方材料获取**。
   本轮**不进入 2B-0B**；Phase 2B（Integration / Orchestrator）保持暂停编码。
+
+---
+
+### 2026-09-30 - Phase 2B-0B：中山大学公开官方材料获取（docs-only）
+- 本次目标：只获取 Case A（2025级 遥感科学与技术 → 网络空间安全）可用的中山大学**公开官方**政策与培养方案来源，
+  确认 D1 / D2 / D3 的证据状态。**不登录教务系统、不采集任何个人数据。**
+- 已完成：
+  1. 新增 `docs/data/SYSU_CASE_A_PUBLIC_EVIDENCE.md`：Case A 证据清单，
+     逐项记录"能证明什么 / 不能证明什么 / 当前有效性判断依据"。
+  2. `docs/data/DATA_SOURCE_REGISTRY.md`：新增「证据等级」字段
+     （Confirmed / Partial / Not Found / Historical / 不适用），登记 12 条中山大学公开官方来源并补齐 14 个字段。
+  3. `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`：依据真实材料把 **G1 更新为「已由真实材料部分验证」**（见 4.2）；
+     G2 / G3 / G4 / G5 / G7 / G8 因缺乏真实证据**维持「待验证」**；**未修改任何公共 Schema**。
+  4. 更新 `docs/status/agent_frontend.md`、本文件。
+- 调查结果（证据状态）：
+  - **D1 政策：Partial** —— Confirmed 2（`POLICY-001` 学籍管理规定〔2026〕62号；
+    `POLICY-003` 网络空间安全学院 2026 年转院系专业考核通知）；
+    Partial 4（`POLICY-002` 转专业实施办法现行性未确认、`POLICY-004`、`POLICY-005`、
+    `POLICY-006` 学院发布的学分成绩转换操作指南）；
+    Historical 1（`POLICY-007` 学籍管理规定〔2022〕52号，已被取代）；
+    另：`POLICY-003` 所引用的上级通知原文、校级课程认定专门制度 **Not Found**。
+  - **D2 2025级 遥感科学与技术 正式培养方案：Not Found** ——
+    只有 `CURR-OLD-001`（2019 级正式培养方案）与 `CURR-OLD-002`（2021 年专业白皮书），
+    **均不能替代 2025 级**。
+  - **D3 2025级 网络空间安全 本科正式培养方案：Not Found** ——
+    学院「本科生培养 → 培养方案」栏目下**只有课程表**（`CURR-NEW-003`）；
+    检索到的"2025 年方案"实为**硕士**培养方案（`CURR-NEW-002`，标记**不适用**并明确排除）。
+- 关键判断（防误用）：
+  - **专业白皮书 ≠ 正式培养方案**：`CURR-OLD-002` 虽含总学分 170 与课程模块学分构成，
+    但它**不是培养方案**，且未声明适用 2025 级；
+  - **2019 级正式方案 ≠ 2025 级方案**：不得用旧版顶替；
+  - **研究生方案 ≠ 本科方案**：`CURR-NEW-002` 标题含"2025 年"但属硕士层次，不得作为 D3 依据；
+  - **政策存在版本冲突**：学籍管理规定〔2026〕62号与〔2022〕52号并存，
+    适用版本**标记【待人工确认】**，Agent 未自行裁决。
+- 修改文件：
+  - 新增 `docs/data/SYSU_CASE_A_PUBLIC_EVIDENCE.md`
+  - 更新 `docs/data/DATA_SOURCE_REGISTRY.md`、`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - 更新 `docs/status/agent_frontend.md`、本文件
+- 测试：本次为 docs-only，未改动任何代码，因此未复跑前后端；
+  最近一次确认仍为：前端 `npm run build` 通过、后端 `python -m pytest` → 125 passed, 1 skipped
+- 使用数据：Mock（**未获取任何真实数据文件**；仅查阅公开官方页面，**未下载任何原件进仓库**）
+- 公共接口是否变化：否（未修改 `/schemas/` 与 `/docs/interfaces/`）
+- 是否修改 backend / frontend / mock_data：否
+- 是否登录教务系统 / 获取个人数据：**否**（未登录、未用 NetID、未取成绩单或课表、
+  未保存 Cookie/Session/Token、未 HAR 抓包、未写爬虫、未批量请求）
+- 需要人工确认：
+  1. D2 / D3 的 2025 级正式培养方案缺失，走哪条补充路径（用户本人导出 / 咨询学院教务 / 暂缓）；
+  2. 学籍管理规定适用版本（〔2026〕62号 vs 〔2022〕52号）；
+  3. `POLICY-002` 转专业实施办法的现行性；
+  4. `POLICY-006` 的校级权威原件出处。
+- 下一步：等待 Reviewer 验收 2B-0B。**不进入 2B-0C / 2B-0D**，Phase 2B Integration 保持暂停编码。
