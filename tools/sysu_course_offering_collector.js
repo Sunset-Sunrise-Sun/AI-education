@@ -5,7 +5,9 @@
  * 定位
  * ----
  * 本文件是 **SYSU-specific Transport 的浏览器侧实现**。
- * 它只做三件事：串行取页 → 最小化字段 + 脱敏 → 产出本地 Capture Bundle。
+ * 它提供两件事：
+ *   1. `collect()` —— 串行取页 → 最小化字段 + 脱敏 → 产出本地 Capture Bundle；
+ *   2. `diagnoseSchedulePresence()` —— **只取第 1 页一次**的**结构诊断**（只统计，不产出数据）。
  *
  * ⛔ 本文件**不实现**任何后端直连学校的认证 HTTP 客户端。
  * 认证完全交给浏览器既有的登录状态（`credentials: "same-origin"`），
@@ -17,6 +19,7 @@
  * 用户必须在控制台**显式调用**：
  *
  *     await window.XuehangSysuCollector.collect({ semester: "2026-1" })
+ *     await window.XuehangSysuCollector.diagnoseSchedulePresence({ semester: "2026-1" })
  *
  * 默认只跑 2 页 smoke test；要跑更多页必须显式提高 `maxPages`，并会弹出确认框。
  *
@@ -34,6 +37,12 @@
  * **不会**反向写进通用 `backend/app/course_data/pagination.py`。
  * `firstPageNo` 被**锁定为 1**：传入其它起始页会在发请求之前直接失败
  * （通用多起始页能力留在 backend 分页核心，不在这里放开）。
+ *
+ * ⛔ 结构诊断的定位
+ * ----------------
+ * `diagnoseSchedulePresence()` 是**取证**，**不是** workaround：
+ * 它只统计 `teachingTimePlaceStr` 的存在形态，**不**改造数据、
+ * **不**放宽 `collect()` 的 fail-closed 行为、**不**产出 Capture Bundle。
  *
  * ⛔ 完整性归属
  * ------------
@@ -458,6 +467,118 @@
     };
   }
 
+  // ---------------------------------------------------------------------
+  // 结构诊断（Phase 2B-2C1B）：只取证，不是 workaround
+  // ---------------------------------------------------------------------
+
+  /** 诊断统计的目标字段名。 */
+  var SCHEDULE_FIELD = "teachingTimePlaceStr";
+
+  /** 诊断固定只取第 1 页（不对外开放、不循环、不重试）。 */
+  var DIAGNOSTIC_PAGE_NO = 1;
+
+  /** 诊断固定使用已验证的单页上限。 */
+  var DIAGNOSTIC_PAGE_SIZE = 200;
+
+  /**
+   * 纯函数：统计 `rows` 中 `teachingTimePlaceStr` 的存在形态。
+   *
+   * 分类（互斥且穷尽）：
+   *   missing          —— 字段不存在
+   *   null             —— 字段存在且值为 null
+   *   empty_string     —— 值是字符串但 trim 后为空
+   *   non_empty_string —— 值是字符串且 trim 后非空
+   *   other_type       —— 字段存在，但既不是 null 也不是字符串
+   *
+   * 保证：missing + null + empty_string + non_empty_string + other_type === rows.length
+   *
+   * ⛔ 只统计数量，**不返回也不打印**任何 row 内容、课程号、教师、教室或原文。
+   */
+  function summarizeSchedulePresence(rows) {
+    if (!Array.isArray(rows)) {
+      fail("诊断需要 data.rows 是数组。已停止。");
+    }
+
+    var bucket = {
+      missing: 0,
+      null: 0,
+      empty_string: 0,
+      non_empty_string: 0,
+      other_type: 0
+    };
+
+    for (var index = 0; index < rows.length; index += 1) {
+      var row = rows[index];
+
+      if (!row || typeof row !== "object" || Array.isArray(row)) {
+        // 只报结构性问题与下标，不回显 row 内容。
+        fail("诊断遇到非对象 row（下标 " + index + "）。已停止。");
+      }
+
+      if (!Object.prototype.hasOwnProperty.call(row, SCHEDULE_FIELD)) {
+        bucket.missing += 1;
+        continue;
+      }
+
+      var value = row[SCHEDULE_FIELD];
+
+      if (value === null) {
+        bucket.null += 1;
+      } else if (typeof value === "string") {
+        if (value.trim() === "") {
+          bucket.empty_string += 1;
+        } else {
+          bucket.non_empty_string += 1;
+        }
+      } else {
+        bucket.other_type += 1;
+      }
+    }
+
+    return {
+      total_rows: rows.length,
+      teachingTimePlaceStr: bucket
+    };
+  }
+
+  /**
+   * 结构诊断：**只请求第 1 页一次**，统计 `teachingTimePlaceStr` 的存在形态。
+   *
+   * - 复用现有 hostname guard / same-origin 请求 / 既有取页函数的
+   *   HTTP / JSON / code / total / rows 校验（**不复制认证逻辑**）；
+   * - 固定 `pageNo = DIAGNOSTIC_PAGE_NO`（1）、`pageSize = DIAGNOSTIC_PAGE_SIZE`（200）；
+   * - ⛔ 不接受任何分页选项（没有 maxPages / firstPageNo / 循环 / 重试 / 并发）；
+   * - ⛔ **不生成 Capture Bundle**、不做字段最小化、不做教师脱敏、不调用 `toJson`；
+   * - ⛔ 不修改 `collect()` 的 fail-closed 行为 —— 本函数只是取证，不是 workaround。
+   *
+   * 返回值只有聚合统计，**不含**任何 Raw row / 课程号 / 教师 / 教室 / 原文。
+   */
+  async function diagnoseSchedulePresence(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var semester = opts.semester;
+    if (typeof semester !== "string" || semester.trim() === "") {
+      fail('诊断必须显式提供非空 semester（例如 "2026-1"）。');
+    }
+    semester = semester.trim();
+
+    // 只取第 1 页、只取一次。
+    var data = await requestPage(semester, DIAGNOSTIC_PAGE_NO, DIAGNOSTIC_PAGE_SIZE);
+
+    var summary = summarizeSchedulePresence(data.rows);
+
+    return {
+      semester: semester,
+      page_no: DIAGNOSTIC_PAGE_NO,
+      page_size: DIAGNOSTIC_PAGE_SIZE,
+      reported_total: data.total,
+      total_rows: summary.total_rows,
+      teachingTimePlaceStr: summary.teachingTimePlaceStr
+    };
+  }
+
   /**
    * 把采集结果序列化成**裸 Capture Bundle**（可直接交给 Python `load_capture_bundle`）。
    *
@@ -486,7 +607,11 @@
 
   window.XuehangSysuCollector = {
     collect: collect,
+    diagnoseSchedulePresence: diagnoseSchedulePresence,
+    summarizeSchedulePresence: summarizeSchedulePresence,
     toJson: toJson,
+    DIAGNOSTIC_PAGE_NO: DIAGNOSTIC_PAGE_NO,
+    DIAGNOSTIC_PAGE_SIZE: DIAGNOSTIC_PAGE_SIZE,
     CAPTURE_FORMAT: CAPTURE_FORMAT,
     ALLOWED_HOSTNAME: ALLOWED_HOSTNAME,
     ENDPOINT_PATH: ENDPOINT_PATH,

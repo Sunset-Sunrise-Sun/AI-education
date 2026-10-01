@@ -1352,3 +1352,26 @@
   （修复前 509 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）。
 - **实际 SYSU 请求数：0**；公共接口是否变化：**否**
 - 下一步：等待 Reviewer 复验。⚠️ **不 merge**。
+
+---
+
+### 2026-10-01 - Phase 2B-2C1B：Schedule Presence Diagnostic（阶段同步）
+- 本次目标：同步新增的**结构诊断入口**（主记录见 `docs/worklogs/course_data.md`）。
+- **新事实（负责人已确认）**：真实 smoke run 在真正的「**全校开设课程**」独立模块内
+  **same-origin 请求成功**、**认证不再是 blocker**；
+  但**第 1 页第 16 条 row 缺少 `teachingTimePlaceStr`**，当前 `collect()` **按设计 fail closed**；
+  **尚未生成真实 Capture Bundle**、**尚未取得 complete semester snapshot**。
+- **导航纠错**：「**选课**」与「**全校开设课程**」是**两个独立模块**（旧层级描述作废）。
+- 新增：`tools/sysu_course_offering_collector.js` 的 `diagnoseSchedulePresence({ semester })`
+  与纯函数 `summarizeSchedulePresence(rows)`；`backend/tests/test_sysu_collector_guard.py` 新增守卫；
+  `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` 新增 **G11**（只登记事实、不裁决 Schema）。
+- 边界：诊断**只请求第 1 页一次**、**只输出聚合统计**、**不产出 bundle**；
+  ⛔ 未改 `collect()` 的 fail-closed 行为；⛔ 未改任何 Schema / Interface / Python 数据链路；
+  ⛔ 未接 Integration / Planner / API / 前端产品 UI；**实际 SYSU 请求数：0**。
+- 修改文件（本模块视角）：
+  - `docs/status/agent_frontend.md`（表头、阶段图、新增 Phase 2B-2C1B 结果小节、「下一步」）
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **522 passed / 2 skipped**
+  （本轮前 515 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）。
+- 公共接口是否变化：**否**
+- 下一步：等待 Reviewer 验收 **Phase 2B-2C1B**。⚠️ **不 merge，不自行开始诊断或完整采集**。

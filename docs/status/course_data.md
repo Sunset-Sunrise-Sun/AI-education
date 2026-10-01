@@ -1,14 +1,18 @@
 # Course Data 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C1A：SYSU Authorized Browser Transport + Capture Bridge** 完成，等待 Reviewer）
+> 最后更新：2026-10-01（**Phase 2B-2C1B：Schedule Presence Diagnostic** 完成，等待 Reviewer）
 >
 > ⚠️ **准确表述（不得夸大）**：
 > **真实 Course Data 尚未完成**，**尚未取得 complete semester snapshot**。
-> **SYSU 浏览器端授权采集器代码已准备**（用户显式触发、串行、same-origin、
-> 只保留最小字段并把 segment 内教师脱敏为 `REDACTED`）；
-> **Capture Bridge 已完成**（本地 Capture Bundle → 复用分页核心 → `OfferingSnapshot`）。
-> **尚未执行真实完整学期程序化采集** —— 真实 smoke run 由负责人在 Reviewer 合并后**手动**执行。
+> **已完成一次真实 smoke run**（在真正的「**全校开设课程**」独立模块内）：
+> **same-origin 请求成功**、**认证不再是当前 blocker**；
+> 但发现**至少一条真实 row 缺少 `teachingTimePlaceStr`**（第 1 页第 16 条），
+> 因此当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**。
+> **缺失字段的业务含义尚未确认** —— 不推测、不写成任何业务结论。
 > 后端 Python 侧仍然**零网络**：没有 endpoint、没有认证处理、**不会自动发起 SYSU 请求**。
+>
+> ⚠️ **导航纠错**：「**选课**」与「**全校开设课程**」是**两个独立模块**；
+> 早先"选课 → 全校开设课程"的层级描述**不正确**，已作废。
 
 ## 阶段状态
 
@@ -20,10 +24,30 @@ teachingTimePlaceStr parser（2B-2B）                ✅ 已完成（依据私�
 本地 Raw-response import adapter（2B-2B）            ✅ 已完成（零网络）
 分页采集核心 Pagination Core（2B-2C0）              ✅ 已完成（零网络；fetch_page 由外部提供）
 SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（前两页；见下）
-浏览器端授权采集器代码 + Capture Bridge（2B-2C1A）   ✅ 代码已准备（未执行真实采集）
-真实完整学期程序化采集                              ⏳ 未执行（负责人手动 smoke run）
+浏览器端授权采集器代码 + Capture Bridge（2B-2C1A）   ✅ 代码已准备
+真实 smoke run（认证 + 第 1 页请求）                 ✅ 已执行（same-origin 成功；认证不再是 blocker）
+结构诊断入口 schedule presence diagnostic（2B-2C1B） ✅ 代码已准备（只取证，未裁决）
+真实完整学期程序化采集                              ⏳ 未完成（因缺字段 fail closed 而中止）
 完整 semester snapshot                              ⏳ 未取得
 ```
+
+### 真实 smoke run 已确认的事实
+
+| 事实 | 状态 |
+|---|---|
+| 在真正的「**全校开设课程**」独立模块内发起 same-origin 请求 | ✅ **成功** |
+| 第 1 页响应成功进入 Collector | ✅ **成功** |
+| **认证不再是当前 blocker** | ✅ 已确认 |
+| 第 1 页第 16 条 row **缺少 `teachingTimePlaceStr`** | ✅ 已确认（至少 1 条） |
+| 当前 `collect()` 的处置 | **按设计 fail closed**（缺字段即整体失败） |
+| 是否已生成真实 Capture Bundle | ❌ **尚未生成** |
+| 是否已取得 complete semester snapshot | ❌ **尚未取得** |
+
+> ⚠️ **缺失字段的业务含义尚未确认**：现有证据**只**证明"存在这样的 row"。
+> **不得**据此写成"缺排课""未排课课程""异步课程""暂无教室"等任何业务结论。
+>
+> ⚠️ **模块导航**：「**选课**」与「**全校开设课程**」是**两个独立模块**，
+> 不存在"选课 → 全校开设课程"的层级关系。
 
 ### SYSU 分页参数人工验证结论（已验证事实）
 
@@ -42,7 +66,27 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 
 ## 已完成
 
-### 浏览器端授权采集器 + Capture Bridge（Phase 2B-2C1A，本轮）
+### 结构诊断入口（Phase 2B-2C1B，本轮）
+位置：`tools/sysu_course_offering_collector.js`（在**现有**采集器内新增，不新建 Transport 文件）
+
+| 项 | 内容 |
+|---|---|
+| 入口 | `window.XuehangSysuCollector.diagnoseSchedulePresence({ semester: "2026-1" })` —— **必须由用户显式调用** |
+| 纯函数 | `window.XuehangSysuCollector.summarizeSchedulePresence(rows)`（便于源码级测试） |
+| 请求范围 | **固定** `pageNo = DIAGNOSTIC_PAGE_NO`（**1**）、`pageSize = DIAGNOSTIC_PAGE_SIZE`（**200**）、`total = true`；**只发 1 次请求** |
+| 不具备的能力 | ⛔ 无 `maxPages`、⛔ 无 `firstPageNo`、⛔ 无循环分页、⛔ 无重试、⛔ 无并发 |
+| 复用 | hostname guard / same-origin 请求 / 既有取页函数的 HTTP · JSON · code · total · rows 校验（**不复制认证逻辑**） |
+| 统计口径 | 每条 row 归入**互斥且穷尽**的一类：`missing`（字段不存在）/ `null` / `empty_string`（trim 后为空）/ `non_empty_string` / `other_type`（存在但既非 null 也非字符串）；**五类之和 == `total_rows`** |
+| 返回值 | 只有聚合统计：`semester` / `page_no` / `page_size` / `reported_total` / `total_rows`（= `data.rows.length`，**不写死**）/ `teachingTimePlaceStr{...}` |
+| ⛔ 不返回 | rows、row 下标、`courseNum` / `courseName` / `classNumber` / 教师 / 教室 / 原文 / 内部 ID |
+| ⛔ 不产生 | **不生成 Capture Bundle**、不做字段最小化、不做教师脱敏、不调用 `toJson` |
+| ⛔ 不改行为 | `collect()` 遇缺字段仍 **fail closed**；诊断**不**跳过、**不**补空、**不**造占位 `Meeting`、**不**标记 complete |
+| ⛔ 本轮不改契约 | `CourseOffering.meetings` 的 `minItems = 1` **保持不变**；诊断结果**不**触发任何 Schema 变更 |
+
+> **定位**：诊断是**取证**，**不是** workaround。若结论表明现有契约覆盖不了真实数据，
+> **下一轮再走正式 `【接口变更请求】`**。
+
+### 浏览器端授权采集器 + Capture Bridge（Phase 2B-2C1A）
 **只做"显式触发的浏览器采集 + 本地回放桥"，不接 Integration / Planner / API / 前端产品 UI。**
 
 | 产出 | 内容 |
@@ -281,9 +325,16 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 当前阻塞
 
-- **真实完整学期程序化采集尚未执行**：浏览器端采集器**代码已准备**，
-  但**尚未对真实系统运行**；真实 smoke run 由负责人在 Reviewer 合并后**手动**执行；
+- **真实数据结构阻塞（当前主 blocker）**：真实 smoke run 已证明
+  **至少一条真实 row 缺少 `teachingTimePlaceStr`**（第 1 页第 16 条）；
+  当前 importer / parser 无法为这样的 row 构造 `meetings`
+  （公共契约要求 `CourseOffering.meetings` `minItems = 1`），
+  因此 `collect()` **按设计 fail closed**；
+  ⛔ **本轮不决定如何修复**，也**不修改**任何 Schema；
+  缺失的**原因 / 记录类型 / 是否普遍存在 / 是否应进入 Planner** 均**待调查**（见缺口报告 **G11**）；
+- **真实完整学期程序化采集未完成**：因上述数据阻塞而中止；
   后端 Python 侧仍然**零网络**（没有 endpoint、没有认证处理、不会自动发起请求）；
+  ✅ 另：**认证不再是 blocker**（same-origin 请求已在「全校开设课程」模块内成功）；
 - **完整 semester snapshot 未取得**：当前只有 D5 小规模侦察、私密脱敏样本
   和**前两页人工分页参数验证**，**尚未进行程序化完整学期采集**，因此**不是**完整 snapshot；
 - ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（本阶段限制）；
@@ -308,18 +359,21 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 下一步
 
-- **负责人手动 smoke run**（Reviewer 合并后）：在本人已登录、已有权限的教务页面加载
-  `tools/sysu_course_offering_collector.js`，显式调用
-  `await window.XuehangSysuCollector.collect({ semester: "2026-1" })`（默认 2 页），
-  把产出的 Capture Bundle 保存到**非公开位置**，
-  再用 `collect_captured_pages_snapshot(bundle, source=...)` 在本地验证；
-  该 smoke run 预期得到 **partial**（2 页不可能覆盖整学期）；
+- **负责人手动 1 页结构诊断**（Reviewer 合并后）：在本人已登录、已有权限的
+  「**全校开设课程**」模块页面加载 `tools/sysu_course_offering_collector.js`，显式调用
+  `await window.XuehangSysuCollector.diagnoseSchedulePresence({ semester: "2026-1" })`；
+  它**只请求第 1 页一次**，返回 `teachingTimePlaceStr` 的五类计数与 `total_rows`，**不产出数据**；
+  该诊断用于回答"缺字段是否普遍、形态如何"，为**下一轮的契约裁决**提供证据；
+- **G11 待调查项**（见 `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`）：
+  缺失**原因 / 记录类型 / 是否普遍 / 是否应进入 Planner** 均未确认；
+  若证据表明现有契约覆盖不了真实数据，**下一轮按 `/AGENTS.md` 第 4 节提交
+  `【接口变更请求】`** —— ⛔ **本轮不预设方案、不改 Schema**；
 - 采集器与 Capture Bridge 目前**不接入** Integration / Planner / API / 前端产品 UI
   （真实 Capture Bundle 的导入 UI 属后续步骤）；
 - `max_pages` 是**内部安全阀**，不是学校侧参数；
   只能取得部分范围时**必须显式记录 completeness**，**不得宣称 complete**（C9）；
 - **完整 semester snapshot**：目标为 **2026-1**，取得后以 `OfferingSnapshot` 表达，
   并由 `SnapshotCourseDataProvider` 供 Integration 消费；
-- ⛔ 上述 smoke run 与后续导入 UI 都属于后续任务书范围，**本轮不得自行开始**；
+- ⛔ 上述诊断与后续导入 UI 都属于后续任务书范围，**本轮不得自行开始**；
   ⛔ **本轮 Builder 未登录 SYSU、未发任何真实请求、未生成真实数据**，
   也**不**把 `partial` snapshot 接入 Integration。

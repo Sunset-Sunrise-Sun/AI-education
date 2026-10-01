@@ -1,12 +1,15 @@
-"""SYSU 浏览器端采集器的**静态安全守卫**（Phase 2B-2C1A）。
+"""SYSU 浏览器端采集器的**静态安全守卫**（Phase 2B-2C1A / 2B-2C1B）。
 
 本文件不执行 JS，只对 `tools/sysu_course_offering_collector.js` 做**源码级**检查，
-确保它满足本轮的安全边界：
+确保它满足两轮的安全边界：
 
 - 加载脚本**不自动发请求**（无顶层调用、无定时轮询、无并发分页）；
 - 有 hostname guard；
 - 有 `pageSize` 上限校验与最小延迟；
-- 源码中**不出现**读取浏览器端认证状态、导出认证头、后端 HTTP 客户端等字样。
+- 源码中**不出现**读取浏览器端认证状态、导出认证头、后端 HTTP 客户端等字样；
+- `firstPageNo` 锁死为 1；空 teacher 不得被 `REDACTED` 静默修复；`toJson` 输出裸 bundle；
+- **结构诊断**（2B-2C1B）只取第 1 页一次、只输出聚合统计、不产出 Capture Bundle、
+  不改动 `collect()` 的 fail-closed 行为。
 
 ⚠️ 这些是**静态**检查，只证明源码里没有相应写法，不等于运行时行为的形式化证明。
 """
@@ -308,3 +311,139 @@ def test_collector_source_is_plain_utf8_without_bom() -> None:
 
     assert not raw.startswith(b"\xef\xbb\xbf")
     raw.decode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2B-2C1B：结构诊断（Schedule Presence Diagnostic）
+# ---------------------------------------------------------------------------
+
+
+def _diagnose_slice(collector_source: str) -> str:
+    """截取 `diagnoseSchedulePresence` 的**代码**（不含前后 JSDoc）。
+
+    依赖文件内的函数顺序：`summarizeSchedulePresence` → `diagnoseSchedulePresence` → `toJson`。
+    """
+
+    start = collector_source.index("async function diagnoseSchedulePresence")
+    end = collector_source.index("function toJson(")
+    assert start < end, "诊断函数应位于 toJson 之前"
+
+    slice_ = collector_source[start:end]
+
+    # 尾部会带上下一个函数的 JSDoc（注释里会提到 bundle / toJson 等），截断掉
+    tail_comment = slice_.rfind("/**")
+    if tail_comment != -1:
+        slice_ = slice_[:tail_comment]
+
+    return slice_
+
+
+def test_diagnostic_is_exposed_and_not_auto_called(collector_source: str) -> None:
+    """诊断入口必须显式暴露，且**加载脚本不得自动调用**。"""
+
+    assert "diagnoseSchedulePresence: diagnoseSchedulePresence" in collector_source
+
+    expose_index = collector_source.rindex("window.XuehangSysuCollector")
+    remainder = collector_source[expose_index + len("window.XuehangSysuCollector") :]
+    assert "diagnoseSchedulePresence(" not in remainder, "挂载之后不得自动调用诊断"
+
+
+def test_diagnostic_uses_the_shared_request_path(collector_source: str) -> None:
+    """诊断复用既有取页函数（不复制认证 / 请求逻辑）。"""
+
+    # 1 处定义 + collect 的 1 处调用 + 诊断的 1 处调用
+    assert collector_source.count("requestPage(") == 3
+    assert collector_source.count("await requestPage(") == 2
+
+    slice_ = _diagnose_slice(collector_source)
+    assert "await requestPage(" in slice_
+    # ⛔ 不出现 raw fetch / 认证相关写法
+    assert "fetch(" not in slice_
+    assert "credentials" not in slice_
+
+
+def test_diagnostic_is_pinned_to_page_one_once(collector_source: str) -> None:
+    """固定 `pageNo=1` / `pageSize=200`，且不接受任何分页选项。"""
+
+    assert "DIAGNOSTIC_PAGE_NO = 1" in collector_source
+    assert "DIAGNOSTIC_PAGE_SIZE = 200" in collector_source
+
+    slice_ = _diagnose_slice(collector_source)
+
+    assert "requestPage(semester, DIAGNOSTIC_PAGE_NO, DIAGNOSTIC_PAGE_SIZE)" in slice_
+    assert slice_.count("await requestPage(") == 1
+
+    for forbidden in ("maxPages", "firstPageNo", "pageNo:", "pageSize:", "while (", "for ("):
+        assert forbidden not in slice_, f"诊断不得出现分页 / 循环写法：{forbidden}"
+
+
+def test_diagnostic_does_not_produce_capture_artifacts(collector_source: str) -> None:
+    """诊断只统计：不产出 bundle、不做最小化 / 脱敏 / 序列化。"""
+
+    slice_ = _diagnose_slice(collector_source)
+
+    for forbidden in ("bundle", "minimizeRow", "redact", "toJson(", "CAPTURE_FORMAT"):
+        assert forbidden not in slice_, f"诊断不得出现：{forbidden}"
+
+
+def test_diagnostic_returns_only_aggregate_counts(collector_source: str) -> None:
+    """返回值只有聚合统计，**不含** rows / 下标 / 课程号 / 教师 / 原文。"""
+
+    slice_ = _diagnose_slice(collector_source)
+
+    for key in (
+        "semester: semester",
+        "page_no: DIAGNOSTIC_PAGE_NO",
+        "page_size: DIAGNOSTIC_PAGE_SIZE",
+        "reported_total: data.total",
+        "total_rows: summary.total_rows",
+        "teachingTimePlaceStr: summary.teachingTimePlaceStr",
+    ):
+        assert key in slice_, f"诊断返回值缺少：{key}"
+
+    for forbidden in (
+        "rows: data.rows",
+        "rows: rows",
+        "row_index",
+        "courseNum",
+        "courseName",
+        "classNumber",
+        "teacher",
+    ):
+        assert forbidden not in slice_, f"诊断不得输出：{forbidden}"
+
+
+def test_diagnostic_summary_buckets_are_exhaustive(collector_source: str) -> None:
+    """纯函数 `summarizeSchedulePresence` 必须给出互斥且穷尽的五类统计。"""
+
+    assert "function summarizeSchedulePresence(rows)" in collector_source
+
+    start = collector_source.index("function summarizeSchedulePresence(rows)")
+    end = collector_source.index("async function diagnoseSchedulePresence")
+    slice_ = collector_source[start:end]
+
+    for bucket in ("missing", "null", "empty_string", "non_empty_string", "other_type"):
+        assert f"{bucket}: 0" in slice_, f"缺少统计桶：{bucket}"
+
+    assert "total_rows: rows.length" in slice_
+    # 统计只看字段是否存在 / 值种类，不读取任何业务字段
+    for forbidden in ("courseNum", "classNumber", "teacher", "readObj"):
+        assert forbidden not in slice_
+
+
+def test_collect_still_fails_closed_on_missing_schedule_field(collector_source: str) -> None:
+    """⛔ 诊断不得改动 `collect()` 的 fail-closed 行为。
+
+    `minimizeRow` 仍要求 8 个必要字段齐备，缺任何一个都整体失败。
+    """
+
+    assert "条记录缺少字段：" in collector_source
+    assert "Object.prototype.hasOwnProperty.call(row, field)" in collector_source
+
+    # 只检查 minimizeRow 内部：不得出现"缺字段 → 跳过 / 补空 / 占位"的写法
+    start = collector_source.index("function minimizeRow(")
+    end = collector_source.index("function validatePagePayload(")
+    minimize = collector_source[start:end]
+
+    for workaround in ("continue;", "meetings: []", "meetings:[]", "return null", "catch"):
+        assert workaround not in minimize, f"minimizeRow 不得出现 workaround：{workaround}"
