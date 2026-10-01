@@ -687,14 +687,14 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   返回口径表述；以及相关性诊断本身：是否只请求第 1 页一次、是否未产出 bundle、
   是否未改动 `collect()` 与 2C1B、是否正确区分 A 类"只统计存在性/类型"与
   B 类"有限分类值计数"、是否对高基数整体 suppression）
-- **之后由负责人手动运行** `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`，
+- **合并后唯一的人工下一步**：**Reviewer 合并 Phase 2B-2C1C 之后**，
+  由**负责人手动执行一次** `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`，
   依据第 1 页真实相关性结果决定是否走正式【接口变更请求】
-  （⛔ 本轮不预设方案、不改 Schema）
-- **下一步是负责人手动 1 页结构诊断**（Reviewer 合并后）：在本人已登录、已有权限的
-  「**全校开设课程**」模块页面显式调用
-  `diagnoseSchedulePresence({ semester: "2026-1" })`；
-  依据结果判断缺字段的普遍性与形态，**下一轮再走正式 `【接口变更请求】`**；
-  ⚠️ **本轮不得自行开始**，须等新一轮任务书
+  （⛔ 本轮不预设方案、不改 Schema）；
+  ⛔ **不再要求重复运行 2B-2C1B 的 1 页结构诊断** —— 该诊断**已由负责人真实运行完成**，
+  结果已登记：第 1 页 `total_rows = 200`（同页 `reported_total = 6892`）、
+  `missing = 39`、`non_empty_string = 161`、`null` / `empty_string` / `other_type` 均为 0
+  （⚠️ **仅第 1 页，不得外推**）；
 - **真实 Capture Bundle 的导入 UI**（前端产品链路）属**后续步骤**，本轮不做；
 - **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
   `max_pages` 是**内部安全阀**，不是学校侧参数；
