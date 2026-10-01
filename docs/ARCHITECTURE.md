@@ -23,8 +23,14 @@
 OR-Tools CP-SAT 等确定性约束求解、Path Repair、无解 / 部分可行处理与 PlanResult 生成。
 输出“在现实约束下怎么排进去”。
 
-Planner 消费 Curriculum 提供的补修任务、课程依赖结果与已确认优先级，
-**不得为求解方便自行重写课程认定或学业优先级规则**。
+Planner 消费 Curriculum 提供的补修任务，**不得为求解方便自行重写课程认定或学业优先级规则**。
+
+> ⚠️ **按 Data Gate DG-05 修正**（2026-09-30）：
+> **MVP 当前跨模块只传 `MakeupTask[]`**，prerequisite 信息由
+> **`MakeupTask.prerequisites[]`** 承载（Planner 可把它转换成本地 adjacency / topology
+> 供确定性求解使用，但**不得新增 / 猜测 / 重写**先修边）。
+> **`priority` 当前没有公共契约** —— 在正式接口变更之前，
+> **不得声称 Integration / Planner 已经消费跨模块 priority**。
 
 ### Course Data
 负责真实开课数据的获取和标准化，输出“现实里有什么课”。
@@ -47,9 +53,13 @@ Planner 消费 Curriculum 提供的补修任务、课程依赖结果与已确认
                                                        Agent / Frontend
 ```
 
-> 图中 Curriculum 的输出简写为 `MakeupTask[]`。按 `/AGENTS.md` 第 5 节，
-> Planner 实际消费的是补修任务**加上** Curriculum 给出的课程依赖结果与已确认优先级，
-> 而不是只有补修任务清单。
+> 图中 Curriculum 的输出简写为 `MakeupTask[]`。按 **Data Gate DG-05**，
+> **MVP 当前跨模块只传 `MakeupTask[]`**：prerequisite 信息由 `MakeupTask.prerequisites[]` 承载，
+> **`priority` 当前没有公共契约**。
+> 因此上图就是当前**真实**的跨模块数据流，不再另加"依赖结果 / 优先级"对象。
+>
+> 模块之间的调用顺序与 Provider 边界见 `docs/interfaces/integration.md`
+> （Integration 只做编排，不做业务算法）。
 
 ## 4. 公共契约
 

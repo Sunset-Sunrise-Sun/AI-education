@@ -1072,3 +1072,148 @@
 - 下一步：等待 Reviewer 复验。Data Gate 已关闭；下一步 **Course Data MVP**
   （真实 2026-1 semester offering snapshot）**须等新一轮任务书**。
   ⚠️ **不 merge，不自行开始 Course Data MVP**。
+
+---
+
+### 2026-09-30 - Phase 2B-1：Integration / Provider Skeleton
+- 本次目标：建立 Curriculum / Course Data / Planner 与 Integration 之间
+  **最小、稳定、可测试的 Python Provider 边界** —— "只做插座"：
+  **不接真实 SYSU 数据、不实现业务算法、不新增用户可见功能、不新增 API**。
+- 起点：`main` = `6e5d330cba31be545ebf67decb01dfebd3c5d788`（Data Gate-2 已合入）；
+  新建 `feature/integration-provider-skeleton`。
+  （注：首次 `git pull` 直连失败 —— `Failed to connect to github.com:443`；
+  按既有约定用 `git -c http.proxy=http://127.0.0.1:7890 pull` 成功，未改全局 git 配置。）
+- **新增 `backend/app/integration/`**（不塞进 `mock_service.py` / `main.py`）
+  - `__init__.py`：包说明 + 只导出三个 Protocol 与 `PlanningOrchestrator`；
+    明确写着"本包**不会**在真实 Provider 缺失时回退到 Mock 通道"。
+  - `ports.py`：三个 `typing.Protocol`（`@runtime_checkable`，便于测试断言结构满足）——
+    - `CurriculumProvider.get_makeup_tasks() -> list[MakeupTask]`
+      （Integration **不知道**培养方案文件 / `CompletedCourse` 内部结构 /
+      `CurriculumVersion` / `CurriculumCourse` / 课程匹配实现）；
+    - `CourseDataProvider.get_course_offerings(semester: str) -> list[CourseOffering]`
+      （Integration **绝不能**知道 `jwxt.sysu.edu.cn` / POST endpoint / `pageNo` / `pageSize` /
+      Cookie / Session / `teachingTimePlaceStr` / `class_ID` / `courseNumber`）；
+    - `PlannerProvider.plan(*, makeup_tasks, offerings, current_schedule, preference) -> PlanResult`
+      （**不接收** `priority` / `dependency_graph` / `risk_scores`）。
+  - `orchestrator.py`：`@dataclass(frozen=True) PlanningOrchestrator`，
+    **只持有**三个 Provider；`build_plan(*, semester, current_schedule, preference)` 内部严格是
+    `get_makeup_tasks()` → `get_course_offerings(semester)` → `plan(...)` → **原样 `return`**。
+    **没有任何业务判断**：无 `if`、无 `sort`、无筛选、无派生计算、无 fallback。
+- **新增 `backend/tests/test_integration_orchestrator.py`**（14 个测试，**全部用 test-only Fake / Spy Provider**）：
+  ① 正常流程 + **返回对象就是 Planner 给出的那一个**（`is` 同一性）；
+  ② 调用顺序固定 `curriculum → course_data → planner`；
+  ③ `semester` 原样传递（含"故意带空格/不规整"的输入，确认 Integration 不做规整）；
+  ④ **四个入参按对象身份透明传递**（`makeup_tasks` / `offerings` / `current_schedule` /
+  `preference` 均为 `is` 断言 + 顺序断言）；
+  ⑤ 空 `current_schedule` 合法下传（不自行报错）；
+  ⑥ 空 `offerings` 原样交给 Planner，**`infeasible` 由 Planner 决定**；
+  ⑦ Course Data / Planner 抛异常时**原样向上抛**，且 Course Data 失败时 **Planner 不被调用**
+  （证明没有 fallback 路径）；
+  ⑧ Protocol 结构满足（`isinstance` + `runtime_checkable`）；
+  ⑨ `PlannerProvider.plan` 的**参数集合被锁定**为四个（防私加 `priority` 等）；
+  ⑩ Orchestrator 的 dataclass 字段**只有三个 Provider**；
+  ⑪ **Integration 层不得引用 Mock 通道**：用 **AST** 检查 import 与函数调用
+  （而不是查源码文本 —— 文档里说明"不会回退到 mock_service"是允许的，被禁的是真的导入 / 调用它）；
+  ⑫ **未新增 API**：断言 OpenAPI `paths` 与 Phase 1 完全一致，且不含 `/plan` / `/integration`。
+- **新增 `docs/interfaces/integration.md`**（8 节：职责 / 三个 Provider / 调用顺序 /
+  `current_schedule` 语义 / dependency-priority 边界 / 错误处理原则 / Mock 与 Real 不自动 fallback /
+  当前尚未开放真实 API）。明确声明这是**既有公共对象之间的编排说明，不是新增 Schema**。
+- **最小修正 `docs/ARCHITECTURE.md`**（DG-05 旧口径）：
+  - 删除"Planner 实际消费的是补修任务**加上**课程依赖结果与已确认优先级"的表述；
+  - 改为：**MVP 当前跨模块只传 `MakeupTask[]`**，prerequisite 由
+    `MakeupTask.prerequisites[]` 承载（Planner 只做本地 adjacency / topology 转换，
+    不得新增 / 猜测 / 重写先修边）；
+  - 明确 **`priority` 当前没有公共契约**，在正式接口变更前
+    **不得声称 Integration / Planner 已经消费跨模块 priority**；
+  - 补一句指向 `docs/interfaces/integration.md`。未重写整个 ARCHITECTURE。
+- **本轮明确未做**：
+  - ❌ **未创建任何生产 Mock Provider**（`MockCurriculumProvider` / `MockCourseDataProvider` /
+    `MockPlannerProvider` 均不存在）—— 避免造成"完整 Integration 已跑通"的错觉；
+  - ❌ **未新增 API**：`backend/app/main.py` **未修改**，`POST /plan` / `POST /integration` /
+    `GET /real/...` 均未添加；
+  - ❌ **未新增跨模块 DTO**：没有 `StudentProfile` / `IntegrationRequest` / `PlanningContext` /
+    `DependencyGraph` / `CourseDataSnapshot` —— 现有稳定对象已足够；
+  - ❌ 未改 `schemas/`、未改现有公共字段、未改 `mock_data/`、
+    未改 `mock_service.py`（仍 **permanent Mock-only**）、未改 `/api/v1/mock/*`；
+  - ❌ 未接 SYSU、未写 crawler / browser extension / Adapter / Normalizer、未做真实 semester snapshot、
+    未建数据库 / ORM / migration；
+  - ❌ 未写 Curriculum 算法 / Planner 冲突算法 / OR-Tools / Path Repair；
+    未接 LLM / Tool Calling / Preference 自然语言解析。
+- 修改文件：
+  - 新增 `backend/app/integration/__init__.py`、`backend/app/integration/ports.py`、
+    `backend/app/integration/orchestrator.py`
+  - 新增 `backend/tests/test_integration_orchestrator.py`
+  - 新增 `docs/interfaces/integration.md`
+  - 修改 `docs/ARCHITECTURE.md`（仅 DG-05 两处口径）
+  - 修改 `docs/status/agent_frontend.md`、本文件（仅追加）
+  - **前端本轮无代码改动**，按要求未跑 `npm run build`。
+- 测试：`cd backend && python -m pytest` → **147 passed / 2 skipped**
+  （迁移前 133 passed / 2 skipped，**新增 14 个 Integration 测试全部通过**；
+  原测试**全部继续通过**，**未删除任何旧测试、未新增 skip、未放宽 Schema**）。
+- 公共接口是否变化：**否**（未改 Schema / 未新增 endpoint；`docs/interfaces/integration.md` 只是编排说明）
+- 当前能做什么：三块上游只要各自给出符合 Protocol 的实现（**测试内已用 Fake 验证**），
+  `PlanningOrchestrator.build_plan()` 就能把 `MakeupTask[]` + `CourseOffering[]` +
+  `current_schedule` + `Preference` 串给 Planner 并原样返回 `PlanResult`。
+- 当前不能做什么：**没有任何真实链路** —— production Curriculum / Course Data / Planner provider
+  三件都未接入；**没有对外 API**；前端仍只能读 Mock 通道。
+- 下一步：等待 Reviewer 验收 **Phase 2B-1**。之后是 **Phase 2B-2 Course Data MVP**
+  （真实 2026-1 semester offering snapshot，实现 `CourseDataProvider`），
+  **须等新一轮任务书**。⚠️ **不 merge，不自行开始 Phase 2B-2**。
+
+---
+
+### 2026-09-30 - Phase 2B-1 Reviewer 治理口径修复（Integration 接口的契约地位，docs-only）
+- 本次目标：修掉 Reviewer 指出的**唯一 blocker** ——
+  Integration Provider 接口被**错误描述为"不是公共契约"**。
+- **治理口径的准确区分**（`/AGENTS.md` 第 4 节把 `/schemas/` 与 `/docs/interfaces/` **一并**列为公共契约）：
+  - ✅ **没有新增公共业务 Schema**（未改 `/schemas/`、未改现有公共数据结构）；
+  - ✅ **但新增了受保护的 Integration 公共接口边界** ——
+    `docs/interfaces/integration.md` 位于 `/docs/interfaces/`，
+    与 `ports.py` / `orchestrator.py` 的四个调用签名**同属公共跨模块接口**。
+  - 后续模块**不得自行修改** Provider 方法名、参数语义或返回类型；
+    变更仍须按 `/AGENTS.md` 第 4 节提交 `【接口变更请求】` 并经负责人确认。
+- **具体修改**：
+  1. `docs/interfaces/integration.md`
+     - 文件开头：删除"**不是一个新 Schema**"这一会误导为"非公共契约"的表述，
+       改为"本文件**不新增业务对象 Schema**，也不修改 `/schemas/` 中的公共数据结构；
+       但本文件位于 `/docs/interfaces/`，因此其中定义的 **Provider 调用边界属于项目的公共跨模块接口**"，
+       并写明"后续模块不得自行修改 Provider 方法名 / 参数语义 / 返回类型；变更须走 `【接口变更请求】`"；
+     - §1 注释：把"这些**不是**新的公共契约，只是……的声明"改为
+       "这些不是**新的业务对象 Schema**，但它们是**已确认的 Integration 公共接口边界**"；
+     - **新增 §3.1「接口冻结（Phase 2B-1 已确认）」**：逐一列出
+       `CurriculumProvider.get_makeup_tasks()`、`CourseDataProvider.get_course_offerings(semester)`、
+       `PlannerProvider.plan(*, ...)`、`PlanningOrchestrator.build_plan(*, ...)` 四个**已确认签名**，
+       明确它们是代码侧的事实接口、**不得私自修改**，并重申
+       `PlannerProvider.plan()` 参数集合**恰为四个**（不得私加 `priority` / `dependency_graph` / `risk_scores`）。
+  2. `backend/app/integration/ports.py`（**仅 docstring**）
+     - 删除"这里的 Protocol **不是新的公共契约**"；
+     - 改为"这些 Protocol 是 `docs/interfaces/integration.md` 的**代码侧映射**：
+       不新增业务字段或 Schema，但其**跨模块调用签名属于已确认的 Integration 公共接口边界**，
+       **不得由实现模块私自修改**"。
+  3. `backend/app/integration/__init__.py`
+     - **已逐句检查，不存在同类"非公共接口"的错误表述，因此未修改**（按任务要求"没有则不改"）。
+  4. `docs/status/agent_frontend.md`
+     - 把"**未新增任何跨模块 Schema / DTO**"改为
+       "**未新增公共业务 Schema / 跨模块 DTO**……但**新增了 Integration Provider 公共接口边界**"
+       （Phase 2B-1 结果与「已完成」两处）；
+     - 「当前接口」的 Integration 条目补注：这四个调用签名是**已确认的 Integration 公共接口边界**，
+       不得由实现模块私自修改。
+- **更正上一轮记录中的口径**：上一轮本文件写的
+  "公共接口是否变化：**否**（……`docs/interfaces/integration.md` 只是编排说明）"
+  **应记为「是」** —— 该轮**未新增业务 Schema，但新增了受保护的 Integration 公共接口边界**。
+  （按 worklog 仅追加的约定，旧行保留，以本条更正为准。）
+- **未修改（严格守住 Reviewer 的禁止项）**：
+  - ❌ Provider 方法签名（`get_makeup_tasks` / `get_course_offerings` / `plan` 一字未动）；
+  - ❌ `orchestrator.py` 的行为（本轮**未打开该文件的逻辑**）；
+  - ❌ 测试逻辑（未新增测试、未改断言）；
+  - ❌ `schemas/`、`mock_data/`、`main.py`、现有 API。
+- 修改文件：
+  - `docs/interfaces/integration.md`
+  - `backend/app/integration/ports.py`（**仅 docstring**）
+  - `docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：本轮为文档 / 注释治理修复，**不需要新增测试**；按要求快速复跑
+  `cd backend && python -m pytest` → **147 passed / 2 skipped**（全部通过）。
+- 公共接口是否变化：**否**（未改任何方法签名 / 未改 Schema / 未新增 API）；
+  本轮只**修正对既有接口契约地位的描述**。
+- 下一步：等待 Reviewer 复验。⚠️ **不 merge，不自行开始 Phase 2B-2 Course Data MVP**。
