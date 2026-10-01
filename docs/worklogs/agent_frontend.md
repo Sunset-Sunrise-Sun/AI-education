@@ -1217,3 +1217,31 @@
 - 公共接口是否变化：**否**（未改任何方法签名 / 未改 Schema / 未新增 API）；
   本轮只**修正对既有接口契约地位的描述**。
 - 下一步：等待 Reviewer 复验。⚠️ **不 merge，不自行开始 Phase 2B-2 Course Data MVP**。
+
+---
+
+### 2026-09-30 - Phase 2B-2A：Course Data Normalization Core（阶段同步）
+- 本次目标：进入 **Course Data** 侧的 **Normalization Core**（已在 `docs/worklogs/course_data.md`
+  留下本轮主记录）。对 Agent / Frontend 来说本轮是**阶段同步**，无行为改动。
+- 起点：`main` = `aff6438c400731dd94e66a3d884ee45c774c4051`；
+  分支 `feature/course-data-normalization-core`。
+- 新增（Course Data 内部包，**不是跨模块公共契约**）：
+  `backend/app/course_data/{__init__,errors,normalization,snapshot}.py`；
+  新增测试 `backend/tests/test_course_data_{normalization,snapshot}.py`（90 个）。
+- 关键边界（对 Integration 侧的意义）：
+  - `SnapshotCourseDataProvider` **结构上满足** Phase 2B-1 冻结的 `CourseDataProvider`
+    （`get_course_offerings(semester) -> list[CourseOffering]`），**不继承、不修改** Protocol；
+  - 学期匹配返回该学期教学班，否则返回 `[]`；**零网络、无 Mock fallback**；
+  - **Integration / Orchestrator / `ports.py` / `orchestrator.py` 一律未修改**；
+  - **前端未改动**（本轮无前端相关接口变化），未跑 `npm run build`。
+- 阶段影响：阶段图由"Phase 2B-1 完成"推进为"**Phase 2B-2A 完成**"，
+  下一步为 **Phase 2B-2B**（真实 `teachingTimePlaceStr` parser / 授权 import adapter /
+  完整 2026-1 snapshot），**须等新任务书**。
+- 修改文件（本模块视角）：
+  - `docs/status/agent_frontend.md`（最小阶段同步：表头、阶段图、新增 Phase 2B-2A 结果小节、
+    「当前阻塞」「下一步」）
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **237 passed / 2 skipped**
+  （本轮前 147 passed / 2 skipped；原测试全部继续通过，未删除旧测试、未新增 skip）。
+- 公共接口是否变化：**否**（未改 `schemas/` / `docs/interfaces/` / Integration 签名 / API）
+- 下一步：等待 Reviewer 验收 **Phase 2B-2A**。⚠️ **不 merge，不自行进入 2B-2B**。
