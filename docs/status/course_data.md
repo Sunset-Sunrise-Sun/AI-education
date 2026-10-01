@@ -147,6 +147,18 @@ G11 业务语义最小核验（2B-2C1D，人工 UI，n = 2）      ✅ **已完�
 **→ 契约缺口候选：`DG-07`**（`docs/data/DATA_GATE_DECISIONS.md` §17），
 状态 **`PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**；⛔ **本轮不实施**。
 
+**DG-07 草案的两条组成部分（缺一不可，否则等于放行静默降级）**：
+
+1. **fail-closed 不变量**（§17.12.1）：`meetings = []` **只能**表示**来源层没有提供**
+   可形成 `Meeting` 的排课信息，⛔ **不得**作为 parser / importer / normalizer
+   **解析失败的 fallback**；**初始边界按现有证据写死** —— ✅ 唯一可映射为 `[]` 的形态是
+   **`teachingTimePlaceStr` 属性不存在**；⛔ `null` / `empty_string` / `other_type` /
+   非空但格式无法解析 / malformed segment / parser / normalization 异常**一律继续 fail closed**；
+2. **Planner 安全规则覆盖 `offerings` 与 `current_schedule`**（§17.9）：
+   两者同为公共类型 `CourseOffering[]`；**对其中任何 `meetings = []` 的 `CourseOffering`，
+   schedule 都视为 unknown**；**若 `current_schedule` 中存在 `meetings = []`，
+   不得把其它候选声明为"已验证与当前课表无时间冲突"**。
+
 > ⚠️ **缺失字段的业务含义尚未确认**：现有证据**只**证明"第 1 页存在 39 条这样的 row"，
 > 且说明它**不是单条孤立现象**。
 > **不得**据此写成"缺排课""未排课课程""未排课教学班""时间待定""异步课程""无需排课"

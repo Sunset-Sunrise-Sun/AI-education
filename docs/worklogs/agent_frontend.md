@@ -1504,3 +1504,28 @@
 - 公共接口是否变化：**否**（DG-07 仅提案，**未实施**）。
 - 下一步：等待 **Architecture Lead** 对 **DG-07** 的裁决。
   ⚠️ **不 merge，不自行开始 DG-07 实施**。
+
+### 2026-10-01 - DG-07 Reviewer 架构修复（3 项，docs-only，阶段同步）
+- 本次目标：按 Reviewer 意见做**架构性收口**（主记录见 `docs/worklogs/course_data.md`）。
+  ⛔ 仍**不实施** DG-07，⛔ **不改**代码 / 测试 / Schema / Interface。
+- **① 表述收口**：删除"真实可选教学班"——C1D 只证明**真实教学班 / 开课记录存在**，
+  **不证明对当前学生可选**；统一改为"**过滤可能丢失真实教学班记录**"；
+  "**是否属于有效可选教学班**"与"**是否应进入 Planner**"**继续保留为未确认项**。
+- **② fail-closed 不变量**（`DATA_GATE_DECISIONS.md` §17.12.1）：
+  `meetings = []` **只能**表示来源层没有提供可形成 `Meeting` 的排课信息，
+  ⛔ **不得**作为 parser / importer / normalizer 解析失败的 fallback；
+  **初始边界**：✅ 唯一可映射为 `[]` 的形态是 **`teachingTimePlaceStr` 属性不存在**；
+  ⛔ `null` / `empty_string` / `other_type` / 无法解析 / malformed segment / 解析异常
+  **一律继续 fail closed**。
+- **③ Planner 规则覆盖 `current_schedule`**（§17.9）：`offerings` 与 `current_schedule`
+  **同为 `CourseOffering[]`**，故**两者中任何 `meetings = []` 的 schedule 均为 unknown**；
+  ⛔ **`current_schedule` 含空 meetings 时，不得把其它候选声明为
+  "已验证与当前课表无时间冲突"**；`status` / `unresolved` 命名**仍待 Planner 实施评审**。
+- **Browser / 本模块视角**：⛔ **未新增或修改任何诊断入口**，
+  ⛔ **不需要重复运行** C1B / C1C 或 C1D；**Builder 实际 SYSU 请求数 = 0**。
+- 修改文件（本模块视角）：`docs/status/agent_frontend.md`、本文件（**仅追加**）；
+- 回归：`cd backend && python -m pytest` → **539 passed / 2 skipped**；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**（未改测试）。
+- 公共接口是否变化：**否**（DG-07 仍为 **PROPOSED**，**未实施**）。
+- 下一步：等待 **Architecture Lead** 对 **DG-07** 的裁决。
+  ⚠️ **不 merge，不自行开始 DG-07 实施**。

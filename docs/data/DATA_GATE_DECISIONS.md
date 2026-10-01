@@ -1275,6 +1275,7 @@ Data Gate-1 + Data Gate-2：PASSED / CLOSED
 | 2026-09-30 | **最终同步修复（Data Gate-1 收尾）** | ① **§5.1 隐私措辞收紧**：删除过强的"来源为学校侧，**不含个人身份信息**，原则上可跨成员共享"，改为 **School-shared = "可在同一学校用户场景中复用的学校侧数据"**，并明确**不代表天然不含人员信息、不代表可以公开发布**；补注 `CourseOffering` 等**可能包含教师等人员信息**、Real / Raw 仍须遵守**数据最小化 / 来源授权 / 非公开处理**，以及 **"是否 School-shared" 与 "是否可以公开" 是两个独立问题**；⚠️ **不得把教师信息归为 Student-private**。② **新增 §11.3 C9 裁决**：目标 **2026-1 semester offering snapshot**；7 条获取边界；Course Data / Integration / Planner 三方分工；**批量导入须先确认合理 `pageSize` / 请求规模**；**completeness 纪律** —— "目标是完整 Snapshot"**≠**"已取得完整数据"，**partial snapshot 必须显式记录完整性，不得宣称 complete**（§11.4 / §11.5 顺延）。③ **§12 同步**：**C2 / C3 / C9 / C10 / C11 全部标记为 ✅ 已确认**，进度更新为"**仅 C5 待 Data Gate-2 执行**"；C10 保留 **真实逐行数据交接次数 = 0**；C11 明确四项风险（`prerequisites[]` 暂无真实来源证据、`weekDay` 待确认、`openingSchoolName → campus` 待确认、meeting-level teacher 为 known deferred representation gap），并写明 **不允许实现层自行补齐**。**仍未修改 Schema / Interface / 代码，未调用 SYSU 接口（零请求），未进入 Data Gate-2。** |
 | 2026-09-30 | **Data Gate-2 实施完成 → Data Gate PASSED / CLOSED** | ① **DG-01 已实施**：`schemas/course_offering.schema.json` 顶层删除 `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`，新增 **`meetings[]`（`minItems: 1`）**；顶层 `required` = `course_id` / `course_name` / `class_id` / `semester` / `meetings`；每个 `Meeting` = `weekday` / `start_section` / `end_section` / `weeks[]` / `campus?` / `classroom?`（`additionalProperties: false`）；**未新增任何暂缓字段，未给 `Meeting` 加 `teacher`**。② **DG-06 已实施**：`docs/interfaces/planner.md` 与 `docs/interfaces/curriculum.md` 已按 `/AGENTS.md` 第 5 节修正（Planner 不再负责依赖认定 / 风险 / 优先级 / Curriculum Diff；删除 `build_dependency_graph` 与 `calculate_priority`；写明 `current_schedule: CourseOffering[]` 的语义与"学校全部供给 ≠ 学生已选子集"；写明优先级当前**无**公共契约）。③ **同步范围**：`mock_data/course_offerings.json` 全量迁移（**9 个教学班，其中 1 个含 2 段 meeting**）、`backend/app/models/contracts.py`（新增 `Meeting`）、后端测试、`frontend` 类型与展示（上课安排逐段展示）。④ **验证**：后端 `pytest` **133 passed / 2 skipped**；前端 `npm run build`（含 `vue-tsc --noEmit`）**成功**。⑤ **C5 完成，C1–C11 全部完成 → Data Gate PASSED / CLOSED**（§12.2、§16）。⑥ **G9 更新为「已通过 DG-01 / Data Gate-2 完成公共契约修复」**，原缺口描述在缺口报告中**原样保留**。⚠️ **全程零 SYSU 请求；未写 crawler / Adapter / Provider / Integration；未建数据库；未进入 Course Data MVP。** |
 | 2026-10-01 | **Data Gate Reopen（仅 DG-07）+ DG-07 草案提交** | 因 **G11** 新真实证据（真实 2026-1「全校开设课程」第 1 页：**39 / 200 条 row 缺少 `teachingTimePlaceStr`**；C1C 相关性诊断显示结构差异集中在排课相关字段；**C1D** 人工 UI 核验 **n = 2** 两条典型候选均为普通教学班行、时间 / 周次 / 地点空白且无状态文字）：① **Data Gate 仅在 DG-07 范围内临时 Reopen**（**Reopened narrowly for DG-07 only**，§12.3），⛔ **DG-01 – DG-06 不重新打开**、其它已裁决问题不重新讨论；② **新增 §17**，按 `/AGENTS.md` 第 4 节格式提交 **DG-07 `CourseOffering` Empty Meetings / Unknown Schedule** 草案 —— 建议把 `meetings` 的 **`minItems: 1` 放宽为 `0`**，使 `"meetings": []` 合法，并锁定其**精确定义**（仅表示"当前来源快照没有可用排课信息"，⛔ 不表示无课 / 异步 / 时间自由 / **无冲突** / 学校确认未排课）；③ **比较 4 个替代方案**（A 过滤、**B `minItems = 0`（推荐）**、C 新增 `schedule_status`、D 独立 DTO），并说明**暂不新增业务状态枚举**的理由（无官方语义证据，易把"未知"伪装成"已知状态"）；④ **写入核心安全不变量 `meetings = []` ≠ conflict-free**，Planner 不得将其视为"已验证无冲突"的普通候选；保守 MVP 行为仅作 Proposal，`PlanResult.unresolved[].type` 的 `missing_schedule` 标为 **candidate convention only**，⛔ 不武断规定 `partially_feasible` / `infeasible`；⑤ **Breaking 分析分两层**：Schema validation 层面为**兼容性放宽**，消费者语义层面为**语义性 breaking change**（依赖 `meetings` 非空不变量的消费者需同步迁移）；⑥ 明确**术语纪律**（推荐中性术语 `schedule information unavailable in current source snapshot`；⛔ 不得使用"未排课课程 / 异步课程 / 时间待定"等学校未提供的标签），并声明**只有边际计数、无逐 row 交叉证据**、C1D **n = 2 不得外推**、39/200 **不得外推到 6892**。⑦ **DG-07 状态 = `PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**（**未批准**）。⚠️ **本轮未修改** `schemas/` / `docs/interfaces/` / 任何代码 / 任何测试；**未实施** `minItems = 0`；**未认定 G11 resolved**；**Builder 实际 SYSU 请求数 = 0**。 |
+| 2026-10-01 | **DG-07 Reviewer 架构修复（3 项，docs-only）** | ① **删除"真实可选教学班"的过度表述**：C1D 只证明**真实教学班 / 开课记录存在**，**不证明**对当前学生**可选**；`过滤可能丢失真实可选教学班` → **`过滤可能丢失真实教学班记录`**（§17.5 / §17.6 共 4 处）。**"是否属于有效可选教学班"与"是否应进入 Planner"继续保留为未确认项**。② **新增 §17.12.1「Course Data fail-closed 不变量」**：明确 **`meetings = []` 只能表示来源层没有提供可形成 `Meeting` 的排课信息，⛔ 不得作为 parser / importer / normalizer 解析失败的 fallback**；**初始实施边界按现有证据写死** —— ✅ **已确认可映射为 `[]` 的来源形态只有一种：`teachingTimePlaceStr` 属性不存在**；⛔ `null` / `empty_string` / `other_type` / 非空但格式无法解析 / malformed segment / parser / normalization 异常**一律继续 fail closed**，除非将来有**独立真实证据 + 架构裁决**。③ **Planner 安全规则显式覆盖 `current_schedule`**（§17.9）：因 `offerings` 与 `current_schedule` **同为公共类型 `CourseOffering[]`**，故**对两者中任何 `meetings = []` 的 `CourseOffering`，schedule 都视为 unknown**；**若 `current_schedule` 中存在 `meetings = []`，Planner 不得把其它候选声明为"已验证与当前课表无时间冲突"**（最多只能说"与**已知**时段不冲突"）。④ **§17.5 建议修改**同步声明：**本提案的批准必须与上述两条不变量同时成立**，否则等于放行静默降级。⑤ `PlanResult.status` / `unresolved` 命名**仍留待 Planner implementation review**，⛔ 本轮不决定；**DG-07 状态仍为 `PROPOSED / WAITING FOR ARCHITECTURE REVIEW`**（⛔ 未写 APPROVED）。⚠️ **仅修改现有 7 个 docs 文件**；**未修改** `schemas/` / `docs/interfaces/` / 代码 / 测试；**未实施** `minItems = 0`；**Builder 实际 SYSU 请求数 = 0**。 |
 
 ---
 
@@ -1465,13 +1466,19 @@ teachingTimePlaceStr:  missing 39 | null 0 | empty_string 0 | non_empty_string 1
      （`meetings` 仍为必填，只是**允许为空数组**）。
   ⛔ 不新增 `schedule_status` / `schedule_known` / `schedule_state`（理由见 §17.7）。
   ⛔ 字段名、最终语义措辞、是否同时调整文档与测试，**均待 Architecture Lead 裁决**。
+  ⚠️ **本提案的批准必须与下面两条不变量同时成立**（否则等于放行静默降级）：
+     · **§17.12.1 fail-closed 不变量**：`meetings = []` **只能**表示来源层确实没有提供
+       可形成 `Meeting` 的排课信息（**初始证据边界**＝**仅 `teachingTimePlaceStr` 属性不存在**），
+       ⛔ **不得**作为 parser / importer / normalizer **解析失败的 fallback**；
+     · **§17.9 Planner 安全规则**：`meetings = []` **≠ conflict-free**，
+       且该规则**同时适用于 `offerings` 与 `current_schedule`**（两者同为 `CourseOffering[]`）。
 
 原因：
   真实证据（§17.3）显示：真实来源中存在**官方教学班记录存在、
   但当前来源快照没有可用排课信息**的已观察状态（第 1 页 39/200；其中 2 条已人工核验）。
   现有契约**强制至少一个 Meeting**，导致 Course Data 只有两种坏选择：
     ① 为这样的教学班**伪造** `Meeting`（凭空造排课信息 → 冲突检测假阴性）；
-    ② **静默过滤**掉这些真实教学班（可能丢失真实可选教学班）。
+    ② **静默过滤**掉这些真实教学班（可能丢失真实教学班记录）。
   两者都与"不得猜测 / 不得伪造 / 不得静默丢数据"的项目纪律冲突（`/AGENTS.md` 第 8、18 节）。
   因此需要一种**不伪造、不丢弃**的合法表示。
 
@@ -1503,7 +1510,7 @@ teachingTimePlaceStr:  missing 39 | null 0 | empty_string 0 | non_empty_string 1
   有，但都有实质代价（详见 §17.6）：
     Alternative A（保持 `minItems = 1`，由 Course Data 过滤缺 schedule 的 row）：
       ⛔ 当前证据**不足以**证明这些 row 无效；已人工核验的 2 条候选在官方 UI 中
-         仍是**普通教学班记录**；过滤可能**丢失真实可选教学班**。
+         仍是**普通教学班记录**；过滤可能**丢失真实教学班记录**。
     Alternative C（新增显式 `schedule_status` 枚举）：
       ⛔ 当前**没有官方业务语义证据**支撑枚举设计（pending / asynchronous /
          cancelled / unscheduled / not_required 均无证据），
@@ -1520,7 +1527,7 @@ teachingTimePlaceStr:  missing 39 | null 0 | empty_string 0 | non_empty_string 1
 
 - 优点：不改公共 Schema；Planner **无需**处理 schedule unknown；
 - 风险：**当前证据不足以证明这些 row 无效**；已人工核验的 2 条候选在官方 UI 中
-  仍是普通教学班记录；**过滤可能丢失真实可选教学班**（与项目"不得静默丢数据"纪律冲突）；
+  仍是普通教学班记录；**过滤可能丢失真实教学班记录**（与项目"不得静默丢数据"纪律冲突）；
 - 评估：**本轮不推荐**（但作为**保留方案**记录，最终由 Architecture Lead 权衡）。
 
 **Alternative B — `meetings` `minItems = 0`（⭐ DG-07 推荐方案）**
@@ -1548,7 +1555,7 @@ teachingTimePlaceStr:  missing 39 | null 0 | empty_string 0 | non_empty_string 1
 
 | 方案 | 是否改公共契约 | 是否保留真实教学班 | 是否需猜学校语义 | 主要风险 |
 |---|---|---|---|---|
-| A 过滤 | 否 | ❌ 会丢 | 否（但隐含"这些是无效记录"的判断） | 丢失真实可选教学班 |
+| A 过滤 | 否 | ❌ 会丢 | 否（但隐含"这些是无效记录"的判断） | 丢失真实教学班记录 |
 | **B `minItems = 0`（推荐）** | 是（放宽） | ✅ | 否 | Planner 误判为无冲突（须配套安全规则） |
 | C `schedule_status` | 是（新增字段） | ✅ | ⚠️ 很可能 | 把"未知"伪装成"已知状态" |
 | D 独立 DTO | 是（新增实体） | ✅ | 否 | MVP 过重、跨模块契约扩大 |
@@ -1586,11 +1593,23 @@ teachingTimePlaceStr:  missing 39 | null 0 | empty_string 0 | non_empty_string 1
 - ⛔ Planner **绝不能**因为"没有 `Meeting` 对象"就推导出"**没有任何时间冲突**"；
 - ✅ 正确描述：`meetings = []` 表示 **schedule unknown / unavailable**，
   因此 Planner **不能**将该教学班视为"**已经验证无冲突**"的普通候选；
+- **`offerings` 与 `current_schedule` 必须使用同一条规则**：
+  - ⚠️ 两者都是公共类型 `CourseOffering[]`
+    （见 `docs/interfaces/planner.md` / `docs/interfaces/integration.md`），
+    **因此 `meetings = []` 的风险在两侧都存在**；
+  - ✅ **对 `offerings` 和 `current_schedule` 中任何 `meetings = []` 的 `CourseOffering`，
+    schedule 都视为 unknown**；
+  - ⛔ **若 `current_schedule` 中存在 `meetings = []`**：Planner **不得**把其它候选声明为
+    "**已验证与当前课表无时间冲突**" —— 因为"当前课表"本身有一段**时间占用未知**，
+    任何"无冲突"结论都**不成立**（最多只能说"与**已知**时段不冲突"）；
 - **保守 MVP 行为（仅 Proposal，本轮不拍死实现细节）**：
-  - 若 Planner 面对 `CourseOffering.meetings = []`，
-    推荐**不自动**把它作为 **conflict-free candidate** 选入最终确定性课表；
+  - 若 Planner 面对 `CourseOffering.meetings = []`（无论来自 `offerings` 还是
+    `current_schedule`），推荐**不自动**把它作为 **conflict-free candidate**
+    选入最终确定性课表；
   - 若某个**必须处理**的 `MakeupTask` **只有** `meetings = []` 的候选教学班，
     方案应**显式进入 unresolved / 人工确认路径**，而**不是**静默选入或静默丢弃；
+  - 若 `current_schedule` 含 `meetings = []`，相关"无冲突"断言应**整体降级为未知**，
+    并**显式**进入 unresolved / 人工确认路径（⛔ 不得静默按"无冲突"处理）；
 - **`PlanResult.unresolved[].type` 的候选约定**：
   - 现状：`plan_result.schema.json` 中 `unresolved[].type` 是**开放字符串**
     （`{"type": "string"}`），因此**无需改 Schema** 即可承载新类型；
@@ -1637,6 +1656,43 @@ Course Data **应**：
 
 > ⚠️ **本轮只是 Proposal。** ⛔ **不得修改** `importer` / `parser` / `normalizer` /
 > `snapshot` / `collector` 的任何代码；⛔ 也**不得**在本轮实施 `minItems = 0`。
+
+#### 17.12.1 **fail-closed 不变量**（DG-07 必须与本条一起批准）
+
+> **`meetings = []` 只能表示「来源层没有提供可形成 `Meeting` 的排课信息」，
+> ⛔ 绝不能作为 parser / importer / normalizer 解析失败的 fallback。**
+
+- ⛔ **解析失败必须继续 fail closed**：不得把异常、畸形输入或"看不懂的格式"
+  转写成 `meetings = []`；那会把**我们的解析缺陷**伪装成**学校的数据状态**；
+- 这条不变量是 DG-07 的**组成部分**：**只批准 `minItems = 0` 而不批准本条，
+  等于放行静默降级**。
+
+**初始实施边界（按现有证据写死）**
+
+✅ **已确认可映射为 `meetings = []` 的来源形态（唯一一种）**：
+
+- **`teachingTimePlaceStr` 属性不存在**（字段缺失）。
+
+⛔ **以下情况一律不得自动映射为 `[]`，必须继续 fail closed**
+（除非将来有**独立真实证据 + 架构裁决**）：
+
+| 来源形态 | 处置 |
+|---|---|
+| `teachingTimePlaceStr = null` | ⛔ **fail closed**（**不**映射为 `[]`） |
+| `teachingTimePlaceStr` 为空字符串（`empty_string`） | ⛔ **fail closed** |
+| `teachingTimePlaceStr` 为其它类型（`other_type`） | ⛔ **fail closed** |
+| **非空但格式无法解析** | ⛔ **fail closed** |
+| **malformed segment**（字段数 / 分隔符 / 结构异常） | ⛔ **fail closed** |
+| **parser / normalization 抛异常** | ⛔ **fail closed**（异常原样向上，不吞掉） |
+
+> ⚠️ 依据：C1B 的真实第 1 页样本中，`null` / `empty_string` / `other_type` **均为 0**，
+> 即**现有证据只覆盖"属性不存在"这一种形态**；
+> 其余形态**没有真实样本**支持"它们也应被视为排课信息不可用"，
+> 因此**不得**顺手放宽（与 §10.1 的暂缓字段纪律、`/AGENTS.md` 第 18 节
+> "不将推测写成真实事实"一致）。
+>
+> ⛔ 本边界的**扩大**（例如把 `empty_string` 也纳入）必须走
+> **新的真实证据 + 架构裁决**，不得由实现层自行决定。
 
 ### 17.13 G11 状态（本轮口径，**不得升级为 resolved**）
 

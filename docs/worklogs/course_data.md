@@ -824,3 +824,48 @@
 - 下一步：等待 **Architecture Lead** 对 **DG-07** 的裁决。
   ⚠️ **不 merge，不自行开始 DG-07 实施**。
 
+### 2026-10-01 - DG-07 Reviewer 架构修复（3 项，docs-only）
+- 本次目标：按 Reviewer 意见做**架构性收口**，⛔ **仍不实施** DG-07、
+  ⛔ **不改**代码 / 测试 / Schema / Interface。起点：HEAD `2d95b0c`（未 merge）。
+- **① 删除"真实可选教学班"的过度表述**：C1D 只证明**真实教学班 / 开课记录存在**，
+  **不证明**对当前学生**可选**；把 `过滤可能丢失真实可选教学班`
+  统一改为 **`过滤可能丢失真实教学班记录`**（`DATA_GATE_DECISIONS.md` §17.5 / §17.6 共 4 处）。
+  **"是否属于有效可选教学班"与"是否应进入 Planner"继续保留为未确认项**（口径未改）。
+- **② 新增 `DATA_GATE_DECISIONS.md` §17.12.1「Course Data fail-closed 不变量」**：
+  - **`meetings = []` 只能表示"来源层没有提供可形成 `Meeting` 的排课信息"**，
+    ⛔ **绝不能作为 parser / importer / normalizer 解析失败的 fallback**；
+  - 否则等于把**我们的解析缺陷**伪装成**学校的数据状态**；
+  - **初始实施边界按现有证据写死**：✅ **唯一已确认可映射为 `[]` 的来源形态 =
+    `teachingTimePlaceStr` 属性不存在**；
+  - ⛔ **`null` / `empty_string` / `other_type` / 非空但格式无法解析 / malformed segment /
+    parser / normalization 异常 一律继续 fail closed**，
+    除非将来有**独立真实证据 + 架构裁决**；
+  - 依据：C1B 真实第 1 页样本中 `null` / `empty_string` / `other_type` **均为 0**，
+    现有证据**只覆盖"属性不存在"**这一种形态。
+- **③ Planner 安全规则显式覆盖 `current_schedule`**（`DATA_GATE_DECISIONS.md` §17.9）：
+  - 因 `offerings` 与 `current_schedule` **同为公共类型 `CourseOffering[]`**
+    （`docs/interfaces/planner.md` / `integration.md`），**两侧都存在 `meetings = []` 风险**；
+  - **对两者中任何 `meetings = []` 的 `CourseOffering`，schedule 都视为 unknown**；
+  - **若 `current_schedule` 中存在 `meetings = []`**：Planner **不得**把其它候选声明为
+    "**已验证与当前课表无时间冲突**"（最多只能说"与**已知**时段不冲突"）；
+    相关"无冲突"断言应**整体降级为未知**并显式进入 unresolved / 人工确认路径；
+  - `PlanResult.status` / `unresolved` 命名**仍留待 Planner implementation review**，
+    ⛔ 本轮不决定。
+- **④ §17.5 建议修改**同步声明：**本提案的批准必须与上述两条不变量同时成立**
+  （只批准 `minItems = 0` 而不批准不变量 = 放行静默降级）。
+- **同步**：`docs/status/course_data.md`、`docs/status/agent_frontend.md` 增补两条不变量要点；
+  `DATA_GATE_DECISIONS.md` §15 变更记录追加本条。
+- 修改文件（**仅既有 7 个 docs 文件**）：
+  - `docs/data/DATA_GATE_DECISIONS.md`
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）；其余 docs 文件**未改**
+- ⛔ **未修改** `schemas/` / `docs/interfaces/` / 任何代码 / 任何测试 / `mock_data/`；
+  ⛔ **未实施** `minItems = 0`；⛔ **DG-07 未改为 APPROVED**；
+  ⛔ **未认定** G11 resolved；⛔ **未推断**学校业务状态。
+- 回归（仅确认无副作用，**未修改任何测试**）：
+  `cd backend && python -m pytest` → **539 passed / 2 skipped**；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**。
+- **Builder 实际 SYSU 请求数：0**。
+- 下一步：等待 **Architecture Lead** 对 **DG-07** 的裁决。
+  ⚠️ **不 merge，不自行开始 DG-07 实施**。
+

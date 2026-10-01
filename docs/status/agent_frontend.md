@@ -536,6 +536,12 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - ⛔ **不得**使用"未排课课程 / 未排课教学班 / 时间待定课程 / 异步课程 / 无需排课课程 /
   停开课程 / 无效教学班 / 自由时间教学班"等**学校未提供**的业务标签；
 - ⛔ **不推断学校业务状态**、⛔ **不声称 G11 resolved**；
+- **DG-07 含两条必须同时批准的组成部分**：① **fail-closed 不变量** ——
+  `meetings = []` 只能来自**来源层确实没有提供**排课信息（初始边界：**仅
+  `teachingTimePlaceStr` 属性不存在**），⛔ **不得**当作 parser / importer / normalizer
+  解析失败的 fallback；② **Planner 安全规则同时覆盖 `offerings` 与 `current_schedule`**
+  （同为 `CourseOffering[]`）：任何 `meetings = []` 的 schedule 均为 unknown，
+  ⛔ 且 `current_schedule` 含空 meetings 时**不得**声明"已验证与当前课表无时间冲突"；
 - ⛔ **本轮未修改** `schemas/` / `docs/interfaces/` / 任何代码 / 任何测试 /
   `mock_data/`；DG-07 **未实施**；
 - **Browser 侧**：⛔ **没有新增任何诊断入口**，⛔ **不再需要重复运行** C1B / C1C；
