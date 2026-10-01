@@ -1,14 +1,14 @@
 # Course Data 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C0：Course Data Pagination Core** 完成，等待 Reviewer）
+> 最后更新：2026-10-01（**Phase 2B-2C1A：SYSU Authorized Browser Transport + Capture Bridge** 完成，等待 Reviewer）
 >
 > ⚠️ **准确表述（不得夸大）**：
-> **真实 Course Data 尚未完成**，**2026-1 全量 snapshot 尚未取得**。
-> **Phase 2B-2C0 Pagination Core 代码仍为零网络实现**，**没有实现、也不会自动发起 SYSU 请求**；
-> **负责人已在本人正常登录、已有权限的范围内完成少量人工分页参数验证**（见下）。
-> 本轮完成的是**零网络的分页采集核心**（把多页 Raw 逐页标准化 + 依据证据链判定 completeness），
-> `fetch_page` **仍由外部提供**（本轮只由测试 Fake 提供）。
-> **真实网络 Transport（登录 / 授权导入 / 请求规模确认）属于 Phase 2B-2C1，尚未实现。**
+> **真实 Course Data 尚未完成**，**尚未取得 complete semester snapshot**。
+> **SYSU 浏览器端授权采集器代码已准备**（用户显式触发、串行、same-origin、
+> 只保留最小字段并把 segment 内教师脱敏为 `REDACTED`）；
+> **Capture Bridge 已完成**（本地 Capture Bundle → 复用分页核心 → `OfferingSnapshot`）。
+> **尚未执行真实完整学期程序化采集** —— 真实 smoke run 由负责人在 Reviewer 合并后**手动**执行。
+> 后端 Python 侧仍然**零网络**：没有 endpoint、没有认证处理、**不会自动发起 SYSU 请求**。
 
 ## 阶段状态
 
@@ -20,7 +20,8 @@ teachingTimePlaceStr parser（2B-2B）                ✅ 已完成（依据私�
 本地 Raw-response import adapter（2B-2B）            ✅ 已完成（零网络）
 分页采集核心 Pagination Core（2B-2C0）              ✅ 已完成（零网络；fetch_page 由外部提供）
 SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（前两页；见下）
-真实网络 Transport（登录 + 授权分页采集）            ⏳ 未实现（Phase 2B-2C1）
+浏览器端授权采集器代码 + Capture Bridge（2B-2C1A）   ✅ 代码已准备（未执行真实采集）
+真实完整学期程序化采集                              ⏳ 未执行（负责人手动 smoke run）
 完整 semester snapshot                              ⏳ 未取得
 ```
 
@@ -41,7 +42,85 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 
 ## 已完成
 
-### 分页采集核心（Phase 2B-2C0，本轮）
+### 浏览器端授权采集器 + Capture Bridge（Phase 2B-2C1A，本轮）
+**只做"显式触发的浏览器采集 + 本地回放桥"，不接 Integration / Planner / API / 前端产品 UI。**
+
+| 产出 | 内容 |
+|---|---|
+| `tools/sysu_course_offering_collector.js` | 浏览器端采集器：`window.XuehangSysuCollector.collect({...})` **必须由用户显式调用** |
+| `backend/app/course_data/captured_pages.py` | `CapturedPagesFetcher`、`collect_captured_pages_snapshot()`、`load_capture_bundle()`、`validate_capture_bundle()` |
+| `backend/tests/test_course_data_captured_pages.py` | Capture Bridge 测试（人工虚构 bundle） |
+| `backend/tests/test_sysu_collector_guard.py` | 采集器**静态安全守卫**（源码级检查） |
+
+**浏览器端采集器（SYSU-specific Transport）**：
+
+- ⛔ **加载脚本不自动请求**：无顶层调用、无定时轮询、无并发；唯一入口是显式 `collect()`
+- ✅ **hostname guard**：`window.location.hostname` 必须是 `jwxt.sysu.edu.cn`，否则直接失败
+- ✅ **分页参数（SYSU 已验证）**：`firstPageNo` **锁定为 `1`**（传入其它起始页**在发请求之前**直接失败；
+  通用多起始页能力留在 backend 分页核心，不在这里放开）、`pageSize=200`（单页上限 200，有校验）
+- ✅ **限速与安全阀**：`DEFAULT_DELAY_MS=1500` / `MIN_DELAY_MS=1000`；`DEFAULT_MAX_PAGES=2`、`ABSOLUTE_MAX_PAGES=50`
+  （50 是**客户端安全上限**，不是学校系统限制）；`maxPages > 2` 时必须 `window.confirm()` 确认，取消则 **0 个请求**
+- ✅ **严格串行**：一页一页取；⛔ 不并发、⛔ 不预取
+- ✅ **认证边界**：`credentials: "same-origin"`，认证状态完全交给浏览器；
+  ⛔ 不读取 / 不保存 / 不打印 / 不导出任何浏览器端认证状态；遇到 401 / 403 / 非 JSON（疑似登录页）立即停止
+- ✅ **每页校验**：HTTP 成功、JSON 可解析、`code === 200`、`data` 是对象、`total` 非负整数、`rows` 是数组
+- ✅ **停止规则**：第一页记 `expectedTotal`；后续 `total` 变化 → 停止失败；累计 > total → 失败；
+  达到 total 前出现空页 → 失败；累计 == total → 不再请求；达到 `maxPages` 仍未取满 → 正常停止（**不自行声称 complete**）
+- ✅ **数据最小化**：每条 row **只保留 8 个字段**（`courseNum` / `courseName` / `classNumber` / `yearTerm` /
+  `score` / `limitNumber` / `selectedNumber` / `teachingTimePlaceStr`）；
+  ⛔ 明确丢弃内部 ID 与暂缓字段（`class_ID` / `sumClassesID` / `sumClassesNum` / `courseId` /
+  `outLineId` / `outlineTypeNum` / `openingUnitName` / `courseCategoryName` / `teachingName` /
+  `examMode` / `openingSchoolName` / `readObj` / `teachProgressSubmitState` / `weekDay` /
+  `timePlaceId` / `openClass`）
+- ✅ **教师脱敏**：`teachingTimePlaceStr` 内 segment 的 teacher 替换为 `REDACTED`
+  （5 字段取第 4 项、6 字段取第 5 项）；保持 segment 顺序、`/`、`,`、**最多一个** trailing comma、
+  location / weeks / weekday / sections / activity 原文；
+  ⛔ **替换前必须验证原 teacher 非空**：空 / 非字符串 teacher → **整体失败**，
+  **不得**用 `REDACTED` 静默掩盖（那会让下游 Python parser 误以为记录合法）；
+  错误信息**不回显** teacher 取值；
+  ⛔ 非 5/6 字段、多个 trailing comma、中间空 segment → **整体失败，不生成 bundle**
+- ✅ **结果导出**：`toJson(result)` 输出的**顶层就是裸 Capture Bundle**
+  （`format` / `semester` / `first_page_no` / `page_size` / `pages`），
+  可直接交给 Python 的 `load_capture_bundle(...)`；
+  ⛔ 采集被取消（`cancelled=true`）或没有 bundle 时 `toJson()` **失败，不生成伪 bundle**
+
+**Capture Bundle（Course Data 内部交换格式，v1）**：
+
+```text
+{
+  "format": "sysu-opening-courses-capture-v1",
+  "semester": "2026-1",
+  "first_page_no": 1,
+  "page_size": 200,
+  "pages": [ { "page_no": 1, "response": { "code": 200, "data": { "total": ..., "rows": [...] } } } ]
+}
+```
+
+- ⛔ 不是公共 Schema（不进 `/schemas/`、不进 `/docs/interfaces/`）；
+- ⛔ **不含** `source`（由 Python 调用方显式给出）、**不含**认证 / 会话信息、
+  **不含**用户标识、**不含**姓名学号、**不含**内部长 ID、**不含**教师姓名；
+- ⚠️ 即使已脱敏，它仍是 **Real Sanitized Capture**：
+  **不得提交 Git、不得放入 `mock_data/`、不得作为测试 fixture、不得复制进 docs / worklog**。
+  采集器**代码**可以进 Git；采集器**实际产出的 JSON 绝不进 Git**。
+
+**Python Capture Bridge（零网络）**：
+
+- `CapturedPagesFetcher`：**只回放** bundle 中已捕获的页；结构上满足 `OpeningCoursesPageFetcher`，
+  **不继承、不修改** Protocol；请求的 `semester` / `page_size` / `page_no` 与 bundle 不一致时直接失败；
+- bundle 校验：`format` 必须匹配、`semester` 非空、`first_page_no ≥ 0`、`page_size ≥ 1`、`pages` 非空数组、
+  每个 `page_no` 唯一且**从 `first_page_no` 起连续**（`1,3` / `2,3` / 重复 → **失败，不排序修复**）；
+- `collect_captured_pages_snapshot(bundle, *, source)`：
+  **复用** `collect_opening_courses_snapshot()`，`max_pages = len(pages)`；
+  **不重新实现** completeness —— 2 页 smoke capture 在未取满时必然是 **partial**，
+  累计 == total 时才是 **complete**；
+- `load_capture_bundle(path)`：只读**调用方显式给出**的本地 UTF-8 JSON（stdlib `json`，**无新依赖**），
+  **无默认路径、不扫描目录、不复制进仓库**；
+- 错误信息只输出**结构性**信息（page_no / 字段名），**不回显** Raw row、`teachingTimePlaceStr` 原文或 teacher。
+
+> ⚠️ **本轮 Builder 未执行任何真实采集**：采集器只由**静态守卫测试**检查，
+> Python 侧只由**人工虚构 bundle** 驱动；**未登录 SYSU、未发任何真实请求、未生成任何真实数据文件**。
+
+### 分页采集核心（Phase 2B-2C0）
 位置：`backend/app/course_data/pagination.py`（**内部实现 / 内部接口**）
 
 | 项 | 内容 |
@@ -202,9 +281,9 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 当前阻塞
 
-- **真实网络 Transport 尚未实现**（Phase 2B-2C1）：还没有"用户明确触发授权导入"的网络通道；
-  Phase 2B-2C0 的分页采集核心是**零网络实现**，**没有实现、也不会自动发起 SYSU 请求**
-  （`fetch_page` 由外部提供）；
+- **真实完整学期程序化采集尚未执行**：浏览器端采集器**代码已准备**，
+  但**尚未对真实系统运行**；真实 smoke run 由负责人在 Reviewer 合并后**手动**执行；
+  后端 Python 侧仍然**零网络**（没有 endpoint、没有认证处理、不会自动发起请求）；
 - **完整 semester snapshot 未取得**：当前只有 D5 小规模侦察、私密脱敏样本
   和**前两页人工分页参数验证**，**尚未进行程序化完整学期采集**，因此**不是**完整 snapshot；
 - ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（本阶段限制）；
@@ -222,17 +301,25 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 - 负责人提供的**私密脱敏样本**（`OFFERING-001`）**只在本地阅读**，
   **未进入 Git**（未 `git add` / 未进测试 fixture / 未进 docs / 未进 worklog；
   本文件**不记录该样本的文件名**）；
+- **本轮未生成任何真实 Capture Bundle**：仓库内**不含**真实采集产物；
+  本地若产生，也属 **Real Sanitized Capture**，**不得进入 Git**；
 - 仓库内**不含**真实教师姓名、真实教室、内部长 ID 取值、`readObj`、Raw JSON、
   Cookie / Session / Token、endpoint。
 
 ## 下一步
 
-- **Phase 2B-2C1：真实网络 Transport**（实现 `OpeningCoursesPageFetcher`）——
-  用户本人正常登录、已有权限、**用户明确触发**的授权导入；
-  分页参数**已完成人工验证**（`first_page_no=1`、`page_size` 上限 200、前两页 `total` 均为 6892），
-  由 Transport 按此配置；`max_pages` 是**内部安全阀**，不是学校侧参数；
+- **负责人手动 smoke run**（Reviewer 合并后）：在本人已登录、已有权限的教务页面加载
+  `tools/sysu_course_offering_collector.js`，显式调用
+  `await window.XuehangSysuCollector.collect({ semester: "2026-1" })`（默认 2 页），
+  把产出的 Capture Bundle 保存到**非公开位置**，
+  再用 `collect_captured_pages_snapshot(bundle, source=...)` 在本地验证；
+  该 smoke run 预期得到 **partial**（2 页不可能覆盖整学期）；
+- 采集器与 Capture Bridge 目前**不接入** Integration / Planner / API / 前端产品 UI
+  （真实 Capture Bundle 的导入 UI 属后续步骤）；
+- `max_pages` 是**内部安全阀**，不是学校侧参数；
   只能取得部分范围时**必须显式记录 completeness**，**不得宣称 complete**（C9）；
 - **完整 semester snapshot**：目标为 **2026-1**，取得后以 `OfferingSnapshot` 表达，
   并由 `SnapshotCourseDataProvider` 供 Integration 消费；
-- ⛔ 这些都属于后续任务书范围，**本轮不得自行开始**；
-  ⛔ 本轮**不进入** 2B-2C1，也**不**把 `partial` snapshot 接入 Integration。
+- ⛔ 上述 smoke run 与后续导入 UI 都属于后续任务书范围，**本轮不得自行开始**；
+  ⛔ **本轮 Builder 未登录 SYSU、未发任何真实请求、未生成真实数据**，
+  也**不**把 `partial` snapshot 接入 Integration。

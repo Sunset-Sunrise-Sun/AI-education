@@ -317,3 +317,129 @@
 - 下一步：等待 Reviewer 验收 Phase 2B-2C0。之后是 **Phase 2B-2C1 真实网络 Transport**，
   ⚠️ **须等新一轮任务书，不自行开始**。
 
+---
+
+### 2026-10-01 - Phase 2B-2C1A：SYSU Authorized Browser Transport + Capture Bridge
+- 本次目标：实现 **浏览器端「显式触发」授权采集器**（same-origin 串行取页、最小字段、教师脱敏）
+  与 **Python Capture Bridge**（本地 Capture Bundle → 复用分页核心 → `OfferingSnapshot`）。
+  ⛔ **不实现**后端直连学校认证的 HTTP client；⛔ **不接** Integration / Planner / API / 前端产品 UI。
+- 起点：`main` = `3ba7cc4a7c2db3bcd255e8ad8c7f6bc8b8fecc2d`；
+  新建 `feature/course-data-sysu-authorized-transport`。
+- **架构口径**：认证完全交给浏览器既有登录状态（`credentials: "same-origin"`），
+  代码**不读取 / 不保存 / 不打印 / 不导出**任何浏览器端认证状态；
+  **未要求负责人提供认证信息 / HAR**。
+- **新增 `tools/sysu_course_offering_collector.js`（SYSU-specific Transport）**
+  - IIFE 包装，**加载脚本不发任何请求**：无顶层调用、无定时轮询、无并发；
+    唯一入口 `window.XuehangSysuCollector.collect({...})`，必须由用户显式调用；
+  - **hostname guard**：`window.location.hostname` 必须是 `jwxt.sysu.edu.cn`，否则直接失败；
+  - **参数（SYSU 已验证）**：`FIRST_PAGE_NO = 1`、`MAX_PAGE_SIZE = 200`、`DEFAULT_PAGE_SIZE = 200`；
+    `pageSize` 越界即失败（SYSU 专有取值**不写进通用 pagination.py**）；
+  - **限速与安全阀**：`DEFAULT_DELAY_MS = 1500`、`MIN_DELAY_MS = 1000`；
+    `DEFAULT_MAX_PAGES = 2`、`ABSOLUTE_MAX_PAGES = 50`（客户端安全上限，非学校限制）；
+    `maxPages > 2` 时 `window.confirm()` 明确确认，取消则 **0 个请求**；
+  - **严格串行**：`for` + `await sleep(delayMs)`，不并发、不预取；
+  - **请求形状**：`POST` 已确认路径 + `?_t=Date.now()`（仅复现已观察形态，不赋予业务语义），
+    body = `{pageNo, pageSize, total: true, param: {yearTerm}}`；
+  - **响应校验**：HTTP 成功、`content-type` 含 JSON（否则视为疑似登录页）、JSON 可解析、
+    `code === 200`、`data` 是对象、`total` 非负整数、`rows` 是数组；
+    **401 / 403 立即停止并标记 BLOCKED**；
+  - **停止规则**：首页记 `expectedTotal`；后续 `total` 变化 → 失败；
+    达到 total 前出现空页 → 失败；累计 > total → 失败；累计 == total → 不再请求；
+    达到 `maxPages` 仍未取满 → 正常停止；**不自行声称 complete**（`claimedComplete: false`）；
+  - **数据最小化**：每条 row 只保留 8 字段
+    （`courseNum` / `courseName` / `classNumber` / `yearTerm` / `score` / `limitNumber` /
+    `selectedNumber` / `teachingTimePlaceStr`）；内部 ID 与暂缓字段全部丢弃；
+  - **教师脱敏**：segment 内 teacher → `REDACTED`（5 字段第 4 项 / 6 字段第 5 项）；
+    保持 segment 顺序、`/`、`,`、**最多一个** trailing comma、location 等原文；
+    非 5/6 字段 / 多个 trailing comma / 中间空 segment → **整体失败，不生成 bundle**；
+  - 产出 Capture Bundle：`{format, semester, first_page_no, page_size, pages}`；
+    **不含** source / 认证 / 用户标识 / 姓名学号 / 内部 ID / 教师。
+- **新增 `backend/app/course_data/captured_pages.py`（零网络 Bridge）**
+  - `CapturedPagesFetcher`：**只回放** bundle 中已捕获的页；结构上满足 `OpeningCoursesPageFetcher`，
+    **不继承、不修改** Protocol；请求的 `semester` / `page_size` / `page_no` 与 bundle 不一致即失败；
+  - bundle 校验：`format` 匹配、`semester` 非空、`first_page_no ≥ 0`、`page_size ≥ 1`、
+    `pages` 非空数组、每个 `page_no` 唯一且**从 `first_page_no` 起连续**（`1,3` / `2,3` / 重复 → 失败，**不排序修复**）；
+  - `collect_captured_pages_snapshot(bundle, *, source)`：**复用** `collect_opening_courses_snapshot()`，
+    `max_pages = len(pages)`，**不重新实现** completeness
+    （2 页 smoke capture 未取满 → **partial**；累计 == total → **complete**）；
+  - `load_capture_bundle(path)`：只读**调用方显式给出**的本地 UTF-8 JSON（stdlib `json`，**无新依赖**），
+    **无默认路径、不扫描目录、不复制进仓库**；
+  - 错误信息只输出结构性信息，**不回显** Raw row / `teachingTimePlaceStr` 原文 / teacher。
+- **`backend/app/course_data/__init__.py`**：最小导出新符号并更新包说明（含 2B-2C1A 阶段边界）。
+- **新增测试**
+  - `backend/tests/test_course_data_captured_pages.py`：2 页 → partial、完整 → complete、
+    `first_page_no` / `page_size` / 页码连续性、重复 page_no / 缺页 / 乱序 / 元数据不符 → FAIL、
+    格式 / semester / 元数据 / pages 容器 / response 类型非法 → FAIL、第二页 total 变化 → FAIL、
+    跨页重复 → FAIL、parser 失败整体 FAIL、空页 → FAIL、非法 source → FAIL、
+    回放器三态不一致 → FAIL、`load_capture_bundle` 用 **tmp_path 人工虚构 JSON**
+    （有效 / 缺文件 / 非 JSON / 非法 bundle / 必须显式传 path）、
+    Bridge **零网络且不 import Integration / 不构造 Provider**（AST 检查）、
+    错误信息不回显 Raw row；
+  - `backend/tests/test_sysu_collector_guard.py`：采集器**静态安全守卫** ——
+    不得出现读取认证状态 / 导出认证头 / 后端 HTTP 客户端的写法；
+    IIFE 包装、`fetch(` 仅 1 处且在 `await` 内、无 `setInterval`、无 `Promise.all` /
+    `allSettled` / `race`、挂载后不自动调用 `collect()`；
+    必须存在 hostname guard、`pageSize ≤ 200` 校验、最小延迟、默认 / 绝对页数、
+    超过 smoke 页数的 `confirm()`、`same-origin`、请求形状、逐页校验、停止规则、
+    `claimedComplete: false`、8 字段白名单（且 16 个禁止字段不出现）、教师脱敏与 5/6 字段判定。
+- 修改文件：
+  - 新增 `tools/sysu_course_offering_collector.js`
+  - 新增 `backend/app/course_data/captured_pages.py`
+  - 修改 `backend/app/course_data/__init__.py`
+  - 新增 `backend/tests/test_course_data_captured_pages.py`、`backend/tests/test_sysu_collector_guard.py`
+  - 更新 `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **509 passed / 2 skipped**
+  （本轮基线 420 passed / 2 skipped；**旧测试全部继续通过，未删除旧测试、未新增 skip、未放宽校验**）。
+- 使用数据：**Mock / 人工虚构**（Capture Bundle 与 Raw row 全部人工虚构）；
+  **本轮未生成任何真实 Capture Bundle**，仓库内不含真实采集产物
+- 需要人工确认：无（未发现公共契约不足，**无需**【接口变更请求】）
+- 对其他模块影响：**无公共接口变化**；`SnapshotCourseDataProvider` **未修改**；
+  采集器与 Bridge **未接入** Integration / Planner / API / 前端
+- **实际 SYSU 请求数：0**（未登录、未运行采集器、未发任何真实请求、未生成 6892 条数据）
+- 下一步：等待 Reviewer 验收 Phase 2B-2C1A。之后由**负责人手动 smoke run**（2 页，**预期 partial**）
+  与真实 Capture Bundle 的导入 UI，⚠️ **须等新一轮任务书，不自行开始**。
+
+---
+
+### 2026-10-01 - Phase 2B-2C1A Reviewer 修复（3 项）
+- 本次目标：只修 Reviewer 指出的 3 个必须修复项，**不进入真实 SYSU smoke run**。
+  起点：同一分支，head `cd15dec59a7c7e13ed7ef1c1f7b3c94e42126fba`。
+- **修复 1：SYSU `firstPageNo` 锁定为已验证的 1**
+  - 问题：Collector 原来允许调用方传 `firstPageNo=0/2/...`，会对 SYSU 发起**未经验证**的页码请求；
+  - 处理：`FIRST_PAGE_NO = 1` 保持不变；若 `options.firstPageNo` 被提供且 `!= 1` →
+    **在任何取页调用之前**直接失败；实际使用的一律是常量
+    （删除了"取调用方值 / 默认值"的三元回退写法）；
+  - ⛔ **未修改** 通用 `backend/app/course_data/pagination.py`：
+    它仍允许 generic `first_page_no >= 0`（SYSU 专有约束只属于本 Transport）。
+- **修复 2：teacher 脱敏前必须验证原 teacher 非空**
+  - 问题：原来空 teacher 也会被写成 `REDACTED`，等于**静默修复 Raw**，
+    会让下游 Python parser 误以为该记录合法；
+  - 处理：`redactSegmentTeacher()` 在替换前要求 teacher 是**非空字符串**；
+    空 / 非字符串 → **整体失败**；错误信息**不回显** teacher 取值；
+  - ⛔ **未修改** Python parser 的现有规则。
+- **修复 3：Collector → Capture Bridge 序列化闭环**
+  - 问题：`collect()` 返回 wrapper，但 Python Bridge 需要的是**裸 bundle**；
+  - 处理：`toJson(result)` 改为 `JSON.stringify(result.bundle, null, 2)`，
+    输出顶层即 `format` / `semester` / `first_page_no` / `page_size` / `pages`，
+    可直接被 `load_capture_bundle(...)` 接受；
+  - ⛔ `cancelled === true` 或没有 bundle 时 `toJson()` **失败，不生成伪 bundle**。
+- 测试：`backend/tests/test_sysu_collector_guard.py` 新增 6 条静态守卫 ——
+  `firstPageNo` 锁死（且校验早于取页调用）、空 teacher 不得被 REDACTED 修复
+  （校验早于赋值）、teacher 错误信息不回显取值、`toJson` 输出裸 bundle
+  （且不再序列化 wrapper）、取消 / 空结果时 `toJson` 失败、bundle 顶层键与 Python Bridge 一致。
+- 修改文件：
+  - `tools/sysu_course_offering_collector.js`
+  - `backend/tests/test_sysu_collector_guard.py`
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **515 passed / 2 skipped**
+  （修复前 509 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）。
+  另用 `node --check` 仅做**语法解析**确认 Collector 源码合法（**未执行**该文件）。
+- 使用数据：**Mock / 人工虚构**；**本轮未生成真实 Capture Bundle**
+- **实际 SYSU 请求数：0**
+- 未修改：`schemas/`、`docs/interfaces/`、`integration/`、`pagination.py`、`importer.py`、
+  `schedule_parser.py`（parser）、`normalization.py`、`snapshot.py`、`main.py`、`api/`、
+  `frontend/`、`mock_data/`
+- 下一步：等待 Reviewer 复验。⚠️ **不 merge，不自行开始手动 smoke run**。
+
