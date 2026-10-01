@@ -20,10 +20,20 @@
  *
  * 默认只跑 2 页 smoke test；要跑更多页必须显式提高 `maxPages`，并会弹出确认框。
  *
+ * 取出结果：
+ *
+ *     const result = await window.XuehangSysuCollector.collect({ semester: "2026-1" });
+ *     const text = window.XuehangSysuCollector.toJson(result);   // 裸 Capture Bundle
+ *
+ * `toJson()` 输出的**顶层就是** `format` / `semester` / `first_page_no` / `page_size` / `pages`，
+ * 可直接交给 Python 的 `load_capture_bundle(...)`。
+ *
  * ⛔ 参数归属
  * ----------
  * `pageSize = 200` 与 `firstPageNo = 1` 是 **SYSU 已验证的专有取值**，只属于本 Transport，
  * **不会**反向写进通用 `backend/app/course_data/pagination.py`。
+ * `firstPageNo` 被**锁定为 1**：传入其它起始页会在发请求之前直接失败
+ * （通用多起始页能力留在 backend 分页核心，不在这里放开）。
  *
  * ⛔ 完整性归属
  * ------------
@@ -140,6 +150,19 @@
     }
 
     var teacherIndex = fields.length === 6 ? 4 : 3;
+    var teacher = fields[teacherIndex];
+
+    // ⛔ 替换前必须确认原 teacher 确实存在：
+    // 空 teacher 若也被写成 REDACTED，等于**静默修复**了原始数据问题，
+    // 会让下游 Python parser 误以为这条记录合法。
+    // 错误信息不回显 teacher 取值。
+    if (typeof teacher !== "string" || teacher.trim() === "") {
+      fail(
+        "第 " + pageNo + " 页第 " + rowIndex + " 条记录的 teachingTimePlaceStr " +
+          "中 teacher 字段为空或不是字符串。本采集器不写入脱敏占位符来掩盖该问题，已整体停止。"
+      );
+    }
+
     fields[teacherIndex] = REDACTED_TEACHER;
 
     return fields.join(FIELD_SEPARATOR);
@@ -325,10 +348,15 @@
       );
     }
 
-    var firstPageNo = opts.firstPageNo === undefined ? FIRST_PAGE_NO : opts.firstPageNo;
-    if (!Number.isInteger(firstPageNo) || firstPageNo < 0) {
-      fail("firstPageNo 必须是不小于 0 的整数。");
+    // ⛔ SYSU 只验证过 firstPageNo=1：
+    // 不允许调用方传入其它起始页（那会对学校发起**未经验证**的页码请求）。
+    // 通用多起始页能力属于 backend 分页核心，不在这里放开。
+    if (opts.firstPageNo !== undefined && opts.firstPageNo !== FIRST_PAGE_NO) {
+      fail(
+        "SYSU 只验证过 firstPageNo=" + FIRST_PAGE_NO + "，不接受其它起始页。已整体停止。"
+      );
     }
+    var firstPageNo = FIRST_PAGE_NO;
 
     var maxPages = opts.maxPages === undefined ? DEFAULT_MAX_PAGES : opts.maxPages;
     if (!Number.isInteger(maxPages) || maxPages < 1 || maxPages > ABSOLUTE_MAX_PAGES) {
@@ -430,9 +458,26 @@
     };
   }
 
-  /** 把采集结果序列化成字符串（写文件由用户自行决定，本文件不落盘）。 */
+  /**
+   * 把采集结果序列化成**裸 Capture Bundle**（可直接交给 Python `load_capture_bundle`）。
+   *
+   * 顶层就是 `format` / `semester` / `first_page_no` / `page_size` / `pages`，
+   * 不含 wrapper 字段 —— 这样自然用法是：
+   *
+   *     const result = await window.XuehangSysuCollector.collect({ semester: "2026-1" });
+   *     const text = window.XuehangSysuCollector.toJson(result);
+   *
+   * ⛔ 采集被取消或没有 bundle 时**直接失败**，不生成伪 bundle。
+   * ⛔ 写文件由用户自行决定，本文件不落盘。
+   */
   function toJson(result) {
-    return JSON.stringify(result, null, 2);
+    if (!result || result.cancelled === true || !result.bundle) {
+      fail(
+        "没有可序列化的 Capture Bundle（采集被取消或未产生 bundle）。" +
+          "本采集器不会生成伪 bundle。"
+      );
+    }
+    return JSON.stringify(result.bundle, null, 2);
   }
 
   // ---------------------------------------------------------------------

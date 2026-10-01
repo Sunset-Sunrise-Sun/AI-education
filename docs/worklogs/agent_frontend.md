@@ -1336,3 +1336,19 @@
   （本轮前 420 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）。
 - 公共接口是否变化：**否**（未改 Schema / Interface / Integration 签名 / API）
 - 下一步：等待 Reviewer 验收 **Phase 2B-2C1A**。⚠️ **不 merge，不自行开始手动 smoke run**。
+
+---
+
+### 2026-10-01 - Phase 2B-2C1A Reviewer 修复（阶段同步）
+- 本次目标：同步 Reviewer 指出的 3 项 Collector 修复（主记录见 `docs/worklogs/course_data.md`）。
+- 修复内容：① SYSU `firstPageNo` **锁定为 1**（传其它值在发请求前失败；通用分页核心不变）；
+  ② **空 teacher 不得被 `REDACTED` 静默修复** → 整体失败（错误信息不回显取值）；
+  ③ `toJson(result)` 输出**裸 Capture Bundle**，可直接交给 `load_capture_bundle`；
+  取消 / 无 bundle 时 `toJson()` 失败，不生成伪 bundle。
+- 修改文件（本模块视角）：
+  - `docs/status/agent_frontend.md`（Phase 2B-2C1A 小节同步上述 3 条 + 测试数字）
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **515 passed / 2 skipped**
+  （修复前 509 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）。
+- **实际 SYSU 请求数：0**；公共接口是否变化：**否**
+- 下一步：等待 Reviewer 复验。⚠️ **不 merge**。

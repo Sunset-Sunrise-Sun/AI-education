@@ -404,16 +404,21 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - ⛔ **加载脚本不自动请求**：无顶层调用、无定时轮询、无并发；唯一入口是显式 `collect()`；
 - ✅ **hostname guard**（必须是 `jwxt.sysu.edu.cn`）+ `pageSize ≤ 200` 校验 + 最小延迟 1000ms；
   默认 2 页、绝对上限 50 页；超过 2 页必须 `confirm()`，取消则 **0 个请求**；**严格串行**；
+- ✅ **`firstPageNo` 锁定为 `1`**（SYSU 唯一已验证值）：传入其它起始页**在发请求之前**失败；
 - ✅ **认证边界**：`credentials: "same-origin"`，认证完全交给浏览器；
   ⛔ 不读取 / 不保存 / 不打印 / 不导出任何认证状态；401 / 403 / 非 JSON → 立即停止；
 - ✅ **数据最小化**：每条 row 只保留 8 个字段，⛔ 丢弃内部 ID 与暂缓字段；
 - ✅ **教师脱敏**：`teachingTimePlaceStr` 内 segment 的 teacher → `REDACTED`，其余结构原样保留；
+  ⛔ **空 / 非字符串 teacher 不得被 `REDACTED` 静默修复** → 整体失败（错误信息不回显 teacher 取值）；
+- ✅ **结果导出**：`toJson(result)` 输出**裸 Capture Bundle**（顶层即 `format` / `semester` /
+  `first_page_no` / `page_size` / `pages`），可直接交给 `load_capture_bundle(...)`；
+  ⛔ 取消（`cancelled=true`）或无 bundle 时 `toJson()` **失败，不生成伪 bundle**；
 - ⛔ 采集器**不判断** completeness（`claimedComplete: false`），交给 Python 分页核心；
 - **Capture Bridge 零网络**：只回放本地 Capture Bundle，**不 import Integration**、**不修改 Provider**，
   并**复用** `collect_opening_courses_snapshot()` 判定 `partial` / `complete`（bundle 页码必须连续，不排序修复）；
 - ⚠️ **Capture Bundle 是 Real Sanitized Capture**：**不进 Git** / 不进 `mock_data/` / 不做测试 fixture；
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/`、`frontend/` 均未修改；
-  后端 **509 passed / 2 skipped**。
+  后端 **515 passed / 2 skipped**。
 
 ## 已完成
 - 模块边界和依赖接口已定义

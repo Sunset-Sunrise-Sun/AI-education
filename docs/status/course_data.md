@@ -56,7 +56,8 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 
 - ⛔ **加载脚本不自动请求**：无顶层调用、无定时轮询、无并发；唯一入口是显式 `collect()`
 - ✅ **hostname guard**：`window.location.hostname` 必须是 `jwxt.sysu.edu.cn`，否则直接失败
-- ✅ **分页参数（SYSU 已验证）**：`firstPageNo=1`、`pageSize=200`（单页上限 200，有校验）
+- ✅ **分页参数（SYSU 已验证）**：`firstPageNo` **锁定为 `1`**（传入其它起始页**在发请求之前**直接失败；
+  通用多起始页能力留在 backend 分页核心，不在这里放开）、`pageSize=200`（单页上限 200，有校验）
 - ✅ **限速与安全阀**：`DEFAULT_DELAY_MS=1500` / `MIN_DELAY_MS=1000`；`DEFAULT_MAX_PAGES=2`、`ABSOLUTE_MAX_PAGES=50`
   （50 是**客户端安全上限**，不是学校系统限制）；`maxPages > 2` 时必须 `window.confirm()` 确认，取消则 **0 个请求**
 - ✅ **严格串行**：一页一页取；⛔ 不并发、⛔ 不预取
@@ -74,7 +75,14 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 - ✅ **教师脱敏**：`teachingTimePlaceStr` 内 segment 的 teacher 替换为 `REDACTED`
   （5 字段取第 4 项、6 字段取第 5 项）；保持 segment 顺序、`/`、`,`、**最多一个** trailing comma、
   location / weeks / weekday / sections / activity 原文；
+  ⛔ **替换前必须验证原 teacher 非空**：空 / 非字符串 teacher → **整体失败**，
+  **不得**用 `REDACTED` 静默掩盖（那会让下游 Python parser 误以为记录合法）；
+  错误信息**不回显** teacher 取值；
   ⛔ 非 5/6 字段、多个 trailing comma、中间空 segment → **整体失败，不生成 bundle**
+- ✅ **结果导出**：`toJson(result)` 输出的**顶层就是裸 Capture Bundle**
+  （`format` / `semester` / `first_page_no` / `page_size` / `pages`），
+  可直接交给 Python 的 `load_capture_bundle(...)`；
+  ⛔ 采集被取消（`cancelled=true`）或没有 bundle 时 `toJson()` **失败，不生成伪 bundle**
 
 **Capture Bundle（Course Data 内部交换格式，v1）**：
 

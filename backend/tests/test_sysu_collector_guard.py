@@ -143,6 +143,92 @@ def test_collector_carries_expected_request_shape(collector_source: str) -> None
 
 
 # ---------------------------------------------------------------------------
+# Reviewer 修复：firstPageNo 锁死 / teacher 非空 / toJson 裸 bundle
+# ---------------------------------------------------------------------------
+
+
+def test_collector_locks_first_page_no_to_verified_value(collector_source: str) -> None:
+    """⛔ SYSU 只验证过 firstPageNo=1：不允许调用方传入其它起始页。
+
+    - 常量保持 1；
+    - 传入非 1 时**在发请求之前**失败；
+    - 实际使用的一律是常量 `FIRST_PAGE_NO`（不再有"取调用方值"的回退写法）。
+    """
+
+    assert "FIRST_PAGE_NO = 1" in collector_source
+
+    # 显式拒绝非 1 的起始页
+    assert "opts.firstPageNo !== undefined" in collector_source
+    assert "opts.firstPageNo !== FIRST_PAGE_NO" in collector_source
+
+    # 实际值恒为常量：不得再出现"取 opts.firstPageNo / 默认值"的三元回退
+    assert "var firstPageNo = FIRST_PAGE_NO;" in collector_source
+    assert "opts.firstPageNo === undefined ?" not in collector_source
+
+    # 校验必须发生在**任何取页调用之前**（requestPage 是唯一会 fetch 的函数）
+    assert collector_source.index(
+        "opts.firstPageNo !== FIRST_PAGE_NO"
+    ) < collector_source.index("await requestPage(")
+
+
+def test_collector_rejects_empty_teacher_before_redaction(collector_source: str) -> None:
+    """⛔ 空 teacher 不得被 REDACTED **静默修复**（那会掩盖原始数据问题）。"""
+
+    assert 'typeof teacher !== "string"' in collector_source
+    assert 'teacher.trim() === ""' in collector_source
+
+    # 校验必须早于写入占位符
+    check_index = collector_source.index('teacher.trim() === ""')
+    assign_index = collector_source.index("fields[teacherIndex] = REDACTED_TEACHER;")
+    assert check_index < assign_index, "必须先校验 teacher 非空，再替换为 REDACTED"
+
+
+def test_collector_teacher_error_message_does_not_echo_value(collector_source: str) -> None:
+    """teacher 相关错误信息不得回显 teacher 取值。"""
+
+    check_index = collector_source.index('teacher.trim() === ""')
+    # 该分支内只允许出现结构性文字，不得拼进 teacher 变量
+    window = collector_source[check_index : check_index + 400]
+
+    assert "+ teacher" not in window
+    assert "teacher +" not in window
+
+
+def test_collector_to_json_emits_bare_bundle(collector_source: str) -> None:
+    """`toJson()` 必须输出**裸** Capture Bundle（顶层即 bundle 键）。
+
+    这样 `load_capture_bundle(...)` 可以直接吃下 `toJson` 的输出。
+    """
+
+    assert "JSON.stringify(result.bundle, null, 2)" in collector_source
+    # 不得再序列化整个 wrapper
+    assert "JSON.stringify(result, null, 2)" not in collector_source
+
+
+def test_collector_to_json_refuses_cancelled_or_empty_result(collector_source: str) -> None:
+    """⛔ 取消或没有 bundle 时 `toJson()` 必须失败，不生成伪 bundle。"""
+
+    assert "result.cancelled === true" in collector_source
+    assert "!result.bundle" in collector_source
+
+    # 拒绝分支必须早于真正序列化
+    reject_index = collector_source.index("result.cancelled === true")
+    serialize_index = collector_source.index("JSON.stringify(result.bundle, null, 2)")
+    assert reject_index < serialize_index
+
+
+def test_collector_bundle_keys_match_python_bridge_expectation(collector_source: str) -> None:
+    """bundle 顶层键必须与 Python Capture Bridge 的校验键一致（`first_page_no` 等 snake_case）。"""
+
+    for key in ("format", "semester", "first_page_no", "page_size", "pages"):
+        assert key + ":" in collector_source, f"bundle 缺少键：{key}"
+
+    # 不得把 SYSU 的 camelCase 请求参数名写进 bundle 元数据
+    assert "firstPageNo: firstPageNo" not in collector_source
+    assert "pageSize: pageSize," in collector_source  # 仅出现在请求 body 中
+
+
+# ---------------------------------------------------------------------------
 # 停止规则 / 数据最小化 / 脱敏
 # ---------------------------------------------------------------------------
 

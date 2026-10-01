@@ -400,3 +400,46 @@
 - 下一步：等待 Reviewer 验收 Phase 2B-2C1A。之后由**负责人手动 smoke run**（2 页，**预期 partial**）
   与真实 Capture Bundle 的导入 UI，⚠️ **须等新一轮任务书，不自行开始**。
 
+---
+
+### 2026-10-01 - Phase 2B-2C1A Reviewer 修复（3 项）
+- 本次目标：只修 Reviewer 指出的 3 个必须修复项，**不进入真实 SYSU smoke run**。
+  起点：同一分支，head `cd15dec59a7c7e13ed7ef1c1f7b3c94e42126fba`。
+- **修复 1：SYSU `firstPageNo` 锁定为已验证的 1**
+  - 问题：Collector 原来允许调用方传 `firstPageNo=0/2/...`，会对 SYSU 发起**未经验证**的页码请求；
+  - 处理：`FIRST_PAGE_NO = 1` 保持不变；若 `options.firstPageNo` 被提供且 `!= 1` →
+    **在任何取页调用之前**直接失败；实际使用的一律是常量
+    （删除了"取调用方值 / 默认值"的三元回退写法）；
+  - ⛔ **未修改** 通用 `backend/app/course_data/pagination.py`：
+    它仍允许 generic `first_page_no >= 0`（SYSU 专有约束只属于本 Transport）。
+- **修复 2：teacher 脱敏前必须验证原 teacher 非空**
+  - 问题：原来空 teacher 也会被写成 `REDACTED`，等于**静默修复 Raw**，
+    会让下游 Python parser 误以为该记录合法；
+  - 处理：`redactSegmentTeacher()` 在替换前要求 teacher 是**非空字符串**；
+    空 / 非字符串 → **整体失败**；错误信息**不回显** teacher 取值；
+  - ⛔ **未修改** Python parser 的现有规则。
+- **修复 3：Collector → Capture Bridge 序列化闭环**
+  - 问题：`collect()` 返回 wrapper，但 Python Bridge 需要的是**裸 bundle**；
+  - 处理：`toJson(result)` 改为 `JSON.stringify(result.bundle, null, 2)`，
+    输出顶层即 `format` / `semester` / `first_page_no` / `page_size` / `pages`，
+    可直接被 `load_capture_bundle(...)` 接受；
+  - ⛔ `cancelled === true` 或没有 bundle 时 `toJson()` **失败，不生成伪 bundle**。
+- 测试：`backend/tests/test_sysu_collector_guard.py` 新增 6 条静态守卫 ——
+  `firstPageNo` 锁死（且校验早于取页调用）、空 teacher 不得被 REDACTED 修复
+  （校验早于赋值）、teacher 错误信息不回显取值、`toJson` 输出裸 bundle
+  （且不再序列化 wrapper）、取消 / 空结果时 `toJson` 失败、bundle 顶层键与 Python Bridge 一致。
+- 修改文件：
+  - `tools/sysu_course_offering_collector.js`
+  - `backend/tests/test_sysu_collector_guard.py`
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **515 passed / 2 skipped**
+  （修复前 509 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）。
+  另用 `node --check` 仅做**语法解析**确认 Collector 源码合法（**未执行**该文件）。
+- 使用数据：**Mock / 人工虚构**；**本轮未生成真实 Capture Bundle**
+- **实际 SYSU 请求数：0**
+- 未修改：`schemas/`、`docs/interfaces/`、`integration/`、`pagination.py`、`importer.py`、
+  `schedule_parser.py`（parser）、`normalization.py`、`snapshot.py`、`main.py`、`api/`、
+  `frontend/`、`mock_data/`
+- 下一步：等待 Reviewer 复验。⚠️ **不 merge，不自行开始手动 smoke run**。
+
