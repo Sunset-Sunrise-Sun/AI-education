@@ -1,23 +1,23 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C0 Course Data Pagination Core** 完成，等待 Reviewer）
+> 最后更新：2026-10-01（**Phase 2B-2C1A SYSU Authorized Browser Transport + Capture Bridge** 完成，等待 Reviewer）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
-> **原始材料、逐行记录、Raw 响应与私密脱敏样本均不进入 public Git**
+> **原始材料、逐行记录、Raw 响应、私密脱敏样本与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
 > **Data Gate 通过条件 C1–C11 全部完成**；**公共契约本轮未改**
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
-> Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照
-> 与零网络分页采集核心**均已完成；
+> Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
+> 零网络分页采集核心、浏览器端授权采集器代码与 Capture Bridge**均已完成；
 > 但 **production Curriculum / Planner provider 尚未接入**，
-> **真实网络 Transport（2B-2C1）与完整 semester snapshot 仍未实现**，
+> **尚未执行真实完整学期程序化采集，尚未取得 complete semester snapshot**，
 > 因此**没有**任何一条真实数据链路端到端跑通，**也未新增任何 API**。
 >
 > 详见 `docs/status/course_data.md`。
 
 ## 当前阶段
 
-**Phase 2B-2C0 已完成 → 下一步 Phase 2B-2C1（真实网络 Transport，尚未开工）**
+**Phase 2B-2C1A 代码已完成 → 下一步由负责人手动 smoke run（尚未执行）**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -29,8 +29,8 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                    →  Phase 2B-2B ✅ Schedule Parser + Local Import Adapter（纯本地、零网络）
                    →  Phase 2B-2C0 ✅ Pagination Core（零网络分页采集 + completeness 证据链）
                    →  ✅ SYSU 分页参数人工验证完成（first_page_no=1、单页上限 200、前两页 total=6892）
-                   →  【下一步，需新任务书】Phase 2B-2C1 真实授权 Transport
-                      （登录 / 授权导入 / 请求规模确认）
+                   →  Phase 2B-2C1A ✅ 浏览器端授权采集器代码 + Capture Bridge（未执行真实采集）
+                   →  【下一步】负责人手动 smoke run（2 页，预期 partial）+ 真实 Capture 导入 UI
                    →  之后：Phase 2B Integration / Orchestrator 接真实 Provider
 ```
 
@@ -388,6 +388,33 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 > ⚠️ 本次**未单独记录** `rows.length`，因此**不声称**已确认每页满 200 行；
 > ⚠️ `max_pages` 是**内部安全阀**，**不是**学校侧参数，无需人工验证。
 
+## Phase 2B-2C1A 结果（SYSU Authorized Browser Transport + Capture Bridge）
+
+**浏览器端显式触发的授权采集 + Python 本地回放桥**；不接 Integration / Planner / API / 前端产品 UI。
+详见 `docs/status/course_data.md`。
+
+| 产出 | 内容 |
+|---|---|
+| `tools/sysu_course_offering_collector.js` | 浏览器端采集器（`window.XuehangSysuCollector.collect({...})`，**必须用户显式调用**） |
+| `backend/app/course_data/captured_pages.py` | `CapturedPagesFetcher` + `collect_captured_pages_snapshot()` + `load_capture_bundle()` |
+| `backend/tests/test_course_data_captured_pages.py`、`test_sysu_collector_guard.py` | Bridge 测试 + 采集器**静态安全守卫** |
+
+**关键边界**：
+
+- ⛔ **加载脚本不自动请求**：无顶层调用、无定时轮询、无并发；唯一入口是显式 `collect()`；
+- ✅ **hostname guard**（必须是 `jwxt.sysu.edu.cn`）+ `pageSize ≤ 200` 校验 + 最小延迟 1000ms；
+  默认 2 页、绝对上限 50 页；超过 2 页必须 `confirm()`，取消则 **0 个请求**；**严格串行**；
+- ✅ **认证边界**：`credentials: "same-origin"`，认证完全交给浏览器；
+  ⛔ 不读取 / 不保存 / 不打印 / 不导出任何认证状态；401 / 403 / 非 JSON → 立即停止；
+- ✅ **数据最小化**：每条 row 只保留 8 个字段，⛔ 丢弃内部 ID 与暂缓字段；
+- ✅ **教师脱敏**：`teachingTimePlaceStr` 内 segment 的 teacher → `REDACTED`，其余结构原样保留；
+- ⛔ 采集器**不判断** completeness（`claimedComplete: false`），交给 Python 分页核心；
+- **Capture Bridge 零网络**：只回放本地 Capture Bundle，**不 import Integration**、**不修改 Provider**，
+  并**复用** `collect_opening_courses_snapshot()` 判定 `partial` / `complete`（bundle 页码必须连续，不排序修复）；
+- ⚠️ **Capture Bundle 是 Real Sanitized Capture**：**不进 Git** / 不进 `mock_data/` / 不做测试 fixture；
+- **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/`、`frontend/` 均未修改；
+  后端 **509 passed / 2 skipped**。
+
 ## 已完成
 - 模块边界和依赖接口已定义
 - **前端技术栈已由负责人确认：Vue 3 + TypeScript + Vite**（`/docs/ARCHITECTURE.md` 已同步）
@@ -548,18 +575,22 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **等待 Reviewer 验收 Phase 2B-2C0**（分页核心；
-  重点看"是否假定分页参数""是否静默去重 / 跳页""是否把 partial 当 complete""是否偷偷接 Integration"）
-- **下一步是 Phase 2B-2C1**：实现**真实授权 Transport**（`OpeningCoursesPageFetcher`）+
-  完整 **2026-1** semester snapshot，
+- **等待 Reviewer 验收 Phase 2B-2C1A**（采集器 + Capture Bridge；
+  重点看"是否自动发请求""是否读取 / 导出认证状态""是否保留最小字段并脱敏教师"
+  "Bridge 是否复用分页核心且不接 Integration"）
+- **下一步是负责人手动 smoke run**（Reviewer 合并后）：在本人已登录、已有权限的教务页面
+  加载采集器并显式调用 `collect({ semester: "2026-1" })`（默认 2 页，**预期 partial**），
+  把 Capture Bundle 保存到**非公开位置**后本地验证；
   ⚠️ **本轮不得自行开始**，须等新一轮任务书
-- **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`），
-  Transport 按此配置即可；`max_pages` 是**内部安全阀**，不是学校侧参数；
+- **真实 Capture Bundle 的导入 UI**（前端产品链路）属**后续步骤**，本轮不做；
+- **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
+  `max_pages` 是**内部安全阀**，不是学校侧参数；
   **partial snapshot 必须显式记录 completeness，不得宣称 complete**（C9）
 - **仍不允许实现层自行补齐**：`prerequisites[]` / `weekDay` / `openingSchoolName → campus` /
   meeting-level teacher 四项保持"待确认"或"已知暂缓"（C11）
 - ⚠️ **公共契约不得再自行修改**：任何后续变更仍须走 `【接口变更请求】` → 人工确认
 - ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（仅用于规模 / 小范围 / parser 验证）
+- **真实 Capture Bundle 属 Real Sanitized Capture**：**不得进入 Git**（含 `mock_data/` 与测试 fixture）
 - 真实 Curriculum / Planner provider 的接入顺序与形式**待负责人安排**
   （Phase 2B-1 只定义了插座，未决定实现方式）
 - 2B-0 全程遵守 `docs/data/DATA_ACQUISITION_PLAN.md` 的三层数据模型与红线：

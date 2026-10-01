@@ -1304,3 +1304,35 @@
   （本轮前 366 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）。
 - 公共接口是否变化：**否**（未改 Schema / Interface / Integration 签名 / API）
 - 下一步：等待 Reviewer 验收 **Phase 2B-2C0**。⚠️ **不 merge，不自行进入 2B-2C1**。
+
+---
+
+### 2026-10-01 - Phase 2B-2C1A：SYSU Authorized Browser Transport + Capture Bridge（阶段同步）
+- 本次目标：进入 **Course Data** 的**浏览器端显式触发授权采集 + 本地 Capture Bridge**
+  （主记录见 `docs/worklogs/course_data.md`）。对 Agent / Frontend 来说本轮是**阶段同步**，无行为改动。
+- 起点：`main` = `3ba7cc4a7c2db3bcd255e8ad8c7f6bc8b8fecc2d`；
+  分支 `feature/course-data-sysu-authorized-transport`。
+- 新增：
+  - `tools/sysu_course_offering_collector.js`（浏览器端采集器，**必须用户显式调用**；
+    认证交给浏览器 `same-origin`，代码不读取 / 不保存 / 不导出任何认证状态）；
+  - `backend/app/course_data/captured_pages.py`（`CapturedPagesFetcher` +
+    `collect_captured_pages_snapshot()` + `load_capture_bundle()`，零网络，
+    **复用**分页核心判定 `partial` / `complete`）；
+  - `backend/tests/test_course_data_captured_pages.py`、`backend/tests/test_sysu_collector_guard.py`。
+- 关键边界：
+  - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/`、
+    `frontend/`、`mock_data/` **一律未修改**；`SnapshotCourseDataProvider` 未修改；
+  - **未接产品链路**：采集器与 Bridge **不接** Integration / Planner / API / 前端产品 UI；
+  - **前端未改动**（真实 Capture Bundle 的导入 UI 属后续步骤），未跑 `npm run build`；
+  - **实际 SYSU 请求数：0**（未登录、未运行采集器、未生成真实数据）。
+- 隐私：Capture Bundle 属 **Real Sanitized Capture**，**不进 Git**（含 `mock_data/` 与测试 fixture）；
+  本轮**未生成任何真实 Capture Bundle**。
+- 阶段影响：阶段图新增 `Phase 2B-2C1A ✅ 浏览器端授权采集器代码 + Capture Bridge`，
+  下一步为**负责人手动 smoke run（2 页，预期 partial）**与真实 Capture 导入 UI，**须等新任务书**。
+- 修改文件（本模块视角）：
+  - `docs/status/agent_frontend.md`（最小阶段同步：表头、阶段图、新增 Phase 2B-2C1A 结果小节、「下一步」）
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **509 passed / 2 skipped**
+  （本轮前 420 passed / 2 skipped；旧测试全部继续通过，未删除旧测试、未新增 skip）。
+- 公共接口是否变化：**否**（未改 Schema / Interface / Integration 签名 / API）
+- 下一步：等待 Reviewer 验收 **Phase 2B-2C1A**。⚠️ **不 merge，不自行开始手动 smoke run**。
