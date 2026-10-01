@@ -475,3 +475,45 @@
   未进入 2B-0D、未改 Schema / Interface、未做 Curriculum Diff、未生成 MakeupTask、未恢复 Integration
 - 下一步：等待 Reviewer 验收 **2B-0C**。通过后进入 **Phase 2B-0D：教学班技术侦察**（**本轮不得自行开始**）。
   **不 merge**，Phase 2B Integration 保持暂停编码。
+
+---
+
+### 2026-09-30 - Phase 2B-0C Reviewer 修复：`course_type` 语义归属 + 隐私口径（docs-only）
+- 本次目标：只修 2 个 Reviewer blocker —— ① `course_type` 的语义归属过强；② 公开 Git 中记录了
+  真实个人的 `passed` 结果分布。**不进入 2B-0D，不改代码 / Schema / Interface / Mock。**
+- Blocker 1：**修正 `course_type` 的语义归属**
+  - 原先把 `course_id` / `course_name` / `credit` / `course_type` **统一定义为"课程本身的固有属性"**，
+    该结论过强（同一门课在专业 A 可能是专必、在专业 B 可能是专选、在某培养方案可能是公选）；
+  - 改为四类归属：**课程核心标识 / 基础属性**（`course_id` / `course_name` / `credit`）、
+    **学生修读事实**（`semester` / `passed`）、**培养方案 / 上下文属性**（`course_type`）、
+    **归属待确认**（`offering_unit` / `cultivation_type`）；
+  - §3.6 中 `course_type` 仍记 **B 可转换后映射 → `Course.course_type`**，但**补充明确说明**：
+    这只表示**现有契约能够承载该字符串值**，**不证明**"公必 / 专必 / 专选 / 公选"是课程的
+    **全局固有属性**；它可能依赖**具体培养方案 / 专业 / 年级上下文**，**最终数据归属本轮不作架构裁决**；
+  - §3.1 的 `course_type` 行同步补注；§4.4 的表述同步改写；
+  - **已确认全仓不再出现**"课程的固有属性"、"与谁修读无关"、"属于'课程本身'"等旧断言。
+- Blocker 2：**删除真实个人 `passed` 结果分布**
+  - 公开 Git **不再记录**"24 条全部 `passed=true`"；
+  - 只保留：**覆盖率 24/24** + **类型 / 语义 = boolean，表示某学生一次修读是否通过**；
+  - 同时按建议进一步最小化个人学业画像：`semester` 改为"**覆盖两个学期**"（删除 11/13 分布）；
+    `course_type` 只列**取值种类**（公必 / 专必 / 专选 / 公选），**删除 12/8/3/1 数量**；
+    `offering_unit` 改为"观察到**多个不同开课单位**"（删除具体计数与分布细节）；
+  - **24 条总记录数保留**（此前批准的样本规模元数据）。
+- **勘误（对本文件历史条目的说明）**：本文件 2B-0C 原有条目中出现的
+  "`passed` 样本内全部为 true"、"`course_type` 4 个取值（公必 12 / 专必 8 / 公选 3 / 专选 1）"、
+  "`semester` 2 个取值（2025-1：11 条；2025-2：13 条）"、"`offering_unit` 11 个不同开课单位"
+  等**分布性表述已不再作为公开口径**；因本文件**只追加、不改写历史**，此处一并勘误：
+  **上述分布信息一律以本轮修复后的公开文档为准，且不再在 public Git 中记录**。
+  同理，历史条目中若把 `course_type` 视作"课程固有属性"，**以本轮修复为准**。
+- G7 处理：**本轮明确不升级 G7**。`offering_unit` 只能证明"**已修记录**里有这个字段"，
+  **不能证明教学班页面也提供同样字段**；须等 **2B-0D** 用真实教学班验证。
+- 修改文件：
+  - `docs/data/SYSU_CASE_A_COMPLETED_COURSES_EVIDENCE.md`
+  - `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - `docs/data/DATA_SOURCE_REGISTRY.md`（本轮未改；确认其中无分布性表述）
+  - `docs/status/agent_frontend.md`（本轮未改；确认其中无分布性表述）
+  - 本文件（**仅追加**）
+- 测试：docs-only，未改动任何代码，未复跑前后端
+- 公共接口是否变化：否 ｜ 是否修改 backend / frontend / mock_data：否
+- 未做：未进入 2B-0D、未获取教学班、未登录教务系统、未改 Schema / Interface、未 merge
+- 下一步：等待 Reviewer 复验。**不 merge，不进入 2B-0D**，Phase 2B Integration 保持暂停编码。
