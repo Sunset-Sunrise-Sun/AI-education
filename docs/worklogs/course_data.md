@@ -628,3 +628,60 @@
 - 下一步：等待 Reviewer 验收 Phase 2B-2C1C；之后由**负责人手动运行相关性诊断**，
   真实结果回填后再决定是否走正式【接口变更请求】。⚠️ **不 merge，不自行开始下一阶段**。
 
+### 2026-10-01 - Phase 2B-2C1C Reviewer 修复（3 项）
+- 本次目标：按 Reviewer 意见收紧**暴露面 / 参数面 / 文档口径**，**不新增能力、不改契约**。
+- 起点：`feature/course-data-missing-schedule-correlation`，HEAD `1177dab`（未 merge）。
+- **① 收口 C1C helper 暴露面**（`tools/sysu_course_offering_collector.js`）：
+  - 从 `window.XuehangSysuCollector` **删除** `classifySchedulePresence` /
+    `summarizeFieldShape` / `summarizeCategoricalValues` 三个键；
+  - 原因：`summarizeCategoricalValues` 是**任意字段**的 generic summarizer，
+    一旦公开，调用方就能绕过 C1C 的字段 allowlist（对 `timePlaceId` / 课程名等
+    字段直接产生具体 value counts）；
+  - C1C 现在**只暴露** `diagnoseMissingScheduleCorrelation` 一个入口；
+    三个 helper 仍为 IIFE 内部实现，并在暴露段上方写明"不暴露 + 原因"；
+  - 新增守卫 `test_correlation_helpers_are_internal_only`：
+    在**全局 exposure 切片**中断言三者均不出现、断言不存在 `函数名: 函数名` 暴露写法。
+- **② options 改为严格白名单**：
+  - 删除 `CORRELATION_FORBIDDEN_OPTIONS`（"已知参数黑名单"可绕过）；
+  - 改为 `var optionNames = Object.keys(opts);` +
+    `optionNames.filter(function (name) { return name !== "semester"; })`；
+    任何额外 own key（`pageSize` / `pageNo` / `firstPageNo` / `maxPages` / `delayMs` /
+    `retry`，以及 `foo` / `fields` 等**任意未知字段**）都在**发请求之前** fail closed；
+  - ⛔ 失败信息**不回显**调用方提供的键名（只报额外参数个数），
+    避免把任意字符串带进日志；
+  - 守卫：`test_correlation_diagnostic_rejects_any_option_other_than_semester`（白名单逻辑 +
+    **时序早于 `await requestPage(`** + 旧黑名单常量已消失 + 不回显键名），
+    并在 `test_correlation_diagnostic_page_and_size_are_locked` 中增加
+    `slice_.count("opts.") == 1`（唯一被读取的 options 字段就是 `semester`）。
+- **③ 修正文档输出口径**：全部删除"只含计数与类型 / 不含取值原文"这类**不准确**说法，
+  统一改为四点口径：
+  1. **不返回** Raw row / 逐行数据 / 课程与教学班标识 / 教师 / 教室 /
+     `teachingTimePlaceStr` 原文；
+  2. **Structural-only 字段不返回具体值**；
+  3. **Categorical 字段 `distinct <= 20` 时会返回聚合后的原始标量分类值 + `count`**；
+  4. **`distinct > 20` 时 `values` 全部 suppression**。
+  同步位置：`docs/status/course_data.md`（C1C 表格 + 新增"返回内容的准确口径"引用块 + 「下一步」）、
+  `docs/status/agent_frontend.md`（C1C 关键边界）、本文件；
+  另在 JS 的 `diagnoseMissingScheduleCorrelation` JSDoc 中写明同一口径。
+- 修改文件：
+  - `tools/sysu_course_offering_collector.js`
+  - `backend/tests/test_sysu_collector_guard.py`（C1C 守卫 13 → **15** 条）
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **539 passed / 2 skipped**，exit 0
+  （上一轮 537 passed / 2 skipped；**未删除任何旧测试、未新增 skip**）；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**。
+- **本地合成校验（临时脚本、未入库、非真实请求）**：加载采集器并 stub `fetch`，
+  确认 ① 暴露键中 `summarizeCategoricalValues` / `summarizeFieldShape` /
+  `classifySchedulePresence` 均为 `undefined`；
+  ② `{semester}` 放行且只发 1 次请求，`{semester, pageSize}` / `{semester, foo}` /
+  `{semester, fields}` / `{semester, pageNo}` / `{semester, retry}` **全部被拒且 0 次额外请求**；
+  ③ `openClass`（2 个 distinct）返回聚合分类值 + count，
+  `openingUnitName`（25 个 distinct）`values_suppressed = true` / `values = []`，
+  `timePlaceId` 只返回 shape 计数；返回 JSON 内无课程 / 教师 / 教室 / 原文。
+- ⛔ **未修改** `schemas/` / `docs/interfaces/` / Python 数据链路 / `collect()` / 2C1B 诊断入口；
+  `CourseOffering.meetings` 的 **`minItems = 1` 保持不变**。
+- 使用数据：**Mock / 人工虚构**；**未生成真实 Capture Bundle**。
+- **实际 SYSU 请求数：0**。
+- 下一步：等待 Reviewer 复核本修复。⚠️ **不 merge，不自行开始下一阶段**。
+

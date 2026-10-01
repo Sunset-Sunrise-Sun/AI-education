@@ -660,16 +660,6 @@
    */
   var SCALAR_TYPE_ORDER = ["boolean", "number", "string"];
 
-  /** C1C **不接受**的参数：用户只允许提供 `semester`。 */
-  var CORRELATION_FORBIDDEN_OPTIONS = [
-    "pageNo",
-    "pageSize",
-    "firstPageNo",
-    "maxPages",
-    "delayMs",
-    "retry"
-  ];
-
   /**
    * 纯函数：把一条 row 归入 `teachingTimePlaceStr` 的五种存在形态之一。
    *
@@ -1058,11 +1048,17 @@
    *
    * - 复用现有 hostname guard / same-origin 请求 / 既有取页函数的全部校验；
    * - 固定 `pageNo = CORRELATION_PAGE_NO`（1）、`pageSize = CORRELATION_PAGE_SIZE`（200）；
-   * - ⛔ 用户**只允许**提供 `semester`：分页 / 限速 / 重试参数一律拒绝；
+   * - ⛔ 用户**只允许**提供 `semester`：其它任何 own key 一律在**发请求之前**拒绝；
    * - ⛔ 没有分页循环、没有重试、没有并发、没有第二次请求；
    * - ⛔ 只把聚合对象返回给**显式调用者**：不落盘、不写浏览器存储、不产出数据文件；
-   * - ⛔ 所有原始值字段（含 `openClass` / `teachProgressSubmitState` / `weekDay`）
-   *   只以"原始值 X 出现 N 次"的形式出现，**不做任何业务语义解释**。
+   * - ⛔ **不返回**：Raw row / 逐行数据 / 课程与教学班标识 / 教师 / 教室 /
+   *   `teachingTimePlaceStr` 原文；
+   * - ⛔ **A 类（structural-only）字段不返回具体值**，只有存在性 / 类型计数；
+   * - ⚠️ **B 类（categorical）字段在 `distinct <= MAX_DISTINCT_VALUES` 时
+   *   会返回"聚合后的原始标量分类值 + 出现次数"**（例如 `{type, value, count}`）——
+   *   这是本诊断**有意**返回的信息，用于观察两组是否分群；
+   *   在 `distinct > MAX_DISTINCT_VALUES` 时 **`values` 整体 suppression**（`values = []`）；
+   * - ⛔ 这些原始值只以"原始值 X 出现 N 次"的形式出现，**不做任何业务语义解释**。
    */
   async function diagnoseMissingScheduleCorrelation(options) {
     requireAllowedHost();
@@ -1075,14 +1071,16 @@
     }
     semester = semester.trim();
 
-    // ⛔ 分页 / 限速 / 重试参数一律拒绝：本诊断固定只取第 1 页一次。
-    var unexpected = CORRELATION_FORBIDDEN_OPTIONS.filter(function (name) {
-      return Object.prototype.hasOwnProperty.call(opts, name);
+    // ⛔ **严格白名单**：只接受 semester 一个 own key（不是"已知参数黑名单"）。
+    // 任何额外字段都在**发请求之前** fail closed；不回显调用方提供的键名。
+    var optionNames = Object.keys(opts);
+    var unexpected = optionNames.filter(function (name) {
+      return name !== "semester";
     });
     if (unexpected.length > 0) {
       fail(
-        "相关性诊断固定只取第 1 页一次，不接受分页 / 限速 / 重试参数（收到 " +
-          unexpected.join(", ") + "）。已停止。"
+        "相关性诊断只接受 semester 一个参数（收到 " + unexpected.length +
+          " 个额外参数）。已停止；参数名不予回显。"
       );
     }
 
@@ -1115,6 +1113,11 @@
 
   // ---------------------------------------------------------------------
   // 显式暴露（加载本文件不触发任何请求）
+  //
+  // ⛔ C1C 的字段级 summarizer（`classifySchedulePresence` /
+  //    `summarizeFieldShape` / `summarizeCategoricalValues`）是**内部实现**，
+  //    **不暴露**：`summarizeCategoricalValues` 是**任意字段**的 generic
+  //    summarizer，一旦公开就能绕过 C1C 的字段 allowlist。
   // ---------------------------------------------------------------------
 
   window.XuehangSysuCollector = {
@@ -1122,9 +1125,6 @@
     diagnoseSchedulePresence: diagnoseSchedulePresence,
     summarizeSchedulePresence: summarizeSchedulePresence,
     diagnoseMissingScheduleCorrelation: diagnoseMissingScheduleCorrelation,
-    classifySchedulePresence: classifySchedulePresence,
-    summarizeFieldShape: summarizeFieldShape,
-    summarizeCategoricalValues: summarizeCategoricalValues,
     toJson: toJson,
     DIAGNOSTIC_PAGE_NO: DIAGNOSTIC_PAGE_NO,
     DIAGNOSTIC_PAGE_SIZE: DIAGNOSTIC_PAGE_SIZE,

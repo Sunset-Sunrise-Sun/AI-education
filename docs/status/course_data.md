@@ -1,7 +1,8 @@
 # Course Data 当前状态
 
 > 最后更新：2026-10-01（**Phase 2B-2C1C：Missing Schedule Correlation Diagnostic**
-> 代码已完成，等待 Reviewer；`OFFERING-002` 已补录**第 1 页真实聚合证据**）
+> 代码已完成、**Reviewer 修复 3 项已完成**，等待 Reviewer 复核；
+> `OFFERING-002` 已补录**第 1 页真实聚合证据**）
 >
 > ⚠️ **准确表述（不得夸大）**：
 > **真实 Course Data 尚未完成**，**尚未取得 complete semester snapshot**。
@@ -125,23 +126,33 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 
 | 项 | 内容 |
 |---|---|
-| 入口 | `window.XuehangSysuCollector.diagnoseMissingScheduleCorrelation({ semester: "2026-1" })` —— **必须由用户显式调用** |
-| 纯函数（已暴露，便于源码级检查） | `classifySchedulePresence` / `summarizeFieldShape` / `summarizeCategoricalValues` |
+| 入口 | `window.XuehangSysuCollector.diagnoseMissingScheduleCorrelation({ semester: "2026-1" })` —— **必须由用户显式调用**，也是 C1C **唯一**暴露到全局的入口 |
+| 内部纯函数（**不暴露**） | `classifySchedulePresence` / `summarizeFieldShape` / `summarizeCategoricalValues` 均为 **IIFE 内部实现**，**不出现在 `window.XuehangSysuCollector`**（`summarizeCategoricalValues` 是**任意字段**的 generic summarizer，公开即可绕过 C1C 字段 allowlist） |
 | 请求范围 | **固定** `pageNo = CORRELATION_PAGE_NO`（= `DIAGNOSTIC_PAGE_NO` = **1**）、`pageSize = CORRELATION_PAGE_SIZE`（= `DIAGNOSTIC_PAGE_SIZE` = **200**）；**只发 1 次请求** |
-| 参数限制 | 用户**只允许**提供 `semester`；`pageNo` / `pageSize` / `firstPageNo` / `maxPages` / `delayMs` / `retry` **一律显式拒绝** |
+| 参数限制 | **严格白名单**：`Object.keys(opts)` 里**只允许** `semester`；任何其它 own key（`pageSize` / `pageNo` / `firstPageNo` / `maxPages` / `delayMs` / `retry` 或任意未知字段如 `foo` / `fields`）都在**发请求之前** fail closed；⛔ 不采用"已知参数黑名单"；⛔ 失败信息**不回显**调用方提供的键名 |
 | 不具备的能力 | ⛔ 无分页循环、⛔ 无重试、⛔ 无并发、⛔ 无第二次请求、⛔ 不复制 `fetch()` |
 | 复用 | hostname guard / same-origin 请求 / 既有 `requestPage()` 的 HTTP · JSON · code · total · rows 校验 |
 | 分组 | `schedule_presence` 保留**五桶**；只比较 `missing` 与 `non_empty_string`；`ungrouped_rows = null + empty_string + other_type`，⛔ **不**塞进任何一组 |
-| A 类字段（只做存在性 / 类型统计） | `timePlaceId` / `limitNumber` / `selectedNumber`；⛔ **绝不输出具体取值**（无 value list、无 distinct 计数） |
-| B 类字段（有限分类值计数） | `weekDay` / `openClass` / `teachProgressSubmitState` / `courseCategoryName` / `examMode` / `openingUnitName` |
+| A 类字段（Structural-only） | `timePlaceId` / `limitNumber` / `selectedNumber`；**只做存在性 / 类型统计，不返回具体值**（无 value list、无 distinct 计数） |
+| B 类字段（Categorical） | `weekDay` / `openClass` / `teachProgressSubmitState` / `courseCategoryName` / `examMode` / `openingUnitName` |
 | 值的安全格式 | `{ type: "number", value: "0", count: 32 }`：**值序列化为字符串、保留原始类型**；`missing` / `null` / `empty_string` / `other_type` **单独归类，不进入 value list** |
-| 高基数安全阀 | `MAX_DISTINCT_VALUES = 20`（**诊断输出安全阀，不是 SYSU 参数**）：distinct **> 20** → `values_suppressed = true`、`values = []`；⛔ **不返回前 N 个 / 随机 N 个 / 最常见 N 个**（排序与出现次数无关） |
+| 分类值的返回口径（⚠️ 注意） | **distinct ≤ 20 时**：**会返回聚合后的原始标量分类值 + 出现次数**（`values[]`）—— 这是本诊断**有意**返回的信息，用于观察两组是否分群；**distinct > 20 时**：`values_suppressed = true`、**`values` 全部 suppression**（`values = []`） |
+| 高基数安全阀 | `MAX_DISTINCT_VALUES = 20`（**诊断输出安全阀，不是 SYSU 参数**）：⛔ **不返回前 N 个 / 随机 N 个 / 最常见 N 个**（排序与出现次数无关） |
 | 计数不变量 | 五桶之和 == `total_rows`；两组之和 == `compared_rows`；`compared_rows + ungrouped_rows == total_rows`；每个字段自身的统计加总 == 该组 `total`；⛔ **任一不成立即整体失败，绝不静默丢 row** |
-| ⛔ 不返回 | Raw row、row 下标、`courseNum` / `courseName` / `classNumber` / 教师 / 教室 / `teachingTimePlaceStr` 原文 / 内部 ID / `readObj` |
+| ⛔ 不返回 | **Raw row**、逐行数据、row 下标、课程 / 教学班标识（`courseNum` / `courseName` / `classNumber`）、教师、教室、`teachingTimePlaceStr` **原文**、内部 ID / `readObj` |
 | ⛔ 不产生 | **不生成 Capture Bundle**、不落盘、不写 `localStorage` / `IndexedDB`、不调用 `toJson` |
 | ⛔ 不改行为 | `collect()` 遇缺字段仍 **fail closed**；2B-2C1B 的 `diagnoseSchedulePresence()` **行为保持不变**（两个入口**并列**，职责不同） |
 | ⛔ 本轮不改契约 | `CourseOffering.meetings` 的 `minItems = 1` **保持不变**；诊断结果**不**触发任何 Schema 变更 |
 
+> ⚠️ **返回内容的准确口径（不得写成"只含计数与类型、不含取值"）**：
+>
+> 1. **不返回** Raw row / 逐行数据 / 课程与教学班标识 / 教师 / 教室 /
+>    `teachingTimePlaceStr` 原文；
+> 2. **Structural-only 字段不返回具体值**（只有存在性 / 类型计数）；
+> 3. **Categorical 字段在 `distinct <= 20` 时，会返回聚合后的原始标量分类值 + `count`**
+>    （例如 `{ type: "number", value: "0", count: 32 }`）；
+> 4. **`distinct > 20` 时 `values` 全部 suppression**（`values = []`）。
+>
 > ⚠️ **本轮不含任何真实相关性数值**：本入口只是**取证工具**，
 > 真实结果由**负责人手动执行**后回填。**Builder 本轮实际 SYSU 请求数 = 0**。
 >
@@ -440,8 +451,12 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 - **负责人手动 1 页相关性诊断**（Reviewer 合并后，2B-2C1C）：同样在本人已登录、已有权限的
   「**全校开设课程**」模块页面加载 `tools/sysu_course_offering_collector.js`，显式调用
   `await window.XuehangSysuCollector.diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`；
-  它**只请求第 1 页一次**，返回 `missing` 组与 `non_empty_string` 组的**字段聚合结构对照**
-  （只含计数与类型，**不含取值原文**），**不产出数据**；
+  它**只请求第 1 页一次**，返回 `missing` 组与 `non_empty_string` 组的**字段聚合结构对照**：
+  **不返回** Raw row / 逐行数据 / 课程与教学班标识 / 教师 / 教室 / `teachingTimePlaceStr` 原文；
+  **Structural-only 字段不返回具体值**；
+  **Categorical 字段在 `distinct <= 20` 时返回聚合后的原始标量分类值 + `count`**，
+  `distinct > 20` 时 **`values` 全部 suppression**；
+  ⛔ **不产出数据文件**；
   用于回答"缺字段的 row 是否存在**一致的结构特征**"，
   ⛔ **不回答**它们的业务含义；
 - **G11 待调查项**（见 `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`）：

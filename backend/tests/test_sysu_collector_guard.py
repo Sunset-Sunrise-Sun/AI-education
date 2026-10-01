@@ -537,6 +537,12 @@ def _correlation_diagnostic_slice(collector_source: str) -> str:
     return collector_source[start:end]
 
 
+def _exposure_slice(collector_source: str) -> str:
+    """截取 `window.XuehangSysuCollector = { ... }` 的**全局暴露面**。"""
+
+    return collector_source[collector_source.index(_COLLECTOR_EXPOSE_START) :]
+
+
 def _js_function_slice(collector_source: str, start_marker: str, end_marker: str) -> str:
     """截取单个函数的代码（不含其上方 JSDoc，也不含下一个函数的 JSDoc）。"""
 
@@ -611,9 +617,69 @@ def test_correlation_diagnostic_page_and_size_are_locked(collector_source: str) 
     ):
         assert option not in slice_, f"C1C 不得接收分页 / 限速 / 重试参数：{option}"
 
-    # 用户只允许提供 semester，且被拒绝的参数是显式列出的
+    # 唯一被读取的 options 字段就是 semester
     assert "opts.semester" in slice_
-    assert "CORRELATION_FORBIDDEN_OPTIONS" in slice_
+    assert slice_.count("opts.") == 1, "C1C 只允许读取 opts.semester"
+
+
+def test_correlation_diagnostic_rejects_any_option_other_than_semester(
+    collector_source: str,
+) -> None:
+    """⛔ 严格白名单：只接受 `semester`，其它任何 own key 都在**发请求之前**失败。
+
+    覆盖：`{semester}` 放行；`{semester, pageSize}` / `{semester, foo}` /
+    `{semester, fields}` 等一律拒绝（不是"已知参数黑名单"，而是白名单）。
+
+    说明：本测试文件按既有约定**只做源码级检查**，不执行 JS；
+    这里验证白名单逻辑与"早于请求"的时序确实写在代码里。
+    """
+
+    slice_ = _correlation_diagnostic_slice(collector_source)
+
+    assert "var optionNames = Object.keys(opts);" in slice_
+    assert 'return name !== "semester";' in slice_
+    assert "if (unexpected.length > 0) {" in slice_
+
+    # 时序：白名单校验必须早于唯一一次取页调用
+    assert slice_.index("var optionNames = Object.keys(opts);") < slice_.index("await requestPage(")
+
+    # ⛔ 不得再使用"已知参数黑名单"（可绕过）
+    assert "CORRELATION_FORBIDDEN_OPTIONS" not in collector_source
+    assert "hasOwnProperty.call(opts," not in collector_source
+
+    # ⛔ 失败信息不回显调用方提供的键名
+    assert "unexpected.join(" not in slice_
+    assert "optionNames.join(" not in slice_
+
+
+def test_correlation_helpers_are_internal_only(collector_source: str) -> None:
+    """⛔ C1C 的字段级 summarizer 不得暴露到 `window.XuehangSysuCollector`。
+
+    `summarizeCategoricalValues` 是**任意字段**的 generic summarizer：
+    一旦公开，调用方就能绕过 C1C 的字段 allowlist，
+    对 `timePlaceId` / 课程名等字段直接产生具体 value counts。
+    三者都保持为 IIFE 内部实现。
+    """
+
+    exposure = _exposure_slice(collector_source)
+
+    for forbidden in (
+        "classifySchedulePresence",
+        "summarizeFieldShape",
+        "summarizeCategoricalValues",
+    ):
+        assert forbidden not in exposure, f"全局 exposure 不得包含：{forbidden}"
+
+    # 也不得以"函数名: 函数名"的暴露写法出现在任何位置
+    for forbidden in (
+        "classifySchedulePresence:",
+        "summarizeFieldShape:",
+        "summarizeCategoricalValues:",
+    ):
+        assert forbidden not in collector_source, f"不得暴露：{forbidden}"
+
+    # 通用分类值 summarizer 的暴露面必须为空（只允许 2C1B 的 schedule presence summarizer）
+    assert "summarizeSchedulePresence: summarizeSchedulePresence" in exposure
 
 
 def test_correlation_diagnostic_produces_no_capture_artifacts(collector_source: str) -> None:

@@ -1423,3 +1423,24 @@
 - 公共接口是否变化：**否**。
 - 下一步：等待 Reviewer 验收 Phase 2B-2C1C；之后由**负责人手动运行相关性诊断**，
   真实结果回填后再决定是否走正式【接口变更请求】。⚠️ **不 merge，不自行开始**。
+
+### 2026-10-01 - Phase 2B-2C1C Reviewer 修复（3 项，阶段同步）
+- 本次目标：按 Reviewer 意见收紧**暴露面 / 参数面 / 文档口径**（主记录见 `docs/worklogs/course_data.md`）。
+- **① 暴露面收口**：C1C 的 `classifySchedulePresence` / `summarizeFieldShape` /
+  `summarizeCategoricalValues` 从 `window.XuehangSysuCollector` **删除**（改为 IIFE 内部实现）；
+  C1C 现在**只暴露** `diagnoseMissingScheduleCorrelation`。
+  原因：`summarizeCategoricalValues` 是**任意字段**的 generic summarizer，
+  公开即可绕过字段 allowlist；
+- **② 参数白名单**：删除"已知参数黑名单"，改为 `Object.keys(opts)` **严格白名单**
+  （只允许 `semester`），任何额外字段在**发请求之前** fail closed；
+  ⛔ 失败信息不回显调用方键名；
+- **③ 返回口径**：不再写"只含计数与类型 / 不含取值原文"，统一为
+  「不返回 Raw row / 逐行数据 / 课程教学班标识 / 教师 / 教室 / `teachingTimePlaceStr` 原文；
+  Structural-only 字段不返回具体值；**Categorical 字段 `distinct <= 20` 时返回聚合后的
+  原始标量分类值 + `count`**；`distinct > 20` 时 `values` 全部 suppression」；
+- 修改文件（本模块视角）：`docs/status/agent_frontend.md`、本文件（**仅追加**）；
+- 测试：`cd backend && python -m pytest` → **539 passed / 2 skipped**
+  （上一轮 537 passed / 2 skipped；未删除旧测试、未新增 skip）；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**。
+- 公共接口是否变化：**否**；**实际 SYSU 请求数：0**。
+- 下一步：等待 Reviewer 复核本修复。⚠️ **不 merge，不自行开始**。

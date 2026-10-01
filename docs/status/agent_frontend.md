@@ -1,7 +1,8 @@
 # Agent / Frontend 当前状态
 
 > 最后更新：2026-10-01（**Phase 2B-2C1C Missing Schedule Correlation Diagnostic**
-> 代码已完成，等待 Reviewer；`OFFERING-002` 已补录**第 1 页真实聚合证据**）
+> 代码已完成、**Reviewer 修复 3 项已完成**，等待 Reviewer 复核；
+> `OFFERING-002` 已补录**第 1 页真实聚合证据**）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应、私密脱敏样本与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering` 已为 1 — N `meetings[]`**（DG-01 已实施）；
@@ -446,8 +447,8 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 
 | 产出 | 内容 |
 |---|---|
-| `tools/sysu_course_offering_collector.js` | 新增 `diagnoseMissingScheduleCorrelation({ semester })` + 纯函数 `classifySchedulePresence` / `summarizeFieldShape` / `summarizeCategoricalValues` |
-| `backend/tests/test_sysu_collector_guard.py` | 新增 C1C 静态守卫（13 条） |
+| `tools/sysu_course_offering_collector.js` | 新增 `diagnoseMissingScheduleCorrelation({ semester })`；字段级 summarizer `classifySchedulePresence` / `summarizeFieldShape` / `summarizeCategoricalValues` 为**内部实现，不暴露** |
+| `backend/tests/test_sysu_collector_guard.py` | 新增 C1C 静态守卫（15 条） |
 | `docs/data/DATA_SOURCE_REGISTRY.md` | `OFFERING-002` 补录第 1 页真实聚合证据（`missing 39` / `non_empty_string 161`，其余 0；**仅第 1 页**） |
 | `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` | G11 / §4.7 补录聚合证据 + 未确认清单 |
 
@@ -460,24 +461,33 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - ⛔ **加载脚本仍不自动请求**；诊断必须由用户显式调用；
 - **固定只取第 1 页一次**（`pageNo = 1` / `pageSize = 200`）；⛔ 无分页循环 / 重试 / 并发 /
   第二次请求 / 不复制 `fetch()`；**复用**既有 hostname guard 与 `requestPage()`；
-- **用户只允许提供 `semester`**：`pageNo` / `pageSize` / `firstPageNo` / `maxPages` /
-  `delayMs` / `retry` **一律显式拒绝**；
+- **参数为严格白名单**：`Object.keys(opts)` 中**只允许** `semester`；任何其它 own key
+  （`pageSize` / `pageNo` / `firstPageNo` / `maxPages` / `delayMs` / `retry`，以及任意未知字段）
+  都在**发请求之前** fail closed（⛔ 不是"已知参数黑名单"；⛔ 不回显调用方键名）；
+- **暴露面收口**：C1C 只暴露 `diagnoseMissingScheduleCorrelation`；
+  `summarizeCategoricalValues` 这类**任意字段**的 generic summarizer
+  **不得**出现在 `window.XuehangSysuCollector`（否则可绕过字段 allowlist）；
 - **分组**：`schedule_presence` 保留**五桶**；只比较 `missing` 与 `non_empty_string`；
   `ungrouped_rows`（`null` + `empty_string` + `other_type`）**保留但不并入任何一组**；
-- **A 类字段只做存在性 / 类型统计**（`timePlaceId` / `limitNumber` / `selectedNumber`）：
-  ⛔ 不输出具体取值、无 value 列表；
-- **B 类字段做有限分类值计数**（`weekDay` / `openClass` / `teachProgressSubmitState` /
-  `courseCategoryName` / `examMode` / `openingUnitName`）：值**序列化为字符串 + 保留原始类型**，
+- **A 类字段（Structural-only）只做存在性 / 类型统计**
+  （`timePlaceId` / `limitNumber` / `selectedNumber`）：⛔ **不返回具体值**、无 value 列表；
+- **B 类字段（Categorical）做有限分类值计数**（`weekDay` / `openClass` /
+  `teachProgressSubmitState` / `courseCategoryName` / `examMode` / `openingUnitName`）：
+  值**序列化为字符串 + 保留原始类型**（`{ type, value, count }`），
   `missing` / `null` / `empty_string` / `other_type` 单独归类；
-- **高基数安全阀** `MAX_DISTINCT_VALUES = 20`：distinct **> 20** → `values_suppressed = true`、
-  `values = []`；⛔ 不返回前 N / 随机 N / 最常见 N 个；
+- **返回内容口径（⚠️ 不是"只有计数"）**：⛔ **不返回** Raw row / 逐行数据 /
+  课程与教学班标识 / 教师 / 教室 / `teachingTimePlaceStr` 原文；
+  **Structural-only 字段不返回具体值**；
+  **Categorical 字段 `distinct <= 20` 时会返回聚合后的原始标量分类值 + `count`**；
+  **`distinct > 20` 时 `values` 全部 suppression**；
+- **高基数安全阀** `MAX_DISTINCT_VALUES = 20`：⛔ 不返回前 N / 随机 N / 最常见 N 个；
 - **计数不变量在代码中显式校验**（五桶之和、两组之和、`compared_rows + ungrouped_rows`、
   每字段加总）：⛔ **任一不成立即整体失败，不静默丢 row**；
 - ⛔ **不生成 Capture Bundle**、不落盘、不写浏览器存储、不调用 `toJson`；
 - ⛔ **不改** `collect()` 的 fail-closed 行为；⛔ **不改** 2B-2C1B 的 `diagnoseSchedulePresence()`；
 - ⛔ **本轮不改契约**：`CourseOffering.meetings` `minItems = 1` 保持不变；**G11 只登记、不裁决**；
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/`、
-  `frontend/`、`backend/app/course_data/*.py` 均未修改；后端 **537 passed / 2 skipped**；
+  `frontend/`、`backend/app/course_data/*.py` 均未修改；后端 **539 passed / 2 skipped**；
 - ⚠️ **本轮不含任何真实相关性数值**：真实结果由**负责人手动执行**后回填；
   **Builder 实际 SYSU 请求数：0**。
 
@@ -673,10 +683,10 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **等待 Reviewer 验收 Phase 2B-2C1C**（相关性诊断：是否只请求第 1 页一次、
-  是否只返回聚合结构、是否未产出 bundle、是否未改动 `collect()` 与 2C1B、
-  是否正确区分 A 类"只统计存在性/类型"与 B 类"有限分类值计数"、
-  是否对高基数整体 suppression）
+- **等待 Reviewer 复核 Phase 2B-2C1C 的 3 项修复**（暴露面收口 / 严格白名单参数 /
+  返回口径表述；以及相关性诊断本身：是否只请求第 1 页一次、是否未产出 bundle、
+  是否未改动 `collect()` 与 2C1B、是否正确区分 A 类"只统计存在性/类型"与
+  B 类"有限分类值计数"、是否对高基数整体 suppression）
 - **之后由负责人手动运行** `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`，
   依据第 1 页真实相关性结果决定是否走正式【接口变更请求】
   （⛔ 本轮不预设方案、不改 Schema）
