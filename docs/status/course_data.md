@@ -1,20 +1,22 @@
 # Course Data 当前状态
 
-> 最后更新：2026-09-30（**Phase 2B-2A：Course Data Normalization Core** 完成，等待 Reviewer）
+> 最后更新：2026-09-30（**Phase 2B-2B：Schedule Parser + Local Import Adapter** 完成，等待 Reviewer）
 >
 > ⚠️ **准确表述（不得夸大）**：
-> **真实 Course Data 尚未完成**，**2026-1 全量 snapshot 尚未取得**。
-> 本轮完成的是"**已确认字段 → `CourseOffering`**"的**本地标准化内核**与**带 completeness 的内部快照**，
-> 是**零网络**实现。
+> **真实 Course Data 尚未完成**，**2026-1 全量 snapshot 尚未取得**，**未发起任何 SYSU 请求**。
+> 本轮完成的是"**已取得 Raw response → `CourseOffering[]` → 内部快照**"的
+> **纯本地 parser + import adapter**（**零网络**）。
+> 真实受控获取（登录 / 分页 / 请求规模确认）属于 **Phase 2B-2C**。
 
 ## 阶段状态
 
 ```text
-D5 教学班技术侦察                                  ✅ 已完成（OFFERING-001，2026-1，CSE202 → 2 个教学班）
+D5 教学班技术侦察                                  ✅ 已完成（OFFERING-001，2026-1）
 Data Gate（契约裁决 + 实施）                        ✅ 已完成（C1–C11 全通过）
-Course Data normalization core（本轮）              ✅ 已完成
-真实 teachingTimePlaceStr parser                    ⏳ 未实现（缺真实脱敏 Raw string）
-授权 import adapter（正常登录 / 已授权范围内导入）    ⏳ 未实现
+Course Data normalization core（2B-2A）             ✅ 已完成
+teachingTimePlaceStr parser（2B-2B）                ✅ 已完成（依据私密脱敏样本，未入 Git）
+本地 Raw-response import adapter（2B-2B）            ✅ 已完成（零网络）
+真实受控获取 adapter（登录 / 分页 / 请求规模确认）    ⏳ 未实现（Phase 2B-2C）
 完整 semester snapshot                              ⏳ 未取得
 ```
 
@@ -30,7 +32,48 @@ Course Data normalization core（本轮）              ✅ 已完成
 - Data Gate-2（**DG-01**）已把 `CourseOffering` 改为 **1 — N `meetings[]`**：
   一个教学班 = 一个 `CourseOffering`，`meetings[]` = 它的**全部**上课时间 / 地点段。
 
-### Course Data normalization core（Phase 2B-2A，本轮）
+### Schedule parser + local import adapter（Phase 2B-2B，本轮）
+位置：`backend/app/course_data/`（**内部实现，不是跨模块公共契约**）
+
+| 模块 | 内容 |
+|---|---|
+| `schedule_parser.py` | `parse_teaching_time_place(text)`、`ParsedScheduleSegment`、`extract_meetings()`、`parse_weekday()`、`parse_sections()` |
+| `importer.py` | `import_opening_courses_response(payload, *, semester, source, completeness)` |
+
+**parser（依据私密脱敏样本，样本本身不入 Git）**：
+
+```text
+segment separator = ","      field separator = "/"
+无地点（5 字段）：weeks / weekday / sections / teacher / activity
+有地点（6 字段）：weeks / weekday / sections / location / teacher / activity
+```
+
+- ✅ **最多一个**末尾逗号：单个末尾逗号产生的空 segment **忽略**；
+  ⛔ `seg,,` / `seg,,,`（多个末尾逗号）**失败**；
+- ⛔ 中间空 segment（`seg1,,seg2`）**失败**，不静默忽略；
+- ⛔ 字段数只接受 **5 或 6**，其它 fail closed；
+- **星期**：只接受 `星期一` … `星期日`；⛔ **`weekday` 一律来自 segment 自身**——
+  样本显示 Raw `weekDay` 的顺序**不能安全假设**与 segment 一致，因此**完全不使用**它；
+- **节次**：`第N-M节`，要求 `N ≥ 1` 且 **`M ≥ N`**（允许 `M == N`，如 `第4-4节`）；
+- **地点**：只按**第一个 `-`** 切 → `campus` = 第一段、`classroom` = 其余完整文本；
+  ⛔ 不进一步猜 building / room；⛔ **`openingSchoolName` 不是 `campus` 的 fallback**；
+- **teacher / activity**：必须为非空字符串，**保留在内部 `ParsedScheduleSegment`**；
+  `extract_meetings()` 只把 `Meeting[]` 交给公共契约；
+  ⛔ **meeting 级教师关联仍是 known deferred representation gap**，**未修改任何 Schema**；
+- **不丢段、不合并、不排序**：输出顺序 == Raw 顺序。
+
+**importer（零网络）**：
+
+- 只消费**已 decode** 的 Raw response：`{"code": 200, "data": {"total": ..., "rows": [...]}}`；
+- 校验 `code == 200`、`data` 为对象、`total` 为非负整数、`rows` 为对象数组；
+- 逐行 `teachingTimePlaceStr` → `Meeting[]` → `build_course_offering()`；
+- **任意一行失败 → 本次 import 整体失败**（⛔ 不 fallback、不重试、不跳过坏 row）；
+- **`completeness` 必须由调用方明确给出**：adapter **不因为 `len(rows) == total` 就自称 complete**；
+- semester 一致性 / real-only / duplicate key / completeness 规则**全部交给 `OfferingSnapshot`**，
+  adapter 不重复实现；
+- 错误信息**不回显** Raw 字符串或其中任何字段取值。
+
+### Course Data normalization core（Phase 2B-2A）
 位置：`backend/app/course_data/`（**内部实现，不是跨模块公共契约**）
 
 | 模块 | 内容 |
@@ -75,20 +118,21 @@ source       → 必须由调用方显式传入
 - 暂缓业务字段：`courseCategoryName`、`openingUnitName`、`examMode`、`readObj`、
   `teachProgressSubmitState`、`openClass`、`outlineTypeNum`。
 
-**周次**：Phase 2B-2A **只接受已经观察到的两个具体取值**（**精确匹配，不做形状泛化**）：
+**周次**（Phase 2B-2B 依据脱敏真实样本重新界定）：
 
 ```text
-1-17周    ✅
-1-17单周  ✅
+普通连续周次 `N-M周`：N ≥ 1 且 M ≥ N（**允许 M == N**）
+  → 样本中已观察到多种范围（含退化区间）
+单周 `1-17单周`：**只此一个取值**
 ```
 
-其它一律 `CourseDataNormalizationError` —— 既包括形状不同的形式
-（双周 / 逗号组合 / 多段组合 / 单个周次号 / 带"第"字前缀 / 全角数字等），
-也包括**形状相似但未被观察过**的区间（`3-4周`、`3-15单周`、`3-3周`、`2-18周` …）。
-**"形状相似"不等于"已确认"**；后续 2B-2B 依真实脱敏样本再扩。
+- ✅ 普通区间按 `N-M周` 展开；退化区间（`M == N`）合法并展开为单个周次；
+- ⛔ **单周不泛化**为任意 `N-M单周`（那一形态尚无证据）；
+- ⛔ 其余一律 `CourseDataNormalizationError`：双周、逗号组合、多段组合、单个周次号、
+  带"第"字前缀、波浪号、全角数字、`M < N`、`N < 1` 等。
 
-> ⛔ **`teachingTimePlaceStr` 本轮不解析**：仓库中**不虚构**任何"看起来像真实 SYSU 格式"的字符串，
-> 测试只用不携带格式假设的占位值。`meetings` 只能由调用方传入**已解析好的** `Meeting`。
+> ✅ **`teachingTimePlaceStr` 已由 `schedule_parser.py` 解析**（Phase 2B-2B，依据私密脱敏样本）；
+> `normalization.py` 本身仍然**不解析**原始串，只接收**已解析好的** `Meeting`。
 
 **Snapshot completeness（Data Gate C9 落代码）**：
 
@@ -114,27 +158,31 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 当前阻塞
 
-- **真实 `teachingTimePlaceStr` parser 未实现**：public Git 没有真实脱敏 Raw string，
-  猜分隔符 / 猜 segment 分隔 / 猜字段位置都属于臆测 → **本轮故意不做**；
-- **授权 import adapter 未实现**：尚未有"用户明确触发授权导入"的落地通道；
-- **完整 semester snapshot 未取得**：当前只有 D5 小规模侦察（2 个教学班），
-  **不是**完整快照；
-- ⛔ **`weekDay → weekday` 与 `openingSchoolName → campus` 映射未确认**（C11 待确认项），
+- **真实受控获取 adapter 未实现**（Phase 2B-2C）：尚未有"用户明确触发授权导入"的网络通道；
+  本轮只做到**纯本地** Raw-response → `OfferingSnapshot`；
+- **完整 semester snapshot 未取得**：当前只有 D5 小规模侦察 + 私密脱敏样本，
+  **不是**完整快照；**本轮未发起任何 SYSU 请求**；
+- ⛔ **`weekDay → weekday` 与 `openingSchoolName → campus` 仍然不做**（C11 待确认项）：
+  `weekday` 一律来自 segment 自身，`campus` 只来自 segment 的 location 字段，
   代码中**没有**这类 fallback；
 - ⛔ **meeting 级教师关联为 known deferred representation gap**：
-  `Meeting` 不承载教师，`teacher` 仍是 `CourseOffering` 顶层汇总 / 展示字段。
+  parser **内部保留** `ParsedScheduleSegment.teacher`，
+  但 `Meeting` 不承载教师，`teacher` 仍是 `CourseOffering` 顶层汇总 / 展示字段。
 
 ## 当前使用数据
 
 - **业务数据仍全部为 Mock**：`/mock_data/course_offerings.json`（人工虚构，`data_source = "mock"`）；
-- 本轮的**测试**只使用人工虚构的 source-shaped dict 与占位教师名 `"示例教师A"`；
-- 仓库内**不含**真实教师姓名、内部长 ID 取值、`readObj`、Raw JSON、Cookie / Session / Token。
+- 本轮的**测试**只使用**人工虚构**的结构等价样本与占位名（如 `"示例教师A"`、`"示例校区"`）；
+- 负责人提供的**私密脱敏样本**（`OFFERING-001`）**只在本地阅读**，
+  **未进入 Git**（未 `git add` / 未进测试 fixture / 未进 docs / 未进 worklog；
+  本文件**不记录该样本的文件名**）；
+- 仓库内**不含**真实教师姓名、真实教室、内部长 ID 取值、`readObj`、Raw JSON、
+  Cookie / Session / Token、endpoint。
 
 ## 下一步
 
-- **真实 `teachingTimePlaceStr` parser**：需先取得**脱敏后的真实 Raw string**，
-  再据实实现（不预先猜格式）；
-- **授权 import adapter**：用户本人正常登录、已有权限、**用户明确触发**的授权导入；
+- **Phase 2B-2C：真实受控获取**（网络 adapter）——
+  用户本人正常登录、已有权限、**用户明确触发**的授权导入；
   批量导入前**必须先确认合理 `pageSize` / 请求规模**，
   只能取得部分范围时**必须显式记录 completeness**，**不得宣称 complete**（C9）；
 - **完整 semester snapshot**：目标为 **2026-1**，取得后以 `OfferingSnapshot` 表达，

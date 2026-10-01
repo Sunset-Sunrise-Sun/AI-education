@@ -133,6 +133,49 @@ weekday / start_section / end_section / weeks[] / campus / classroom
 
 ---
 
+## 7A. `teachingTimePlaceStr` 结构结论（Phase 2B-2B，脱敏汇总）
+
+> 依据负责人提供的**私密脱敏样本**（Sanitized Sample，`source_id = OFFERING-001`，2026-1）。
+> 该文件**不在本仓库**；本节只记录**结构性汇总结论**，
+> **不含** Raw string、教师姓名、教室、内部 ID、`readObj` 或任何逐行记录。
+
+**已确认结构**：
+
+| 项 | 结论 |
+|---|---|
+| segment 分隔符 | `,` |
+| 字段分隔符 | `/` |
+| 末尾逗号 | **最多一个**（单个末尾逗号产生的空 segment 可忽略） |
+| 无地点 segment | **5 字段**：weeks / weekday / sections / teacher / activity |
+| 有地点 segment | **6 字段**：weeks / weekday / sections / location / teacher / activity |
+| 地点字段 | **可选**（不是每段都有） |
+| teacher 字段 | segment 级**存在**（当前公共 `Meeting` **不承载**，见下） |
+| activity 字段 | **存在**；作为**非空文本**在内部保留，**当前不进入公共契约** |
+
+**已确认的取值形态**：
+
+- **星期**：`星期一` 等中文 token（样本中出现多个不同星期）；
+- **节次**：`第N-M节`，**包含 `N == M` 的单节形式**（例如"第4-4节"）；
+- **周次**：普通连续区间**存在多种范围**，并**包含退化区间**（例如 `6-6周`）；
+  此外**单周**形态也存在；
+- **地点**：形如 `校区-教学楼-教室`（含多个 `-`）。
+
+**对公共契约的影响**：
+
+- ⛔ **`weekday` 必须从每个 segment 自身解析**：
+  本样本显示 Raw `weekDay` 的排列顺序**不能安全假设**与 segment 顺序一致，
+  因此**不得**用 `weekDay` 作为 `Meeting.weekday` 来源，也不得按位置 zip；
+- ⛔ **`campus` 只来自 segment 中实际存在的 location 字段**；
+  `openingSchoolName → campus` 仍然**不是** fallback；
+- ⛔ **meeting 级 teacher association 确认存在**，但当前公共 `Meeting` 没有 `teacher`
+  （Data Gate 已登记为 **known deferred representation gap**）——
+  parser 在**内部**保留 teacher，**不修改任何 Schema**。
+
+**本轮未做的**：完整 parser 之外的网络获取、登录、分页请求、完整 semester snapshot
+（属于后续阶段）。
+
+---
+
 ## 8. 合规声明
 
 - 本轮查询由负责人在**本人正常登录、已有权限**的范围内完成；
@@ -143,3 +186,7 @@ weekday / start_section / end_section / weeks[] / campus / classroom
 - **未进入** Integration；
 - 本文件**不含** Raw JSON、教师姓名、修读对象完整文本、内部长 ID 取值、完整教学班逐行记录；
 - 人工技术侦察**到此结束**，不再继续查询更多课程。
+
+> **Phase 2B-2B 补充**：本轮**未发起任何 SYSU 请求**（零网络）；
+> 仅使用负责人单独提供的**私密脱敏样本**在**本地**完成 parser / adapter 开发，
+> 该样本**未进入本仓库**；§7A 只记录**结构性汇总结论**。

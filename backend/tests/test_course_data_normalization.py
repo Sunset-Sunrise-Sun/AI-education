@@ -293,38 +293,50 @@ def test_invalid_source_is_rejected(source: object) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 周次：Phase 2B-2A 只接受**已经观察到的两个具体取值**（精确匹配，不做形状泛化）
+# 周次：Phase 2B-2B 依据**脱敏真实样本**重新界定
 # ---------------------------------------------------------------------------
 
 
-def test_observed_plain_week_text_is_expanded() -> None:
-    """✅ `1-17周` —— 已观察到的取值之一。"""
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("1-5周", [1, 2, 3, 4, 5]),
+        ("1-6周", [1, 2, 3, 4, 5, 6]),
+        ("1-8周", [1, 2, 3, 4, 5, 6, 7, 8]),
+        ("7-8周", [7, 8]),
+        ("10-17周", list(range(10, 18))),
+        ("1-17周", list(range(1, 18))),
+    ],
+)
+def test_observed_plain_week_ranges_are_expanded(text: str, expected: list[int]) -> None:
+    """✅ 普通连续周次 `N-M周`（脱敏样本中已观察到多种范围）。"""
 
-    assert expand_weeks("1-17周") == list(range(1, 18))
+    assert expand_weeks(text) == expected
+
+
+def test_observed_degenerate_week_range_is_expanded() -> None:
+    """✅ **`6-6周` 真实存在**，必须合法并展开为 `[6]`（`M == N`）。"""
+
+    assert expand_weeks("6-6周") == [6]
 
 
 def test_observed_odd_week_text_is_expanded() -> None:
-    """✅ `1-17单周` —— 已观察到的取值之一。"""
+    """✅ `1-17单周` —— 单周只允许这一个已观察取值。"""
 
     assert expand_weeks("1-17单周") == [1, 3, 5, 7, 9, 11, 13, 15, 17]
 
 
-@pytest.mark.parametrize(
-    "text",
-    [
-        "3-4周",  # ⛔ 形状相似，但**未被观察过**
-        "3-15单周",  # ⛔ 形状相似，但**未被观察过**
-        "3-3周",  # ⛔ 退化区间
-        "2-18周",  # ⛔ 形状相似，但**未被观察过**
-    ],
-)
-def test_similar_shaped_week_ranges_are_rejected_without_evidence(text: str) -> None:
-    """⛔ **形状相似 ≠ 已确认**：任意 `x-y周` / `x-y单周` 都不是已确认语法。
+@pytest.mark.parametrize("text", ["3-15单周", "1-5单周", "10-17单周"])
+def test_unobserved_odd_week_ranges_are_rejected(text: str) -> None:
+    """⛔ 单周**不泛化**为任意 `N-M单周`：只接受已观察到的 `1-17单周`。"""
 
-    Phase 2B-2A 的真实证据只记录了 `1-17周` 与 `1-17单周` **两个具体取值**，
-    因此这里采用**精确匹配**；`3-4周` / `3-15单周` / `3-3周` 一律拒绝
-    （接受它们会让实现能力超过证据）。后续 2B-2B 依真实脱敏样本再扩。
-    """
+    with pytest.raises(CourseDataNormalizationError):
+        expand_weeks(text)
+
+
+@pytest.mark.parametrize("text", ["17-1周", "0-17周", "5-3周"])
+def test_invalid_plain_week_range_is_rejected(text: str) -> None:
+    """⛔ `N < 1` 或 `M < N` 的区间非法。"""
 
     with pytest.raises(CourseDataNormalizationError):
         expand_weeks(text)
@@ -337,9 +349,6 @@ def test_similar_shaped_week_ranges_are_rejected_without_evidence(text: str) -> 
         "1,3,5周",  # 逗号组合：未确认
         "1-17周,3-4单周",  # 多段组合：未确认
         "5周",  # 单个周次号：未确认
-        "3-3周",  # 退化区间：未确认
-        "17-1周",  # 逆序区间：未确认
-        "0-17周",  # 起点 0：未确认
         "1-17",  # 缺"周"字
         "第1-17周",  # 带前缀
         "1~17周",  # 波浪号
