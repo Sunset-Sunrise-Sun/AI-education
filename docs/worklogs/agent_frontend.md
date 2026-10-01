@@ -1396,3 +1396,30 @@
 - 公共接口是否变化：**否**；**实际 SYSU 请求数：0**。
 - 下一步：等待 Reviewer 复核本修复；之后由**负责人手动执行 1 页诊断**。
   ⚠️ **不 merge，不自行开始**。
+
+### 2026-10-01 - Phase 2B-2C1C：Missing Schedule Correlation Diagnostic（阶段同步）
+- 本次目标：同步新增的**相关性诊断入口**（主记录见 `docs/worklogs/course_data.md`）。
+- **真实证据（负责人手动执行 `diagnoseSchedulePresence`，本轮回填）**：
+  第 1 页 `total_rows = 200`、`missing = 39`、`non_empty_string = 161`、其余形态 0
+  （`reported_total = 6892`）；⚠️ **39/200 = 19.5% 只描述第 1 页样本，不得外推**。
+  来源登记 `OFFERING-002`（**未创建新 `source_id`**，只登记汇总事实、无 Raw row）。
+- 新增：`tools/sysu_course_offering_collector.js` 的
+  `diagnoseMissingScheduleCorrelation({ semester })`（固定 `pageNo=1` / `pageSize=200`，
+  **只请求第 1 页一次**，只接受 `semester`）与纯函数
+  `classifySchedulePresence` / `summarizeFieldShape` / `summarizeCategoricalValues`；
+  A 类字段只做存在性 / 类型统计（⛔ 不输出取值），B 类字段做有限分类值计数
+  （`MAX_DISTINCT_VALUES = 20`，高基数整体 suppression、⛔ 不返回前 N / 最常见 N 个）；
+  分类值格式 `{ type, value: String(value), count }`，⛔ 不用真实取值当 key；
+  计数不变量在代码中显式校验（⛔ 不静默丢 row）。
+- 边界：⛔ 无分页循环 / 重试 / 并发 / 第二次请求；⛔ 不产出 bundle、不落盘、不写浏览器存储、
+  不调用 `toJson`；⛔ 未改 `collect()` 的 fail-closed 行为；⛔ 未改 2B-2C1B 的诊断入口；
+  ⛔ 未改任何 Schema / Interface / Python 数据链路；⛔ 未进入 Integration / Planner / 产品 UI；
+  **实际 SYSU 请求数：0**。
+- 修改文件（本模块视角）：`docs/status/agent_frontend.md`、本文件（**仅追加**）
+  （代码与主文档变更见 `docs/worklogs/course_data.md`）。
+- 测试：`cd backend && python -m pytest` → **537 passed / 2 skipped**
+  （baseline 524 passed / 2 skipped；未删除旧测试、未新增 skip）；
+  `node --check tools/sysu_course_offering_collector.js` → **exit 0**。
+- 公共接口是否变化：**否**。
+- 下一步：等待 Reviewer 验收 Phase 2B-2C1C；之后由**负责人手动运行相关性诊断**，
+  真实结果回填后再决定是否走正式【接口变更请求】。⚠️ **不 merge，不自行开始**。

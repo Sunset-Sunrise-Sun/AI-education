@@ -5,9 +5,12 @@
  * 定位
  * ----
  * 本文件是 **SYSU-specific Transport 的浏览器侧实现**。
- * 它提供两件事：
+ * 它提供三件事：
  *   1. `collect()` —— 串行取页 → 最小化字段 + 脱敏 → 产出本地 Capture Bundle；
- *   2. `diagnoseSchedulePresence()` —— **只取第 1 页一次**的**结构诊断**（只统计，不产出数据）。
+ *   2. `diagnoseSchedulePresence()` —— **只取第 1 页一次**的**结构诊断**（只统计，不产出数据）；
+ *   3. `diagnoseMissingScheduleCorrelation()` —— 同样**只取第 1 页一次**的
+ *      **相关性诊断**：比较"缺 `teachingTimePlaceStr`"与"该字段非空"两组 row
+ *      的**字段聚合结构**，用来看前者是否表现出一致的结构特征。
  *
  * ⛔ 本文件**不实现**任何后端直连学校的认证 HTTP 客户端。
  * 认证完全交给浏览器既有的登录状态（`credentials: "same-origin"`），
@@ -20,6 +23,7 @@
  *
  *     await window.XuehangSysuCollector.collect({ semester: "2026-1" })
  *     await window.XuehangSysuCollector.diagnoseSchedulePresence({ semester: "2026-1" })
+ *     await window.XuehangSysuCollector.diagnoseMissingScheduleCorrelation({ semester: "2026-1" })
  *
  * 默认只跑 2 页 smoke test；要跑更多页必须显式提高 `maxPages`，并会弹出确认框。
  *
@@ -617,6 +621,499 @@
   }
 
   // ---------------------------------------------------------------------
+  // 相关性诊断（Phase 2B-2C1C）：missing 组 vs non_empty_string 组的字段聚合
+  // ---------------------------------------------------------------------
+
+  /**
+   * C1C 与 2C1B 使用**同一固定取页口径**：只取第 1 页一次。
+   * 常量直接引用已人工验证的取值，避免两处口径漂移。
+   */
+  var CORRELATION_PAGE_NO = DIAGNOSTIC_PAGE_NO;
+  var CORRELATION_PAGE_SIZE = DIAGNOSTIC_PAGE_SIZE;
+
+  /**
+   * 分类值统计的**诊断输出安全阀**（**不是** SYSU 参数）。
+   * 某字段某组的 distinct 取值数超过它 → **整体 suppression**，不返回任何取值列表。
+   */
+  var MAX_DISTINCT_VALUES = 20;
+
+  /** C1C 允许比较的两组（其余形态计入 ungrouped_rows，**不**被塞进任何一组）。 */
+  var CORRELATION_GROUP_MISSING = "missing";
+  var CORRELATION_GROUP_PRESENT = "non_empty_string";
+
+  /** A. 只做**存在性 / 类型**统计的字段：⛔ 绝不输出具体取值。 */
+  var STRUCTURAL_ONLY_FIELDS = ["timePlaceId", "limitNumber", "selectedNumber"];
+
+  /** B. 允许做**有限分类值计数**的字段（高基数会整体 suppression）。 */
+  var CATEGORICAL_FIELDS = [
+    "weekDay",
+    "openClass",
+    "teachProgressSubmitState",
+    "courseCategoryName",
+    "examMode",
+    "openingUnitName"
+  ];
+
+  /**
+   * 分类值列表的**确定顺序**：先按类型（boolean → number → string），再按序列化文本。
+   * ⛔ 不按出现次数排序 —— 那会变成"取最常见的 N 个"，本诊断不做这种选择。
+   */
+  var SCALAR_TYPE_ORDER = ["boolean", "number", "string"];
+
+  /** C1C **不接受**的参数：用户只允许提供 `semester`。 */
+  var CORRELATION_FORBIDDEN_OPTIONS = [
+    "pageNo",
+    "pageSize",
+    "firstPageNo",
+    "maxPages",
+    "delayMs",
+    "retry"
+  ];
+
+  /**
+   * 纯函数：把一条 row 归入 `teachingTimePlaceStr` 的五种存在形态之一。
+   *
+   * 与 2B-2C1B 的 `summarizeSchedulePresence` **同一套分类规则**：
+   *   missing / null / empty_string / non_empty_string / other_type
+   *
+   * ⛔ 只读该字段自身的存在性与类型，不读、不返回任何业务字段取值。
+   */
+  function classifySchedulePresence(row) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      fail("相关性诊断遇到非对象 row。已停止。");
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(row, SCHEDULE_FIELD)) {
+      return "missing";
+    }
+
+    var value = row[SCHEDULE_FIELD];
+
+    if (value === null) {
+      return "null";
+    }
+    if (typeof value === "string") {
+      return value.trim() === "" ? "empty_string" : "non_empty_string";
+    }
+    return "other_type";
+  }
+
+  /**
+   * 纯函数：五桶统计（互斥且穷尽）。
+   *
+   * 保证：missing + null + empty_string + non_empty_string + other_type === rows.length
+   *
+   * ⛔ 只计数，不返回任何 row 内容 / 课程信息 / 教师 / 原文。
+   */
+  function summarizePresenceBuckets(rows) {
+    if (!Array.isArray(rows)) {
+      fail("相关性诊断需要 data.rows 是数组。已停止。");
+    }
+
+    var buckets = {
+      missing: 0,
+      null: 0,
+      empty_string: 0,
+      non_empty_string: 0,
+      other_type: 0
+    };
+
+    for (var index = 0; index < rows.length; index += 1) {
+      var bucket = classifySchedulePresence(rows[index]);
+      if (!Object.prototype.hasOwnProperty.call(buckets, bucket)) {
+        fail("相关性诊断出现未知的分类桶。已停止。");
+      }
+      buckets[bucket] += 1;
+    }
+
+    return { total_rows: rows.length, buckets: buckets };
+  }
+
+  /**
+   * 纯函数：把 rows 分成"只参与比较的两组" + "其余形态的计数"。
+   *
+   * ⛔ `null` / `empty_string` / `other_type` **不**被塞进任何一组，只计入 `other_rows`。
+   * ⛔ 返回的两个数组只在本次调用栈内使用，**绝不**进入诊断返回值。
+   */
+  function splitRowsForCorrelation(rows) {
+    var missingRows = [];
+    var presentRows = [];
+    var otherRows = 0;
+
+    for (var index = 0; index < rows.length; index += 1) {
+      var bucket = classifySchedulePresence(rows[index]);
+
+      if (bucket === CORRELATION_GROUP_MISSING) {
+        missingRows.push(rows[index]);
+      } else if (bucket === CORRELATION_GROUP_PRESENT) {
+        presentRows.push(rows[index]);
+      } else {
+        otherRows += 1;
+      }
+    }
+
+    return {
+      missing: missingRows,
+      non_empty_string: presentRows,
+      other_rows: otherRows
+    };
+  }
+
+  /**
+   * 纯函数（A 类）：某字段在**一组 row** 中的**存在性 / 类型**统计。
+   *
+   * 桶：missing（字段不存在）/ null / empty_string / non_empty_string /
+   *     number / boolean / other_type。
+   *
+   * ⛔ **不返回任何取值列表**、不返回具体值、不返回 distinct 计数 ——
+   *    需要"值"的字段属于 B 类，走另一个函数。
+   */
+  function summarizeFieldShape(rows, field) {
+    var shape = {
+      field: field,
+      total: rows.length,
+      missing: 0,
+      null: 0,
+      empty_string: 0,
+      non_empty_string: 0,
+      number: 0,
+      boolean: 0,
+      other_type: 0
+    };
+
+    for (var index = 0; index < rows.length; index += 1) {
+      var row = rows[index];
+
+      if (!Object.prototype.hasOwnProperty.call(row, field)) {
+        shape.missing += 1;
+        continue;
+      }
+
+      var value = row[field];
+
+      if (value === null) {
+        shape.null += 1;
+      } else if (typeof value === "string") {
+        if (value.trim() === "") {
+          shape.empty_string += 1;
+        } else {
+          shape.non_empty_string += 1;
+        }
+      } else if (typeof value === "number") {
+        shape.number += 1;
+      } else if (typeof value === "boolean") {
+        shape.boolean += 1;
+      } else {
+        shape.other_type += 1;
+      }
+    }
+
+    return shape;
+  }
+
+  /**
+   * 在一个**数组**里累加标量取值计数（线性扫描）。
+   *
+   * ⛔ 故意**不用**真实取值作为 object / Map 的 key：
+   * 真实数据只作为比较对象存在，绝不会变成属性名。
+   * 展示值统一序列化成字符串，`type` 保留原始类型。
+   */
+  function accumulateScalarEntry(entries, type, value) {
+    var serialized = String(value);
+
+    for (var index = 0; index < entries.length; index += 1) {
+      if (entries[index].type === type && entries[index].value === serialized) {
+        entries[index].count += 1;
+        return;
+      }
+    }
+
+    entries.push({ type: type, value: serialized, count: 1 });
+  }
+
+  /** 确定顺序的比较器：先类型，再序列化文本（⛔ 与出现次数无关）。 */
+  function compareScalarEntries(left, right) {
+    var leftRank = SCALAR_TYPE_ORDER.indexOf(left.type);
+    var rightRank = SCALAR_TYPE_ORDER.indexOf(right.type);
+
+    if (leftRank !== rightRank) {
+      return leftRank - rightRank;
+    }
+    if (left.value < right.value) {
+      return -1;
+    }
+    if (left.value > right.value) {
+      return 1;
+    }
+    return 0;
+  }
+
+  /**
+   * 纯函数（B 类）：某字段在**一组 row** 中的"归类桶 + 有限分类值计数"。
+   *
+   * 归类桶（**不进入** value 列表）：missing / null / empty_string /
+   * other_type（object、array、undefined、function 等）。
+   * 正常 value 列表只包含三种标量：boolean / number / 非空 string，
+   * 形如 `{ type: "number", value: "0", count: 32 }`。
+   *
+   * 保证：missing + null + empty_string + other_type + scalar_count === total；
+   *       未 suppression 时 Σ values[].count === scalar_count。
+   *
+   * ⛔ distinct 数超过 `MAX_DISTINCT_VALUES` → **整体 suppression**
+   *    （`values_suppressed: true`、`values: []`），
+   *    **不**返回前 N 个、**不**返回随机 N 个、**不**返回最常见的 N 个。
+   */
+  function summarizeCategoricalValues(rows, field) {
+    var summary = {
+      field: field,
+      total: rows.length,
+      missing: 0,
+      null: 0,
+      empty_string: 0,
+      other_type: 0,
+      scalar_count: 0,
+      distinct_count: 0,
+      values_suppressed: false,
+      values: []
+    };
+
+    var entries = [];
+
+    for (var index = 0; index < rows.length; index += 1) {
+      var row = rows[index];
+
+      if (!Object.prototype.hasOwnProperty.call(row, field)) {
+        summary.missing += 1;
+        continue;
+      }
+
+      var value = row[field];
+
+      if (value === null) {
+        summary.null += 1;
+        continue;
+      }
+
+      var valueType = typeof value;
+
+      if (valueType === "string") {
+        if (value.trim() === "") {
+          summary.empty_string += 1;
+          continue;
+        }
+      } else if (valueType !== "number" && valueType !== "boolean") {
+        summary.other_type += 1;
+        continue;
+      }
+
+      summary.scalar_count += 1;
+      accumulateScalarEntry(entries, valueType, value);
+    }
+
+    entries.sort(compareScalarEntries);
+
+    summary.distinct_count = entries.length;
+    if (entries.length > MAX_DISTINCT_VALUES) {
+      summary.values_suppressed = true;
+      summary.values = [];
+    } else {
+      summary.values = entries;
+    }
+
+    return summary;
+  }
+
+  /**
+   * 纯函数：对**一组 row** 做字段聚合（A 类 + B 类）。
+   *
+   * ⛔ 返回值里**没有** Raw row、没有课程号 / 课程名 / 教学班号 / 教师 / 教室 /
+   *    内部 ID 取值，也没有 `teachingTimePlaceStr` 原文。
+   */
+  function summarizeCorrelationGroup(rows) {
+    var structuralFields = {};
+    var categoricalFields = {};
+
+    for (var index = 0; index < STRUCTURAL_ONLY_FIELDS.length; index += 1) {
+      var structuralField = STRUCTURAL_ONLY_FIELDS[index];
+      structuralFields[structuralField] = summarizeFieldShape(rows, structuralField);
+    }
+
+    for (var otherIndex = 0; otherIndex < CATEGORICAL_FIELDS.length; otherIndex += 1) {
+      var categoricalField = CATEGORICAL_FIELDS[otherIndex];
+      categoricalFields[categoricalField] = summarizeCategoricalValues(rows, categoricalField);
+    }
+
+    return {
+      total: rows.length,
+      structural_fields: structuralFields,
+      categorical_fields: categoricalFields
+    };
+  }
+
+  /** 已列出的分类值计数之和（用于 suppression 关闭时的加总校验）。 */
+  function sumListedCounts(values) {
+    var total = 0;
+    for (var index = 0; index < values.length; index += 1) {
+      total += values[index].count;
+    }
+    return total;
+  }
+
+  /**
+   * 纯函数：一组内**每个字段自身的统计必须加总等于该组 total**。
+   * ⛔ 不守恒即整体失败，绝不静默丢 row。
+   */
+  function assertFieldTotals(groupName, group) {
+    var index;
+    var field;
+    var summary;
+
+    for (index = 0; index < STRUCTURAL_ONLY_FIELDS.length; index += 1) {
+      field = STRUCTURAL_ONLY_FIELDS[index];
+      summary = group.structural_fields[field];
+
+      if (
+        summary.missing + summary.null + summary.empty_string +
+        summary.non_empty_string + summary.number + summary.boolean +
+        summary.other_type !== summary.total
+      ) {
+        fail("相关性诊断的结构字段统计不守恒（" + groupName + "）。已停止。");
+      }
+    }
+
+    for (index = 0; index < CATEGORICAL_FIELDS.length; index += 1) {
+      field = CATEGORICAL_FIELDS[index];
+      summary = group.categorical_fields[field];
+
+      if (
+        summary.missing + summary.null + summary.empty_string +
+        summary.other_type + summary.scalar_count !== summary.total
+      ) {
+        fail("相关性诊断的分类字段统计不守恒（" + groupName + "）。已停止。");
+      }
+      if (summary.values_suppressed === true && summary.values.length !== 0) {
+        fail("相关性诊断在 suppression 时仍返回了取值列表（" + groupName + "）。已停止。");
+      }
+      if (
+        summary.values_suppressed === false &&
+        sumListedCounts(summary.values) !== summary.scalar_count
+      ) {
+        fail("相关性诊断的分类值计数不守恒（" + groupName + "）。已停止。");
+      }
+    }
+  }
+
+  /**
+   * 纯函数：C1C 的**计数不变量**（任一不成立即整体失败，绝不静默丢 row）。
+   *
+   *   五桶之和                          === total_rows
+   *   groups.missing.total              === 五桶.missing
+   *   groups.non_empty_string.total     === 五桶.non_empty_string
+   *   missing + non_empty_string        === compared_rows
+   *   分组时的其它形态计数              === null + empty_string + other_type
+   *   compared_rows + ungrouped_rows    === total_rows
+   *   每个字段自身的统计加总            === 该组 total
+   */
+  function assertCorrelationInvariants(presence, split, groups) {
+    var buckets = presence.buckets;
+    var bucketTotal =
+      buckets.missing + buckets.null + buckets.empty_string +
+      buckets.non_empty_string + buckets.other_type;
+
+    if (bucketTotal !== presence.total_rows) {
+      fail("相关性诊断的形态统计不守恒。已停止。");
+    }
+    if (groups.missing.total !== buckets.missing) {
+      fail("相关性诊断的 missing 组计数与形态统计不一致。已停止。");
+    }
+    if (groups.non_empty_string.total !== buckets.non_empty_string) {
+      fail("相关性诊断的 non_empty_string 组计数与形态统计不一致。已停止。");
+    }
+    if (
+      groups.missing.total + groups.non_empty_string.total !==
+      buckets.missing + buckets.non_empty_string
+    ) {
+      fail("相关性诊断的 compared_rows 不守恒。已停止。");
+    }
+    if (split.other_rows !== buckets.null + buckets.empty_string + buckets.other_type) {
+      fail("相关性诊断的 ungrouped_rows 不守恒。已停止。");
+    }
+    if (
+      groups.missing.total + groups.non_empty_string.total + split.other_rows !==
+      presence.total_rows
+    ) {
+      fail("相关性诊断的行数加总不守恒。已停止。");
+    }
+
+    assertFieldTotals(CORRELATION_GROUP_MISSING, groups.missing);
+    assertFieldTotals(CORRELATION_GROUP_PRESENT, groups.non_empty_string);
+  }
+
+  /**
+   * 相关性诊断：**只请求第 1 页一次**，比较两组 row 的字段聚合结构。
+   *
+   * 目的**只是**判断"缺 `teachingTimePlaceStr` 的 row 是否表现出一致的结构特征"，
+   * ⛔ **不是**判断它们的业务含义，也**不是** workaround：
+   * 不改造数据、不放宽 `collect()` 的 fail-closed 行为、不产出任何数据文件。
+   *
+   * - 复用现有 hostname guard / same-origin 请求 / 既有取页函数的全部校验；
+   * - 固定 `pageNo = CORRELATION_PAGE_NO`（1）、`pageSize = CORRELATION_PAGE_SIZE`（200）；
+   * - ⛔ 用户**只允许**提供 `semester`：分页 / 限速 / 重试参数一律拒绝；
+   * - ⛔ 没有分页循环、没有重试、没有并发、没有第二次请求；
+   * - ⛔ 只把聚合对象返回给**显式调用者**：不落盘、不写浏览器存储、不产出数据文件；
+   * - ⛔ 所有原始值字段（含 `openClass` / `teachProgressSubmitState` / `weekDay`）
+   *   只以"原始值 X 出现 N 次"的形式出现，**不做任何业务语义解释**。
+   */
+  async function diagnoseMissingScheduleCorrelation(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var semester = opts.semester;
+    if (typeof semester !== "string" || semester.trim() === "") {
+      fail('相关性诊断必须显式提供非空 semester（例如 "2026-1"）。');
+    }
+    semester = semester.trim();
+
+    // ⛔ 分页 / 限速 / 重试参数一律拒绝：本诊断固定只取第 1 页一次。
+    var unexpected = CORRELATION_FORBIDDEN_OPTIONS.filter(function (name) {
+      return Object.prototype.hasOwnProperty.call(opts, name);
+    });
+    if (unexpected.length > 0) {
+      fail(
+        "相关性诊断固定只取第 1 页一次，不接受分页 / 限速 / 重试参数（收到 " +
+          unexpected.join(", ") + "）。已停止。"
+      );
+    }
+
+    // 只取第 1 页、只取一次。
+    var data = await requestPage(semester, CORRELATION_PAGE_NO, CORRELATION_PAGE_SIZE);
+    var rows = data.rows;
+
+    var presence = summarizePresenceBuckets(rows);
+    var split = splitRowsForCorrelation(rows);
+
+    var groups = {
+      missing: summarizeCorrelationGroup(split.missing),
+      non_empty_string: summarizeCorrelationGroup(split.non_empty_string)
+    };
+
+    assertCorrelationInvariants(presence, split, groups);
+
+    return {
+      semester: semester,
+      page_no: CORRELATION_PAGE_NO,
+      page_size: CORRELATION_PAGE_SIZE,
+      reported_total: data.total,
+      total_rows: presence.total_rows,
+      schedule_presence: presence.buckets,
+      compared_rows: groups.missing.total + groups.non_empty_string.total,
+      ungrouped_rows: split.other_rows,
+      groups: groups
+    };
+  }
+
+  // ---------------------------------------------------------------------
   // 显式暴露（加载本文件不触发任何请求）
   // ---------------------------------------------------------------------
 
@@ -624,9 +1121,16 @@
     collect: collect,
     diagnoseSchedulePresence: diagnoseSchedulePresence,
     summarizeSchedulePresence: summarizeSchedulePresence,
+    diagnoseMissingScheduleCorrelation: diagnoseMissingScheduleCorrelation,
+    classifySchedulePresence: classifySchedulePresence,
+    summarizeFieldShape: summarizeFieldShape,
+    summarizeCategoricalValues: summarizeCategoricalValues,
     toJson: toJson,
     DIAGNOSTIC_PAGE_NO: DIAGNOSTIC_PAGE_NO,
     DIAGNOSTIC_PAGE_SIZE: DIAGNOSTIC_PAGE_SIZE,
+    CORRELATION_PAGE_NO: CORRELATION_PAGE_NO,
+    CORRELATION_PAGE_SIZE: CORRELATION_PAGE_SIZE,
+    MAX_DISTINCT_VALUES: MAX_DISTINCT_VALUES,
     CAPTURE_FORMAT: CAPTURE_FORMAT,
     ALLOWED_HOSTNAME: ALLOWED_HOSTNAME,
     ENDPOINT_PATH: ENDPOINT_PATH,

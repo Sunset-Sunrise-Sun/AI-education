@@ -1,13 +1,16 @@
 # Course Data 当前状态
 
-> 最后更新：2026-10-01（**Phase 2B-2C1B：Schedule Presence Diagnostic** 完成，
-> **Reviewer 修复 6 项已完成**，等待 Reviewer 复核）
+> 最后更新：2026-10-01（**Phase 2B-2C1C：Missing Schedule Correlation Diagnostic**
+> 代码已完成，等待 Reviewer；`OFFERING-002` 已补录**第 1 页真实聚合证据**）
 >
 > ⚠️ **准确表述（不得夸大）**：
 > **真实 Course Data 尚未完成**，**尚未取得 complete semester snapshot**。
-> **已完成一次真实 smoke run**（在真正的「**全校开设课程**」独立模块内）：
+> **已完成真实 smoke run + 一次真实结构诊断**（在真正的「**全校开设课程**」独立模块内）：
 > **same-origin 请求成功**、**认证不再是当前 blocker**；
-> 但发现**第 1 页至少 1 条真实 row 缺少 `teachingTimePlaceStr`**，
+> 第 1 页 **200** 条真实 row（同页 `reported_total = 6892`）中
+> **39 条完全没有 `teachingTimePlaceStr`**、**161 条非空**，其余形态为 0；
+> ⚠️ **39/200 = 19.5% 只描述第 1 页这 200 条样本**，**不代表** `6892` 条整体的比例、
+> **不得外推**；
 > 因此当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**。
 > **缺失字段的业务含义尚未确认** —— 不推测、不写成任何业务结论。
 > 后端 Python 侧仍然**零网络**：没有 endpoint、没有认证处理、**不会自动发起 SYSU 请求**。
@@ -27,7 +30,10 @@ teachingTimePlaceStr parser（2B-2B）                ✅ 已完成（依据私�
 SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（前两页；见下）
 浏览器端授权采集器代码 + Capture Bridge（2B-2C1A）   ✅ 代码已准备
 真实 smoke run（认证 + 第 1 页请求）                 ✅ 已执行（same-origin 成功；认证不再是 blocker）
-结构诊断入口 schedule presence diagnostic（2B-2C1B） ✅ 代码已准备（只取证，未裁决）
+结构诊断入口 schedule presence diagnostic（2B-2C1B） ✅ 已完成并**由负责人真实运行**
+                                                    （第 1 页 200 条：39 missing / 161 非空 / 其余 0）
+相关性诊断入口 missing schedule correlation（2B-2C1C） ⏳ 代码已完成，等待 Reviewer；
+                                                    真实运行由负责人手动执行，**结果待回填**
 真实完整学期程序化采集                              ⏳ 未完成（因缺字段 fail closed 而中止）
 完整 semester snapshot                              ⏳ 未取得
 ```
@@ -39,13 +45,20 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 | 在真正的「**全校开设课程**」独立模块内发起 same-origin 请求 | ✅ **成功** |
 | 第 1 页响应成功进入 Collector | ✅ **成功** |
 | **认证不再是当前 blocker** | ✅ 已确认 |
-| 第 1 页至少发现 1 条 row **缺少 `teachingTimePlaceStr`** | ✅ 已确认（计数为「至少 1 条」，**非精确条数**） |
+| 第 1 页 `total_rows` | ✅ **200**（同页 `reported_total = 6892`） |
+| 第 1 页 `teachingTimePlaceStr` = `missing` | ✅ **39** |
+| 第 1 页 `teachingTimePlaceStr` = `non_empty_string` | ✅ **161** |
+| 第 1 页 `null` / `empty_string` / `other_type` | ✅ **均为 0** |
+| 第 1 页 missing 占比 | **39 / 200 = 19.5%**，⚠️ **只描述这 200 条样本，不得外推** |
 | 当前 `collect()` 的处置 | **按设计 fail closed**（缺字段即整体失败） |
 | 是否已生成真实 Capture Bundle | ❌ **尚未生成** |
 | 是否已取得 complete semester snapshot | ❌ **尚未取得** |
 
-> ⚠️ **缺失字段的业务含义尚未确认**：现有证据**只**证明"存在这样的 row"。
-> **不得**据此写成"缺排课""未排课课程""异步课程""暂无教室"等任何业务结论。
+> ⚠️ **缺失字段的业务含义尚未确认**：现有证据**只**证明"第 1 页存在 39 条这样的 row"，
+> 且说明它**不是单条孤立现象**。
+> **不得**据此写成"缺排课""未排课课程""未排课教学班""时间待定""异步课程""无需排课"
+> "异常数据""暂无教室"等任何业务结论。
+> ⚠️ **39/200 不可外推**：不得写成"全校 19.5%""6892 条中约有多少条"。
 >
 > ⚠️ **模块导航**：「**选课**」与「**全校开设课程**」是**两个独立模块**，
 > 不存在"选课 → 全校开设课程"的层级关系。
@@ -67,7 +80,7 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
 
 ## 已完成
 
-### 结构诊断入口（Phase 2B-2C1B，本轮）
+### 结构诊断入口（Phase 2B-2C1B，已完成并由负责人真实运行）
 位置：`tools/sysu_course_offering_collector.js`（在**现有**采集器内新增，不新建 Transport 文件）
 
 | 项 | 内容 |
@@ -102,6 +115,43 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
   `node --check tools/sysu_course_offering_collector.js` → exit 0；
 - ⛔ 本轮修复**未改**任何公共契约（`schemas/` / `docs/interfaces/` 未修改），
   **未发起任何真实 SYSU 请求**（实际请求数：**0**），**未生成真实 Capture Bundle**。
+
+### 相关性诊断入口（Phase 2B-2C1C，本轮）
+位置：`tools/sysu_course_offering_collector.js`（在**现有**采集器内新增，**不新建** Transport 文件）
+
+**唯一目标**：在**第 1 页同一份样本**内，对 `missing` 组与 `non_empty_string` 组
+做**已有真实字段**的**聚合结构对照**，用来判断"缺该字段的 row 是否表现出**一致的结构特征**"。
+⛔ **不判断业务含义**、⛔ **不是 workaround**、⛔ **不改契约**。
+
+| 项 | 内容 |
+|---|---|
+| 入口 | `window.XuehangSysuCollector.diagnoseMissingScheduleCorrelation({ semester: "2026-1" })` —— **必须由用户显式调用** |
+| 纯函数（已暴露，便于源码级检查） | `classifySchedulePresence` / `summarizeFieldShape` / `summarizeCategoricalValues` |
+| 请求范围 | **固定** `pageNo = CORRELATION_PAGE_NO`（= `DIAGNOSTIC_PAGE_NO` = **1**）、`pageSize = CORRELATION_PAGE_SIZE`（= `DIAGNOSTIC_PAGE_SIZE` = **200**）；**只发 1 次请求** |
+| 参数限制 | 用户**只允许**提供 `semester`；`pageNo` / `pageSize` / `firstPageNo` / `maxPages` / `delayMs` / `retry` **一律显式拒绝** |
+| 不具备的能力 | ⛔ 无分页循环、⛔ 无重试、⛔ 无并发、⛔ 无第二次请求、⛔ 不复制 `fetch()` |
+| 复用 | hostname guard / same-origin 请求 / 既有 `requestPage()` 的 HTTP · JSON · code · total · rows 校验 |
+| 分组 | `schedule_presence` 保留**五桶**；只比较 `missing` 与 `non_empty_string`；`ungrouped_rows = null + empty_string + other_type`，⛔ **不**塞进任何一组 |
+| A 类字段（只做存在性 / 类型统计） | `timePlaceId` / `limitNumber` / `selectedNumber`；⛔ **绝不输出具体取值**（无 value list、无 distinct 计数） |
+| B 类字段（有限分类值计数） | `weekDay` / `openClass` / `teachProgressSubmitState` / `courseCategoryName` / `examMode` / `openingUnitName` |
+| 值的安全格式 | `{ type: "number", value: "0", count: 32 }`：**值序列化为字符串、保留原始类型**；`missing` / `null` / `empty_string` / `other_type` **单独归类，不进入 value list** |
+| 高基数安全阀 | `MAX_DISTINCT_VALUES = 20`（**诊断输出安全阀，不是 SYSU 参数**）：distinct **> 20** → `values_suppressed = true`、`values = []`；⛔ **不返回前 N 个 / 随机 N 个 / 最常见 N 个**（排序与出现次数无关） |
+| 计数不变量 | 五桶之和 == `total_rows`；两组之和 == `compared_rows`；`compared_rows + ungrouped_rows == total_rows`；每个字段自身的统计加总 == 该组 `total`；⛔ **任一不成立即整体失败，绝不静默丢 row** |
+| ⛔ 不返回 | Raw row、row 下标、`courseNum` / `courseName` / `classNumber` / 教师 / 教室 / `teachingTimePlaceStr` 原文 / 内部 ID / `readObj` |
+| ⛔ 不产生 | **不生成 Capture Bundle**、不落盘、不写 `localStorage` / `IndexedDB`、不调用 `toJson` |
+| ⛔ 不改行为 | `collect()` 遇缺字段仍 **fail closed**；2B-2C1B 的 `diagnoseSchedulePresence()` **行为保持不变**（两个入口**并列**，职责不同） |
+| ⛔ 本轮不改契约 | `CourseOffering.meetings` 的 `minItems = 1` **保持不变**；诊断结果**不**触发任何 Schema 变更 |
+
+> ⚠️ **本轮不含任何真实相关性数值**：本入口只是**取证工具**，
+> 真实结果由**负责人手动执行**后回填。**Builder 本轮实际 SYSU 请求数 = 0**。
+>
+> ⚠️ 对 `openClass` / `teachProgressSubmitState` / `weekDay` 等字段，
+> 只允许写"**原始值 X 在 missing 组出现 N 次 / 在 non_empty_string 组出现 M 次**"，
+> ⛔ **禁止解释**它们的业务含义（例如"0 表示…"），也⛔ **禁止**据此补 `Meeting`、
+> 推断地点、判断是否应排除或是否应进入 Planner。
+>
+> ⚠️ **2B-2C1B 的"不登记精确条数"限制由本轮解除**（负责人已手动取得并给出第 1 页聚合计数），
+> 但**范围仍严格限定在第 1 页 200 条样本**，**不得外推**。
 
 ### 浏览器端授权采集器 + Capture Bridge（Phase 2B-2C1A）
 **只做"显式触发的浏览器采集 + 本地回放桥"，不接 Integration / Planner / API / 前端产品 UI。**
@@ -342,13 +392,15 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 当前阻塞
 
-- **真实数据结构阻塞（当前主 blocker）**：真实 smoke run 已证明
-  **第 1 页至少 1 条真实 row 缺少 `teachingTimePlaceStr`**；
+- **真实数据结构阻塞（当前主 blocker）**：真实 smoke run 的第 1 页结构诊断已给出计数 ——
+  **200 条中有 39 条完全没有 `teachingTimePlaceStr`**（161 条非空，其余形态 0）；
   当前 importer / parser 无法为这样的 row 构造 `meetings`
   （公共契约要求 `CourseOffering.meetings` `minItems = 1`），
   因此 `collect()` **按设计 fail closed**；
   ⛔ **本轮不决定如何修复**，也**不修改**任何 Schema；
-  缺失的**原因 / 记录类型 / 是否普遍存在 / 是否应进入 Planner** 均**待调查**（见缺口报告 **G11**）；
+  缺失的**原因 / 缺失 row 的业务类型 / 是否属于有效可选教学班 / 是否应进入 Planner /
+  全学期缺失比例 / 是否需要改契约** 均**待调查**（见缺口报告 **G11**）；
+  ⚠️ **39/200 只描述第 1 页样本，不得外推**；
 - **真实完整学期程序化采集未完成**：因上述数据阻塞而中止；
   后端 Python 侧仍然**零网络**（没有 endpoint、没有认证处理、不会自动发起请求）；
   ✅ 另：**认证不再是 blocker**（same-origin 请求已在「全校开设课程」模块内成功）；
@@ -370,8 +422,10 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
   **未进入 Git**（未 `git add` / 未进测试 fixture / 未进 docs / 未进 worklog；
   本文件**不记录该样本的文件名**）；
 - **`OFFERING-002`** 只登记**汇总事实**（「全校开设课程」独立模块内 same-origin 请求成功、
-  第 1 页响应成功进入采集器、**第 1 页至少 1 条** row 缺少 `teachingTimePlaceStr`）；
-  **不含任何 Raw row**、不含课程 / 教学班信息、教师、教室、内部 ID、`readObj`；
+  第 1 页响应成功进入采集器、第 1 页 `total_rows = 200` 且
+  `missing = 39` / `non_empty_string = 161` / 其余形态 0；⚠️ **仅第 1 页，不得外推**）；
+  **不含任何 Raw row**、不含课程 / 教学班信息、教师、教室、内部 ID、`readObj`、
+  不含任何逐行信息与字段取值；
   **Raw 响应 / Capture Bundle 均未进入 Git**；
 - **本轮未生成任何真实 Capture Bundle**：仓库内**不含**真实采集产物；
   本地若产生，也属 **Real Sanitized Capture**，**不得进入 Git**；
@@ -380,13 +434,19 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 下一步
 
-- **负责人手动 1 页结构诊断**（Reviewer 合并后）：在本人已登录、已有权限的
+- ✅ **1 页结构诊断已完成**（2B-2C1B，由**负责人手动执行**）：
+  `diagnoseSchedulePresence({ semester: "2026-1" })` 已返回第 1 页聚合计数
+  （`total_rows = 200`，`missing = 39`，`non_empty_string = 161`，其余形态 0）；
+- **负责人手动 1 页相关性诊断**（Reviewer 合并后，2B-2C1C）：同样在本人已登录、已有权限的
   「**全校开设课程**」模块页面加载 `tools/sysu_course_offering_collector.js`，显式调用
-  `await window.XuehangSysuCollector.diagnoseSchedulePresence({ semester: "2026-1" })`；
-  它**只请求第 1 页一次**，返回 `teachingTimePlaceStr` 的五类计数与 `total_rows`，**不产出数据**；
-  该诊断用于回答"缺字段是否普遍、形态如何"，为**下一轮的契约裁决**提供证据；
+  `await window.XuehangSysuCollector.diagnoseMissingScheduleCorrelation({ semester: "2026-1" })`；
+  它**只请求第 1 页一次**，返回 `missing` 组与 `non_empty_string` 组的**字段聚合结构对照**
+  （只含计数与类型，**不含取值原文**），**不产出数据**；
+  用于回答"缺字段的 row 是否存在**一致的结构特征**"，
+  ⛔ **不回答**它们的业务含义；
 - **G11 待调查项**（见 `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`）：
-  缺失**原因 / 记录类型 / 是否普遍 / 是否应进入 Planner** 均未确认；
+  缺失**原因 / 缺失 row 的业务类型 / 是否属于有效可选教学班 / 是否应进入 Planner /
+  全学期缺失比例 / 是否需要改契约** 均未确认；
   若证据表明现有契约覆盖不了真实数据，**下一轮按 `/AGENTS.md` 第 4 节提交
   `【接口变更请求】`** —— ⛔ **本轮不预设方案、不改 Schema**；
 - 采集器与 Capture Bridge 目前**不接入** Integration / Planner / API / 前端产品 UI
