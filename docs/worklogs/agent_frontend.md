@@ -170,3 +170,52 @@
 - 已知问题：无新增
 - 需要人工确认：无
 - 下一步：等待负责人下发新的 Phase 2B 技术任务书（Integration / Orchestrator 集成骨架）
+
+---
+
+### 2026-09-30 - Phase 2B-0A：真实数据获取规划（docs-only）
+- 本次目标：在真实对接开发之前，先完成"需要什么数据、从哪来、能不能拿、拿到后怎么存"的规划，
+  并建立数据源登记、Schema 承载能力分析与成员交接的框架。**不获取任何真实数据。**
+- 已完成：
+  1. 新增 `docs/data/DATA_ACQUISITION_PLAN.md`：五类数据（D1 政策 / D2 原专业培养方案 /
+     D3 新专业培养方案 / D4 已修课程 / D5 教学班）逐类规划，含用途、来源、授权、最小字段、
+     允许与禁止的采集方式、脱敏要求、当前状态与下一步行动；并确立
+     Raw → Sanitized Sample → Mock 三层数据模型与红线。
+  2. 新增 `docs/data/DATA_SOURCE_REGISTRY.md`：13 字段正式登记模板与 `source_id` 命名约定
+     （POLICY / CURR-OLD / CURR-NEW / TRANSCRIPT / OFFERING），未写任何未确认 URL。
+  3. 新增 `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`：五个公共 Schema 的承载能力分析框架，
+     含 8 条待验证初步观察；明确"只记录缺口，不修改公共 Schema，不自行设计正式字段"。
+  4. 新增 `docs/data/MEMBER_DATA_HANDOFF.md`：Curriculum / Planner 的数据需求、交接规则与清单模板；
+     明确 Raw 不得直接交给其他成员。
+  5. 第一轮 Review 修订（本轮一并提交）：
+     - 明确 GitHub 仓库为 **public**；
+     - **D4 收紧**：Raw 绝不进 Git，**脱敏样本也不得进入 public 仓库**，只能经负责人控制的
+       非公开位置交付；第一版脱敏默认只保留 课程号 / 课程名 / 学分 / 修读学期 / 是否通过 /
+       必要课程性质，不保留具体成绩 / GPA / 排名；
+     - **D5 隐私表述修正**：不再写"不含个人信息"，改为"Raw 按潜在含个人信息处理，实际检查后再判断"；
+       D5 的 Raw 与真实 Sanitized 样本都先不进 public Git；
+     - 契约原则改写为"未经批准不得私自绕过或扩展契约；语义无法表达时登记缺口并提交接口变更请求"；
+     - D2 / D3 案例描述改为"同一转专业案例的适用专业、年级 / 培养版本"，不要求同一自然人；
+     - 补齐 **Curriculum → Planner 边界缺口**：`MakeupTask[]` 是当前已存在的稳定公共对象，
+       但"课程依赖结果"与"已确认优先级"目前没有正式公共 Schema，
+       不得自行设计私有跨模块格式；
+     - G1 / G2 / G4 措辞由"没有承载对象"改为"当前没有明确的跨模块公共 Schema / 正式表示"，
+       不预设最终一定新增 Schema（也可能是模块内部输入）；
+     - 记录 **G6 裁决**：`StudentProfile` 当前不是已实现、可使用的公共契约，
+       视为受公共契约规则保护的保留 / 候选概念，任何模块不得依赖，后续需走【接口变更请求】；
+     - 记录**数据阶段顺序**：2B-0A 规划 → 2B-0B 公开政策 / 培养方案 → 2B-0C 已修课程脱敏
+       → 2B-0D 教学班技术侦察 → 数据 Gate → 恢复 Phase 2B Integration。
+- 修改文件：
+  - 新增 `docs/data/DATA_ACQUISITION_PLAN.md`、`docs/data/DATA_SOURCE_REGISTRY.md`、
+    `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`、`docs/data/MEMBER_DATA_HANDOFF.md`
+  - 更新 `docs/status/agent_frontend.md`（当前阶段改为 Phase 2B-0）、本文件
+- 测试：本次为 docs-only，未改动任何代码，因此未复跑前后端；
+  最近一次确认仍为：前端 `npm run build` 通过、后端 `python -m pytest` → 125 passed, 1 skipped
+- 使用数据：Mock（**未获取任何真实数据**）
+- 公共接口是否变化：否（未修改 `/schemas/` 与 `/docs/interfaces/`）
+- 是否修改 backend / frontend / mock_data：否
+- 是否获取真实数据：**否**（未抓取、未写爬虫、未登录教务系统、未采集任何样本）
+- 需要人工确认：Demo 转专业案例、可引用政策文件清单、D4 脱敏字段最终范围、非公开存放位置、
+  D5 技术侦察范围与频率（详见 `docs/data/DATA_ACQUISITION_PLAN.md` 第 7 节）
+- 下一步：等待 Reviewer 验收 2B-0A；通过后进入 **2B-0B 公开官方材料获取**。
+  本轮**不进入 2B-0B**；Phase 2B（Integration / Orchestrator）保持暂停编码。
