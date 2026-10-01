@@ -295,7 +295,7 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 | `backend/app/course_data/errors.py` | `CourseDataNormalizationError(ValueError)`（单一异常） |
 | `backend/app/course_data/normalization.py` | `build_course_offering(raw, *, meetings, source)`、`expand_weeks(text)` |
 | `backend/app/course_data/snapshot.py` | `OfferingSnapshot`（`partial` / `complete`）、`SnapshotCourseDataProvider` |
-| `backend/tests/test_course_data_{normalization,snapshot}.py` | 90 个测试 |
+| `backend/tests/test_course_data_{normalization,snapshot}.py` | 99 个测试 |
 
 **关键约束**：
 
@@ -310,14 +310,15 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - ⛔ **不映射**内部 ID（`courseId` ≠ `course_id`、`class_ID` ≠ `class_id`）与全部暂缓字段；
 - ⛔ **不做** `weekDay → weekday`、`openingSchoolName → campus`（C11 待确认）；
 - ⛔ **不解析 `teachingTimePlaceStr`**（缺真实脱敏 Raw string，不猜分隔符）；`meetings` 只能由已解析的 `Meeting` 传入；
-- 周次只支持 `1-17周` / `1-17单周`，且**必须为真区间（结束 > 开始）**；
-  其余形式（含退化区间 `3-3周`、双周、组合、单个周次号）一律拒绝；
+- 周次：Phase 2B-2A **只接受已经观察到的两个具体取值** —— `1-17周` / `1-17单周`
+  （**精确匹配，不做形状泛化**）；`3-4周`、`3-15单周`、`3-3周` 等**形状相似但未被观察过**的区间
+  同样拒绝；其余形式（双周 / 组合 / 单个周次号）一律拒绝；
 - completeness 落代码：`complete` 必须 `reported_total == loaded_count`，
   否则不能声称完整快照（C9）；重复 `(semester, course_id, class_id)` 即失败；
 - `SnapshotCourseDataProvider` **结构上满足**已冻结的 `CourseDataProvider`（不继承、不修改），
   **零网络、无 Mock fallback**；另有代码边界检查锁定该包不导入网络 / 抓取 / Mock 回放依赖；
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/ports.py`、`orchestrator.py` 均未修改；
-  后端 **237 passed / 2 skipped**。
+  后端 **246 passed / 2 skipped**。
 
 ## 已完成
 - 模块边界和依赖接口已定义

@@ -293,45 +293,41 @@ def test_invalid_source_is_rejected(source: object) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 周次：只支持已记录的两种原子格式
+# 周次：Phase 2B-2A 只接受**已经观察到的两个具体取值**（精确匹配，不做形状泛化）
 # ---------------------------------------------------------------------------
 
 
-def test_plain_week_range_is_expanded() -> None:
+def test_observed_plain_week_text_is_expanded() -> None:
+    """✅ `1-17周` —— 已观察到的取值之一。"""
+
     assert expand_weeks("1-17周") == list(range(1, 18))
 
 
-def test_odd_week_range_is_expanded() -> None:
+def test_observed_odd_week_text_is_expanded() -> None:
+    """✅ `1-17单周` —— 已观察到的取值之一。"""
+
     assert expand_weeks("1-17单周") == [1, 3, 5, 7, 9, 11, 13, 15, 17]
 
 
-def test_single_week_range_is_expanded() -> None:
-    """`3-4周` 这种**真区间**仍属已确认语法。"""
+@pytest.mark.parametrize(
+    "text",
+    [
+        "3-4周",  # ⛔ 形状相似，但**未被观察过**
+        "3-15单周",  # ⛔ 形状相似，但**未被观察过**
+        "3-3周",  # ⛔ 退化区间
+        "2-18周",  # ⛔ 形状相似，但**未被观察过**
+    ],
+)
+def test_similar_shaped_week_ranges_are_rejected_without_evidence(text: str) -> None:
+    """⛔ **形状相似 ≠ 已确认**：任意 `x-y周` / `x-y单周` 都不是已确认语法。
 
-    assert expand_weeks("3-4周") == [3, 4]
-
-
-def test_degenerate_week_range_is_rejected_without_evidence() -> None:
-    """⛔ **退化区间（`3-3周`）未经真实样本确认，本轮拒绝**。
-
-    真实证据只覆盖 `1-17周` / `1-17单周` 这类"两个不同周次构成的区间"。
-    接受 `3-3周` 会让实现能力超过证据，因此 Phase 2B-2A 保持最窄实现，
-    其它形式统一抛 `CourseDataNormalizationError`（后续 2B-2B 依真实样本再扩）。
+    Phase 2B-2A 的真实证据只记录了 `1-17周` 与 `1-17单周` **两个具体取值**，
+    因此这里采用**精确匹配**；`3-4周` / `3-15单周` / `3-3周` 一律拒绝
+    （接受它们会让实现能力超过证据）。后续 2B-2B 依真实脱敏样本再扩。
     """
 
     with pytest.raises(CourseDataNormalizationError):
-        expand_weeks("3-3周")
-
-    with pytest.raises(CourseDataNormalizationError):
-        expand_weeks("5-5单周")
-
-
-def test_week_range_bounds_are_checked() -> None:
-    with pytest.raises(CourseDataNormalizationError):
-        expand_weeks("17-1周")
-
-    with pytest.raises(CourseDataNormalizationError):
-        expand_weeks("0-17周")
+        expand_weeks(text)
 
 
 @pytest.mark.parametrize(
@@ -342,6 +338,8 @@ def test_week_range_bounds_are_checked() -> None:
         "1-17周,3-4单周",  # 多段组合：未确认
         "5周",  # 单个周次号：未确认
         "3-3周",  # 退化区间：未确认
+        "17-1周",  # 逆序区间：未确认
+        "0-17周",  # 起点 0：未确认
         "1-17",  # 缺"周"字
         "第1-17周",  # 带前缀
         "1~17周",  # 波浪号

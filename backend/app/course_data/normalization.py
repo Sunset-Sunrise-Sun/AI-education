@@ -49,48 +49,41 @@ __all__ = ["build_course_offering", "expand_weeks"]
 
 
 # ---------------------------------------------------------------------------
-# 周次：只支持"已经记录过"的两种原子格式
+# 周次：Phase 2B-2A 只接受**已经观察到的两个具体取值**
 # ---------------------------------------------------------------------------
 
-#: `1-17周` —— 连续周次。
-#: 用 `[0-9]` 而不是 `\d`：Python 的 `\d` 会匹配全角等 Unicode 数字，
-#: 那属于"未确认的格式"，一律拒绝而不是宽容接受。
-_PLAIN_WEEK_RANGE = re.compile(r"^([0-9]+)-([0-9]+)周$")
+#: 已观察到的周次文本 → `(起始周, 结束周, 是否只取单周)`。
+#:
+#: ⚠️ Phase 2B-2A **不做形状泛化**：不接受任意 `x-y周` / `x-y单周`。
+#: 真实证据（`docs/data/SYSU_COURSE_OFFERING_RECON.md` §7）只记录了这**两个取值**：
+#: `1-17周` 与 `1-17单周`。
+#: 形状相似但**未被观察过**的区间（例如 `3-4周`、`3-15单周`、`3-3周`）
+#: 一律拒绝 —— 它们属于"实现能力超过证据"。
+#: 后续取得**脱敏真实样本**再据实扩（Phase 2B-2B）。
+_OBSERVED_WEEK_TEXTS: dict[str, tuple[int, int, bool]] = {
+    "1-17周": (1, 17, False),
+    "1-17单周": (1, 17, True),
+}
 
-#: `1-17单周` —— 奇数周次。
-_ODD_WEEK_RANGE = re.compile(r"^([0-9]+)-([0-9]+)单周$")
-
-#: 已知可支持的周次格式说明，用于错误信息（便于人工对照）。
-_SUPPORTED_WEEK_FORMATS = "`1-17周`（连续）与 `1-17单周`（单周）"
-
-
-def _week_range_bounds(start: int, end: int, raw_text: str) -> None:
-    if start < 1:
-        raise CourseDataNormalizationError(
-            f"周次起点必须 ≥1：{raw_text!r}（解析出 start={start}）"
-        )
-    if end <= start:
-        raise CourseDataNormalizationError(
-            f"周次区间必须满足「结束 > 开始」：{raw_text!r}（start={start}, end={end}）。"
-            f"真实证据只覆盖 `1-17周` / `1-17单周` 这类**真区间**；"
-            f"退化区间（例如 `3-3周`）与其它形式尚未取得样本，本轮一律拒绝。"
-        )
+#: 已观察取值的说明，用于错误信息（便于人工对照）。
+_SUPPORTED_WEEK_TEXTS = "、".join(f"`{text}`" for text in _OBSERVED_WEEK_TEXTS)
 
 
 def expand_weeks(text: str) -> list[int]:
-    """把**已确认格式**的周次文本展开成实际周次数组。
+    """把**已经观察到的**周次文本展开成实际周次数组。
 
-    当前只支持 `docs/data/SYSU_COURSE_OFFERING_RECON.md` §7 记录过的两种：
+    Phase 2B-2A 只接受这两个**具体取值**（精确匹配，不做形状泛化）：
 
     ```text
     1-17周    → [1, 2, 3, …, 17]
     1-17单周  → [1, 3, 5, …, 17]
     ```
 
-    ⛔ **其余格式一律拒绝**，包括但不限于：双周、逗号组合、多段组合、单个周次号、
-    **退化区间（如 `3-3周`）**、带"第"字前缀、其它未知语法。**绝不猜。**
+    ⛔ **其余一律拒绝** —— 既包括双周、逗号组合、多段组合、单个周次号、
+    带"第"字前缀等**形状不同**的形式，也包括
+    **形状相似但未被观察过**的区间（例如 `3-4周`、`3-15单周`、`3-3周`）。
+    **绝不猜**：不接受任意 `x-y周` / `x-y单周` 的泛化。
 
-    实现保持**最窄**：只接受"两个不同周次构成的区间"这一种形状，
     后续取得**脱敏后的真实样本**再据实扩 parser（Phase 2B-2B）。
 
     只做一处无害规整：去掉首尾空白（不改变格式语义）。
@@ -105,22 +98,17 @@ def expand_weeks(text: str) -> list[int]:
     if not candidate:
         raise CourseDataNormalizationError("周次文本为空")
 
-    odd_match = _ODD_WEEK_RANGE.match(candidate)
-    if odd_match:
-        start, end = (int(group) for group in odd_match.groups())
-        _week_range_bounds(start, end, candidate)
-        return [week for week in range(start, end + 1) if week % 2 == 1]
+    observed = _OBSERVED_WEEK_TEXTS.get(candidate)
+    if observed is None:
+        raise CourseDataNormalizationError(
+            f"暂不支持的周次格式：{text!r}。Phase 2B-2A 只接受已经观察到的两个取值："
+            f"{_SUPPORTED_WEEK_TEXTS}；其它范围**即使形状相似也暂时拒绝**（不猜）。"
+            f"后续取得脱敏真实样本再扩 parser。"
+        )
 
-    plain_match = _PLAIN_WEEK_RANGE.match(candidate)
-    if plain_match:
-        start, end = (int(group) for group in plain_match.groups())
-        _week_range_bounds(start, end, candidate)
-        return list(range(start, end + 1))
-
-    raise CourseDataNormalizationError(
-        f"暂不支持的周次格式：{text!r}。当前仅支持 {_SUPPORTED_WEEK_FORMATS}；"
-        f"其余格式需取得脱敏真实样本后再实现，本轮不猜。"
-    )
+    start, end, odd_only = observed
+    weeks = list(range(start, end + 1))
+    return [week for week in weeks if week % 2 == 1] if odd_only else weeks
 
 
 # ---------------------------------------------------------------------------

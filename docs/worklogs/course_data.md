@@ -131,3 +131,40 @@
 - 使用数据：**Mock**（人工虚构的 source-shaped dict 与占位教师名 `"示例教师A"`）
 - 下一步：等待 Reviewer 复验。⚠️ **不 merge，不自行进入 2B-2B**。
 
+---
+
+### 2026-09-30 - Phase 2B-2A Reviewer 修复：`expand_weeks` 改为精确匹配
+- 本次目标：修掉最后一个代码 blocker —— `expand_weeks()` 仍然接受**任意** `x-y周` / `x-y单周`，
+  超过了现有真实证据。Reviewer 已确认 `score` / `selectedNumber` / `teachingTimePlaceStr` 三处修复通过。
+  起点：同一分支，head `ee88ffca68426a8fe475af5f3fad94f23215980b`。
+- **修改内容**：
+  - `expand_weeks()` 从"区间形状匹配"改为**精确匹配已观察取值**：
+    删除 `_PLAIN_WEEK_RANGE` / `_ODD_WEEK_RANGE` 两个正则与 `_week_range_bounds()`，
+    新增 `_OBSERVED_WEEK_TEXTS = {"1-17周": (1, 17, False), "1-17单周": (1, 17, True)}`，
+    以 `dict.get()` 精确命中；未命中即抛 `CourseDataNormalizationError`；
+  - 错误信息写明："Phase 2B-2A 只接受已经观察到的两个取值：`1-17周`、`1-17单周`；
+    其它范围**即使形状相似也暂时拒绝**（不猜）"；
+  - 删除"`3-4周` 属已确认语法"的错误假设（原 `test_single_week_range_is_expanded`）。
+- **测试调整**：
+  - ✅ `1-17周` PASS、✅ `1-17单周` PASS（两个独立正向用例）；
+  - ⛔ 新增 `test_similar_shaped_week_ranges_are_rejected_without_evidence`，
+    参数含 **`3-4周` / `3-15单周` / `3-3周` / `2-18周`**；
+  - 原"未确认格式"参数集补入 `17-1周`、`0-17周`；
+  - 删除已不成立的 `test_week_range_bounds_are_checked`（边界校验随形状泛化一起移除）。
+- **文档同步**：
+  - `docs/status/course_data.md`：周次一节改写为"**只接受两个已观察取值，精确匹配，不做形状泛化**"，
+    删掉"必须满足结束 > 开始（真区间）"这一已被取代的表述；
+  - `docs/status/agent_frontend.md`：同步周次口径；
+    并把旧统计「90 个测试」「237 passed / 2 skipped」更新为当前实际值
+    「**99 个测试**」「**246 passed / 2 skipped**」。
+- **明确未改**：`snapshot.py`、`SnapshotCourseDataProvider`、`schemas/`、`docs/interfaces/`、
+  Integration、API、网络代码 —— 一律未修改。
+- 修改文件：
+  - `backend/app/course_data/normalization.py`
+  - `backend/tests/test_course_data_normalization.py`
+  - `docs/status/course_data.md`、`docs/status/agent_frontend.md`
+  - 本文件（**仅追加**）
+- 测试：`cd backend && python -m pytest` → **246 passed / 2 skipped**
+  （修复前 243 passed / 2 skipped；原测试全部继续通过，**未删除旧测试、未新增 skip**）。
+- 下一步：等待 Reviewer 复验。⚠️ **不 merge，不自行进入 2B-2B**。
+
