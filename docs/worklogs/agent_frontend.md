@@ -517,3 +517,106 @@
 - 公共接口是否变化：否 ｜ 是否修改 backend / frontend / mock_data：否
 - 未做：未进入 2B-0D、未获取教学班、未登录教务系统、未改 Schema / Interface、未 merge
 - 下一步：等待 Reviewer 复验。**不 merge，不进入 2B-0D**，Phase 2B Integration 保持暂停编码。
+
+---
+
+### 2026-09-30 - Phase 2B-0D：教学班（CourseOffering）技术侦察（docs-only）
+- 本次目标：用**已取得**的真实教学班侦察样本，验证 `CourseOffering` 的字段承载能力与真实结构。
+  人工技术侦察**到此结束**，不再查询更多课程。**只做结构分析**：不写 parser、不建数据库、
+  不写 Course Data Adapter、不进入 Integration。
+- 侦察来源（**Authenticated Official**，小规模）：
+  - 方法 / 路径：`POST /jwxt/schedule/agg/schoolOpeningCoursesSchedule/querySchoolOpeningCourses`；
+  - 查询参数：`pageNo` / `pageSize` / `total` / `param.yearTerm` / `param.courseNumber`；
+  - 本轮取值：`yearTerm = 2026-1`、`courseNumber = CSE202`；返回 `code = 200`、`data.total = 2`。
+  - **只记录路径与查询参数**；**未记录** Cookie / Session / Token、完整 Request Headers、HAR。
+- 汇总事实：**`CSE202` 在 2026-1 返回 2 个真实教学班**；每个教学班含**多个上课时间 / 地点 segment**。
+- 字段映射结论（详见 `SYSU_COURSE_OFFERING_RECON.md` 与缺口报告 §3.2）：
+  - **A**：`courseNum → course_id`、`courseName → course_name`、`classNumber → class_id`、
+    `yearTerm → semester`、`limitNumber → capacity`；
+  - **B**：`score → credit`（**字符串数字**需转 number）；
+    `remaining_capacity` = `limitNumber - selectedNumber`（**派生值**）；
+  - **C**：`selectedNumber`、`openingUnitName`、`courseCategoryName`、`examMode`、`readObj`、
+    `teachProgressSubmitState`、`openClass`；
+  - `teachingName → teacher` 为 **A/B**（**教师姓名不入库**）。
+- **本轮最重要的发现 —— 新增 G9**：
+  - `CSE202` 的**每个教学班都存在多个 schedule segment**（例如"1-17周 星期一 第3-4节 某教室"
+    ＋ "1-17单周 星期三 第5-6节 某教室"）；
+  - 而当前 `CourseOffering` **只能表达一组** `weekday` / `start_section` / `end_section` /
+    `weeks[]` / `campus` / `classroom`；
+  - 因此登记为**真实结构缺口**：**一个教学班可以拥有多个独立的上课时间 / 地点 segment，
+    当前 `CourseOffering` 无法在一个对象中无损表达**；
+  - **明确未做**：未改 Schema、未新增 `meetings[]`、未只保留第一段、未丢弃其他时间段、
+    **未把同一教学班拆成多个可独立选择的 `CourseOffering`**；**最终表示方式留给 Data Gate**。
+- **新增 G10**：D5 另有多个真实字段在现有 `CourseOffering` 中**没有任何表示**
+  （`selectedNumber` / `openingUnitName` / `courseCategoryName` / `examMode` / `readObj` /
+  `teachProgressSubmitState` / `openClass`）；**只登记、不设计字段**。
+- **G7 升级为「已由真实 D5 样本验证」**：真实 JSON 中确实出现 `openingUnitName` 与 `courseCategoryName`
+  （2B-0C 预留的"须等 2B-0D"条件已满足）。
+- 重要口径（已写入文档）：
+  - ⚠️ **不得声称学校接口直接提供 `remaining_capacity`** —— 它是**派生值**；
+  - ⚠️ `courseCategoryName`（样本为"专必"）**带培养方案 / 上下文语义**，
+    **不得**认定为课程的**全局固有属性**（与 D4 的 `course_type` 同源问题）；
+  - ⚠️ `teachProgressSubmitState` / `openClass` / `outlineTypeNum`：**字段存在，业务语义待确认**，
+    **不根据 0/1 值自行解释**；
+  - ⚠️ `courseId` / `class_ID` 等**后台长 ID 不等于**公共 `course_id` / `class_id`；
+    **只记录其存在**，**不记录其值**，本轮**不设计对应字段**。
+- 周次格式（**仅结构记录，未实现 parser**）：已确认真实格式至少含 `1-17周`（→ `[1..17]` 的潜在转换）
+  与 `1-17单周`（→ `[1,3,5,…,17]` 的潜在转换）；正式转换规则留待 Data Gate / Course Data 定义。
+- 登记（`DATA_SOURCE_REGISTRY.md`）：**登记 `OFFERING-001`**（D5，**Authenticated Official**，
+  证据等级 **Confirmed**，范围 **2026-1** 小规模侦察）；
+  **Raw response / Cookie / Session / Token / 完整 Request Headers / HAR 均不入库**；
+  **不记录**教师姓名、修读对象完整文本、内部长 ID 取值、完整教学班逐行记录。
+- 修改文件：
+  - 新增 `docs/data/SYSU_COURSE_OFFERING_RECON.md`
+  - 更新 `docs/data/DATA_SOURCE_REGISTRY.md`、`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - 更新 `docs/status/agent_frontend.md`、本文件（**仅追加**）
+- 测试：docs-only，未改动任何代码，未复跑前后端
+- 公共接口是否变化：否 ｜ 是否修改 backend / frontend / mock_data：否
+- 未做：未登录教务系统、未保存 Cookie/Session/Token、未采集 HAR、**未写 crawler**、
+  **未建数据库**、**未写 Course Data Adapter**、未改 Schema / Interface、**未进入 Integration**
+- 下一步：等待 Reviewer 验收 **2B-0D**。通过后进入 **Data Gate**
+  （处理 G9 多 segment 建模与 `Course` / `CurriculumCourse` / `CompletedCourse` 的架构边界）。
+  ⚠️ **不得自行开始**。**不 merge**，Phase 2B Integration 保持暂停编码。
+
+---
+
+### 2026-09-30 - Phase 2B-0D Reviewer 修复：§3.2 字段来源 + 登记表状态措辞（docs-only）
+- 本次目标：只修 2 个 Reviewer blocker。**不再查询教务系统、不进入 Data Gate、
+  不写 parser、不建数据库、不写 Adapter、不改 Schema / Interface / 代码 / Mock。**
+- Blocker 1：**修正 `REAL_TO_SCHEMA_GAP_REPORT.md` §3.2 的真实字段来源**
+  - 问题：原表在「真实 D5 字段」列里误列了
+    `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` ——
+    **这些是公共 `CourseOffering` 的目标字段，不是 SYSU Response 的真实字段**，
+    且被错误判为"C 当前无正式表示"（它们其实**在现有 Schema 中已经存在**）；
+  - 处理：**删除该行**，改为以**实际 Response 字段**为源：
+    `teachingTimePlaceStr`、`openingSchoolName`、`weekDay`；
+  - **`teachingTimePlaceStr` 明确区分两层**（已写入表格与表下说明）：
+    ① **单个 schedule segment** → 可解析为 `weeks` / `weekday` / `start_section` / `end_section` /
+    `campus` / `classroom` → 属**数据转换层能力（B）**；
+    ② **整个教学班** → 该字段**可包含多个 segment**，而当前一个 `CourseOffering` **只能表达一组**
+    → **无法无损映射（C）→ G9**；
+  - `openingSchoolName` / `weekDay` 标为 **B 待确认**：**字段真实存在**，
+    分别与 `campus` / `weekday` **有关联**，但**具体转换 / 对应关系待确认**（多 segment 时如何取值不明）；
+    **不猜**；
+  - 表下新增「**真实 D5 字段」列的填写纪律**说明：该列**只列 Response 中实际出现的字段**，
+    目标字段不得混入。
+  - **保持**：不修改 Schema、不设计 `meetings[]`、不实现 parser。
+- Blocker 2：**修正 `DATA_SOURCE_REGISTRY.md` 状态措辞**
+  - 问题：原文"已登记来源数：17（**全部已确认，无"待填写"**）"会与
+    **Evidence Grade = Confirmed** 混淆；
+  - 改为："已登记来源数：17（**均已完成来源登记 / 状态判定，无"待填写"项**）"；
+  - 并**保留并强化**真实证据等级分布，加注"注意：并非全部来源都是 `Confirmed`"：
+    **Confirmed 7 ｜ Partial 7 ｜ Not Found 1 ｜ Historical 1 ｜ 不适用 1**；
+  - 明确：**不得**把这 17 个来源全部描述成 Evidence Grade = Confirmed。
+- 未改动的文件：`docs/status/agent_frontend.md` 与各 Evidence 文档**本轮未改**
+  （复查后确认其中不含上述两类问题，**不为凑修改范围而改**）。
+- 修改文件：
+  - `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - `docs/data/DATA_SOURCE_REGISTRY.md`
+  - 本文件（**仅追加**）
+- 测试：docs-only，未改动任何代码，未复跑前后端
+- 公共接口是否变化：否 ｜ 是否修改 backend / frontend / mock_data：否
+- 未做：**未再查询教务系统**、未保存 Cookie/Session/Token、未采集 HAR、未写 crawler、
+  未实现 parser、未建数据库、未写 Adapter、未改 Schema / Interface、**未进入 Data Gate**、
+  未进入 Integration
+- 下一步：等待 Reviewer 复验。**不 merge，不进入 Data Gate**，Phase 2B Integration 保持暂停编码。
