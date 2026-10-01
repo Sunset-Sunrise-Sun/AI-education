@@ -1,7 +1,10 @@
 # Course Data 模块接口
 
 > Data Gate-2（**DG-01**）已把公共契约从"一个 `CourseOffering` = 一个时间段"
-> 改为 **`CourseOffering` 1 — N `Meeting`**（**DG-07A 起为 0 — N**）。
+> 改为 **`CourseOffering` 1 → 0..N `Meeting`**
+> （即：**每个 `CourseOffering` 可以包含 0 个或多个 `Meeting`**；
+> `CourseOffering` 本身的基数没有变成 0）。
+> **DG-01 当时为 1 — N（至少 1 段）；DG-07A 起允许 0 段**。
 > 本文件已同步该 breaking migration 与 DG-07A 契约迁移。
 >
 > **DG-07A（Contract Migration）** 起，`meetings` 允许为空数组
@@ -39,7 +42,7 @@ CourseOffering.meetings[] = 当前来源快照中能够形成公共 Meeting 的*
 | 状态 | 含义 | 本模块义务 |
 |---|---|---|
 | `meetings` **非空** | 来源提供了可用排课信息 | **必须保留全部可解析 segment**（不得只留第一段、不得合并、不得去重丢段） |
-| `meetings = []` | **当前来源快照没有提供能够形成 `Meeting` 的排课信息** | 保留该教学班记录本身（`course_id` / `class_name` / `class_id` / `semester` / 容量等） |
+| `meetings = []` | **当前来源快照没有提供能够形成 `Meeting` 的排课信息** | 保留该教学班记录本身（`course_id` / `course_name` / `class_id` / `semester` / 容量等） |
 
 > ⛔ `meetings = []` **不表示**：没有上课时间、异步教学、时间自由、
 > **没有时间冲突**、学校确认尚未排课、该教学班无效、应被过滤。

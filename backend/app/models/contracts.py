@@ -160,7 +160,9 @@ class Course(BaseModel):
 class Meeting(BaseModel):
     """`course_offering.schema.json` 中 `meetings[]` 的元素（一段上课时间 / 地点）。
 
-    概念关系是 **`CourseOffering` 1 —— N `Meeting`**：
+    概念关系是 **`CourseOffering` 1 → 0..N `Meeting`**
+    （即：每个 `CourseOffering` 可以包含 **0 个或多个** `Meeting`；
+    `CourseOffering` 本身的基数没有变化，变的只是它可以包含的 `Meeting` 数量下界）：
     一个教学班不等同一个时间段，可以有多个独立的排课段
     （例如"周一 3-4 节 1-16 周"与"周三 5-6 节 1-16 单周"）。
 

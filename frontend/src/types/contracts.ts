@@ -41,8 +41,8 @@ export interface MakeupTask {
  * 对应 `course_offering.schema.json` 中 `meetings[]` 的元素：**一段**上课时间 / 地点。
  *
  * Data Gate-2（DG-01）后，一个教学班可以有多个独立的上课时间 / 地点段
- * （`CourseOffering` 0 — N `Meeting`，DG-07A 起允许 0 段），
- * 因此排课信息不再挂在教学班顶层。
+ * （**`CourseOffering` 1 → 0..N `Meeting`**：每个 `CourseOffering` 可以包含 0 个或多个
+ * `Meeting`；DG-07A 起允许 0 段），因此排课信息不再挂在教学班顶层。
  *
  * ⚠️ 这里**没有** `teacher`：meeting 级教师关联是已登记的
  * known deferred representation gap，本轮不进入公共契约。
