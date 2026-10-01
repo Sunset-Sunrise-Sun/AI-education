@@ -25,6 +25,7 @@ from app.models.contracts import (
     DataSource,
     MakeupStatus,
     MakeupTask,
+    Meeting,
     PlanResult,
     PlanStatus,
     Preference,
@@ -41,15 +42,29 @@ VALID_COURSE: dict = {
     "credit": 3,
 }
 
+#: 一个合法的 `Meeting`（一段上课时间 / 地点）。
+VALID_MEETING: dict = {
+    "weekday": 1,
+    "start_section": 1,
+    "end_section": 2,
+    "weeks": [1, 2, 3, 4],
+}
+
+
+def _meeting(**overrides) -> dict:
+    """构造一个合法 `Meeting`，可覆盖任意字段（不修改共享的 `VALID_MEETING`）。"""
+
+    return {**VALID_MEETING, **overrides}
+
+
+#: Data Gate-2（DG-01）之后的教学班：排课信息收敛到 `meetings[]`，
+#: 顶层不再有 `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`。
 VALID_OFFERING: dict = {
     "course_id": "62001001",
     "course_name": "离散数学",
     "class_id": "6200100120260101",
     "semester": "2026-1",
-    "weekday": 1,
-    "start_section": 1,
-    "end_section": 2,
-    "weeks": [1, 2, 3, 4],
+    "meetings": [_meeting()],
 }
 
 VALID_MAKEUP_TASK: dict = {
@@ -308,7 +323,11 @@ def test_unique_items_fields_are_enforced_at_runtime(model_name: str, load_schem
     ]
 
     if not unique_fields:
-        pytest.skip(f"{model_name} 的公共 Schema 没有 uniqueItems 字段，无需运行")
+        pytest.skip(
+            f"{model_name} 的公共 Schema 顶层没有 uniqueItems 数组；"
+            f"嵌套数组（CourseOffering.meetings[].weeks）由 "
+            f"test_nested_meeting_weeks_unique_items_are_enforced_at_runtime 单独覆盖"
+        )
 
     for name in unique_fields:
         assert name in model.model_fields, f"{model_name} 缺少带有 uniqueItems 的字段 {name}"
@@ -330,13 +349,13 @@ def test_unique_items_fields_are_enforced_at_runtime(model_name: str, load_schem
     ("model", "payload", "field"),
     [
         (Course, {**VALID_COURSE, "prerequisites": ["A", "A"]}, "prerequisites"),
-        (CourseOffering, {**VALID_OFFERING, "weeks": [1, 1]}, "weeks"),
+        (Meeting, {**_meeting(), "weeks": [1, 1]}, "weeks"),
         (MakeupTask, {**VALID_MAKEUP_TASK, "prerequisites": ["A", "B", "A"]}, "prerequisites"),
         (Preference, {"preferred_courses": ["62001001", "62001001"]}, "preferred_courses"),
     ],
     ids=[
         "course-prerequisites",
-        "course-offering-weeks",
+        "meeting-weeks",
         "makeup-task-prerequisites",
         "preference-preferred-courses",
     ],
@@ -354,18 +373,45 @@ def test_duplicate_items_are_rejected(model: type, payload: dict, field: str) ->
 
 
 def test_duplicate_weeks_are_rejected() -> None:
-    """第一轮 Review 明确要求：`weeks=[1, 1]` 必须 ValidationError。"""
+    """第一轮 Review 明确要求：`weeks=[1, 1]` 必须 ValidationError。
+
+    Data Gate-2 后 `weeks` 位于 `Meeting` 上，因此同时验证**嵌套位置**也被拒绝。
+    """
 
     with pytest.raises(ValidationError):
-        CourseOffering.model_validate({**VALID_OFFERING, "weeks": [1, 1]})
+        Meeting.model_validate(_meeting(weeks=[1, 1]))
+
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate({**VALID_OFFERING, "meetings": [_meeting(weeks=[1, 1])]})
 
 
 def test_distinct_weeks_are_accepted() -> None:
     """反向确认：不重复的 weeks 必须正常通过，避免把合法数据也挡掉。"""
 
-    offering = CourseOffering.model_validate({**VALID_OFFERING, "weeks": [1, 2]})
+    assert Meeting.model_validate(_meeting(weeks=[1, 2])).weeks == [1, 2]
 
-    assert offering.weeks == [1, 2]
+
+def test_nested_meeting_weeks_unique_items_are_enforced_at_runtime(load_schema) -> None:
+    """`meetings[].weeks` 的 `uniqueItems` 必须真的被模型强制。
+
+    `test_unique_items_fields_are_enforced_at_runtime` 只扫描公共 Schema 的**顶层**
+    properties，而 `meetings[].weeks` 是唯一一个**嵌套在数组元素里**的 uniqueItems 数组，
+    会被它漏掉。这里按 Schema 路径单独锁定，避免迁移后悄悄失去这层校验。
+    """
+
+    schema = load_schema("course_offering.schema.json")
+    weeks_schema = schema["properties"]["meetings"]["items"]["properties"]["weeks"]
+
+    assert weeks_schema.get("uniqueItems") is True, (
+        "公共 Schema 的 meetings[].weeks 不再是 uniqueItems，本用例的前提已变化"
+    )
+    assert weeks_schema["items"]["type"] == "integer"
+
+    with pytest.raises(ValidationError):
+        Meeting.model_validate(_meeting(weeks=[1, 1]))
+
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate({**VALID_OFFERING, "meetings": [_meeting(weeks=[1, 1])]})
 
 
 def test_duplicate_items_allow_distinct_values() -> None:
@@ -403,8 +449,9 @@ def test_valid_course_passes() -> None:
 def test_valid_course_offering_passes() -> None:
     offering = CourseOffering.model_validate(VALID_OFFERING)
 
-    assert offering.weekday == 1
-    assert offering.weeks == [1, 2, 3, 4]
+    assert len(offering.meetings) == 1
+    assert offering.meetings[0].weekday == 1
+    assert offering.meetings[0].weeks == [1, 2, 3, 4]
 
 
 def test_valid_makeup_task_passes() -> None:
@@ -427,13 +474,102 @@ def test_preference_requires_no_field() -> None:
 
 
 def test_optional_fields_accept_null() -> None:
-    """可空字段必须接受显式 null。"""
+    """可空字段必须接受显式 null。
 
-    offering = CourseOffering.model_validate({**VALID_OFFERING, "teacher": None, "campus": None})
+    Data Gate-2 后：`teacher` 在教学班层，`campus` / `classroom` 在 meeting 层。
+    """
+
+    offering = CourseOffering.model_validate(
+        {
+            **VALID_OFFERING,
+            "teacher": None,
+            "meetings": [_meeting(campus=None, classroom=None)],
+        }
+    )
     task = MakeupTask.model_validate({**VALID_MAKEUP_TASK, "deadline_semester": None})
 
     assert offering.teacher is None
+    assert offering.meetings[0].campus is None
+    assert offering.meetings[0].classroom is None
     assert task.deadline_semester is None
+
+
+def test_multiple_meetings_are_accepted() -> None:
+    """任务明确要求：多个 meetings 合法 → PASS（DG-01 的核心能力）。"""
+
+    offering = CourseOffering.model_validate(
+        {
+            **VALID_OFFERING,
+            "meetings": [
+                _meeting(weekday=1, start_section=3, end_section=4),
+                _meeting(weekday=3, start_section=5, end_section=6, weeks=[1, 3, 5]),
+            ],
+        }
+    )
+
+    assert [item.weekday for item in offering.meetings] == [1, 3]
+    assert offering.meetings[1].weeks == [1, 3, 5]
+
+
+def test_missing_meetings_is_rejected() -> None:
+    """`meetings` 是必填项：没有排课信息的教学班不合法。"""
+
+    payload = dict(VALID_OFFERING)
+    del payload["meetings"]
+
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate(payload)
+
+
+def test_empty_meetings_is_rejected() -> None:
+    """任务明确要求：`meetings: []` 必须失败（教学班至少要有一段上课安排）。"""
+
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate({**VALID_OFFERING, "meetings": []})
+
+
+def test_meeting_extra_field_is_rejected() -> None:
+    """任务明确要求：Meeting 出现公共 Schema 以外的字段必须失败。
+
+    特意用 `teacher` 作为例子 —— meeting 级教师关联是已登记的
+    known deferred representation gap，**不得**在本轮加进 Meeting。
+    """
+
+    with pytest.raises(ValidationError):
+        Meeting.model_validate({**_meeting(), "teacher": "某教师"})
+
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate(
+            {**VALID_OFFERING, "meetings": [{**_meeting(), "teacher": "某教师"}]}
+        )
+
+
+def test_legacy_top_level_schedule_fields_are_rejected() -> None:
+    """任务明确要求：旧格式（顶层排课字段）必须失败。
+
+    Data Gate-2（DG-01）是**有意的 breaking migration**：不保留兼容层，
+    旧结构必须被明确拒绝，而不是被"宽容接受"。
+    """
+
+    legacy = {
+        "course_id": "62001001",
+        "course_name": "离散数学",
+        "class_id": "6200100120260101",
+        "semester": "2026-1",
+        "weekday": 1,
+        "start_section": 1,
+        "end_section": 2,
+        "weeks": [1, 2, 3, 4],
+        "campus": "东校园",
+        "classroom": "东A201",
+    }
+
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate(legacy)
+
+    # 旧字段即使与 meetings 同时出现也必须失败（不允许悄悄兼容）
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate({**VALID_OFFERING, "weekday": 1, "weeks": [1, 2]})
 
 
 def test_plan_result_accepts_empty_optional_sections() -> None:
@@ -453,13 +589,13 @@ def test_plan_result_accepts_empty_optional_sections() -> None:
 
 @pytest.mark.parametrize("weekday", [1, 7])
 def test_weekday_boundaries_are_valid(weekday: int) -> None:
-    assert CourseOffering.model_validate({**VALID_OFFERING, "weekday": weekday}).weekday == weekday
+    assert Meeting.model_validate(_meeting(weekday=weekday)).weekday == weekday
 
 
 def test_single_week_is_valid() -> None:
     """weeks 只有 1 项是合法的边界情况。"""
 
-    assert CourseOffering.model_validate({**VALID_OFFERING, "weeks": [3]}).weeks == [3]
+    assert Meeting.model_validate(_meeting(weeks=[3])).weeks == [3]
 
 
 def test_zero_credit_is_valid() -> None:
@@ -485,10 +621,14 @@ def test_plan_result_with_empty_selected_classes_is_valid() -> None:
 
 @pytest.mark.parametrize("weekday", [0, 8, -1, 9])
 def test_invalid_weekday_is_rejected(weekday: int) -> None:
-    """任务明确要求：weekday 超范围必须失败。"""
+    """任务明确要求：weekday 超范围必须失败（校验点已迁到 `Meeting` 上）。"""
 
     with pytest.raises(ValidationError):
-        CourseOffering.model_validate({**VALID_OFFERING, "weekday": weekday})
+        Meeting.model_validate(_meeting(weekday=weekday))
+
+    # 嵌套位置同样必须失败：放进 meetings[] 里也不能被放过
+    with pytest.raises(ValidationError):
+        CourseOffering.model_validate({**VALID_OFFERING, "meetings": [_meeting(weekday=weekday)]})
 
 
 @pytest.mark.parametrize("weeks", [[], None, "1-16"])
@@ -496,12 +636,12 @@ def test_empty_weeks_is_rejected(weeks) -> None:
     """任务明确要求：weeks 为空必须失败。"""
 
     with pytest.raises(ValidationError):
-        CourseOffering.model_validate({**VALID_OFFERING, "weeks": weeks})
+        Meeting.model_validate(_meeting(weeks=weeks))
 
 
 def test_non_positive_section_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        CourseOffering.model_validate({**VALID_OFFERING, "start_section": 0})
+        Meeting.model_validate(_meeting(start_section=0))
 
 
 def test_negative_credit_is_rejected() -> None:

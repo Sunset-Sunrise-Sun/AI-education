@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { CourseOffering } from '../types/contracts'
-import { displayOrDash, formatSections, formatWeekday, formatWeeks } from '../utils/labels'
+import { displayOrDash, formatMeetingLine } from '../utils/labels'
 
 /**
  * 只展示 Course Data 模块本应输出的教学班，按课程分组。
  *
- * 前端**不做**冲突检测、不比较教学班优劣、不推荐选哪个班——
- * 那些属于 Planner 模块。"同课多个教学班"只是如实并排列出。
+ * Data Gate-2（DG-01）后，一个教学班可以有**多个**上课时间 / 地点段
+ * （`CourseOffering` 1 —— N `Meeting`）。这里把每一段都如实列出。
+ *
+ * 前端**不做**冲突检测、不比较教学班优劣、不推荐选哪个班、不合并 / 删除任何一段、
+ * 也不会"只显示第一段"——那些属于 Planner 模块。
+ * "同课多个教学班"与"一个教学班的多个时间段"都只是如实并排列出。
  */
 const props = defineProps<{
   offerings: CourseOffering[]
@@ -54,10 +58,7 @@ const groups = computed<CourseGroup[]>(() => {
             <tr>
               <th scope="col">教学班号</th>
               <th scope="col">教师</th>
-              <th scope="col">上课时间</th>
-              <th scope="col">节次</th>
-              <th scope="col">周次</th>
-              <th scope="col">校区 / 教室</th>
+              <th scope="col">上课安排</th>
               <th scope="col">剩余容量</th>
               <th scope="col">数据来源</th>
             </tr>
@@ -66,12 +67,16 @@ const groups = computed<CourseGroup[]>(() => {
             <tr v-for="offering in group.offerings" :key="offering.class_id">
               <td class="mono">{{ offering.class_id }}</td>
               <td>{{ displayOrDash(offering.teacher) }}</td>
-              <td>{{ formatWeekday(offering.weekday) }}</td>
-              <td class="num">{{ formatSections(offering.start_section, offering.end_section) }}</td>
-              <td>{{ formatWeeks(offering.weeks) }}</td>
               <td>
-                {{ displayOrDash(offering.campus) }}
-                <span class="cell-hint">{{ displayOrDash(offering.classroom) }}</span>
+                <ul class="meeting-list">
+                  <li
+                    v-for="(meeting, index) in offering.meetings"
+                    :key="index"
+                    class="meeting"
+                  >
+                    {{ formatMeetingLine(meeting) }}
+                  </li>
+                </ul>
               </td>
               <td class="num">
                 {{ displayOrDash(offering.remaining_capacity) }}

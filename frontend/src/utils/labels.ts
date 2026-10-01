@@ -1,4 +1,4 @@
-import type { MakeupStatus, PlanStatus, RiskLevel } from '../types/contracts'
+import type { MakeupStatus, Meeting, PlanStatus, RiskLevel } from '../types/contracts'
 
 /**
  * 纯展示用的文案映射。
@@ -104,4 +104,24 @@ export function displayOrDash(value: string | number | null | undefined): string
     return '—'
   }
   return String(value)
+}
+
+/**
+ * 把**一段** meeting 拼成一行可读文本，例如：
+ * `周一 · 3-4 节 · 1-16 周 · 东校园 / 东B305`。
+ *
+ * 纯展示拼接：不判断冲突、不比较优劣、不筛选、不合并 / 删除任何一段。
+ * 一个教学班有几段就渲染几行，前端不做取舍。
+ */
+export function formatMeetingLine(meeting: Meeting): string {
+  const place = [meeting.campus, meeting.classroom]
+    .filter((value): value is string => value !== null && value !== undefined && value !== '')
+    .join(' / ')
+
+  return [
+    formatWeekday(meeting.weekday),
+    formatSections(meeting.start_section, meeting.end_section),
+    formatWeeks(meeting.weeks),
+    place || '—',
+  ].join(' · ')
 }

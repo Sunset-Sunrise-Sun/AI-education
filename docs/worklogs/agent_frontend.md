@@ -894,3 +894,122 @@
 - 下一步：等待 Reviewer 收尾确认。之后由负责人决定是否发出 **Data Gate-2 任务书**
   （实施 DG-01 契约变更与 DG-06 接口文档修正，即完成 **C5**）。
   ⚠️ **不 merge，不进入 Data Gate-2**，Phase 2B Integration 保持暂停编码。
+
+---
+
+### 2026-09-30 - Data Gate-2：公共契约实施（DG-01 breaking migration + DG-06 接口文档）
+- 本次目标：实施两项**已裁决**的契约变更 —— **DG-01**（`CourseOffering` → `meetings[]`）
+  与 **DG-06**（Curriculum / Planner 接口职责修正）；**不重新讨论架构选型**。
+  这是本项目**第一次真正修改公共契约**。
+- 起点：`main` = `70c81050209808e534fe47114340d5328ce0fbf4`（Data Gate-1 已由 PR #10 合入）；
+  **未继续使用旧分支 `docs/data-gate-architecture`**；新建
+  `refactor/data-gate-2-course-offering-meetings`。
+- **DG-01 实施（`CourseOffering` 1 — N `Meeting`）**
+  - `schemas/course_offering.schema.json`：
+    - 顶层**删除** `weekday` / `start_section` / `end_section` / `weeks` / `campus` / `classroom`
+      （**彻底移除，不留兼容字段**）；
+    - 顶层 `required` 改为 `course_id` / `course_name` / `class_id` / `semester` / **`meetings`**；
+    - 新增 `meetings`：`type: array`，`minItems: 1`；
+    - `Meeting`：`additionalProperties: false`，必填
+      `weekday`(integer 1–7) / `start_section`(integer ≥1) / `end_section`(integer ≥1) /
+      `weeks`(integer[]，item ≥1，`minItems: 1`，`uniqueItems: true`)，
+      可选 `campus`(string|null) / `classroom`(string|null)；
+    - **未新增任何暂缓字段**：`selectedNumber` / `openingUnitName` / `courseCategoryName` /
+      `examMode` / `readObj` / `teachProgressSubmitState` / `openClass` 一律未加入；
+      **`Meeting` 不含 `teacher`**。
+  - `backend/app/models/contracts.py`：
+    - 新增 `Meeting` 模型（与 Schema 等价）；`CourseOffering.meetings: list[Meeting]`（至少 1 项）；
+      删除顶层六个排课字段；`__all__` 加入 `"Meeting"`；
+    - `PositiveIntList` 的注释由 `CourseOffering.weeks` 改为 `Meeting.weeks`；
+    - `weeks` 的 `uniqueItems` 仍由 `_reject_duplicates` 在**运行时真实拒绝**重复项
+      （Pydantic 不生成该关键字，这一点未因迁移而放松）。
+  - `mock_data/course_offerings.json`：**9 个教学班全部迁移**到 `meetings[]`；
+    `6200100220260101`（数据结构与算法，**被方案选中的教学班**）拥有 **2 段 meeting**
+    （周三 3-4 节 1-16 周 + **人工构造**的周一 5-6 节单周实验段，避开 prefered `avoid_times` 的周五 5-8 节）；
+    **未复制任何真实 SYSU Response 或真实教师信息**（Mock 仍为人工虚构）。
+  - 后端测试迁移并**加严**：
+    - `test_contracts.py`：`VALID_MEETING` + `_meeting()` 工厂；所有 weekday / weeks /
+      section 校验迁到 `Meeting`，**并同时验证嵌套位置**（放进 `meetings[]` 里也必须被拒）；
+      新增 **多 meetings 通过**、**`meetings: []` 拒绝**、**缺少 `meetings` 拒绝**、
+      **`Meeting` 额外字段（含 `teacher`）拒绝**、**旧格式顶层排课字段拒绝**
+      （含"旧字段与 meetings 同时出现"）；
+      新增 `test_nested_meeting_weeks_unique_items_are_enforced_at_runtime`：
+      按公共 Schema 路径 `properties.meetings.items.properties.weeks` 确认 `uniqueItems: true`
+      并断言模型真实拒绝 —— 因为顶层 uniqueItems 扫描**会漏掉这个嵌套数组**。
+    - `test_mock_data_schema.py`：新增 `_meetings_of()` 辅助；**所有**时间 / 地点 / 周次 / 节次检查
+      改为**逐 meeting 遍历**（`test_plan_result_avoids_preferred_avoid_times`
+      现在检查选中教学班的**每一个** meeting，不再只看第一段）；
+      新增 **至少 1 个教学班含 ≥2 个 meeting**、**Mock 无旧顶层排课字段残留**、
+      **旧格式在数据层被拒**；两个 raw-schema 回归测试改到 `meetings[0].weekday` /
+      `meetings[0].weeks`，**"先 JSON Schema 后 Pydantic"的顺序未被破坏**。
+  - 前端：
+    - `types/contracts.ts` 新增 `Meeting`，`CourseOffering` 改为 `meetings: Meeting[]`，
+      删除旧顶层六个字段；**未新增 Schema 不存在的类型字段**；
+    - `CourseOfferingList.vue`：原"上课时间 / 节次 / 周次 / 校区教室"四列**收敛为"上课安排"一列**，
+      **逐段**渲染（`v-for="meeting in offering.meetings"`）；**不做**冲突判断、优劣排序、
+      自动选择、合并 / 删除任何一段；
+    - `utils/labels.ts` 新增**纯展示**函数 `formatMeetingLine(meeting)`；
+    - `styles/base.css` 新增 `.meeting-list` / `.meeting`（多段之间虚线分隔）。
+  - `backend/README.md` 手动验收第 7 步由"改某个 `weekday`"改为"改某个 `meetings[0].weekday`"
+    （否则该步骤在新结构下失效）。
+- **DG-06 实施（接口职责修正）**
+  - `docs/interfaces/planner.md`：职责改为冲突检测 / 当前课表冲突分析 / 替代教学班搜索 /
+    硬软约束建模 / 确定性约束求解 / Path Repair / 无解与部分可行 / `PlanResult`；
+    **不负责**依赖认定 / 风险 / 优先级 / Curriculum Diff；
+    **删除** `build_dependency_graph(courses)` 与 `calculate_priority(...)`；
+    明确 `current_schedule: CourseOffering[]` 的语义并写明
+    **"学校全部 CourseOffering[] ≠ current_schedule"**、**禁止用 `Preference.avoid_times[]` 冒充当前课表**；
+    写明依赖权威边界（Curriculum 认定 edges；Planner 只做本地 adjacency / topology；
+    不得新增 / 猜测 / 重写 edge；无法提供时标记未知，不自动补齐）；
+    写明 **MVP 无公共 `priority` 字段，Planner 不得自行生成优先级**；
+    实现约束补上**冲突检测必须遍历 `meetings[]` 的每一段**。
+  - `docs/interfaces/curriculum.md`：补上**课程依赖认定**、**补修风险 / 学业优先级的所有权**、
+    **跨学期补修路径建议**；明确**优先级当前没有公共契约**、
+    **不得假装当前已可跨模块传 priority**；交付说明写明先修边的权威来源与"不得自动补齐"；
+    并保留"真实样本中未发现先修字段"的证据限制。
+- **Data Gate 收口**
+  - `docs/data/DATA_GATE_DECISIONS.md`：文件状态改为 **Data Gate PASSED / CLOSED**；
+    裁决总表加"实施状态"列；§1.3 流程图补 Data Gate-2；§6.7 / §6.8 / §9.1 标注已实施；
+    §12 中 **C4 / C5 / C6 / C7 / C8 更新为已完成**，新增 §12.2 结论（C1–C11 全 ✅）；
+    §12.1 改为"Gate 关闭后仍然适用的约束"；新增 **§16 Data Gate 关闭记录**
+    （实施内容 / 同步范围 / 验证结果 / 本轮未做）。
+  - `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`：**G9 更新为"已通过 DG-01 / Data Gate-2 完成公共契约修复"**，
+    **原缺口描述原样保留**；新增 **§4.6** 记录修复形态、同步范围、表达损失与"未新增的字段"；
+    §3.2 区分"Data Gate-1 当时的字段"与"Data Gate-2 之后的字段"，历史分析表**未删改**；
+    §3.2 表下的 `teachingTimePlaceStr` 两层说明补注"该限制已解除"；变更记录追加一行。
+  - `docs/status/agent_frontend.md`：阶段图改为"Data Gate 已关闭 → 下一步 Course Data MVP"；
+    新增「Data Gate-2 实施结果」小节；「已完成」/「当前接口」/「当前阻塞」/「下一步」全面同步
+    （G9 与 DG 状态改写为已完成，`CourseOffering[]` 注明含 `meetings[]`）。
+- 修改文件：
+  - `schemas/course_offering.schema.json`
+  - `backend/app/models/contracts.py`、`backend/tests/test_contracts.py`、
+    `backend/tests/test_mock_data_schema.py`、`backend/README.md`
+  - `mock_data/course_offerings.json`
+  - `frontend/src/types/contracts.ts`、`frontend/src/components/CourseOfferingList.vue`、
+    `frontend/src/utils/labels.ts`、`frontend/src/styles/base.css`
+  - `docs/interfaces/planner.md`、`docs/interfaces/curriculum.md`
+  - `docs/data/DATA_GATE_DECISIONS.md`、`docs/data/REAL_TO_SCHEMA_GAP_REPORT.md`
+  - `docs/status/agent_frontend.md`、本文件（仅追加）
+- 测试：
+  - `cd backend && python -m pytest` → **133 passed / 2 skipped**（全部通过；迁移前为 125 passed / 1 skipped）
+  - `cd frontend && npm run build`（含 `vue-tsc --noEmit`）→ **成功**
+  - **未删除任何测试、未新增 skip、未放宽任何校验**；两处 skip 仍是
+    "该 Schema 顶层没有 uniqueItems 数组"的原语义，且原先被跳过的 CourseOffering
+    改由 `test_nested_meeting_weeks_unique_items_are_enforced_at_runtime` **专项覆盖**。
+- 公共接口是否变化：**是（本轮首次真实变更公共契约）**
+  - `course_offering.schema.json`：**breaking migration**（顶层删 6 字段 + 新增 `meetings[]`）；
+  - `docs/interfaces/planner.md` / `curriculum.md`：**文档修正**（无字段变更）；
+  - 其余四个 Schema **未变**。
+- 未执行：**未调用 SYSU API（零请求）**、**未抓取 6892 条课程**、未写 crawler、
+  未写 Course Data Adapter / Normalizer / `CourseDataProvider`、**未进入 Integration / Orchestrator**、
+  **未建数据库 / ORM / migration**、未写 Curriculum 算法或 Planner 求解器、
+  未新增 `CompletedCourse` / `CurrentEnrollment` / `CurriculumVersion` / `CurriculumCourse` /
+  `DependencyGraph` / `priority`。
+- 备注（留给后续，不在本轮授权范围内）：`docs/interfaces/course_data.md` 的"关键标准"一节
+  仍按旧结构罗列 `weekday` / `start_section` / `end_section` / `weeks`（语义仍成立，
+  但未说明它们现在位于 `meetings[]` 内）；该文件**本轮未获授权修改**，故**未改**，
+  作为**待同步的接口文档一致性问题**上报，不自行扩大修改范围。
+- 下一步：等待 Reviewer 验收 **Data Gate-2**（本轮是真实契约变更，请重点复核
+  breaking migration 完整性与"未偷偷新增暂缓字段"）。
+  Data Gate 已关闭；下一步 **Course Data MVP**（真实 2026-1 snapshot）**须等新一轮任务书**。
+  ⚠️ **不 merge，不自行开始 Course Data MVP**。

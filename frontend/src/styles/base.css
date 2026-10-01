@@ -356,6 +356,27 @@ code.mono {
   font-size: 12px;
 }
 
+/* ---------- 一个教学班的多个上课时间段（DG-01） ---------- */
+
+/* 一个教学班可有多个 meeting；这里逐段平铺，前端不做取舍、不合并。 */
+.meeting-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.meeting {
+  white-space: nowrap;
+}
+
+.meeting + .meeting {
+  border-top: 1px dashed var(--border);
+  padding-top: 2px;
+}
+
 /* ---------- 键值列表 ---------- */
 
 .kv {

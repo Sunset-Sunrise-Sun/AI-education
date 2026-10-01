@@ -205,7 +205,8 @@ Mock 通道（始终存在）:  /api/v1/mock/course-offerings  ->  mock_service 
 5. 在浏览器开发者工具的 Network 面板里确认响应头包含 `X-Data-Source: mock`；
 6. 调 `GET /api/v1/mock/plan-result`，确认 `unresolved` 里有 `manual_confirmation` 项
    ——系统应当**诚实暴露待人工确认的部分**，而不是假装已经全部解决；
-7. （可选）把 `mock_data/course_offerings.json` 里某个 `weekday` 改成 `9`，重启服务，
+7. （可选）把 `mock_data/course_offerings.json` 里某个教学班的
+   `meetings[0].weekday` 改成 `9`，重启服务，
    确认进程启动失败并给出指向该字段的报错；改回后恢复正常。
 
 ---
