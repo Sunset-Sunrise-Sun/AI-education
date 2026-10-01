@@ -404,8 +404,13 @@ Frontend / Mock + tests，且须经 Reviewer 验收）；**本轮未开始任何
 
 ### 契约（Data Gate）
 - 公共输出为 `schemas/course_offering.schema.json`；
-- Data Gate-2（**DG-01**）已把 `CourseOffering` 改为 **1 — N `meetings[]`**：
-  一个教学班 = 一个 `CourseOffering`，`meetings[]` = 它的**全部**上课时间 / 地点段。
+- **DG-01** 建立了 `CourseOffering.meetings[]` 的**嵌套结构**（一个教学班不再等于一个时间段）；
+- **DG-07A 起**，**每个 `CourseOffering` 可以包含 0..N 个 `Meeting`**
+  （`meetings` 仍必填，`minItems: 0`）；
+- 一个教学班 = 一个 `CourseOffering`；
+  `meetings[]` = **当前来源快照中能够形成公共 `Meeting` 的全部已知排课段**；
+- `meetings = []` **仅**表示**当前来源快照没有可用排课信息**：
+  ⛔ **不表示无时间占用**，⛔ **也不表示 conflict-free**；
 
 ### Schedule parser + local import adapter（Phase 2B-2B，本轮）
 位置：`backend/app/course_data/`（**内部实现，不是跨模块公共契约**）
