@@ -437,13 +437,23 @@ def test_known_prerequisites_and_explicit_semesters_are_preserved() -> None:
 
 
 @pytest.mark.parametrize("status_case", ["manual", "candidate", "required"])
-def test_provider_refuses_unknown_prerequisites_for_unsatisfied_courses(status_case: str) -> None:
+def test_provider_marks_unknown_prerequisites_manual_without_hiding_base_conclusion(status_case: str) -> None:
     target = _target(prerequisites=None, course_name="DEMO Candidate")
     completed = (_attempt("DEMO-OTHER", course_name="DEMO Candidate"),) if status_case == "candidate" else ()
     missing = (_missing(target),) if status_case == "required" else ()
     diff = _diff((target,), completed, missing_requirements=missing)
-    with pytest.raises(CurriculumNormalizationError):
-        CurriculumResultProvider(diff).get_makeup_tasks()
+    task = CurriculumResultProvider(diff).get_makeup_tasks()[0]
+    assert task.status is MakeupStatus.MANUAL_CONFIRMATION
+    assert task.prerequisites == []
+    assert diff.matches[0].reason in task.reason
+    assert "先修关系未知" in task.reason
+    assert "先修关系未确认" in task.source_evidence
+    expected = {
+        "manual": MakeupStatus.MANUAL_CONFIRMATION,
+        "candidate": MakeupStatus.POSSIBLY_EQUIVALENT,
+        "required": MakeupStatus.REQUIRED,
+    }
+    assert diff.matches[0].status is expected[status_case]
 
 
 def test_provider_returns_fresh_public_objects_with_unchanged_signature() -> None:
