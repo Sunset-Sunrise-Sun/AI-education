@@ -1,0 +1,59 @@
+[
+  {
+    "course_id": "DEMO101",
+    "course_name": "示例课程一",
+    "credit": 3.0,
+    "status": "satisfied",
+    "deadline_semester": 5,
+    "recommended_semester": 3,
+    "prerequisites": [],
+    "reason": "依据本 case 匹配规则，课程号、规范化名称、学分及通过事实完全匹配。",
+    "source_evidence": "mock://curriculum-demo/new#row:DEMO101；mock://curriculum-demo/completed#row:1；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策"
+  },
+  {
+    "course_id": "DEMO202",
+    "course_name": "示例课程二",
+    "credit": 4.0,
+    "status": "required",
+    "deadline_semester": 5,
+    "recommended_semester": 3,
+    "prerequisites": [
+      "DEMO101"
+    ],
+    "reason": "依据本 case 缺课规则，完整目标要求与已修记录中未发现通过匹配或身份未知的通过记录。",
+    "source_evidence": "mock://curriculum-demo/new#row:DEMO202；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策"
+  },
+  {
+    "course_id": "DEMO303",
+    "course_name": "示例课程候选",
+    "credit": 2.0,
+    "status": "possibly_equivalent",
+    "deadline_semester": 5,
+    "recommended_semester": 3,
+    "prerequisites": [],
+    "reason": "发现名称候选，等价关系待人工确认。",
+    "source_evidence": "mock://curriculum-demo/new#row:DEMO303；mock://curriculum-demo/completed#row:2；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策"
+  },
+  {
+    "course_id": "DEMO404",
+    "course_name": "示例课程四",
+    "credit": 3.0,
+    "status": "manual_confirmation",
+    "deadline_semester": 5,
+    "recommended_semester": 3,
+    "prerequisites": [],
+    "reason": "相同课程号存在学分差异，补修认定待人工核对。先修关系未知，待人工确认。",
+    "source_evidence": "mock://curriculum-demo/new#row:DEMO404；mock://curriculum-demo/completed#row:3；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策；先修关系未确认"
+  },
+  {
+    "course_id": "DEMO505",
+    "course_name": "示例课程五",
+    "credit": 1.0,
+    "status": "manual_confirmation",
+    "deadline_semester": 5,
+    "recommended_semester": 3,
+    "prerequisites": [],
+    "reason": "依据本 case 缺课规则，完整目标要求与已修记录中未发现通过匹配或身份未知的通过记录。先修关系未知，待人工确认。",
+    "source_evidence": "mock://curriculum-demo/new#row:DEMO505；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策；先修关系未确认"
+  }
+]

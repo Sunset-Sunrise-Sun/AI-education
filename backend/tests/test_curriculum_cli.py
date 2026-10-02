@@ -76,3 +76,51 @@ def test_argument_errors_do_not_echo_private_arguments(argv, capsys) -> None:
     assert captured.out == ""
     assert captured.err == "参数无效，请运行 --help 查看用法。\n"
     assert "DEMO-PRIVATE" not in captured.err
+
+
+def test_demo_cli_computes_tasks_with_explicit_mock_marker(capsys) -> None:
+    assert main(["--demo"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["data_source"] == "mock"
+    assert {task["status"] for task in result["makeup_tasks"]} == {
+        "satisfied", "required", "possibly_equivalent", "manual_confirmation",
+    }
+
+
+def test_case_cli_only_prints_statistics_for_private_input(tmp_path, capsys) -> None:
+    from app.curriculum.case import DEMO_CASE_PATH
+
+    payload = json.loads(DEMO_CASE_PATH.read_text())
+    payload["data_source"] = "real"
+    payload["old"]["major"] = "DEMO-PRIVATE-MAJOR"
+    payload["old"]["source_id"] = "DEMO-PRIVATE-OLD-SOURCE"
+    payload["new"]["source_id"] = "DEMO-PRIVATE-NEW-SOURCE"
+    payload["completed"]["source_id"] = "DEMO-PRIVATE-COMPLETED-SOURCE"
+    payload["rules"]["completed_source_id"] = "DEMO-PRIVATE-COMPLETED-SOURCE"
+    payload["rules"]["evidence"] = "DEMO-PRIVATE-RULE-EVIDENCE"
+    payload["old"]["completeness_evidence"] = "DEMO-PRIVATE-OLD-COMPLETENESS"
+    payload["new"]["completeness_evidence"] = "DEMO-PRIVATE-NEW-COMPLETENESS"
+    payload["completed"]["completeness_evidence"] = "DEMO-PRIVATE-COMPLETED-COMPLETENESS"
+    for row in payload["completed"]["records"]:
+        row["id_match_source"] = "DEMO-PRIVATE-ID-EVIDENCE"
+    path = tmp_path / "DEMO-PRIVATE-CASE.json"
+    path.write_text(json.dumps(payload))
+    assert main(["--case", str(path)]) == 0
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    assert output["data_source"] == "real" and output["makeup_task_count"] == 5
+    assert "makeup_tasks" not in output and "DEMO-PRIVATE" not in captured.out
+    assert "示例课程" not in captured.out
+
+
+@pytest.mark.parametrize("argv", [
+    ["--demo", "--case", "/DEMO-PRIVATE-PATH/input.json"],
+    ["--demo", "/DEMO-PRIVATE-PATH/input.xlsx"],
+    ["--case", "/DEMO-PRIVATE-PATH/input.json", "--source-id", "DEMO-SOURCE"],
+])
+def test_input_modes_cannot_mix_private_input_with_public_demo(argv, capsys) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        main(argv)
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert captured.out == "" and "DEMO-PRIVATE" not in captured.err

@@ -1,4 +1,4 @@
-"""Compare supplied requirements and recognition evidence without inferring policy."""
+"""Compare supplied requirements using explicit decisions or scoped case rules."""
 
 from __future__ import annotations
 
@@ -32,6 +32,24 @@ def _items(values: object, kind: type, field: str) -> tuple:
     if any(not isinstance(value, kind) for value in result):
         raise CurriculumNormalizationError(f"{field}: unexpected item type")
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class MatchingRules:
+    """Evidence-backed case configuration, not a public or school-policy DTO."""
+
+    target_version_id: str
+    completed_source_id: str
+    evidence: str
+    allow_exact_match: bool = False
+    allow_confirmed_absence: bool = False
+
+    def __post_init__(self) -> None:
+        for field in ("target_version_id", "completed_source_id", "evidence"):
+            _text(getattr(self, field), field)
+        for field in ("allow_exact_match", "allow_confirmed_absence"):
+            if type(getattr(self, field)) is not bool:
+                raise CurriculumNormalizationError(f"{field}: expected a boolean")
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,12 +165,44 @@ class CurriculumDiff:
 
 
 def _name(value: str) -> str:
-    # Formatting normalization is used for candidates, never for recognition.
+    # Formatting alone never authorizes recognition without scoped case rules.
     return "".join(unicodedata.normalize("NFKC", value).casefold().split())
 
 
 def _source(record: CompletedCourse) -> str:
     return f"{record.source_id}#{record.source_record}"
+
+
+def _candidate_records(
+    target: CurriculumCourse, completed: tuple[CompletedCourse, ...]
+) -> tuple[tuple[CompletedCourse, ...], tuple[CompletedCourse, ...]]:
+    identity = tuple(record for record in completed if (
+        record.course_id_status is CourseIdStatus.CONFIRMED and record.course_id == target.course_id
+    ))
+    named = tuple(record for record in completed if (
+        record.passed and _name(record.course_name) == _name(target.course_name)
+        and record not in identity
+    ))
+    return identity, named
+
+
+def _exact_rule_candidates(
+    target: CurriculumCourse,
+    identity: tuple[CompletedCourse, ...],
+    named: tuple[CompletedCourse, ...],
+    by_ref: dict[tuple[str, str], list[CompletedCourse]],
+) -> tuple[tuple[CompletedCourse, ...], str | None]:
+    """Return unambiguous exact passing facts; do not combine attempt credits."""
+    if any(len(by_ref[(record.source_id, record.source_record)]) != 1 for record in identity + named):
+        return (), "修读来源引用重复，无法唯一定位记录，待人工核对。"
+    if any(record.course_id_status is CourseIdStatus.PENDING for record in named):
+        return (), "匹配候选的课程号仍待确认，不能自动抵认。"
+    passed = tuple(record for record in identity if record.passed)
+    if any(_name(record.course_name) != _name(target.course_name) for record in passed):
+        return (), "相同课程号存在课程名称冲突，待人工核对。"
+    if any(record.credit != target.credit for record in passed):
+        return (), "相同课程号存在学分差异，补修认定待人工核对。"
+    return passed, None
 
 
 def build_curriculum_diff(
@@ -165,8 +215,9 @@ def build_curriculum_diff(
     completed_complete: bool = False,
     completed_completeness_evidence: str | None = None,
     completed_source_id: str | None = None,
+    rules: MatchingRules | None = None,
 ) -> CurriculumDiff:
-    """Use explicit decisions; candidate matching does not approve equivalence."""
+    """Use supplied decisions or case rules; defaults never approve equivalence."""
     if not isinstance(old, CurriculumVersion) or not isinstance(new, CurriculumVersion):
         raise CurriculumNormalizationError("curriculum: expected a CurriculumVersion")
     completed = _items(completed, CompletedCourse, "completed")
@@ -187,6 +238,13 @@ def build_curriculum_diff(
         completed_source_id = next(iter(source_ids))
     elif len(source_ids) > 1:
         raise CurriculumNormalizationError("completed records require one case-specific source")
+    if rules is not None:
+        if not isinstance(rules, MatchingRules):
+            raise CurriculumNormalizationError("rules: expected MatchingRules")
+        if completed_source_id is None:
+            raise CurriculumNormalizationError("rules: completed source scope is required")
+        if rules.target_version_id != new.version_id or rules.completed_source_id != completed_source_id:
+            raise CurriculumNormalizationError("rules: configuration is outside the supplied case")
 
     target_counts = Counter(course.course_id for course in new.courses)
     by_ref: dict[tuple[str, str], list[CompletedCourse]] = defaultdict(list)
@@ -208,24 +266,33 @@ def build_curriculum_diff(
             raise CurriculumNormalizationError("missing requirement: target must be explicitly required")
         missing[decision.target_course_id].append(decision)
 
+    automatic: dict[str, tuple[tuple[CompletedCourse, ...], str | None]] = {}
+    if rules is not None and (rules.allow_exact_match or rules.allow_confirmed_absence):
+        for target in new.courses:
+            identity, named = _candidate_records(target, completed)
+            exact, conflict = _exact_rule_candidates(target, identity, named, by_ref)
+            automatic[target.course_id] = exact if rules.allow_exact_match else (), conflict
+            if (rules.allow_exact_match and target_counts[target.course_id] == 1
+                    and target.requirement is not RequirementKind.UNKNOWN
+                    and not granted[target.course_id] and not missing[target.course_id]):
+                for record in exact:
+                    ref_uses[(record.source_id, record.source_record)].add(target.course_id)
+
     has_unknown_passed_identity = any(
         record.passed and record.course_id_status is CourseIdStatus.PENDING for record in completed
     )
     matches: list[CourseMatch] = []
     for target in new.courses:
-        identity = tuple(record for record in completed if (
-            record.course_id_status is CourseIdStatus.CONFIRMED and record.course_id == target.course_id
-        ))
-        named = tuple(record for record in completed if (
-            record.passed and _name(record.course_name) == _name(target.course_name)
-            and record not in identity
-        ))
+        identity, named = _candidate_records(target, completed)
         candidates = identity + named
         evidence = [f"{new.source_id}#{target.source_record}"]
         evidence.extend(_source(record) for record in candidates)
         approved = granted[target.course_id]
         missing_decisions = missing[target.course_id]
         evidence.extend(decision.evidence for decision in (*approved, *missing_decisions))
+        if rules is not None:
+            evidence.append(f"case 匹配规则依据：{rules.evidence}")
+        exact, rule_conflict = automatic.get(target.course_id, ((), None))
         status = MakeupStatus.MANUAL_CONFIRMATION
         reason = "未发现匹配，但缺课认定尚未确认。"
 
@@ -259,6 +326,14 @@ def build_curriculum_diff(
                         evidence.append(_source(record))
         elif missing_decisions and any(record.passed for record in candidates):
             reason = "缺课确认与已修候选相互冲突，待人工核对。"
+        elif rule_conflict is not None:
+            reason = rule_conflict
+        elif exact:
+            if any(len(ref_uses[(record.source_id, record.source_record)]) > 1 for record in exact):
+                reason = "同一修读记录被用于多门目标课程，认定分配待确认。"
+            else:
+                status = MakeupStatus.SATISFIED
+                reason = "依据本 case 匹配规则，课程号、规范化名称、学分及通过事实完全匹配。"
         elif target.requirement is RequirementKind.ELECTIVE:
             reason = "选修课程保留在课程池，不逐门判为必补。"
             if named:
@@ -280,6 +355,12 @@ def build_curriculum_diff(
             reason = "已有明确补修需求确认依据。"
         elif len(missing_decisions) > 1:
             reason = "存在多条缺课确认记录，待人工核对。"
+        elif rules is not None and rules.allow_confirmed_absence:
+            if any(len(records) != 1 for records in by_ref.values()):
+                reason = "已修来源引用重复，完整记录的缺课判断待人工核对。"
+            else:
+                status = MakeupStatus.REQUIRED
+                reason = "依据本 case 缺课规则，完整目标要求与已修记录中未发现通过匹配或身份未知的通过记录。"
         matches.append(CourseMatch(target, status, candidates, reason, tuple(dict.fromkeys(evidence))))
 
     unrepresented: list[str] = []
@@ -346,13 +427,16 @@ def project_makeup_tasks(diff: CurriculumDiff) -> list[MakeupTask]:
         if target.requirement is RequirementKind.ELECTIVE and match.status is not MakeupStatus.SATISFIED:
             continue
         reason = match.reason
+        status = match.status
         evidence = "；".join(match.evidence)
         if target.prerequisites is None:
             reason += "先修关系未知，待人工确认。"
             evidence += "；先修关系未确认"
+            if status is not MakeupStatus.SATISFIED:
+                status = MakeupStatus.MANUAL_CONFIRMATION
         tasks.append(MakeupTask(
             course_id=target.course_id, course_name=target.course_name, credit=target.credit,
-            status=match.status, recommended_semester=target.recommended_semester,
+            status=status, recommended_semester=target.recommended_semester,
             deadline_semester=target.deadline_semester, prerequisites=list(target.prerequisites or ()),
             reason=reason, source_evidence=evidence,
         ))
@@ -389,8 +473,4 @@ class CurriculumResultProvider:
         _require_built_diff(self.diff)
 
     def get_makeup_tasks(self) -> list[MakeupTask]:
-        tasks = project_makeup_tasks(self.diff)
-        if any(match.target.prerequisites is None and match.status is not MakeupStatus.SATISFIED
-               for match in self.diff.matches if match.target.requirement is not RequirementKind.ELECTIVE):
-            raise CurriculumNormalizationError("prerequisite facts are unresolved for courses to be planned")
-        return tasks
+        return project_makeup_tasks(self.diff)

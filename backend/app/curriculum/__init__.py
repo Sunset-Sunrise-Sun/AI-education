@@ -11,6 +11,7 @@ from app.curriculum.matching import (
     ConfirmedRecognition,
     CurriculumDiff,
     CurriculumResultProvider,
+    MatchingRules,
     build_curriculum_diff,
     project_courses,
     project_makeup_tasks,
@@ -21,6 +22,18 @@ from app.curriculum.requirements import (
     CurriculumVersion,
     RequirementKind,
     normalize_curriculum_version,
+)
+from app.curriculum.academic import (
+    AcademicAnalysis,
+    AcademicIssue,
+    PriorityPolicy,
+    analyze_academic_path,
+)
+from app.curriculum.case import (
+    CurriculumCase,
+    CurriculumCaseProvider,
+    load_curriculum_case,
+    normalize_curriculum_case,
 )
 
 __all__ = [
@@ -40,4 +53,13 @@ __all__ = [
     "build_curriculum_diff",
     "project_courses",
     "project_makeup_tasks",
+    "MatchingRules",
+    "AcademicAnalysis",
+    "AcademicIssue",
+    "PriorityPolicy",
+    "analyze_academic_path",
+    "CurriculumCase",
+    "CurriculumCaseProvider",
+    "load_curriculum_case",
+    "normalize_curriculum_case",
 ]
