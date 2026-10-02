@@ -1580,3 +1580,54 @@
 - **Builder 实际 SYSU 请求数：0**。
 - 下一步：等待 Reviewer；之后等待 **DG-07B / DG-07C / DG-07D** 任务书。
   ⚠️ **不 merge，不自行开始任何后续阶段**。
+
+---
+
+### 2026-10-02 - 成员5任务：Frontend / Product Demo Polish 与 DG-07D 展示就绪
+- 本次目标：依据成员5任务书（PROMPT.md）与交付协议，在严格不改动公共 Schema、公共 Interface 及 Provider 签名的前提下，对前端 Demo 界面进行视觉层级、交互可用性与信息架构 Polish，并提前就绪 DG-07D 中性排课数据状态与 unresolved 多类型展示。
+- 已完成：
+  1. 页面骨架与视觉层级升级：
+     - TopStatusBar：新增品牌 Logo、系统模式、数据安全状态徽章与一键锚点快速导航栏。
+     - Pipeline Guide：新增四步业务流引导卡片（培养方案对比 ➔ 教学班供给 ➔ 偏好约束 ➔ 课表求解与调班），极大提升比赛演示与答辩可读性。
+     - Overview Bar：新增核心指标概览（识别补修任务数、候选教学班数、偏好学分上限、方案可行性状态）。
+     - SectionCard：统一区块头部与 Mock 标识、数量徽标、锚点平滑滚动。
+  2. 补修任务清单（MakeupTaskList.vue）：
+     - 增加状态筛选 Chips（全部 / 需要补修 / 待人工确认 / 可能等价 / 已满足）；
+     - 增加先修课程依赖芯片（prerequisites）与修读学期规划（建议学期 / 截止学期）；
+     - 增加判定说明与来源证据（source_evidence）展示，支持超长文本换行与优雅空状态。
+  3. 开课教学班展示（CourseOfferingList.vue）：
+     - 支持按课程名、课程号、教师与教学班号的实时搜索过滤；
+     - 全面落实 DG-07D 规范：当 `meetings = []` 时，严格中性呈现“当前数据中无排课信息”，严禁推断使用“无课”、“无需上课”、“异步课程”、“尚未排课”、“无冲突”等违规词汇；
+     - 逐段展示多 segment 排课（DG-01），显示学分、教学班容量与紧俏预警（<=5 时标红）。
+  4. 用户偏好设置（PreferencePanel.vue）：
+     - 升级为网格卡片化布局，清晰呈现学分上限控制、避免跨校区选课偏好、意向课程芯片（反查显示课程名）、回避时段与学生个性化备注。
+  5. 重构方案与求解结果（PlanResultPanel.vue）：
+     - 顶部 Hero 状态看板（可行/部分可行/不可行 + 策略摘要 + 4 项核心 KPI）；
+     - 换班对比（changes）强化流向图示：原班级（带删除线）➜ 调整后班级（成功色）+ 明确调整原因；
+     - 风险提示（risks）划分高/中/低等级色彩；
+     - 未解决事项（unresolved）：支持多类型呈现（`manual_confirmation`、`missing_data`、`schedule_unknown`）及任意未知类型的通用 fallback，展示原始 type 标识与详细原因，严禁一律归为“人工确认”。
+  6. 响应式与全端可用性：
+     - 重构 `base.css`，完善 860px 平板与 640px 手机断点适配，优化加载（loading spinner）与报错重试流程。
+- 修改文件：
+  - `frontend/src/App.vue`
+  - `frontend/src/components/CourseOfferingList.vue`
+  - `frontend/src/components/MakeupTaskList.vue`
+  - `frontend/src/components/PlanResultPanel.vue`
+  - `frontend/src/components/PreferencePanel.vue`
+  - `frontend/src/components/SectionCard.vue`
+  - `frontend/src/components/TopStatusBar.vue`
+  - `frontend/src/styles/base.css`
+  - `frontend/src/utils/labels.ts`
+  - `frontend/verify_all_scenarios.mjs`
+  - `docs/status/agent_frontend.md`
+  - `docs/worklogs/agent_frontend.md`
+- 测试：
+  - `cd frontend && npm run build`（含 `vue-tsc --noEmit && vite build`）：通过（0 error，0 warning）
+  - 自动化场景覆盖测试（`node verify_all_scenarios.mjs`）：全部 7 项场景全部通过（正常多 Meeting、meetings=[] 中性数据状态与禁词检查、三类方案状态、unresolved 多类型与未知 fallback、空列表容错、长文本排版、响应式断点）
+- 使用数据：Mock
+- 公共接口是否变化：否（未改动 `/schemas/`、`/docs/interfaces/` 与 `backend/app/integration/ports.py`）
+- 是否修改 backend：否
+- 已知问题：无
+- 需要人工确认：无
+- 对其他模块影响：无破坏性影响，纯前端与产品层改进
+- 下一步：等待项目负责人与 Reviewer 审查；等待 Planner DG-07C 求解器落地与架构审查后再决定是否需要最终文案联动。
