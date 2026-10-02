@@ -1,0 +1,152 @@
+{
+  "data_source": "mock",
+  "old": {
+    "version_id": "mock-old",
+    "major": "示例old专业",
+    "cohort": "示例年级",
+    "source_id": "mock://curriculum-demo/old",
+    "course_records": [
+      {
+        "course_id": "DEMO101",
+        "course_name": "示例课程一",
+        "credit": 3,
+        "requirement": "required",
+        "source_record": "row:DEMO101",
+        "prerequisites": [],
+        "deadline_semester": 5,
+        "recommended_semester": 3
+      },
+      {
+        "course_id": "DEMO309",
+        "course_name": "示例课程候选",
+        "credit": 2,
+        "requirement": "required",
+        "source_record": "row:DEMO309",
+        "prerequisites": [],
+        "deadline_semester": 5,
+        "recommended_semester": 3
+      },
+      {
+        "course_id": "DEMO404",
+        "course_name": "示例课程四",
+        "credit": 2,
+        "requirement": "required",
+        "source_record": "row:DEMO404",
+        "prerequisites": [],
+        "deadline_semester": 5,
+        "recommended_semester": 3
+      }
+    ],
+    "complete": true,
+    "completeness_evidence": "mock://curriculum-demo/old/完整范围说明"
+  },
+  "new": {
+    "version_id": "mock-new",
+    "major": "示例new专业",
+    "cohort": "示例年级",
+    "source_id": "mock://curriculum-demo/new",
+    "course_records": [
+      {
+        "course_id": "DEMO101",
+        "course_name": "示例课程一",
+        "credit": 3,
+        "requirement": "required",
+        "source_record": "row:DEMO101",
+        "prerequisites": [],
+        "deadline_semester": 5,
+        "recommended_semester": 3
+      },
+      {
+        "course_id": "DEMO-E1",
+        "course_name": "示例选修课程1",
+        "credit": 2,
+        "requirement": "elective",
+        "source_record": "row:DEMO-E1",
+        "group_id": "DEMO-GROUP",
+        "prerequisites": [],
+        "deadline_semester": 5
+      },
+      {
+        "course_id": "DEMO-E2",
+        "course_name": "示例选修课程2",
+        "credit": 2,
+        "requirement": "elective",
+        "source_record": "row:DEMO-E2",
+        "group_id": "DEMO-GROUP",
+        "prerequisites": [],
+        "deadline_semester": 5
+      },
+      {
+        "course_id": "DEMO-E3",
+        "course_name": "示例选修课程3",
+        "credit": 2,
+        "requirement": "elective",
+        "source_record": "row:DEMO-E3",
+        "group_id": "DEMO-GROUP",
+        "prerequisites": [],
+        "deadline_semester": 5
+      }
+    ],
+    "complete": true,
+    "completeness_evidence": "mock://curriculum-demo/new/完整范围说明",
+    "group_records": [
+      {
+        "group_id": "DEMO-GROUP",
+        "name": "示例选修组",
+        "minimum_credit": 4,
+        "source_record": "mock://curriculum-demo/选修组要求"
+      }
+    ]
+  },
+  "completed": {
+    "source_id": "mock://curriculum-demo/completed",
+    "records": [
+      {
+        "course_id": "DEMO101",
+        "course_name": "示例课程一",
+        "credit": 3,
+        "semester": "DEMO-TERM-1",
+        "passed": true,
+        "course_type": "示例必修",
+        "course_id_status": "已确认",
+        "id_match_source": "mock://curriculum-demo/课程号依据",
+        "source_record": "row:1"
+      },
+      {
+        "course_id": "DEMO-E1",
+        "course_name": "示例选修课程1",
+        "credit": 2,
+        "semester": "DEMO-TERM-1",
+        "passed": true,
+        "course_type": "示例选修",
+        "course_id_status": "已确认",
+        "id_match_source": "mock://curriculum-demo/课程号依据",
+        "source_record": "row:2"
+      }
+    ],
+    "complete": true,
+    "completeness_evidence": "mock://curriculum-demo/已修记录完整范围"
+  },
+  "rules": {
+    "target_version_id": "mock-new",
+    "completed_source_id": "mock://curriculum-demo/completed",
+    "evidence": "mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策",
+    "allow_exact_match": true,
+    "allow_confirmed_absence": true
+  },
+  "elective_selections": [
+    {
+      "target_version_id": "mock-new",
+      "group_id": "DEMO-GROUP",
+      "course_ids": [
+        "DEMO-E2"
+      ],
+      "evidence": "mock://curriculum-demo/人工选课确认，仅用于开发验证"
+    }
+  ],
+  "priority_policy": {
+    "target_version_id": "mock-new",
+    "evidence": "mock://curriculum-demo/示例来源顺序策略",
+    "deadline_first": false
+  }
+}
