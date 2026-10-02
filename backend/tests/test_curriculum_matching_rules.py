@@ -14,6 +14,7 @@ from app.curriculum.matching import (
     MatchingRules,
     build_curriculum_diff,
     elective_plan_covers_group,
+    group_plan_covers_requirement,
     project_makeup_tasks,
     selected_elective_course_ids,
 )
@@ -481,4 +482,99 @@ def test_selected_credit_cannot_complete_a_partial_target_catalog():
     assert not elective_plan_covers_group(diff, "DEMO-GROUP")
     assert diff.matches[0].status is MakeupStatus.MANUAL_CONFIRMATION
     with pytest.raises(CurriculumNormalizationError, match="incomplete"):
+        project_makeup_tasks(diff)
+
+
+def test_known_mandatory_group_projects_without_an_elective_choice():
+    targets = tuple(_target(course_id, group_id="DEMO-GROUP") for course_id in ("DEMO-R1", "DEMO-R2"))
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Mandatory Group", 6, "DEMO-GROUP-SOURCE")
+    diff = _diff(targets, new=_version(targets, groups=(group,)))
+    assert not diff.elective_selections and diff.group_gaps[0].remaining_credit == 6
+    assert group_plan_covers_requirement(diff, "DEMO-GROUP")
+    assert elective_plan_covers_group(diff, "DEMO-GROUP")
+    tasks = project_makeup_tasks(diff)
+    assert [(task.course_id, task.status) for task in tasks] == [
+        ("DEMO-R1", MakeupStatus.REQUIRED), ("DEMO-R2", MakeupStatus.REQUIRED),
+    ]
+    assert diff.group_gaps[0].remaining_credit == 6
+
+
+def test_mixed_group_combines_earned_elective_and_remaining_mandatory_requirement():
+    targets = (
+        _target("DEMO-R1", group_id="DEMO-GROUP"),
+        _target("DEMO-E1", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP"),
+        _target("DEMO-E2", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP"),
+    )
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Mixed Group", 6, "DEMO-GROUP-SOURCE")
+    diff = _diff(targets, (_attempt("DEMO-E1"),), new=_version(targets, groups=(group,)))
+    assert diff.group_gaps[0].remaining_credit == 3 and not diff.elective_selections
+    assert [(task.course_id, task.status) for task in project_makeup_tasks(diff)] == [
+        ("DEMO-R1", MakeupStatus.REQUIRED), ("DEMO-E1", MakeupStatus.SATISFIED),
+    ]
+    assert diff.group_gaps[0].remaining_credit == 3
+
+
+def test_insufficient_mandatory_credits_still_require_an_explicit_elective_choice():
+    targets = (
+        _target("DEMO-R1", group_id="DEMO-GROUP"),
+        _target("DEMO-E1", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP"),
+    )
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Mixed Group", 6, "DEMO-GROUP-SOURCE")
+    version = _version(targets, groups=(group,))
+    uncovered = _diff(targets, new=version)
+    assert not group_plan_covers_requirement(uncovered, "DEMO-GROUP")
+    with pytest.raises(CurriculumNormalizationError):
+        project_makeup_tasks(uncovered)
+    selected = _diff(targets, new=version, elective_selections=(_selection("DEMO-E1"),))
+    assert group_plan_covers_requirement(selected, "DEMO-GROUP")
+    assert [task.status for task in project_makeup_tasks(selected)] == [MakeupStatus.REQUIRED] * 2
+    assert selected.group_gaps[0].remaining_credit == 6
+
+
+def test_unknown_requirement_classification_does_not_cover_a_group_credit_gap():
+    targets = (
+        _target("DEMO-R1", group_id="DEMO-GROUP"),
+        _target("DEMO-U1", requirement=RequirementKind.UNKNOWN, group_id="DEMO-GROUP"),
+    )
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Mixed Group", 6, "DEMO-GROUP-SOURCE")
+    diff = _diff(targets, new=_version(targets, groups=(group,)))
+    assert diff.matches[1].status is MakeupStatus.MANUAL_CONFIRMATION
+    assert not group_plan_covers_requirement(diff, "DEMO-GROUP")
+    with pytest.raises(CurriculumNormalizationError):
+        project_makeup_tasks(diff)
+    assert diff.group_gaps[0].remaining_credit == 6
+
+
+@pytest.mark.parametrize("mode", ["no_rules", "candidate", "unknown_prerequisite", "unknown_passing_identity"])
+def test_mandatory_plan_capacity_preserves_unconfirmed_matching_and_prerequisites(mode):
+    target = _target("DEMO-R1", group_id="DEMO-GROUP",
+                     prerequisites=None if mode == "unknown_prerequisite" else ())
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Mandatory Group", 3, "DEMO-GROUP-SOURCE")
+    completed = ()
+    rules = None if mode in {"no_rules", "candidate"} else _rules()
+    if mode == "candidate":
+        completed = (_attempt("DEMO-OTHER", course_name=target.course_name),)
+    elif mode == "unknown_passing_identity":
+        completed = (_attempt(None, course_name="DEMO Unresolved Other Course"),)
+    diff = _diff((target,), completed, new=_version((target,), groups=(group,)), rules=rules)
+    assert group_plan_covers_requirement(diff, "DEMO-GROUP")
+    task = project_makeup_tasks(diff)[0]
+    assert task.status is (MakeupStatus.POSSIBLY_EQUIVALENT if mode == "candidate" else MakeupStatus.MANUAL_CONFIRMATION)
+    assert diff.group_gaps[0].remaining_credit == 3
+    if mode == "unknown_prerequisite":
+        assert diff.matches[0].status is MakeupStatus.REQUIRED
+        assert task.prerequisites == [] and "先修关系未知" in task.reason
+
+
+@pytest.mark.parametrize("mode", ["unknown_minimum", "incomplete", "duplicate_target"])
+def test_mandatory_capacity_does_not_bypass_incomplete_or_ambiguous_group_inputs(mode):
+    target = _target("DEMO-R1", group_id="DEMO-GROUP")
+    targets = (target, replace(target, source_record="DEMO-SECOND-CONTEXT")) if mode == "duplicate_target" else (target,)
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Mandatory Group", None if mode == "unknown_minimum" else 3,
+                            "DEMO-GROUP-SOURCE")
+    version = _version(targets, groups=(group,), complete=mode != "incomplete",
+                       completeness_evidence=None if mode == "incomplete" else "DEMO-CATALOG-CHECKLIST")
+    diff = _diff(targets, new=version)
+    assert not group_plan_covers_requirement(diff, "DEMO-GROUP")
+    with pytest.raises(CurriculumNormalizationError):
         project_makeup_tasks(diff)

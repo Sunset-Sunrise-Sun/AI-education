@@ -17,6 +17,8 @@ python -m pytest tests/test_curriculum_*.py
 
 程序入口：`CurriculumCaseProvider(load_curriculum_case(path)).get_makeup_tasks()`。输入结构见 `mock_data/curriculum_demo/case.json`。
 
-匹配规则按 case 绑定来源。模糊等价、学分差异和未知先修保留待确认。平面选修组可按有依据的人工选择生成任务，实际学分缺口仍保留。没有选择或选择不足时明确报错。
+匹配规则按 case 绑定来源。模糊等价、学分差异和未知先修保留待确认。平面组可由已有必修任务和有依据的选修选择表达，实际学分缺口仍保留。剩余选修没有选择或额度不足时明确报错。
 
 Word 按明确的表格和列映射读取，问题行保留在内部草稿。输入格式和组合文件用法见 [INPUTS.md](INPUTS.md)。学业分析只留在模块内部，不改公共任务排序。真实 D2/D3 和学校规则尚未验收，公共契约未变。
+
+技术审查和联调范围见 [REVIEW.md](REVIEW.md)。

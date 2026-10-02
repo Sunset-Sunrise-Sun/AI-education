@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.curriculum.errors import CurriculumNormalizationError
-from app.curriculum.matching import CurriculumDiff, elective_plan_covers_group, selected_elective_course_ids
+from app.curriculum.matching import CurriculumDiff, group_plan_covers_requirement, selected_elective_course_ids
 from app.curriculum.requirements import RequirementKind
 from app.models.contracts import MakeupStatus
 
@@ -238,9 +238,24 @@ def analyze_academic_path(
     for gap in diff.group_gaps:
         group = next((group for group in diff.new.groups if group.group_id == gap.group_id), None)
         evidence = (f"{diff.new.source_id}#{group.source_record}",) if group is not None else (diff.new.source_id,)
-        if elective_plan_covers_group(diff, gap.group_id):
+        if group_plan_covers_requirement(diff, gap.group_id):
+            covered_matches = tuple(match for match in diff.matches if match.target.group_id == gap.group_id and (
+                match.status is MakeupStatus.SATISFIED
+                or match.target.requirement is RequirementKind.REQUIRED
+                or (match.target.requirement is RequirementKind.ELECTIVE and match.target.course_id in selected_electives)
+            ))
+            future_requirements = tuple(match for match in covered_matches if match.status is not MakeupStatus.SATISFIED)
+            plan_sources = []
+            if any(match.target.requirement is RequirementKind.REQUIRED for match in future_requirements):
+                plan_sources.append("已知必修要求")
+            if any(match.target.requirement is RequirementKind.ELECTIVE for match in future_requirements):
+                plan_sources.append("人工选修计划")
+            evidence += tuple(reference for match in covered_matches for reference in match.evidence)
             evidence += tuple(selection.evidence for selection in diff.elective_selections if selection.group_id == gap.group_id)
-            issue("group_credit_outstanding", None, "课程组实际学分仍有缺口，已有明确选修计划；计划不表示学分已取得。", evidence)
+            evidence += (diff.new.completeness_evidence,)
+            issue("group_credit_outstanding", None,
+                  f"课程组实际学分仍有缺口，{'及'.join(plan_sources)}可表达剩余计划；计划不表示学分已取得。",
+                  tuple(dict.fromkeys(evidence)))
         else:
             priority_complete = False
             issue("group_requirement_unresolved", None, "课程组仍有未确认的学分要求或缺口。", evidence)

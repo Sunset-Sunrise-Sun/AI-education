@@ -294,6 +294,57 @@ def test_split_runs_and_bilingual_paragraphs_preserve_source_name(tmp_path):
     assert result.rows[0].course_name == "DEMO 中文课程\nDEMO English Name" and not result.issues
 
 
+@pytest.mark.parametrize("kind,character", [("noBreakHyphen", "\u2011"), ("softHyphen", "\u00ad")])
+def test_hyphen_elements_preserve_course_identity_and_cannot_authorize_a_collapsed_id_match(tmp_path, kind, character):
+    from app.curriculum.completed_courses import CompletedCourse, CourseIdStatus
+    from app.curriculum.matching import MatchingRules, build_curriculum_diff
+    from app.curriculum.requirements import CurriculumVersion
+
+    table = _table([_facts(course_id="DEMO")])
+    run = table[1][0][0][0]
+    ET.SubElement(run, _q(kind))
+    ET.SubElement(run, _q("t")).text = "101"
+    result = _read(_docx(tmp_path, _document(table)))
+    assert not result.issues and result.rows[0].course_id == f"DEMO{character}101"
+    assert dict(result.rows[0].raw_values)["course_id"] == f"DEMO{character}101"
+    new = _version(result, complete=True, completeness_evidence="mock://complete")
+    old = CurriculumVersion("DEMO-OLD", "DEMO", "DEMO", "mock://old", ())
+    completed = CompletedCourse(
+        "DEMO101", "DEMO Course A", 2.5, "DEMO-TERM", True, None,
+        CourseIdStatus.CONFIRMED, "mock://id-match", "mock://d4", "row:1",
+    )
+    diff = build_curriculum_diff(
+        old, new, (completed,), completed_source_id="mock://d4",
+        rules=MatchingRules("DEMO-V1", "mock://d4", "mock://exact-rule", allow_exact_match=True),
+    )
+    assert diff.matches[0].status.value == "possibly_equivalent"
+
+
+@pytest.mark.parametrize("kind,character", [("noBreakHyphen", "\u2011"), ("softHyphen", "\u00ad")])
+def test_hyphen_elements_in_credit_remain_unresolved_instead_of_joining_digits(tmp_path, kind, character):
+    table = _table([_facts(credit="2")])
+    run = table[1][2][0][0]
+    ET.SubElement(run, _q(kind))
+    ET.SubElement(run, _q("t")).text = "3"
+    result = _read(_docx(tmp_path, _document(table)))
+    assert len(result.rows) == 1 and result.rows[0].credit is None
+    assert dict(result.rows[0].raw_values)["credit"] == f"2{character}3"
+    assert [issue.code for issue in result.issues] == ["unresolved_credit"]
+    with pytest.raises(CurriculumNormalizationError, match="unresolved rows"):
+        _version(result)
+
+
+def test_font_symbol_between_credit_digits_blocks_conversion_without_guessing_its_character(tmp_path):
+    table = _table([_facts(credit="2")])
+    run = table[1][2][0][0]
+    ET.SubElement(run, _q("sym"), {_q("font"): "Wingdings", _q("char"): "F02D"})
+    ET.SubElement(run, _q("t")).text = "3"
+    result = _read(_docx(tmp_path, _document(table)))
+    assert len(result.rows) == 1 and any(issue.code == "unsupported_content" for issue in result.issues)
+    with pytest.raises(CurriculumNormalizationError, match="unresolved rows"):
+        _version(result)
+
+
 @pytest.mark.parametrize("kind", ["vanish", "webHidden"])
 @pytest.mark.parametrize("value", [None, "true", "on", "1", "DEMO-UNKNOWN"])
 def test_active_hidden_runs_preserve_draft_but_cannot_change_visible_credit(tmp_path, kind, value):

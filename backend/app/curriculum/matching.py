@@ -501,11 +501,12 @@ def selected_elective_course_ids(diff: CurriculumDiff) -> tuple[str, ...]:
                  if match.target.course_id in selected and match.status is not MakeupStatus.SATISFIED)
 
 
-def elective_plan_covers_group(diff: CurriculumDiff, group_id: str) -> bool:
-    """Check known flat credits for a future plan, without changing earned gaps.
+def group_plan_covers_requirement(diff: CurriculumDiff, group_id: str) -> bool:
+    """Check earned credits and expressed future requirements for a flat group.
 
-    Coverage permits pending matching decisions to be represented as pending
-    tasks. It does not authorize those tasks or claim the group is satisfied.
+    Known mandatory requirements already have public tasks. Unearned elective
+    requirements need an explicit choice. Pending matching or prerequisites
+    stay pending; capacity never changes a task's status or the earned gap.
     """
     if not isinstance(diff, CurriculumDiff):
         raise CurriculumNormalizationError("diff: expected a CurriculumDiff")
@@ -520,7 +521,9 @@ def elective_plan_covers_group(diff: CurriculumDiff, group_id: str) -> bool:
         coverage = math.fsum(
             match.target.credit for match in diff.matches
             if match.target.group_id == group_id and (
-                match.status is MakeupStatus.SATISFIED or match.target.course_id in selected
+                match.status is MakeupStatus.SATISFIED
+                or match.target.requirement is RequirementKind.REQUIRED
+                or (match.target.requirement is RequirementKind.ELECTIVE and match.target.course_id in selected)
             )
         )
     except OverflowError:
@@ -528,8 +531,13 @@ def elective_plan_covers_group(diff: CurriculumDiff, group_id: str) -> bool:
     return math.isfinite(coverage) and coverage >= group.minimum_credit
 
 
+def elective_plan_covers_group(diff: CurriculumDiff, group_id: str) -> bool:
+    """Compatibility wrapper for the general flat-group plan coverage check."""
+    return group_plan_covers_requirement(diff, group_id)
+
+
 def project_makeup_tasks(diff: CurriculumDiff) -> list[MakeupTask]:
-    """Project flat group plans only after an explicit, sufficient future choice."""
+    """Project flat groups covered by known mandatory tasks or explicit choices."""
     _require_built_diff(diff)
     if not diff.new.complete:
         raise CurriculumNormalizationError("target curriculum is incomplete")
@@ -540,12 +548,11 @@ def project_makeup_tasks(diff: CurriculumDiff) -> list[MakeupTask]:
         raise CurriculumNormalizationError("duplicate target course requirements cannot be projected")
     by_id = {match.target.course_id: match for match in diff.matches}
     groups_by_id = {group.group_id: group for group in diff.new.groups}
-    selected_groups = {selection.group_id for selection in diff.elective_selections}
     for gap in diff.group_gaps:
-        if groups_by_id[gap.group_id].minimum_credit is None or gap.group_id not in selected_groups:
+        if groups_by_id[gap.group_id].minimum_credit is None:
             raise CurriculumNormalizationError("group requirements cannot be projected to MakeupTask")
-        if not elective_plan_covers_group(diff, gap.group_id):
-            raise CurriculumNormalizationError("selected group plan cannot cover the known credit requirement")
+        if not group_plan_covers_requirement(diff, gap.group_id):
+            raise CurriculumNormalizationError("group plan cannot cover the known credit requirement")
     selected_tasks = set(selected_elective_course_ids(diff))
 
     emitted_ids = {

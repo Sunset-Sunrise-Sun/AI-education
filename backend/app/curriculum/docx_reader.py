@@ -275,6 +275,10 @@ def _cell_text(cell: ET.Element) -> str:
                 parts.append("\n")
             elif node.tag == _tag("tab"):
                 parts.append("\t")
+            elif node.tag == _tag("noBreakHyphen"):
+                parts.append("\u2011")
+            elif node.tag == _tag("softHyphen"):
+                parts.append("\u00ad")
         paragraphs.append("".join(parts))
     return "\n".join(paragraphs)
 

@@ -366,6 +366,51 @@ def test_deadline_priority_for_remaining_elective_choice_excludes_earned_and_unu
     ]
 
 
+def test_mandatory_group_reports_future_requirements_without_claiming_earned_credit() -> None:
+    courses = tuple(_target(course_id, group_id="DEMO-GROUP") for course_id in ("DEMO-R1", "DEMO-R2"))
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Mandatory Group", 6, "row:group")
+    diff = _diff(courses, new=_version(courses, groups=(group,)))
+    result = analyze_academic_path(diff, priority_policy=_policy())
+    assert result.priority_order == ("DEMO-R1", "DEMO-R2")
+    assert "group_requirement_unresolved" not in _codes(result)
+    outstanding = next(issue for issue in result.issues if issue.code == "group_credit_outstanding")
+    assert "必修" in outstanding.message and "选修" not in outstanding.message
+    assert "计划不表示学分已取得" in outstanding.message
+    assert "DEMO-CURRICULUM-SOURCE#row:group" in outstanding.evidence
+    assert "DEMO-COMPLETE-CHECK" in outstanding.evidence
+    assert all(f"DEMO-CURRICULUM-SOURCE#{course.source_record}" in outstanding.evidence for course in courses)
+    assert diff.group_gaps[0].remaining_credit == 6
+
+
+def test_mixed_group_report_identifies_mandatory_and_confirmed_elective_plan_sources() -> None:
+    courses = (
+        _target("DEMO-R1", group_id="DEMO-GROUP"),
+        _target("DEMO-E1", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP"),
+    )
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Mixed Group", 6, "row:group")
+    selection = ConfirmedElectiveSelection("DEMO-NEW", "DEMO-GROUP", ("DEMO-E1",), "DEMO-SELECTION")
+    diff = _diff(courses, new=_version(courses, groups=(group,)), elective_selections=(selection,),
+                 rules=MatchingRules("DEMO-NEW", "DEMO-COMPLETED-SOURCE", "DEMO-MATCH-RULE", allow_confirmed_absence=True))
+    result = analyze_academic_path(diff, priority_policy=_policy())
+    outstanding = next(issue for issue in result.issues if issue.code == "group_credit_outstanding")
+    assert "必修" in outstanding.message and "人工选修" in outstanding.message
+    assert "DEMO-SELECTION" in outstanding.evidence
+    assert all(f"DEMO-CURRICULUM-SOURCE#{course.source_record}" in outstanding.evidence for course in courses)
+    assert result.priority_order == ("DEMO-R1", "DEMO-E1")
+    assert diff.group_gaps[0].remaining_credit == 6
+
+
+def test_mandatory_group_with_pending_matching_has_capacity_but_no_final_priority() -> None:
+    course = _target("DEMO-R1", group_id="DEMO-GROUP")
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Mandatory Group", 3, "row:group")
+    diff = _diff((course,), new=_version((course,), groups=(group,)), missing_ids=())
+    result = analyze_academic_path(diff, priority_policy=_policy())
+    assert diff.matches[0].status is MakeupStatus.MANUAL_CONFIRMATION
+    assert {"group_credit_outstanding", "matching_unconfirmed", "priority_unresolved"} <= _codes(result)
+    assert result.priority_order is None and diff.group_gaps[0].remaining_credit == 3
+    assert CurriculumResultProvider(diff).get_makeup_tasks()[0].status is MakeupStatus.MANUAL_CONFIRMATION
+
+
 @pytest.mark.parametrize("recommended,deadline,conflict", [(5, 3, True), (3, 3, False), (2, 3, False), (None, 3, False), (5, None, False)])
 def test_recommendation_later_than_deadline_is_a_source_warning(recommended, deadline, conflict) -> None:
     course = _target(recommended_semester=recommended, deadline_semester=deadline)
