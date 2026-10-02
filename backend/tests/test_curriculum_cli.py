@@ -117,6 +117,10 @@ def test_case_cli_only_prints_statistics_for_private_input(tmp_path, capsys) -> 
     ["--demo", "--case", "/DEMO-PRIVATE-PATH/input.json"],
     ["--demo", "/DEMO-PRIVATE-PATH/input.xlsx"],
     ["--case", "/DEMO-PRIVATE-PATH/input.json", "--source-id", "DEMO-SOURCE"],
+    ["--docx", "/DEMO-PRIVATE-PATH/input.docx"],
+    ["--docx", "/DEMO-PRIVATE-PATH/input.docx", "--profile", "/DEMO-PRIVATE-PATH/profile.json", "--demo"],
+    ["--inspect-case", "/DEMO-PRIVATE-PATH/input.json", "--profile", "/DEMO-PRIVATE-PATH/profile.json"],
+    ["--profile", "/DEMO-PRIVATE-PATH/profile.json", "/DEMO-PRIVATE-PATH/input.xlsx", "--source-id", "DEMO-SOURCE"],
 ])
 def test_input_modes_cannot_mix_private_input_with_public_demo(argv, capsys) -> None:
     with pytest.raises(SystemExit) as excinfo:

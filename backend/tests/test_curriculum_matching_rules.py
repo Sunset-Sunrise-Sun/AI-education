@@ -7,12 +7,15 @@ import pytest
 from app.curriculum.completed_courses import CompletedCourse, CourseIdStatus
 from app.curriculum.errors import CurriculumNormalizationError
 from app.curriculum.matching import (
+    ConfirmedElectiveSelection,
     ConfirmedMissingRequirement,
     ConfirmedRecognition,
     CurriculumResultProvider,
     MatchingRules,
     build_curriculum_diff,
+    elective_plan_covers_group,
     project_makeup_tasks,
+    selected_elective_course_ids,
 )
 from app.curriculum.requirements import CurriculumCourse, CurriculumGroup, CurriculumVersion, RequirementKind
 from app.models.contracts import MakeupStatus
@@ -302,3 +305,180 @@ def test_satisfied_unknown_prerequisites_are_not_downgraded_to_makeup():
     target = _target(prerequisites=None)
     diff = _diff((target,), (_attempt(),))
     assert CurriculumResultProvider(diff).get_makeup_tasks()[0].status is MakeupStatus.SATISFIED
+
+
+def _selection(*course_ids, **changes):
+    return ConfirmedElectiveSelection(**{
+        "target_version_id": "DEMO-NEW", "group_id": "DEMO-GROUP", "course_ids": course_ids,
+        "evidence": "mock://DEMO-human-elective-choice", **changes,
+    })
+
+
+def _pool(minimum=6, **changes):
+    targets = tuple(_target(f"DEMO-E{number}", requirement=RequirementKind.ELECTIVE,
+                           group_id="DEMO-GROUP", **changes) for number in (1, 2, 3))
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Pool", minimum, "DEMO-GROUP-SOURCE")
+    return targets, _version(targets, groups=(group,))
+
+
+def test_rule_confirmed_absence_is_traceable_even_with_no_completed_candidates():
+    diff = _diff((_target(),), (_attempt("DEMO-OTHER"),))
+    task = project_makeup_tasks(diff)[0]
+    assert task.status is MakeupStatus.REQUIRED
+    assert task.source_evidence.endswith("已修记录完整性依据：DEMO-D4-CHECKLIST")
+    assert "DEMO-CATALOG-CHECKLIST" in task.source_evidence and "DEMO-COMPLETED" in task.source_evidence
+    assert "mock://DEMO-case-rules" in task.source_evidence
+
+
+@pytest.mark.parametrize("changes", [
+    {"evidence": None}, {"evidence": "  "}, {"group_id": ""}, {"target_version_id": None},
+    {"course_ids": ()}, {"course_ids": "DEMO-E1"}, {"course_ids": ("DEMO-E1", "DEMO-E1")},
+    {"course_ids": (1,)}, {"course_ids": (" ",)},
+])
+def test_elective_choice_requires_explicit_evidence_and_unique_real_course_references(changes):
+    with pytest.raises(CurriculumNormalizationError):
+        _selection("DEMO-E1", **changes)
+
+
+def test_elective_selection_snapshots_source_lists_without_changing_group_facts():
+    courses = ["DEMO-E1", "DEMO-E2"]
+    selection = _selection(course_ids=courses)
+    courses.clear()
+    assert selection.course_ids == ("DEMO-E1", "DEMO-E2")
+    with pytest.raises(FrozenInstanceError):
+        selection.evidence = "DEMO-CHANGED"
+    targets, version = _pool()
+    selections = [selection]
+    diff = _diff(targets, new=version, elective_selections=selections)
+    selections.clear()
+    assert diff.elective_selections == (selection,)
+    assert diff.group_gaps[0].remaining_credit == 6
+    assert all(match.status is not MakeupStatus.SATISFIED for match in diff.matches)
+
+
+@pytest.mark.parametrize("selection", [
+    _selection("DEMO-E1", target_version_id="DEMO-FOREIGN-VERSION"),
+    _selection("DEMO-E1", group_id="DEMO-FOREIGN-GROUP"),
+    _selection("DEMO-FOREIGN-ID"),
+])
+def test_elective_selection_cannot_escape_target_version_or_group(selection):
+    targets, version = _pool()
+    with pytest.raises(CurriculumNormalizationError) as excinfo:
+        _diff(targets, new=version, elective_selections=(selection,))
+    assert "DEMO-FOREIGN" not in str(excinfo.value)
+
+
+def test_elective_selection_rejects_duplicate_decisions_cross_group_and_non_pool_targets():
+    targets, version = _pool()
+    selection = _selection("DEMO-E1")
+    with pytest.raises(CurriculumNormalizationError, match="duplicate"):
+        _diff(targets, new=version, elective_selections=(selection, selection))
+    other = _target("DEMO-OTHER", requirement=RequirementKind.ELECTIVE, group_id="DEMO-OTHER-GROUP")
+    required = _target("DEMO-REQUIRED", group_id="DEMO-GROUP")
+    groups = version.groups + (CurriculumGroup("DEMO-OTHER-GROUP", "DEMO Other Pool", 0, "DEMO-OTHER-GROUP-SOURCE"),)
+    expanded = _version(targets + (other, required), groups=groups)
+    for course_id in (other.course_id, required.course_id):
+        with pytest.raises(CurriculumNormalizationError, match="pool"):
+            _diff(expanded.courses, new=expanded, elective_selections=(_selection(course_id),))
+
+
+def test_selection_cannot_choose_a_course_with_multiple_target_contexts():
+    targets, version = _pool()
+    duplicate = replace(targets[0], source_record="DEMO-SECOND-CONTEXT")
+    version = _version(targets + (duplicate,), groups=version.groups)
+    with pytest.raises(CurriculumNormalizationError, match="uniquely"):
+        _diff(version.courses, new=version, elective_selections=(_selection(targets[0].course_id),))
+
+
+def test_confirmed_choice_produces_future_tasks_and_preserves_actual_unearned_group_gap():
+    targets, version = _pool()
+    passed = _attempt("DEMO-E1")
+    diff = _diff(targets, (passed,), new=version, elective_selections=(_selection("DEMO-E2"),))
+    assert diff.group_gaps[0].remaining_credit == 3
+    assert selected_elective_course_ids(diff) == ("DEMO-E2",)
+    assert elective_plan_covers_group(diff, "DEMO-GROUP")
+    tasks = project_makeup_tasks(diff)
+    assert [(task.course_id, task.status) for task in tasks] == [
+        ("DEMO-E1", MakeupStatus.SATISFIED), ("DEMO-E2", MakeupStatus.REQUIRED),
+    ]
+    assert "mock://DEMO-human-elective-choice" in tasks[1].source_evidence
+    assert "DEMO-GROUP-SOURCE" in tasks[1].source_evidence and "DEMO-D4-CHECKLIST" in tasks[1].source_evidence
+    assert "未来计划" in tasks[1].reason
+    tasks[1].course_name = "DEMO-MUTATED"
+    assert project_makeup_tasks(diff)[1].course_name == targets[1].course_name
+    assert diff.group_gaps[0].remaining_credit == 3
+
+
+@pytest.mark.parametrize("mode", ["no_rules", "candidate", "unknown_prerequisite", "unknown_passing_identity"])
+def test_confirmed_choice_does_not_confirm_matching_or_unknown_prerequisites(mode):
+    targets, version = _pool(3, prerequisites=None if mode == "unknown_prerequisite" else ())
+    completed = ()
+    rules = None if mode in {"no_rules", "candidate"} else _rules()
+    if mode == "candidate":
+        completed = (_attempt("DEMO-OTHER", course_name=targets[0].course_name),)
+    elif mode == "unknown_passing_identity":
+        completed = (_attempt(None, course_name="DEMO Unresolved Other Course"),)
+    diff = _diff(targets, completed, new=version, rules=rules, elective_selections=(_selection("DEMO-E1"),))
+    task = project_makeup_tasks(diff)[0]
+    assert task.status is (MakeupStatus.POSSIBLY_EQUIVALENT if mode == "candidate" else MakeupStatus.MANUAL_CONFIRMATION)
+    assert task.course_id == "DEMO-E1" and "mock://DEMO-human-elective-choice" in task.source_evidence
+    assert diff.group_gaps[0].remaining_credit == 3
+    if mode == "unknown_prerequisite":
+        assert task.prerequisites == [] and "先修关系未知" in task.reason
+        assert diff.matches[0].status is MakeupStatus.REQUIRED
+
+
+@pytest.mark.parametrize("minimum,chosen,passed", [
+    (None, ("DEMO-E1", "DEMO-E2"), False),
+    (6, ("DEMO-E1",), False),
+    (6, ("DEMO-E1",), True),
+    (6, (), False),
+])
+def test_unknown_or_uncovered_quota_never_counts_a_future_choice_as_earned_credit(minimum, chosen, passed):
+    targets, version = _pool(minimum)
+    completed = (_attempt("DEMO-E1"),) if passed else ()
+    selections = (_selection(*chosen),) if chosen else ()
+    diff = _diff(targets, completed, new=version, elective_selections=selections)
+    assert diff.group_gaps[0].remaining_credit == (None if minimum is None else minimum - (3 if passed else 0))
+    assert not elective_plan_covers_group(diff, "DEMO-GROUP")
+    with pytest.raises(CurriculumNormalizationError):
+        project_makeup_tasks(diff)
+
+
+def test_plan_credit_from_one_group_cannot_cover_a_second_group():
+    targets, version = _pool(3)
+    other = _target("DEMO-OTHER", requirement=RequirementKind.ELECTIVE, group_id="DEMO-OTHER-GROUP")
+    group = CurriculumGroup("DEMO-OTHER-GROUP", "DEMO Other Pool", 3, "DEMO-OTHER-GROUP-SOURCE")
+    version = _version(targets + (other,), groups=version.groups + (group,))
+    diff = _diff(version.courses, new=version, elective_selections=(_selection("DEMO-E1", "DEMO-E2"),))
+    assert elective_plan_covers_group(diff, "DEMO-GROUP")
+    assert not elective_plan_covers_group(diff, group.group_id)
+    with pytest.raises(CurriculumNormalizationError):
+        project_makeup_tasks(diff)
+
+
+def test_satisfied_group_does_not_require_unearned_chosen_pool_courses():
+    targets, version = _pool(3)
+    diff = _diff(targets, (_attempt("DEMO-E1"),), new=version,
+                 elective_selections=(_selection("DEMO-E2"),))
+    assert diff.group_gaps == () and selected_elective_course_ids(diff) == ()
+    assert diff.matches[1].status is not MakeupStatus.REQUIRED
+    assert [task.course_id for task in project_makeup_tasks(diff)] == ["DEMO-E1"]
+
+
+def test_clearing_choices_from_a_modified_diff_does_not_bypass_builder_guard():
+    targets, version = _pool(3)
+    valid = _diff(targets, new=version, elective_selections=(_selection("DEMO-E1"),))
+    assert project_makeup_tasks(valid)[0].status is MakeupStatus.REQUIRED
+    with pytest.raises(CurriculumNormalizationError, match="rebuild"):
+        project_makeup_tasks(replace(valid, elective_selections=()))
+
+
+def test_selected_credit_cannot_complete_a_partial_target_catalog():
+    targets, version = _pool(3)
+    version = replace(version, complete=False, completeness_evidence=None)
+    diff = _diff(targets, new=version, elective_selections=(_selection("DEMO-E1"),))
+    assert not elective_plan_covers_group(diff, "DEMO-GROUP")
+    assert diff.matches[0].status is MakeupStatus.MANUAL_CONFIRMATION
+    with pytest.raises(CurriculumNormalizationError, match="incomplete"):
+        project_makeup_tasks(diff)

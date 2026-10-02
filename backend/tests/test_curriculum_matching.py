@@ -13,6 +13,7 @@ from jsonschema import Draft202012Validator
 from app.curriculum.completed_courses import CompletedCourse, CourseIdStatus
 from app.curriculum.errors import CurriculumNormalizationError
 from app.curriculum.matching import (
+    ConfirmedElectiveSelection,
     ConfirmedMissingRequirement,
     ConfirmedRecognition,
     CourseMatch,
@@ -615,3 +616,88 @@ def test_unmodified_builder_output_remains_exportable() -> None:
     original = _diff((target,), (attempt,), recognitions=(_recognition(target, attempt),))
     assert project_makeup_tasks(original)[0].status is MakeupStatus.SATISFIED
     assert CurriculumResultProvider(original).get_makeup_tasks()[0].status is MakeupStatus.SATISFIED
+
+
+def test_explicit_missing_output_retains_both_complete_input_sources() -> None:
+    target = _target()
+    diff = _diff((target,), missing_requirements=(_missing(target),))
+    task = project_makeup_tasks(diff)[0]
+    assert task.status is MakeupStatus.REQUIRED
+    assert "DEMO-EXPLICIT-MISSING-DECISION" in task.source_evidence
+    assert diff.new.completeness_evidence in task.source_evidence
+    assert "DEMO-COMPLETED-COMPLETE" in task.source_evidence
+    assert "DEMO-COMPLETED" in task.source_evidence
+
+
+@pytest.mark.parametrize("satisfied_dependent", [False, True])
+def test_unsatisfied_pool_prerequisites_remain_visible_without_making_the_pool_required(satisfied_dependent) -> None:
+    dependent = _target("DEMO-B", prerequisites=("DEMO-E2",))
+    earned = _target("DEMO-E1", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP")
+    predecessor = _target("DEMO-E2", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP",
+                          prerequisites=("DEMO-E3",))
+    earlier = _target("DEMO-E3", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP")
+    unrelated = _target("DEMO-E4", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP")
+    targets = (dependent, earned, predecessor, earlier, unrelated)
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Pool", 3, "DEMO-GROUP-SOURCE")
+    attempt = _attempt("DEMO-E1")
+    completed = (attempt,)
+    recognitions = (_recognition(earned, attempt),)
+    missing = (_missing(dependent),)
+    if satisfied_dependent:
+        passed_dependent = _attempt("DEMO-B", row=2)
+        completed += (passed_dependent,)
+        recognitions += (_recognition(dependent, passed_dependent),)
+        missing = ()
+    diff = _diff(targets, completed, new=_version(targets, groups=(group,)),
+                 recognitions=recognitions, missing_requirements=missing)
+    assert diff.group_gaps == ()
+    tasks = CurriculumResultProvider(diff).get_makeup_tasks()
+    if satisfied_dependent:
+        assert [task.course_id for task in tasks] == ["DEMO-B", "DEMO-E1"]
+    else:
+        assert [task.course_id for task in tasks] == ["DEMO-B", "DEMO-E1", "DEMO-E2", "DEMO-E3"]
+        assert tasks[0].prerequisites == ["DEMO-E2"]
+        assert tasks[2].prerequisites == ["DEMO-E3"]
+        assert all(task.status is MakeupStatus.MANUAL_CONFIRMATION for task in tasks[2:])
+        assert all("DEMO-GROUP-SOURCE" in task.source_evidence and "选修池" in task.reason for task in tasks[2:])
+        tasks[2].prerequisites.clear()
+        assert CurriculumResultProvider(diff).get_makeup_tasks()[2].prerequisites == ["DEMO-E3"]
+
+
+def test_cyclic_pool_prerequisite_references_are_retained_and_projection_terminates() -> None:
+    dependent = _target("DEMO-B", prerequisites=("DEMO-E1",))
+    first = _target("DEMO-E1", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP",
+                    prerequisites=("DEMO-E2",))
+    second = _target("DEMO-E2", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP",
+                     prerequisites=("DEMO-E1",))
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Pool", 0, "DEMO-GROUP-SOURCE")
+    targets = (dependent, first, second)
+    diff = _diff(targets, new=_version(targets, groups=(group,)), missing_requirements=(_missing(dependent),))
+    tasks = project_makeup_tasks(diff)
+    assert [task.prerequisites for task in tasks] == [["DEMO-E1"], ["DEMO-E2"], ["DEMO-E1"]]
+    assert [task.status for task in tasks[1:]] == [MakeupStatus.MANUAL_CONFIRMATION] * 2
+
+
+def test_adding_selection_to_a_modified_diff_cannot_authorize_unmet_group_projection() -> None:
+    targets, version = _elective_case(6)
+    original = _diff(targets, new=version)
+    selection = ConfirmedElectiveSelection(version.version_id, "DEMO-GROUP",
+                                          tuple(target.course_id for target in targets), "DEMO-CHOICE")
+    modified = replace(original, elective_selections=(selection,))
+    _assert_modified_diff_is_not_exportable(modified)
+
+
+def test_explicitly_selected_elective_can_use_a_scoped_missing_decision() -> None:
+    targets, version = _elective_case(3)
+    selected = targets[0]
+    selection = ConfirmedElectiveSelection(version.version_id, "DEMO-GROUP", (selected.course_id,), "DEMO-CHOICE")
+    diff = _diff(targets, new=version, elective_selections=(selection,), missing_requirements=(_missing(selected),))
+    tasks = project_makeup_tasks(diff)
+    assert [task.course_id for task in tasks] == [selected.course_id]
+    assert tasks[0].status is MakeupStatus.REQUIRED
+    assert "DEMO-CHOICE" in tasks[0].source_evidence
+    assert diff.group_gaps[0].remaining_credit == 3
+    schema = json.loads((Path(__file__).resolve().parents[2] / "schemas/makeup_task.schema.json").read_text())
+    payload = tasks[0].model_dump(mode="json")
+    Draft202012Validator(schema).validate(payload)
+    assert not {"group_id", "elective_selections", "priority"} & set(payload)

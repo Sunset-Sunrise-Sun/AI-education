@@ -1,0 +1,35 @@
+[
+  {
+    "course_id": "DEMO101",
+    "course_name": "示例课程一",
+    "credit": 3.0,
+    "status": "satisfied",
+    "deadline_semester": 5,
+    "recommended_semester": 3,
+    "prerequisites": [],
+    "reason": "依据本 case 匹配规则，课程号、规范化名称、学分及通过事实完全匹配。",
+    "source_evidence": "mock://curriculum-demo/new#row:DEMO101；mock://curriculum-demo/completed#row:1；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策"
+  },
+  {
+    "course_id": "DEMO-E1",
+    "course_name": "示例选修课程1",
+    "credit": 2.0,
+    "status": "satisfied",
+    "deadline_semester": 5,
+    "recommended_semester": null,
+    "prerequisites": [],
+    "reason": "依据本 case 匹配规则，课程号、规范化名称、学分及通过事实完全匹配。",
+    "source_evidence": "mock://curriculum-demo/new#row:DEMO-E1；mock://curriculum-demo/completed#row:2；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策"
+  },
+  {
+    "course_id": "DEMO-E2",
+    "course_name": "示例选修课程2",
+    "credit": 2.0,
+    "status": "required",
+    "deadline_semester": 5,
+    "recommended_semester": null,
+    "prerequisites": [],
+    "reason": "依据本 case 缺课规则，完整目标要求与已修记录中未发现通过匹配或身份未知的通过记录。人工已确认选修计划范围，所列学分是未来计划，不表示课程已修或选修组已满足。",
+    "source_evidence": "mock://curriculum-demo/new#row:DEMO-E2；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策；mock://curriculum-demo/new#mock://curriculum-demo/选修组要求；人工选修计划选择依据：mock://curriculum-demo/人工选课确认，仅用于开发验证；目标方案完整性依据：mock://curriculum-demo/new/完整范围说明；已修记录来源：mock://curriculum-demo/completed；已修记录完整性依据：mock://curriculum-demo/已修记录完整范围"
+  }
+]

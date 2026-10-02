@@ -92,6 +92,53 @@ class ConfirmedMissingRequirement:
 
 
 @dataclass(frozen=True, slots=True)
+class ConfirmedElectiveSelection:
+    """An explicit future choice within one flat credit group, not earned credit."""
+
+    target_version_id: str
+    group_id: str
+    course_ids: tuple[str, ...]
+    evidence: str
+
+    def __post_init__(self) -> None:
+        for name in ("target_version_id", "group_id", "evidence"):
+            _text(getattr(self, name), name)
+        course_ids = _items(self.course_ids, str, "selection course_ids")
+        if not course_ids:
+            raise CurriculumNormalizationError("selection course_ids: expected at least one course")
+        for course_id in course_ids:
+            _text(course_id, "selection course_ids")
+        if len(set(course_ids)) != len(course_ids):
+            raise CurriculumNormalizationError("selection course_ids: duplicate course reference")
+        object.__setattr__(self, "course_ids", course_ids)
+
+
+def _elective_selections(
+    version: CurriculumVersion, values: Sequence[ConfirmedElectiveSelection],
+) -> tuple[ConfirmedElectiveSelection, ...]:
+    selections = _items(values, ConfirmedElectiveSelection, "elective_selections")
+    groups = {group.group_id for group in version.groups}
+    targets: dict[str, list[CurriculumCourse]] = defaultdict(list)
+    for course in version.courses:
+        targets[course.course_id].append(course)
+    seen_groups: set[str] = set()
+    for selection in selections:
+        if selection.target_version_id != version.version_id or selection.group_id not in groups:
+            raise CurriculumNormalizationError("elective selection: outside the supplied curriculum")
+        if selection.group_id in seen_groups:
+            raise CurriculumNormalizationError("elective selection: duplicate group decision")
+        seen_groups.add(selection.group_id)
+        for course_id in selection.course_ids:
+            entries = targets.get(course_id, [])
+            if len(entries) != 1:
+                raise CurriculumNormalizationError("elective selection: target is not uniquely defined")
+            target = entries[0]
+            if target.requirement is not RequirementKind.ELECTIVE or target.group_id != selection.group_id:
+                raise CurriculumNormalizationError("elective selection: target must belong to the selected pool")
+    return selections
+
+
+@dataclass(frozen=True, slots=True)
 class CourseMatch:
     target: CurriculumCourse
     status: MakeupStatus
@@ -144,6 +191,7 @@ class CurriculumDiff:
     removed_course_ids: tuple[str, ...] | None
     changed_course_ids: tuple[str, ...] | None
     unrepresented_requirements: tuple[str, ...]
+    elective_selections: tuple[ConfirmedElectiveSelection, ...] = ()
     _build_token: object = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -154,6 +202,7 @@ class CurriculumDiff:
             raise CurriculumNormalizationError("diff: matches must cover the supplied target entries in order")
         object.__setattr__(self, "matches", matches)
         object.__setattr__(self, "group_gaps", _items(self.group_gaps, GroupGap, "group_gaps"))
+        object.__setattr__(self, "elective_selections", _elective_selections(self.new, self.elective_selections))
         for field in ("added_course_ids", "removed_course_ids", "changed_course_ids", "unrepresented_requirements"):
             value = getattr(self, field)
             if value is None and field != "unrepresented_requirements":
@@ -216,6 +265,7 @@ def build_curriculum_diff(
     completed_completeness_evidence: str | None = None,
     completed_source_id: str | None = None,
     rules: MatchingRules | None = None,
+    elective_selections: Sequence[ConfirmedElectiveSelection] = (),
 ) -> CurriculumDiff:
     """Use supplied decisions or case rules; defaults never approve equivalence."""
     if not isinstance(old, CurriculumVersion) or not isinstance(new, CurriculumVersion):
@@ -223,6 +273,11 @@ def build_curriculum_diff(
     completed = _items(completed, CompletedCourse, "completed")
     recognitions = _items(recognitions, ConfirmedRecognition, "recognitions")
     missing_requirements = _items(missing_requirements, ConfirmedMissingRequirement, "missing_requirements")
+    elective_selections = _elective_selections(new, elective_selections)
+    selections_by_course = {
+        course_id: selection for selection in elective_selections for course_id in selection.course_ids
+    }
+    groups_by_id = {group.group_id: group for group in new.groups}
     if type(completed_complete) is not bool:
         raise CurriculumNormalizationError("completed_complete: expected a boolean")
     if completed_complete:
@@ -262,8 +317,10 @@ def build_curriculum_diff(
         ref_uses[(decision.completed_source_id, decision.completed_source_record)].add(decision.target_course_id)
     for decision in missing_requirements:
         targets = [course for course in new.courses if course.course_id == decision.target_course_id]
-        if any(course.requirement is not RequirementKind.REQUIRED for course in targets):
-            raise CurriculumNormalizationError("missing requirement: target must be explicitly required")
+        if any(course.requirement is not RequirementKind.REQUIRED and not (
+            course.requirement is RequirementKind.ELECTIVE and course.course_id in selections_by_course
+        ) for course in targets):
+            raise CurriculumNormalizationError("missing requirement: target must be required or explicitly selected")
         missing[decision.target_course_id].append(decision)
 
     automatic: dict[str, tuple[tuple[CompletedCourse, ...], str | None]] = {}
@@ -292,6 +349,12 @@ def build_curriculum_diff(
         evidence.extend(decision.evidence for decision in (*approved, *missing_decisions))
         if rules is not None:
             evidence.append(f"case 匹配规则依据：{rules.evidence}")
+        selection = selections_by_course.get(target.course_id)
+        if selection is not None:
+            evidence.extend((
+                f"{new.source_id}#{groups_by_id[selection.group_id].source_record}",
+                f"人工选修计划选择依据：{selection.evidence}",
+            ))
         exact, rule_conflict = automatic.get(target.course_id, ((), None))
         status = MakeupStatus.MANUAL_CONFIRMATION
         reason = "未发现匹配，但缺课认定尚未确认。"
@@ -334,7 +397,7 @@ def build_curriculum_diff(
             else:
                 status = MakeupStatus.SATISFIED
                 reason = "依据本 case 匹配规则，课程号、规范化名称、学分及通过事实完全匹配。"
-        elif target.requirement is RequirementKind.ELECTIVE:
+        elif target.requirement is RequirementKind.ELECTIVE and selection is None:
             reason = "选修课程保留在课程池，不逐门判为必补。"
             if named:
                 status = MakeupStatus.POSSIBLY_EQUIVALENT
@@ -361,6 +424,12 @@ def build_curriculum_diff(
             else:
                 status = MakeupStatus.REQUIRED
                 reason = "依据本 case 缺课规则，完整目标要求与已修记录中未发现通过匹配或身份未知的通过记录。"
+        if status is MakeupStatus.REQUIRED:
+            evidence.extend((
+                f"目标方案完整性依据：{new.completeness_evidence}",
+                f"已修记录来源：{completed_source_id}",
+                f"已修记录完整性依据：{completed_completeness_evidence}",
+            ))
         matches.append(CourseMatch(target, status, candidates, reason, tuple(dict.fromkeys(evidence))))
 
     unrepresented: list[str] = []
@@ -382,6 +451,15 @@ def build_curriculum_diff(
         if remaining > 0:
             group_gaps.append(GroupGap(group.group_id, remaining, "课程组仍有未确认满足的学分要求。"))
 
+    unmet_groups = {gap.group_id for gap in group_gaps}
+    matches = [
+        CourseMatch(match.target, MakeupStatus.MANUAL_CONFIRMATION, match.candidates,
+                    "选修组已满足，未修的已选课程不因此成为补修要求。", match.evidence)
+        if (match.status is MakeupStatus.REQUIRED and match.target.requirement is RequirementKind.ELECTIVE
+            and match.target.group_id not in unmet_groups) else match
+        for match in matches
+    ]
+
     added = removed = changed = None
     if old.complete and new.complete:
         old_ids = {course.course_id for course in old.courses}
@@ -399,7 +477,8 @@ def build_curriculum_diff(
             course.course_id for course in new.courses if course.course_id in old_ids
             and signatures(old, course.course_id) != signatures(new, course.course_id)
         ))
-    diff = CurriculumDiff(old, new, tuple(matches), tuple(group_gaps), added, removed, changed, tuple(unrepresented))
+    diff = CurriculumDiff(old, new, tuple(matches), tuple(group_gaps), added, removed, changed,
+                          tuple(unrepresented), elective_selections)
     # Replacements and manually assembled results remain useful for inspection,
     # but cannot bypass the builder's recognition and group checks.
     object.__setattr__(diff, "_build_token", _BUILD_TOKEN)
@@ -411,24 +490,95 @@ def _require_built_diff(diff: object) -> None:
         raise CurriculumNormalizationError("diff: rebuild before projecting planning results")
 
 
+def selected_elective_course_ids(diff: CurriculumDiff) -> tuple[str, ...]:
+    """Return non-earned choices for groups with an actual gap, in source order."""
+    if not isinstance(diff, CurriculumDiff):
+        raise CurriculumNormalizationError("diff: expected a CurriculumDiff")
+    unmet = {gap.group_id for gap in diff.group_gaps}
+    selected = {course_id for selection in diff.elective_selections if selection.group_id in unmet
+                for course_id in selection.course_ids}
+    return tuple(match.target.course_id for match in diff.matches
+                 if match.target.course_id in selected and match.status is not MakeupStatus.SATISFIED)
+
+
+def elective_plan_covers_group(diff: CurriculumDiff, group_id: str) -> bool:
+    """Check known flat credits for a future plan, without changing earned gaps.
+
+    Coverage permits pending matching decisions to be represented as pending
+    tasks. It does not authorize those tasks or claim the group is satisfied.
+    """
+    if not isinstance(diff, CurriculumDiff):
+        raise CurriculumNormalizationError("diff: expected a CurriculumDiff")
+    group = next((value for value in diff.new.groups if value.group_id == group_id), None)
+    if group is None or group.minimum_credit is None or not diff.new.complete:
+        return False
+    counts = Counter(match.target.course_id for match in diff.matches)
+    if any(count != 1 for count in counts.values()):
+        return False
+    selected = set(selected_elective_course_ids(diff))
+    try:
+        coverage = math.fsum(
+            match.target.credit for match in diff.matches
+            if match.target.group_id == group_id and (
+                match.status is MakeupStatus.SATISFIED or match.target.course_id in selected
+            )
+        )
+    except OverflowError:
+        return False
+    return math.isfinite(coverage) and coverage >= group.minimum_credit
+
+
 def project_makeup_tasks(diff: CurriculumDiff) -> list[MakeupTask]:
-    """Project representable results without inventing tasks for group gaps."""
+    """Project flat group plans only after an explicit, sufficient future choice."""
     _require_built_diff(diff)
     if not diff.new.complete:
         raise CurriculumNormalizationError("target curriculum is incomplete")
-    if diff.group_gaps or diff.unrepresented_requirements:
+    if diff.unrepresented_requirements:
         raise CurriculumNormalizationError("group requirements cannot be projected to MakeupTask")
     ids = [match.target.course_id for match in diff.matches]
     if len(set(ids)) != len(ids):
         raise CurriculumNormalizationError("duplicate target course requirements cannot be projected")
+    by_id = {match.target.course_id: match for match in diff.matches}
+    groups_by_id = {group.group_id: group for group in diff.new.groups}
+    selected_groups = {selection.group_id for selection in diff.elective_selections}
+    for gap in diff.group_gaps:
+        if groups_by_id[gap.group_id].minimum_credit is None or gap.group_id not in selected_groups:
+            raise CurriculumNormalizationError("group requirements cannot be projected to MakeupTask")
+        if not elective_plan_covers_group(diff, gap.group_id):
+            raise CurriculumNormalizationError("selected group plan cannot cover the known credit requirement")
+    selected_tasks = set(selected_elective_course_ids(diff))
+
+    emitted_ids = {
+        match.target.course_id for match in diff.matches
+        if match.target.requirement is not RequirementKind.ELECTIVE
+        or match.status is MakeupStatus.SATISFIED or match.target.course_id in selected_tasks
+    }
+    referenced_pool: set[str] = set()
+    pending = [course_id for course_id in emitted_ids if by_id[course_id].status is not MakeupStatus.SATISFIED]
+    while pending:
+        course_id = pending.pop()
+        for reference in by_id[course_id].target.prerequisites or ():
+            predecessor = by_id.get(reference)
+            if (predecessor is not None and predecessor.target.requirement is RequirementKind.ELECTIVE
+                    and predecessor.status is not MakeupStatus.SATISFIED and reference not in emitted_ids):
+                referenced_pool.add(reference)
+                emitted_ids.add(reference)
+                pending.append(reference)
     tasks: list[MakeupTask] = []
     for match in diff.matches:
         target = match.target
-        if target.requirement is RequirementKind.ELECTIVE and match.status is not MakeupStatus.SATISFIED:
+        if target.course_id not in emitted_ids:
             continue
         reason = match.reason
         status = match.status
         evidence = "；".join(match.evidence)
+        if target.course_id in selected_tasks:
+            reason += "人工已确认选修计划范围，所列学分是未来计划，不表示课程已修或选修组已满足。"
+        elif target.course_id in referenced_pool:
+            status = MakeupStatus.MANUAL_CONFIRMATION
+            reason += "选修池课程被未满足目标课程引用为先修，是否需要独立修读及选修认定待人工确认。"
+            group = groups_by_id[target.group_id]
+            evidence += f"；先修引用涉及选修池：{diff.new.source_id}#{group.source_record}"
         if target.prerequisites is None:
             reason += "先修关系未知，待人工确认。"
             evidence += "；先修关系未确认"

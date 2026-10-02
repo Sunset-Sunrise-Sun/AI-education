@@ -21,7 +21,7 @@
       "DEMO101"
     ],
     "reason": "依据本 case 缺课规则，完整目标要求与已修记录中未发现通过匹配或身份未知的通过记录。",
-    "source_evidence": "mock://curriculum-demo/new#row:DEMO202；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策"
+    "source_evidence": "mock://curriculum-demo/new#row:DEMO202；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策；目标方案完整性依据：mock://curriculum-demo/new/完整范围说明；已修记录来源：mock://curriculum-demo/completed；已修记录完整性依据：mock://curriculum-demo/已修记录完整范围"
   },
   {
     "course_id": "DEMO303",
@@ -54,6 +54,6 @@
     "recommended_semester": 3,
     "prerequisites": [],
     "reason": "依据本 case 缺课规则，完整目标要求与已修记录中未发现通过匹配或身份未知的通过记录。先修关系未知，待人工确认。",
-    "source_evidence": "mock://curriculum-demo/new#row:DEMO505；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策；先修关系未确认"
+    "source_evidence": "mock://curriculum-demo/new#row:DEMO505；case 匹配规则依据：mock://curriculum-demo/人工案例规则，仅用于开发验证，不是学校政策；目标方案完整性依据：mock://curriculum-demo/new/完整范围说明；已修记录来源：mock://curriculum-demo/completed；已修记录完整性依据：mock://curriculum-demo/已修记录完整范围；先修关系未确认"
   }
 ]

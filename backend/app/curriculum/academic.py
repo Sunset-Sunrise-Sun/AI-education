@@ -7,12 +7,13 @@ are inferred here. The public MakeupTask list and its order remain unchanged.
 from __future__ import annotations
 
 import heapq
+import math
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.curriculum.errors import CurriculumNormalizationError
-from app.curriculum.matching import CurriculumDiff
+from app.curriculum.matching import CurriculumDiff, elective_plan_covers_group, selected_elective_course_ids
 from app.curriculum.requirements import RequirementKind
 from app.models.contracts import MakeupStatus
 
@@ -143,9 +144,16 @@ def analyze_academic_path(
 
     if not diff.new.complete:
         issue("curriculum_incomplete", None, "目标培养方案范围尚未确认完整。", (diff.new.source_id,))
+    if (
+        diff.new.total_credit is not None
+        and diff.new.practice_credit is not None
+        and diff.new.practice_credit > diff.new.total_credit
+    ):
+        issue("credit_summary_inconsistent", None, "来源中的实践学分高于总学分，汇总事实需核对。", (diff.new.source_id,))
     counts = Counter(match.target.course_id for match in diff.matches)
     course_ids = tuple(counts)
     by_id = {match.target.course_id: match for match in diff.matches}
+    selected_electives = set(selected_elective_course_ids(diff))
     for course_id, count in counts.items():
         if count > 1:
             graph_complete = False
@@ -156,15 +164,24 @@ def analyze_academic_path(
     for match in diff.matches:
         target = match.target
         course_id = target.course_id
+        needed_requirement = target.requirement is not RequirementKind.ELECTIVE or course_id in selected_electives
         if match.status in {MakeupStatus.MANUAL_CONFIRMATION, MakeupStatus.POSSIBLY_EQUIVALENT}:
             issue("matching_unconfirmed", course_id, "课程匹配或认定仍需人工确认。", match.evidence)
-            if target.requirement is not RequirementKind.ELECTIVE:
+            if needed_requirement:
                 priority_complete = False
+        if (
+            target.recommended_semester is not None and target.deadline_semester is not None
+            and target.recommended_semester > target.deadline_semester
+        ):
+            issue("recommended_semester_after_deadline", course_id,
+                  "来源推荐学期晚于期限，需核对课程要求；不能据此判断实际安排或逾期。", match.evidence)
         if target.prerequisites is None:
             graph_complete = False
             issue("prerequisites_unknown", course_id, "来源尚未确认先修关系，不能当作没有先修。", match.evidence)
         else:
-            edges[course_id] = target.prerequisites
+            # Repeated source contexts remain ambiguous. Retain all explicit
+            # edges for diagnosis rather than letting a later row erase them.
+            edges[course_id] = tuple(dict.fromkeys(edges.get(course_id, ()) + target.prerequisites))
             for reference in target.prerequisites:
                 if reference not in by_id:
                     external_references[reference] = None
@@ -176,16 +193,57 @@ def analyze_academic_path(
                 ):
                     priority_complete = False
                     issue("prerequisite_match_unconfirmed", course_id, "先修课程的满足或补修结论尚未确认。", match.evidence + by_id[reference].evidence)
-        if match.status is not MakeupStatus.SATISFIED and target.requirement is not RequirementKind.ELECTIVE:
+        if match.status is not MakeupStatus.SATISFIED and needed_requirement:
             if target.deadline_semester is None:
-                priority_complete = False
+                if priority_policy is not None and priority_policy.deadline_first:
+                    priority_complete = False
                 issue("deadline_unknown", course_id, "来源未提供明确的整数补修期限，不能从推荐学期推断。", match.evidence)
 
+    # These comparisons identify source-data pressure, not semester feasibility.
+    # A later prerequisite deadline is an upper bound, not its scheduled term.
+    for match in diff.matches:
+        target = match.target
+        if match.status is not MakeupStatus.REQUIRED or target.deadline_semester is None:
+            continue
+        for reference in target.prerequisites or ():
+            predecessor = by_id.get(reference)
+            if (
+                counts[target.course_id] == 1 and counts[reference] == 1
+                and predecessor is not None and predecessor.status is MakeupStatus.REQUIRED
+                and predecessor.target.deadline_semester is not None
+                and target.deadline_semester < predecessor.target.deadline_semester
+            ):
+                issue("deadline_dependency_pressure", target.course_id,
+                      "后续课程期限早于未满足的先修课程期限，应核对先修链安排；现有信息不能判断逾期或不可行。",
+                      tuple(dict.fromkeys(match.evidence + predecessor.evidence)))
+
+    if diff.new.complete:
+        for group in diff.new.groups:
+            members = tuple(course for course in diff.new.courses if course.group_id == group.group_id)
+            if group.minimum_credit is None or any(counts[course.course_id] > 1 for course in members):
+                continue
+            try:
+                capacity = math.fsum(course.credit for course in members)
+            except OverflowError:
+                # Nonnegative finite credits can only overflow above a finite
+                # quota, so overflow cannot establish insufficient capacity.
+                continue
+            if capacity < group.minimum_credit:
+                evidence = (f"{diff.new.source_id}#{group.source_record}",)
+                evidence += tuple(f"{diff.new.source_id}#{course.source_record}" for course in members)
+                evidence += (diff.new.completeness_evidence,)
+                issue("group_capacity_insufficient", None,
+                      "所提供完整课程组的课程池学分不足以达到组最低要求，需核对来源范围或要求。", evidence)
+
     for gap in diff.group_gaps:
-        priority_complete = False
         group = next((group for group in diff.new.groups if group.group_id == gap.group_id), None)
         evidence = (f"{diff.new.source_id}#{group.source_record}",) if group is not None else (diff.new.source_id,)
-        issue("group_requirement_unresolved", None, "课程组仍有未确认的学分要求或缺口。", evidence)
+        if elective_plan_covers_group(diff, gap.group_id):
+            evidence += tuple(selection.evidence for selection in diff.elective_selections if selection.group_id == gap.group_id)
+            issue("group_credit_outstanding", None, "课程组实际学分仍有缺口，已有明确选修计划；计划不表示学分已取得。", evidence)
+        else:
+            priority_complete = False
+            issue("group_requirement_unresolved", None, "课程组仍有未确认的学分要求或缺口。", evidence)
     if diff.unrepresented_requirements:
         priority_complete = False
         issue("unrepresented_requirement", None, "部分课程要求无法由现有任务表示完整表达。", (diff.new.source_id,))

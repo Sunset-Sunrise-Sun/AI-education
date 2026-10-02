@@ -15,9 +15,11 @@ from app.curriculum.academic import (
 from app.curriculum.completed_courses import CompletedCourse, CourseIdStatus
 from app.curriculum.errors import CurriculumNormalizationError
 from app.curriculum.matching import (
+    ConfirmedElectiveSelection,
     ConfirmedMissingRequirement,
     ConfirmedRecognition,
     CurriculumResultProvider,
+    MatchingRules,
     build_curriculum_diff,
 )
 from app.curriculum.requirements import CurriculumCourse, CurriculumGroup, CurriculumVersion, RequirementKind
@@ -211,6 +213,171 @@ def test_explicit_policy_can_keep_source_order_without_implicit_weights() -> Non
     courses = (_target("DEMO-A", deadline_semester=7), _target("DEMO-B", deadline_semester=1))
     result = analyze_academic_path(_diff(courses), priority_policy=_policy(deadline_first=False))
     assert result.priority_order == ("DEMO-A", "DEMO-B")
+
+
+@pytest.mark.parametrize("deadline_first", [False, True])
+def test_missing_deadlines_only_block_a_policy_that_uses_them(deadline_first: bool) -> None:
+    courses = (
+        _target("DEMO-B", prerequisites=("DEMO-A",), deadline_semester=None),
+        _target("DEMO-A", deadline_semester=None),
+    )
+    result = analyze_academic_path(_diff(courses), priority_policy=_policy(deadline_first=deadline_first))
+    assert result.dependency_order == ("DEMO-A", "DEMO-B")
+    assert result.priority_order == (None if deadline_first else ("DEMO-A", "DEMO-B"))
+    assert [issue.course_id for issue in result.issues if issue.code == "deadline_unknown"] == ["DEMO-B", "DEMO-A"]
+    assert ("priority_unresolved" in _codes(result)) is deadline_first
+
+
+def test_duplicate_source_context_cannot_erase_an_explicit_cycle() -> None:
+    courses = (
+        _target("DEMO-A", source_record="row:1", prerequisites=("DEMO-B",)),
+        _target("DEMO-A", source_record="row:2", prerequisites=()),
+        _target("DEMO-B", prerequisites=("DEMO-A",)),
+    )
+    result = analyze_academic_path(_diff(courses), priority_policy=_policy())
+    assert {"duplicate_course_id", "dependency_cycle"} <= _codes(result)
+    assert result.dependency_order is None and result.priority_order is None
+    cycle = next(issue for issue in result.issues if issue.code == "dependency_cycle")
+    assert "DEMO-CURRICULUM-SOURCE#row:1" in cycle.evidence
+    assert "DEMO-CURRICULUM-SOURCE#row:2" in cycle.evidence
+
+
+def test_repeated_explicit_edge_is_not_misdiagnosed_as_a_cycle() -> None:
+    courses = (
+        _target("DEMO-A", source_record="row:1", prerequisites=("DEMO-B",)),
+        _target("DEMO-A", source_record="row:2", prerequisites=("DEMO-B",)),
+        _target("DEMO-B"),
+    )
+    result = analyze_academic_path(_diff(courses), priority_policy=_policy())
+    assert "duplicate_course_id" in _codes(result) and "dependency_cycle" not in _codes(result)
+    assert result.dependency_order is None and result.priority_order is None
+
+
+@pytest.mark.parametrize("total,practice,conflict", [(3, 6, True), (6, 3, False), (None, 6, False), (3, None, False)])
+def test_credit_summary_conflict_is_reported_without_rewriting_source_facts(total, practice, conflict) -> None:
+    courses = (_target(),)
+    version = _version(courses, total_credit=total, practice_credit=practice)
+    result = analyze_academic_path(_diff(courses, new=version), priority_policy=_policy())
+    assert ("credit_summary_inconsistent" in _codes(result)) is conflict
+    assert version.total_credit == total and version.practice_credit == practice
+    assert result.priority_order == ("DEMO-A",)
+    if conflict:
+        issue = next(issue for issue in result.issues if issue.code == "credit_summary_inconsistent")
+        assert issue.course_id is None and issue.evidence == (version.source_id,)
+
+
+@pytest.mark.parametrize("complete,duplicate,minimum,insufficient", [
+    (True, False, 7, True), (True, False, 6, False), (False, False, 7, False),
+    (True, True, 7, False), (True, False, None, False),
+])
+def test_group_capacity_risk_requires_complete_unambiguous_pool(complete, duplicate, minimum, insufficient) -> None:
+    courses = (
+        _target("DEMO-E1", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP", source_record="row:1"),
+        _target("DEMO-E1" if duplicate else "DEMO-E2", requirement=RequirementKind.ELECTIVE,
+                group_id="DEMO-GROUP", source_record="row:2"),
+    )
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Pool", minimum, "row:group")
+    version = _version(courses, groups=(group,), complete=complete,
+                       completeness_evidence="DEMO-COMPLETE-CHECK" if complete else None)
+    result = analyze_academic_path(_diff(courses, new=version), priority_policy=_policy())
+    assert ("group_capacity_insufficient" in _codes(result)) is insufficient
+    if insufficient:
+        issue = next(issue for issue in result.issues if issue.code == "group_capacity_insufficient")
+        assert issue.course_id is None
+        assert issue.evidence == (
+            "DEMO-CURRICULUM-SOURCE#row:group", "DEMO-CURRICULUM-SOURCE#row:1",
+            "DEMO-CURRICULUM-SOURCE#row:2", "DEMO-COMPLETE-CHECK",
+        )
+
+
+def test_confirmed_empty_pool_reports_insufficient_positive_quota() -> None:
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Pool", 3, "row:group")
+    result = analyze_academic_path(_diff((), new=_version((), groups=(group,))), priority_policy=_policy())
+    assert "group_capacity_insufficient" in _codes(result)
+    assert result.priority_order is None
+
+
+def test_deadline_dependency_pressure_does_not_rewrite_policy_or_claim_infeasibility() -> None:
+    courses = (
+        _target("DEMO-B", prerequisites=("DEMO-A",), deadline_semester=1),
+        _target("DEMO-A", deadline_semester=9),
+        _target("DEMO-C", deadline_semester=2),
+    )
+    result = analyze_academic_path(_diff(courses), priority_policy=_policy())
+    assert result.priority_order == ("DEMO-C", "DEMO-A", "DEMO-B")
+    pressure = next(issue for issue in result.issues if issue.code == "deadline_dependency_pressure")
+    assert pressure.course_id == "DEMO-B"
+    assert "不能判断逾期或不可行" in pressure.message
+    assert "DEMO-CURRICULUM-SOURCE#DEMO-CATALOG#DEMO-A" in pressure.evidence
+    assert "DEMO-CURRICULUM-SOURCE#DEMO-CATALOG#DEMO-B" in pressure.evidence
+    satisfied = analyze_academic_path(_diff(courses, satisfied=("DEMO-A",)), priority_policy=_policy())
+    assert "deadline_dependency_pressure" not in _codes(satisfied)
+
+
+@pytest.mark.parametrize("deadline_first", [False, True])
+def test_selected_electives_participate_in_deadline_policy_and_keep_actual_gap(deadline_first: bool) -> None:
+    courses = (
+        _target("DEMO-E1", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP", deadline_semester=None),
+        _target("DEMO-E2", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP", deadline_semester=None),
+    )
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Pool", 6, "row:group")
+    selection = ConfirmedElectiveSelection("DEMO-NEW", "DEMO-GROUP", ("DEMO-E2", "DEMO-E1"), "DEMO-SELECTION")
+    diff = _diff(courses, new=_version(courses, groups=(group,)), elective_selections=(selection,),
+                 rules=MatchingRules("DEMO-NEW", "DEMO-COMPLETED-SOURCE", "DEMO-MATCH-RULE", allow_confirmed_absence=True))
+    assert all(match.status is MakeupStatus.REQUIRED for match in diff.matches)
+    result = analyze_academic_path(diff, priority_policy=_policy(deadline_first=deadline_first))
+    assert result.priority_order == (None if deadline_first else ("DEMO-E1", "DEMO-E2"))
+    assert [issue.course_id for issue in result.issues if issue.code == "deadline_unknown"] == ["DEMO-E1", "DEMO-E2"]
+    assert "group_requirement_unresolved" not in _codes(result)
+    outstanding = next(issue for issue in result.issues if issue.code == "group_credit_outstanding")
+    assert "DEMO-SELECTION" in outstanding.evidence and "计划不表示学分已取得" in outstanding.message
+    assert diff.group_gaps[0].remaining_credit == 6
+    assert [task.course_id for task in CurriculumResultProvider(diff).get_makeup_tasks()] == ["DEMO-E1", "DEMO-E2"]
+
+
+def test_covered_elective_plan_with_unconfirmed_matching_has_no_final_priority() -> None:
+    courses = (_target("DEMO-E1", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP"),)
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Pool", 3, "row:group")
+    selection = ConfirmedElectiveSelection("DEMO-NEW", "DEMO-GROUP", ("DEMO-E1",), "DEMO-SELECTION")
+    diff = _diff(courses, new=_version(courses, groups=(group,)), elective_selections=(selection,))
+    assert diff.matches[0].status is MakeupStatus.MANUAL_CONFIRMATION
+    result = analyze_academic_path(diff, priority_policy=_policy())
+    assert result.priority_order is None
+    assert {"matching_unconfirmed", "group_credit_outstanding", "priority_unresolved"} <= _codes(result)
+
+
+def test_deadline_priority_for_remaining_elective_choice_excludes_earned_and_unused_pool_courses() -> None:
+    courses = (
+        _target("DEMO-E1", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP", deadline_semester=None),
+        _target("DEMO-E2", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP", prerequisites=("DEMO-E1",), deadline_semester=1),
+        _target("DEMO-E3", requirement=RequirementKind.ELECTIVE, group_id="DEMO-GROUP", deadline_semester=None),
+    )
+    group = CurriculumGroup("DEMO-GROUP", "DEMO Pool", 6, "row:group")
+    selection = ConfirmedElectiveSelection("DEMO-NEW", "DEMO-GROUP", ("DEMO-E1", "DEMO-E2"), "DEMO-SELECTION")
+    diff = _diff(courses, new=_version(courses, groups=(group,)), satisfied=("DEMO-E1",), elective_selections=(selection,),
+                 rules=MatchingRules("DEMO-NEW", "DEMO-COMPLETED-SOURCE", "DEMO-MATCH-RULE", allow_confirmed_absence=True))
+    result = analyze_academic_path(diff, priority_policy=_policy())
+    assert result.priority_order == ("DEMO-E2",)
+    assert "deadline_unknown" not in _codes(result)
+    assert "group_credit_outstanding" in _codes(result) and diff.group_gaps[0].remaining_credit == 3
+    tasks = CurriculumResultProvider(diff).get_makeup_tasks()
+    assert [(task.course_id, task.status) for task in tasks] == [
+        ("DEMO-E1", MakeupStatus.SATISFIED), ("DEMO-E2", MakeupStatus.REQUIRED),
+    ]
+
+
+@pytest.mark.parametrize("recommended,deadline,conflict", [(5, 3, True), (3, 3, False), (2, 3, False), (None, 3, False), (5, None, False)])
+def test_recommendation_later_than_deadline_is_a_source_warning(recommended, deadline, conflict) -> None:
+    course = _target(recommended_semester=recommended, deadline_semester=deadline)
+    result = analyze_academic_path(_diff((course,)), priority_policy=_policy(deadline_first=False))
+    assert ("recommended_semester_after_deadline" in _codes(result)) is conflict
+    assert course.recommended_semester == recommended and course.deadline_semester == deadline
+    assert result.priority_order == ("DEMO-A",)
+    if conflict:
+        warning = next(issue for issue in result.issues if issue.code == "recommended_semester_after_deadline")
+        assert warning.course_id == "DEMO-A" and "不能据此判断实际安排或逾期" in warning.message
+        satisfied = analyze_academic_path(_diff((course,), satisfied=("DEMO-A",)), priority_policy=_policy())
+        assert "recommended_semester_after_deadline" in _codes(satisfied)
 
 
 def test_academic_analysis_never_reorders_or_modifies_public_provider_tasks() -> None:

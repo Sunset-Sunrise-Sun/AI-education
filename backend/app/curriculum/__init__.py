@@ -7,6 +7,7 @@ from app.curriculum.completed_courses import (
 )
 from app.curriculum.errors import CurriculumNormalizationError
 from app.curriculum.matching import (
+    ConfirmedElectiveSelection,
     ConfirmedMissingRequirement,
     ConfirmedRecognition,
     CurriculumDiff,
@@ -35,6 +36,12 @@ from app.curriculum.case import (
     load_curriculum_case,
     normalize_curriculum_case,
 )
+from app.curriculum.docx_reader import (
+    DocxCourseRow,
+    DocxImportIssue,
+    DocxImportResult,
+    load_curriculum_docx,
+)
 
 __all__ = [
     "CompletedCourse",
@@ -47,6 +54,7 @@ __all__ = [
     "RequirementKind",
     "normalize_curriculum_version",
     "ConfirmedMissingRequirement",
+    "ConfirmedElectiveSelection",
     "ConfirmedRecognition",
     "CurriculumDiff",
     "CurriculumResultProvider",
@@ -62,4 +70,8 @@ __all__ = [
     "CurriculumCaseProvider",
     "load_curriculum_case",
     "normalize_curriculum_case",
+    "DocxCourseRow",
+    "DocxImportIssue",
+    "DocxImportResult",
+    "load_curriculum_docx",
 ]

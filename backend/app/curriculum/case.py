@@ -10,7 +10,9 @@ from pathlib import Path
 from app.curriculum.academic import AcademicAnalysis, PriorityPolicy, analyze_academic_path
 from app.curriculum.completed_courses import CompletedCourse, normalize_completed_courses
 from app.curriculum.errors import CurriculumNormalizationError
+from app.curriculum.json_reader import load_json_input, resolve_local_input
 from app.curriculum.matching import (
+    ConfirmedElectiveSelection,
     ConfirmedMissingRequirement,
     ConfirmedRecognition,
     CurriculumDiff,
@@ -52,10 +54,26 @@ def _decisions(values: object, model: type, keys: set[str], label: str) -> tuple
     return tuple(result)
 
 
-def _version(value: object) -> CurriculumVersion:
-    record = _object(value, required={"version_id", "major", "cohort", "source_id", "course_records"},
+def _version(value: object, *, directory: Path | None = None) -> CurriculumVersion:
+    record = _object(value, required={"version_id", "major", "cohort", "source_id"},
                      optional={"group_records", "complete", "completeness_evidence", "total_credit",
-                               "practice_credit", "study_years"}, label="curriculum")
+                               "practice_credit", "study_years", "course_records", "docx"}, label="curriculum")
+    if ("course_records" in record) == ("docx" in record):
+        raise CurriculumNormalizationError("curriculum: provide course_records or docx exclusively")
+    if "docx" in record:
+        if directory is None:
+            raise CurriculumNormalizationError("curriculum: file inputs require load_curriculum_case")
+        from app.curriculum.docx_reader import load_curriculum_docx
+
+        document = _object(record["docx"], required={"path", "tables"}, optional=set(), label="docx input")
+        metadata = {key: value for key, value in record.items() if key not in {"docx", "source_id"}}
+        # Check metadata before accessing any explicitly referenced local file.
+        normalize_curriculum_version(source_id=record["source_id"], course_records=(), **metadata)
+        result = load_curriculum_docx(
+            resolve_local_input(document["path"], directory=directory, label="docx input"),
+            source_id=record["source_id"], tables=document["tables"],
+        )
+        return result.to_version(**metadata)
     return normalize_curriculum_version(**record)
 
 
@@ -72,6 +90,7 @@ class CurriculumCase:
     recognitions: tuple[ConfirmedRecognition, ...] = ()
     missing_requirements: tuple[ConfirmedMissingRequirement, ...] = ()
     priority_policy: PriorityPolicy | None = None
+    elective_selections: tuple[ConfirmedElectiveSelection, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.data_source, DataSource):
@@ -86,7 +105,8 @@ class CurriculumCase:
             if self.priority_policy.target_version_id != self.new.version_id:
                 raise CurriculumNormalizationError("priority policy: target version mismatch")
         for key, kind in (("completed", CompletedCourse), ("recognitions", ConfirmedRecognition),
-                          ("missing_requirements", ConfirmedMissingRequirement)):
+                          ("missing_requirements", ConfirmedMissingRequirement),
+                          ("elective_selections", ConfirmedElectiveSelection)):
             values = _sequence(getattr(self, key), key)
             if any(not isinstance(value, kind) for value in values):
                 raise CurriculumNormalizationError(f"{key}: unexpected item type")
@@ -94,7 +114,9 @@ class CurriculumCase:
         # Validate scope, rules and explicit decisions even before a Provider is used.
         self.build_diff()
         sources = (self.old.source_id, self.new.source_id, self.completed_source_id)
-        evidence = tuple(decision.evidence for decision in (*self.recognitions, *self.missing_requirements))
+        evidence = tuple(decision.evidence for decision in (
+            *self.recognitions, *self.missing_requirements, *self.elective_selections,
+        ))
         evidence += tuple(value for value in (
             self.old.completeness_evidence, self.new.completeness_evidence,
             self.completed_completeness_evidence,
@@ -118,20 +140,40 @@ class CurriculumCase:
             completed_completeness_evidence=self.completed_completeness_evidence,
             rules=self.rules, recognitions=self.recognitions,
             missing_requirements=self.missing_requirements,
+            elective_selections=self.elective_selections,
         )
 
 
 def normalize_curriculum_case(payload: object) -> CurriculumCase:
+    """Validate structured facts without opening files or resolving references."""
+    return _normalize_case(payload)
+
+
+def _normalize_case(payload: object, *, directory: Path | None = None) -> CurriculumCase:
     record = _object(payload, required={"data_source", "old", "new", "completed"},
-                     optional={"rules", "recognitions", "missing_requirements", "priority_policy"}, label="case")
+                     optional={"rules", "recognitions", "missing_requirements", "priority_policy",
+                               "elective_selections"}, label="case")
     try:
         data_source = DataSource(record["data_source"])
     except (ValueError, TypeError):
         raise CurriculumNormalizationError("data_source: expected mock or real") from None
-    old, new = _version(record["old"]), _version(record["new"])
-    completed = _object(record["completed"], required={"source_id", "records"},
-                        optional={"complete", "completeness_evidence"}, label="completed")
-    rows = normalize_completed_courses(completed["records"], source_id=completed["source_id"])
+    old, new = _version(record["old"], directory=directory), _version(record["new"], directory=directory)
+    completed = _object(record["completed"], required={"source_id"},
+                        optional={"complete", "completeness_evidence", "records", "xlsx"}, label="completed")
+    if ("records" in completed) == ("xlsx" in completed):
+        raise CurriculumNormalizationError("completed: provide records or xlsx exclusively")
+    if "xlsx" in completed:
+        if directory is None:
+            raise CurriculumNormalizationError("completed: file inputs require load_curriculum_case")
+        from app.curriculum.xlsx_reader import load_completed_courses_xlsx
+
+        workbook = _object(completed["xlsx"], required={"path"}, optional={"sheet_name"}, label="xlsx input")
+        rows = load_completed_courses_xlsx(
+            resolve_local_input(workbook["path"], directory=directory, label="xlsx input"),
+            source_id=completed["source_id"], sheet_name=workbook.get("sheet_name", "已修课程_脱敏"),
+        )
+    else:
+        rows = normalize_completed_courses(completed["records"], source_id=completed["source_id"])
     rules = None
     if record.get("rules") is not None:
         rules_record = _object(record["rules"], required={"target_version_id", "completed_source_id", "evidence"},
@@ -148,36 +190,25 @@ def normalize_curriculum_case(payload: object) -> CurriculumCase:
     missing = _decisions(record.get("missing_requirements", ()), ConfirmedMissingRequirement,
                          {"target_version_id", "target_course_id", "completed_source_id", "evidence"},
                          "missing_requirements")
+    selections = _decisions(record.get("elective_selections", ()), ConfirmedElectiveSelection,
+                            {"target_version_id", "group_id", "course_ids", "evidence"},
+                            "elective_selections")
     return CurriculumCase(
-        data_source, old, new, rows, completed["source_id"],
-        completed.get("complete", False), completed.get("completeness_evidence"),
-        rules, recognitions, missing, priority_policy,
+        data_source=data_source, old=old, new=new, completed=rows,
+        completed_source_id=completed["source_id"], completed_complete=completed.get("complete", False),
+        completed_completeness_evidence=completed.get("completeness_evidence"),
+        rules=rules, recognitions=recognitions, missing_requirements=missing,
+        priority_policy=priority_policy, elective_selections=selections,
     )
 
 
 def load_curriculum_case(path: str | Path) -> CurriculumCase:
-    if not isinstance(path, (str, Path)):
-        raise CurriculumNormalizationError("case: invalid input path")
-
-    def invalid_constant(value: str):
-        raise CurriculumNormalizationError("case: non-finite JSON number")
-
-    def unique_fields(pairs):
-        result = {}
-        for key, value in pairs:
-            if key in result:
-                raise CurriculumNormalizationError("case: duplicate JSON field")
-            result[key] = value
-        return result
-
+    payload = load_json_input(path)
     try:
-        raw = Path(path).read_bytes()
-        if len(raw) > 8 * 1024 * 1024:
-            raise CurriculumNormalizationError("case: file size limit exceeded")
-        payload = json.loads(raw.decode("utf-8"), parse_constant=invalid_constant, object_pairs_hook=unique_fields)
-    except (OSError, UnicodeError, ValueError, RecursionError):
-        raise CurriculumNormalizationError("case: invalid or unreadable JSON") from None
-    return normalize_curriculum_case(payload)
+        directory = Path(path).resolve().parent
+    except (OSError, ValueError, RuntimeError):
+        raise CurriculumNormalizationError("case: invalid input path") from None
+    return _normalize_case(payload, directory=directory)
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +226,35 @@ class CurriculumCaseProvider:
 
     def get_academic_analysis(self) -> AcademicAnalysis:
         return analyze_academic_path(self._diff, priority_policy=self.case.priority_policy)
+
+    def get_curriculum_diff(self) -> CurriculumDiff:
+        """Return immutable internal facts, including unresolved group gaps."""
+        return self._diff
+
+    def get_validation_summary(self) -> dict:
+        """Inspect blocked cases using counts and fixed diagnostics only."""
+        from collections import Counter
+
+        error = None
+        try:
+            tasks = self.get_makeup_tasks()
+        except CurriculumNormalizationError as exc:
+            error = str(exc)
+            tasks = None
+        analysis = self.get_academic_analysis()
+        return {
+            "data_source": self.case.data_source.value,
+            "target_records": len(self.case.new.courses),
+            "completed_records": len(self.case.completed),
+            "group_gap_count": len(self._diff.group_gaps),
+            "projection_ready": error is None,
+            "projection_error": error,
+            "makeup_task_count": len(tasks) if tasks is not None else None,
+            "status_counts": dict(Counter(task.status.value for task in tasks)) if tasks is not None else None,
+            "academic_issue_counts": dict(Counter(issue.code for issue in analysis.issues)),
+            "dependency_order_available": analysis.dependency_order is not None,
+            "priority_order_available": analysis.priority_order is not None,
+        }
 
 
 def load_demo_case() -> CurriculumCase:

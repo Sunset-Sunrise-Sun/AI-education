@@ -1,4 +1,4 @@
-"""Read a private D4 workbook and print counts only."""
+"""Run an artificial Demo or inspect private Curriculum inputs using counts."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from collections import Counter
 
 from app.curriculum import CourseIdStatus, CurriculumNormalizationError
 from app.curriculum.case import CurriculumCaseProvider, demo_output, load_curriculum_case
+from app.curriculum.json_reader import load_json_input
 from app.curriculum.xlsx_reader import load_completed_courses_xlsx
 
 
@@ -24,17 +25,41 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--demo", action="store_true", help="计算人工案例，输出 Mock 任务")
     mode.add_argument("--case", dest="case_path", help="检查本地结构化 JSON case，只输出统计")
+    mode.add_argument("--inspect-case", dest="inspect_path", help="检查待确认 case 的内部问题，只输出统计")
+    mode.add_argument("--docx", dest="docx_path", help="按明确列映射检查本地 Word 表格，只输出统计")
+    parser.add_argument("--profile", help="Word 列映射 JSON，包含 source_id 和 tables")
     parser.add_argument("--source-id", help="D4 交接来源编号")
     args = parser.parse_args(argv)
-    if args.demo or args.case_path is not None:
-        if args.path is not None or args.source_id is not None:
+    if args.docx_path is not None:
+        if args.path is not None or args.source_id is not None or args.profile is None:
+            parser.error("docx profile is required")
+    elif args.demo or args.case_path is not None or args.inspect_path is not None:
+        if args.path is not None or args.source_id is not None or args.profile is not None:
             parser.error("mixed input modes")
-    elif args.path is None or args.source_id is None:
+    elif args.path is None or args.source_id is None or args.profile is not None:
         parser.error("D4 path and source are required")
 
     try:
         if args.demo:
             print(json.dumps(demo_output(), ensure_ascii=False, indent=2))
+            return 0
+        if args.docx_path is not None:
+            from app.curriculum.docx_reader import load_curriculum_docx
+
+            profile = load_json_input(args.profile, label="docx profile")
+            if not isinstance(profile, dict) or set(profile) != {"source_id", "tables"}:
+                raise CurriculumNormalizationError("docx profile: expected source_id and tables")
+            result = load_curriculum_docx(args.docx_path, **profile)
+            print(json.dumps({
+                "rows": len(result.rows),
+                "unresolved_rows": sum(bool(row.issues) for row in result.rows),
+                "issue_counts": dict(Counter(issue.code for issue in result.issues)),
+                "conversion_ready": not result.issues,
+            }, ensure_ascii=False))
+            return 0
+        if args.inspect_path is not None:
+            provider = CurriculumCaseProvider(load_curriculum_case(args.inspect_path))
+            print(json.dumps(provider.get_validation_summary(), ensure_ascii=False))
             return 0
         if args.case_path is not None:
             case = load_curriculum_case(args.case_path)

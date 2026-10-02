@@ -4,4 +4,4 @@ __all__ = ["CurriculumNormalizationError"]
 
 
 class CurriculumNormalizationError(ValueError):
-    """A supplied completed-course record cannot be normalized safely."""
+    """A supplied Curriculum input cannot be normalized or projected safely."""

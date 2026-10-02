@@ -47,6 +47,37 @@ def test_saved_demo_output_matches_the_runtime_result() -> None:
     assert demo_output()["makeup_tasks"] == expected
 
 
+def test_saved_elective_demo_computes_only_the_confirmed_remaining_selection() -> None:
+    provider = CurriculumCaseProvider(load_curriculum_case(DEMO_CASE_PATH.parent / "elective_case.json"))
+    expected = json.loads((DEMO_CASE_PATH.parent / "elective_makeup_tasks.json").read_text())
+    tasks = provider.get_makeup_tasks()
+    assert [task.model_dump(mode="json") for task in tasks] == expected
+    assert [task.course_id for task in tasks] == ["DEMO101", "DEMO-E1", "DEMO-E2"]
+    assert [task.status.value for task in tasks] == ["satisfied", "satisfied", "required"]
+    assert provider.get_curriculum_diff().group_gaps[0].remaining_credit == 2
+    assert provider.get_academic_analysis().priority_order == ("DEMO-E2",)
+
+
+def test_real_case_cannot_reuse_mock_elective_selection_evidence() -> None:
+    payload = json.loads((DEMO_CASE_PATH.parent / "elective_case.json").read_text())
+
+    def replace_mock(value):
+        if isinstance(value, str):
+            return value.replace("mock://", "confirmed-local://")
+        if isinstance(value, list):
+            return [replace_mock(item) for item in value]
+        if isinstance(value, dict):
+            return {key: replace_mock(item) for key, item in value.items()}
+        return value
+
+    payload = replace_mock(payload)
+    payload["data_source"] = "real"
+    payload["elective_selections"][0]["evidence"] = "mock://DEMO-PRIVATE-SELECTION"
+    with pytest.raises(CurriculumNormalizationError) as error:
+        normalize_curriculum_case(payload)
+    assert "Mock" in str(error.value) and "DEMO-PRIVATE" not in str(error.value)
+
+
 def test_demo_recalculates_modified_artificial_input_instead_of_replaying_output(tmp_path, monkeypatch) -> None:
     payload = _input()
     payload["new"]["course_records"][0]["credit"] = 4
