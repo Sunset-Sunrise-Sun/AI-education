@@ -6,4 +6,25 @@ from app.planner.conflicts import (
     check_schedule_conflict,
 )
 
-__all__ = ["ConflictState", "check_conflict", "check_schedule_conflict"]
+from app.planner.section_repair import (
+    AlternativeSearchResult,
+    CandidateAssessment,
+    RepairOutcome,
+    SearchOutcome,
+    SectionRepairResult,
+    find_alternative_sections,
+    repair_target_section,
+)
+
+__all__ = [
+    "AlternativeSearchResult",
+    "CandidateAssessment",
+    "ConflictState",
+    "RepairOutcome",
+    "SearchOutcome",
+    "SectionRepairResult",
+    "check_conflict",
+    "check_schedule_conflict",
+    "find_alternative_sections",
+    "repair_target_section",
+]
