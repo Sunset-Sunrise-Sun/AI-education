@@ -192,3 +192,36 @@
   - 契约/Integration沙箱内tmp_path setup报错并停止；按工具审批在沙箱外重跑相关及全量，无修改测试环境/其他模块来绕过错误。warning为既有Starlette/httpx弃用提示，skip未增加。
 - 仅合成Mock验证；**当前功能仅使用Mock数据验证，尚未完成真实数据验证。**
 - 保留未完成：本学期必达证据/学期映射、非时间规则和证据、人工选择产品调用链、真实联调、API接线、Architecture Reviewer。本阶段仍是受限Provider，非完整Planner MVP；DG-07整体未完成，Data Gate保持Reopened，真实rollout gate不解除。
+
+### 2026-10-05 - 阶段4成员4独立回归与文档收尾
+- 本次目标与授权：在阶段3已提交HEAD上运行仓库既有Planner、契约/Mock Schema/Integration及后端全量回归；全部通过后仅更新本模块STATUS/WORKLOG。失败先停止，不自行修复；不创建或切换分支，不commit/push/merge。Reviewer材料草案在交付回复提供，不新增文件。
+- 分支：`feature/planner-dg07c-unknown-schedule`；开发Base SHA：`f807d89cb9af1821a0c7d5854563041b6271e628`。
+- 正式checkpoint：阶段1 `b7b0ced23addf6d6a02e3feb81b2d668713864b8`；阶段2 `10cfe219de5ff1195cdeec3fb9f3379885b73249`；阶段3/本轮验收HEAD `2fe77bdf912c2ef51f4ca832a2bbd279ed34d36a`。
+- 阶段3commit/push已完成基于阶段3 Git 交接记录确认；开工及全量通过后本地HEAD与upstream记录一致、工作区clean。本轮未联网核验远端；此前日志中“未提交/等待commit”保留为当时历史，不代表当前状态。阶段4两份文档改动尚未提交。
+- 环境：Windows PowerShell，Python 3.12.14，沿用`backend/.venv`；以下pytest命令均从`backend`执行，沿用阶段3的`-B`、`-o addopts=`、`-q`、`-p no:cacheprovider`，未安装/升级依赖或改变测试口径。
+- 实际验证命令与结果（本轮阶段4连续授权执行的记录）：
+  - `.venv/Scripts/python.exe -B -m pytest tests/test_planner_provider.py tests/test_planner_conflicts.py tests/test_planner_section_repair.py -o addopts= -q -p no:cacheprovider`：默认沙箱，**342 passed / 0 skipped / 1 warning in 0.32s**，退出码**0**。
+  - `.venv/Scripts/python.exe -B -m pytest tests/test_contracts.py tests/test_mock_data_schema.py tests/test_integration_orchestrator.py -o addopts= -q -p no:cacheprovider`：默认沙箱出现连续**5个ERROR**、观察到**2个skipped**后立即中止，退出码**1**；无最终passed/warning汇总，无完整traceback。只读查看发现连续错误位置对应五个使用tmp_path的Mock Schema用例，但未获错误汇总确认，不将推测当作已确认失败节点。
+  - 经本轮单次授权，仅在沙箱外重跑上述契约组完全相同命令：**127 passed / 2 skipped / 1 warning in 0.17s**，退出码**0**，未修改任何源码/测试/fixture/配置/环境文件。
+  - `.venv/Scripts/python.exe -B -m pytest -o addopts= -q -p no:cacheprovider`：默认沙箱观察到**4个ERROR**、**2个skipped**后立即中止，退出码**1**；无最终passed/warning汇总、完整traceback或确切失败节点；停止后未修改文档，等待单独授权。
+  - 经本轮单次授权，在沙箱外**仅运行一次**上述完全相同全量命令：**938 passed / 2 skipped / 1 warning in 0.84s**，退出码**0**。本次授权范围内未再次运行全量。
+  - `git diff --check`：全量通过后、文档编辑前通过，退出码**0**；文档编辑后再次检查通过。
+  - `git status --short --untracked-files=all`：文档编辑前无输出；编辑后仅本节及STATUS两个已跟踪文件修改，无新增未跟踪文件。`git diff --stat`与最终差异用于核对范围。
+- 错误原因判断：相同测试代码/命令在沙箱外通过，支持沙箱环境差异判断；历史曾记录tmp_path setup错误，但本次未取得原始完整traceback，因此不宣称具体临时目录权限原因已经确认，也不认定Planner业务缺陷。未使用自动修复、格式化或依赖升级。
+- warning：每个成功pytest运行均只有既有`StarletteDeprecationWarning`（httpx/TestClient弃用提示）；无新增skip，契约与全量仍为2 skipped。
+- 修改文件：仅`docs/status/planner.md`与本WORKLOG；无新算法、参数、API、约束、权重或跨模块实现；公共Schema/Interface/模型/Integration/Course Data/Curriculum/Frontend/Mock/依赖均未修改。
+- 使用数据：Mock（Planner人工合成对象及仓库既有Mock/结构等价夹具）。**当前功能仅使用Mock数据验证，尚未完成真实数据验证。** 未获取、导入或提交真实逐行材料。
+- BLOCKED：成员4当前未持有完整批准联调包，仓库内也未发现满足当前联调条件的完整输入交接；成员4当前可用的完整学期CourseOffering snapshot、稳定真实MakeupTask、学生当前课表/Preference未齐备。Data Gate保持Reopened，DG-07D及Review gate未解除，真实empty-meeting和partial snapshot不得接入产品链路。真实数据获取/交付属Course Data与项目负责人，补修任务属Curriculum，产品API与选班闭环属Integration/Frontend，不由成员4补造。
+- 已知边界：受限Provider保持四参数；多个CLEAR不自动选、已有班替换需显式指定、required唯一CLEAR可建议新增、UNKNOWN不新增；selected_classes为完整建议课表而非学校已执行选课。缺失学期不推断本学期必达；UNKNOWN仅影响相关证明，存在合法显式repair可能时不提前判infeasible。非时间规则/证据仍待人工确认，risks不生成未批准等级；无连锁换班/全局优化/OR-Tools/跨学期规划；搜索最坏指数复杂度，无超时无解转换。
+- Reviewer材料草案范围：上述Base/三个checkpoint/本轮实际测试证据；内部三态、Provider位置、PlanResult证明范围、schedule_unknown/selection_required规则、阶段3四项修复及对应测试；公共契约与其他模块零修改证据、真实数据及rollout blocker。仅准备材料，**未自行执行或标记Architecture Reviewer通过、DG-07关闭或完整MVP完成**。
+- 下一步：项目负责人审查本次未提交的两份文档和Reviewer草案，再安排独立Architecture Reviewer及外部依赖交接。本轮不commit、不push、不merge。
+
+### 2026-10-05 - 独立Architecture Reviewer完成：PASS WITH NOTES
+- 事实来源：本轮收到的独立Architecture Reviewer结果；本节登记该审查事实，不声称由本次文档更新自行执行独立审查。前节Reviewer尚待安排/仅准备材料的表述保留为当时历史，当前Review状态以本节为准。
+- 结论：**PASS WITH NOTES**；独立Architecture Reviewer已完成，未发现阻塞成员4当前受限交付的问题，**无成员4交付阻塞缺陷**。Reviewer未修改任何文件。
+- Reviewer本轮独立复跑Planner：**342 passed / 0 skipped / 1 warning**；独立穷举校验：**3,645组通过**。
+- Contracts：**127 passed / 2 skipped / 1 warning**；后端全量：**938 passed / 2 skipped / 1 warning**。两项使用前节阶段4已重新验证的记录，**Reviewer本轮未重跑**；不将这些结果写成Reviewer独立复跑。本次文档更新未运行pytest或穷举校验。
+- Reviewer NOTES保留：真实数据验证仍未完成；Data Gate / rollout仍未解除；DG-07整体未关闭；完整Planner MVP未最终验收；API接线、人工选择产品闭环、Frontend DG-07D和非时间规则仍属于外部依赖，不因成员4Review通过而变成完成。
+- 交付边界：通过范围仅为成员4当前受限Provider交付；既有算法/规则/输入输出及真实联调BLOCKED不变，不扩大成员4职责，不解除empty-meeting或partial snapshot的产品链路限制。
+- 本次修改：仅更新`docs/status/planner.md`当前Reviewer状态并在本WORKLOG追加记录；分支保持`feature/planner-dg07c-unknown-schedule`，未修改源码、测试、fixture、公共Schema/Interface、配置、依赖或其他模块。未commit、未push、未merge。
+- 下一步：由项目负责人安排受限交付后续流程与外部依赖交接；真实联调、DG-07关闭和完整MVP最终验收仍需分别满足其前置条件。

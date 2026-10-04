@@ -1,6 +1,9 @@
 # Planner 当前状态
 
-更新日期：2026-10-05。阶段：受限 Provider / PlanResult / DG-07C 安全处理及四项验收修复已实现，待负责人验收及 Architecture Reviewer；未 commit / push / merge。
+更新日期：2026-10-05。阶段：阶段3受限 Provider / PlanResult / DG-07C 安全处理及四项验收修复已 commit / push；阶段4成员4既有 Mock 回归已通过，独立 Architecture Reviewer 已完成，结论为 **PASS WITH NOTES**，未发现阻塞成员4当前受限交付的问题。本轮仅涉及 Planner 文档收尾，未修改源码、测试、公共接口或其他模块。
+
+- 当前分支：`feature/planner-dg07c-unknown-schedule`；阶段3 checkpoint / 本轮验收 HEAD：`2fe77bdf912c2ef51f4ca832a2bbd279ed34d36a`。
+- 阶段3已 push 基于阶段3 Git 交接记录确认；本地 HEAD 与 upstream 记录一致，本轮未联网核验远端。未创建或切换分支。
 
 ## 已实现
 - 阶段1/2三态时间检测、全部Meeting比较、同课同学期替代搜索及显式单目标repair保持不变。
@@ -24,20 +27,29 @@
 - 不生成未批准风险等级，risks=[]；摘要说明受限认证范围和输入数据标签，不保证学校选课成功。
 
 ## 验证
-- 本阶段共210项正式Mock测试（初稿102项，本次增加108项并修正旧夹具）；Planner合计 **342 passed / 1 warning**。
-- 相关契约/Mock Schema/Integration：**127 passed / 2 skipped / 1 warning**。
-- 后端全量：**938 passed / 2 skipped / 1 warning**，最终运行记录见WORKLOG；git diff --check通过。
+- 阶段4在上述 HEAD 实际运行既有测试，Python 3.12.14，沿用 backend/.venv，未修改依赖或测试口径；命令与运行历史见WORKLOG“阶段4成员4独立回归与文档收尾”记录。
+- Provider共210项正式Mock测试；Planner合计 **342 passed / 0 skipped / 1 warning**，默认沙箱通过，退出码0。
+- 相关契约/Mock Schema/Integration：**127 passed / 2 skipped / 1 warning**，同一命令经授权在沙箱外通过，退出码0。
+- 后端全量：**938 passed / 2 skipped / 1 warning**，同一命令经授权仅在沙箱外运行一次并通过，退出码0；git diff --check通过。
+- 契约组及全量的先前沙箱运行出现ERROR后中止，无最终汇总或完整traceback；同命令沙箱外通过支持环境差异判断，具体临时目录权限原因未确认。未修改源码、测试、fixture、配置或环境文件来绕过错误。
 - 1 warning为既有Starlette/httpx弃用提示，无新增skip。
 - 当前功能仅使用Mock数据验证，尚未完成真实数据验证。测试为合成对象，现有mock_data未修改。
+
+## 独立 Architecture Reviewer
+- 根据本轮提供的独立审查结果，Reviewer已完成，结论为 **PASS WITH NOTES**；未发现阻塞成员4当前受限交付的问题，Reviewer未修改任何文件。
+- Reviewer本轮独立复跑Planner：**342 passed / 0 skipped / 1 warning**；独立穷举校验：**3,645组通过**。Contracts **127 passed / 2 skipped / 1 warning**与全量**938 passed / 2 skipped / 1 warning**沿用阶段4已重新验证记录，Reviewer本轮未重跑。本次文档更新未运行pytest或穷举校验。
+- NOTES：真实数据验证仍未完成；Data Gate / rollout仍未解除；DG-07整体未关闭；完整Planner MVP未最终验收；API接线、人工选择产品闭环、DG-07D和非时间规则仍属于外部依赖。Review通过只针对成员4当前受限交付，不解除这些条件。
 
 ## 未完成与边界
 - 受限Provider不是完整Planner MVP；候选展示→人工选择→回传→正式repair产品链本阶段不实现。
 - 非时间正式执行规则（容量、学分统计口径、通勤、先修证据、学期映射、硬/软分类）仍需人工确认。
 - 无连锁换班、全局目标优化、OR-Tools、自动优先级或跨学期规划。
 - 搜索已缓存并剪枝，不构造完整笛卡尔积；一般约束组合的最坏复杂度仍为指数级，不能承诺任意规模实时完成。未加入超时/节点限制，搜索未完成绝不生成infeasible。
-- 真实联调、产品API接线和Architecture Reviewer未完成。
+- 真实联调BLOCKED：成员4当前未持有完整批准联调包，仓库内也未发现满足当前联调条件的完整输入交接；成员4当前可用的完整学期CourseOffering快照、稳定真实MakeupTask、学生当前课表与Preference未齐备，真实证据汇总不等于可联调逐行数据。
+- 产品API接线、人工选择调用闭环、Frontend DG-07D与非时间未定义规则保持BLOCKED，不由成员4补造或跨模块实现；partial snapshot不得进入产品链路。
+- 独立Architecture Reviewer已完成并给出PASS WITH NOTES，未发现成员4当前受限交付的阻塞问题；DG-07/完整Planner MVP仍未通过最终验收。其他模块及公共接口文档中的旧阶段描述留给对应所有者同步。
 - Schema/Interface/公共模型/Integration/其他成员模块/依赖未修改。
-- **DG-07整体未完成，Data Gate保持Reopened**，DG-07D与评审gate未解除，真实端到端rollout不开放。
+- **DG-07整体未完成，Data Gate保持Reopened**，DG-07D与DG-07整体验收gate未解除，真实端到端rollout不开放；成员4独立Review的PASS WITH NOTES不等于DG-07关闭。
 
 ## 运行与排查
 - Python导入 `from app.planner import RestrictedPlannerProvider` 并用冻结四参数调用plan；网页仍是Mock回放，无新增API。
