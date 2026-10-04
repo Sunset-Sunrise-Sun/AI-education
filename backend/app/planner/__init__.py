@@ -1,4 +1,6 @@
-"""Planner 内部算法；不定义公共 Schema，也尚未实现 PlannerProvider。"""
+"""Planner 内部算法及受限 Provider；不定义或修改公共 Schema。"""
+
+from app.planner.provider import RestrictedPlannerProvider
 
 from app.planner.conflicts import (
     ConflictState,
@@ -17,6 +19,7 @@ from app.planner.section_repair import (
 )
 
 __all__ = [
+    "RestrictedPlannerProvider",
     "AlternativeSearchResult",
     "CandidateAssessment",
     "ConflictState",

@@ -138,3 +138,57 @@
   **DG-07C 尚未整体完成；DG-07 整体未完成，Data Gate 保持 Reopened**，
   不解除真实端到端 rollout gate。
 - 下一步：验收本阶段实现与测试，由负责人确认后再推进后续完整规划阶段。
+
+### 2026-10-05 - 阶段3：受限 Provider、PlanResult 与 DG-07C 状态处理
+- 本节为初稿实现历史，后续只读验收发现四项缺陷；最终证明范围、学期判断、搜索及回归结果以末尾“四项验收修复”记录为准，初稿测试通过不代表验收通过。
+- 目标：按负责人批准计划实现代码、测试、文档；本轮不commit/push/merge。
+- 分支：feature/planner-dg07c-unknown-schedule；Base/HEAD checkpoint：10cfe219de5ff1195cdeec3fb9f3379885b73249。开工工作区干净，本地upstream一致，未访问远端。
+- 本次负责人裁决（来自本轮授权，不声称此前仓库已定义）：
+  - selected_classes为完整本学期建议课表，保留当前班；唯一CLEAR新增required允许建议加入，多个CLEAR不选，UNKNOWN不新增。
+  - 已有班替换须显式指定；selection_required为新确认开放字符串约定；UNKNOWN与无解证据按证明范围聚合status。
+  - 多任务联合判断：确定目标全部允许组合已被已知约束排除才可判无解，不按任务顺序牺牲required。
+  - changes相对本次current_schedule：实际新增记录，保留/未执行替换不记录。
+- 实现文件：
+  - backend/app/planner/provider.py：RestrictedPlannerProvider，冻结四参数，深拷贝与重校验，正式PlanResult。
+  - backend/app/planner/feasibility.py：课表三态认证、组合存在性枚举；无选班、无评分。
+  - backend/app/planner/__init__.py：导出Provider，阶段1/2实现不变。
+  - backend/tests/test_planner_provider.py：102项合成Mock正式测试。
+  - docs/status/planner.md更新当前状态，本WORKLOG追加历史。
+- 算法边界：
+  - 当前班事实优先于供给同身份快照；非法类型、重复、混合学期、倒置节次明确报错。
+  - 唯一CLEAR新增先收集再联合检查，冲突组全暂不加入，独立新增可形成部分建议。
+  - 无解证明与实际选班分离：required原班/供给候选构成可能域，其余当前班固定；存在性见证不授权自动选择/替换。
+  - UNKNOWN组合是可能解，空供给不是无解证据；相对学期映射未知的目标不参与新增任务无解证明。确定子目标无解可阻塞完整目标，但局部候选失败不可冒充整体无解。
+  - 只消费先修边，不推断通过/并修；激活Preference、方案容量、多校区通勤、学期映射显式manual_confirmation。不新增硬软分类、阈值、评分、权重或风险等级。
+- 测试环境：Python3.12.14，沿用backend/.venv，未修改依赖。
+  - Planner：.venv/Scripts/python.exe -B -m pytest tests/test_planner_provider.py tests/test_planner_conflicts.py tests/test_planner_section_repair.py -o addopts= -q -p no:cacheprovider：**234 passed / 1 warning**（新增102+原132）。
+  - 同命令指定tests/test_contracts.py tests/test_mock_data_schema.py tests/test_integration_orchestrator.py：**127 passed / 2 skipped / 1 warning**。
+  - 全量：.venv/Scripts/python.exe -B -m pytest -o addopts= -q -p no:cacheprovider：**830 passed / 2 skipped / 1 warning**。
+  - git diff --check通过；没有修改公共契约和其他成员模块。
+  - 沙箱内相关/全量回归在tmp_path setup出现临时目录创建OSError并停滞，已停止；按工具审批在沙箱外重跑同套检查。未改其他模块来绕过失败。
+  - 仅既有Starlette/httpx弃用提示，无新增skip。
+- 覆盖：任务书A–L、当前UNKNOWN保留、未用UNKNOWN不降级、多个CLEAR待选、已有班不自动替换；三任务两两可行但联合无解、UNKNOWN逃逸组合、16个独立时段oracle案例及顺序不影响结果；新增changes/部分建议/外部repair历史不伪造；非时间待确认；空/错误/重复/混合学期/篡改对象、多Meeting、输入隔离、JSON Schema和实际Provider注入test-only上游Orchestrator。
+- 使用数据：Mock合成对象，未处理真实学校材料，现有mock_data未修改。
+  **当前功能仅使用Mock数据验证，尚未完成真实数据验证。**
+- 未完成/待确认：人工选择产品调用链、非时间正式执行语义、真实联调、Architecture Reviewer；本阶段不是完整Planner MVP。
+- 对其他模块影响：Schema/Interface/公共模型/Integration/Curriculum/Course Data/Frontend/依赖/Mock文件均0修改。
+- 风险：候选枚举无截断，最坏运行时间随组合数增长；当前适用于MVP小规模输入。
+- **DG-07整体未完成，Data Gate保持Reopened，DG-07D及Review未完成，真实rollout gate不解除。**
+- 下一步：停在未提交可验收状态，负责人验收后再决定commit/push，后续进入Architecture Reviewer。
+
+### 2026-10-05 - 阶段3四项验收修复
+- 授权：负责人接受NEEDS_FIX并将四项全部纳入阶段3；不暂存、不commit、不push、不merge，冻结四参数及Schema不变。
+- 修复1，显式修复证明范围：所有当前课程均纳入原班及同课同学期输入候选，不按required身份限制；原班时间以current_schedule为准。证明用保守放宽域覆盖显式repair尚未排除的可能，连尚未满足本次repair条件的候选也不提前排除；放宽域无解才足以证明实际允许域无解。见证不作为执行方案、不授权连锁换班。stage2仅明确选择CLEAR后单目标替换的行为不变，Provider只报告实际CLEAR待选择、保留当前班，changes不造替换。
+- 修复2，学期证据：None不再视为本学期必达；新增required缺失学期字段显式manual_confirmation。有相对编号也缺少与本次学校学期的映射，冻结输入目前不能确认新增任务本学期必达。因此新增任务安排失败不产生整体无解证据，唯一CLEAR仍可形成带待确认项的新增建议。本次可靠无解证明仅消费当前课程的保留目标，不能将建议反向当作必达目标。
+- 修复3，UNKNOWN关联：删除全局uncertain_current否决，相关UNKNOWN若仍允许可能组合则partial；无关UNKNOWN不能抹除独立证明。已知冲突与UNKNOWN同时出现时按证明范围处理，不能按三态优先级机械映射PlanResult。
+- 修复4，搜索：固定课表预检查；同次调用按对象身份缓存Section两两检测；显式栈增量构造前缀、已知CONFLICT立即剪枝；先搜索认证组合，再搜索含UNKNOWN可能组合。没有笛卡尔积生成、没有递归深度依赖、没有人工截止；异常/中断不转换为无解。最坏仍为指数级，未承诺大规模实时求解。
+- 文件范围：修复provider.py、feasibility.py、test_planner_provider.py及STATUS/WORKLOG；__init__.py保留初稿导出，本次未改变。阶段1/2实现、公共契约、Integration及其他成员模块0修改。
+- 本次增加108个测试实例：12个当前课程不同身份/学期字段的实际显式repair对照；4个缺失学期边界；4个相关/无关UNKNOWN成对回归；81个独立已知/未知时段穷尽oracle；7个固定预检查、缓存、2**36冲突后缀剪枝、全UNKNOWN可能组合和搜索失败回归。修正原有错误的缺省学期必达夹具，无解用已选保留目标验证；Schema测试增加状态取值断言。
+- 首轮新测试夹具中A与保留C同一天，导致修复后新增断言失败；改为独立时段后仍保留实际stage2修复及Provider不自动替换断言，未放宽规则。
+- 最终测试（Python3.12.14，backend/.venv，无依赖变更）：
+  - `.venv/Scripts/python.exe -B -m pytest tests/test_planner_provider.py tests/test_planner_conflicts.py tests/test_planner_section_repair.py -o addopts= -q -p no:cacheprovider`：**342 passed / 1 warning**（Provider210 + 阶段1/2原132）。
+  - 同命令指定tests/test_contracts.py tests/test_mock_data_schema.py tests/test_integration_orchestrator.py：**127 passed / 2 skipped / 1 warning**。
+  - `.venv/Scripts/python.exe -B -m pytest -o addopts= -q -p no:cacheprovider`：**938 passed / 2 skipped / 1 warning**。
+  - 契约/Integration沙箱内tmp_path setup报错并停止；按工具审批在沙箱外重跑相关及全量，无修改测试环境/其他模块来绕过错误。warning为既有Starlette/httpx弃用提示，skip未增加。
+- 仅合成Mock验证；**当前功能仅使用Mock数据验证，尚未完成真实数据验证。**
+- 保留未完成：本学期必达证据/学期映射、非时间规则和证据、人工选择产品调用链、真实联调、API接线、Architecture Reviewer。本阶段仍是受限Provider，非完整Planner MVP；DG-07整体未完成，Data Gate保持Reopened，真实rollout gate不解除。

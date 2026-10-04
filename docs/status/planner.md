@@ -1,47 +1,45 @@
 # Planner 当前状态
 
-更新日期：2026-10-04。阶段：三态检测、替代教学班搜索与单目标课程换班已实现，待验收。
+更新日期：2026-10-05。阶段：受限 Provider / PlanResult / DG-07C 安全处理及四项验收修复已实现，待负责人验收及 Architecture Reviewer；未 commit / push / merge。
 
-## 已完成
-- 公共输入输出 Schema、Provider 签名已经定义，本轮未修改。
-- `backend/app/planner/conflicts.py`：内部 `ConflictState`，以及纯函数
-  `check_conflict()` / `check_schedule_conflict()`。
-- 比较全部 Meeting 两两组合：同星期、实际周次有交集、闭区间节次重叠才冲突。
-- `meetings=[]` 为 UNKNOWN，适用于候选与当前课表；聚合优先级
-  `CONFLICT > UNKNOWN > CLEAR`，未知不能掩盖后续明确冲突。
-- 三态检测接受已校验的同学期 CourseOffering；不筛选班级、不修改输入。
-  倒置节次沿用 Course Data 的拒绝规则，明确报错。
-- `section_repair.py`：`find_alternative_sections()` 搜索同课程、同学期的其他
-  class_id；先移除原班，再判断候选与剩余课表的关系。全部 CLEAR 候选按输入
-  顺序返回，UNKNOWN 保留核验原因，CONFLICT 保留淘汰原因，不排名、不自动选班。
-- `repair_target_section()` 只接受调用方明确指定的 CLEAR 候选，只替换目标位置，
-  复用 Change 记录原班、新班和原因。原班 CLEAR 不替换；原班 UNKNOWN 时允许
-  指定 CLEAR，但不声称原班存在已确认冲突。未使用的 UNKNOWN 不否定这次时间修复。
-- 输入以 `(semester, course_id, class_id)` 识别；原班必须在当前课表恰好出现一次，
-  当前课表必须属于指定学期。重复身份、非法输入明确报错；返回数据与输入深拷贝隔离。
-- 无候选、存在 UNKNOWN 但无 CLEAR、全部 CONFLICT 分别给出内部原因；不生成
-  PlanResult 或完整规划可行性状态，不把 UNKNOWN 当成无解。
-- 第一阶段 48 项、本阶段新增 84 项，合计 132 项 Planner 测试通过；
-  后端全量回归 728 passed / 2 skipped / 1 warning（既有依赖弃用提示）；详见 WORKLOG。
+## 已实现
+- 阶段1/2三态时间检测、全部Meeting比较、同课同学期替代搜索及显式单目标repair保持不变。
+- `provider.py` 的 `RestrictedPlannerProvider.plan()` 兼容冻结四参数 Protocol；重校验、深拷贝、无网络、无排名或自动替换。
+- selected_classes 按本次负责人裁决为完整本学期建议课表：保留当前班。保留UNKNOWN/冲突班是当前选择事实，不代表已认证，unresolved/status明确反映限制。
+- 当前未选required仅唯一CLEAR可建议新增，且联合检查其他新增班；多个CLEAR待选择，UNKNOWN不新增。冲突组全部暂不加入，不按任务顺序牺牲任何任务，独立班可以形成部分建议。
+- changes相对本次current_schedule：新增记录from_class=null/to_class=新班；保留不记录；未执行替换不记录。外部repair历史不在下一次Provider调用中伪造。
+- `feasibility.py` 固定课表预检查、Section成对缓存、显式栈前缀搜索，已知冲突立即剪枝；先找CLEAR完整组合，再找UNKNOWN可能组合，不返回选班。没有搜索截断；异常/中断不能返回无解证明。
+- 证明范围：所有当前课程均保留原班和同课同学期输入候选，不区分required身份。无替代班的课程才固定；证明用保守放宽域覆盖仍可能的显式repair，放宽域也无解才认证实际目标无解。找到放宽域组合不代表允许执行，plan不替换、不授权连锁换班。
+- UNKNOWN按证明关联范围保留：能留下可能解的相关UNKNOWN阻止无解认证；不能解开独立已知冲突的无关UNKNOWN不抹除证明，无全局uncertain_current否决。
+- 缺失推荐/截止学期明确表示学期要求未知；有相对学期编号时也缺少映射。本接口目前没有新增任务本学期必达证据，新增建议及其联合冲突均不能据此证明整体无解。唯一CLEAR仍可建议加入，但学期要求待确认使结果为partial。
+- 空候选进入missing_data，不假定学校未开课或供给完整；无解证明仅针对本次输入和保留当前课程目标，不宣称学校全部供给无解。
 
-## 尚未实现
-- 连锁换班、完整 Path Repair、硬/软约束优化、OR-Tools。
-- `PlannerProvider.plan()` 真正实现、PlanResult 生成与状态判定。
-- PlanResult 中 `unresolved[].type=schedule_unknown` 生成及完整方案选班安全处理。
-- 因此 **DG-07C 仅完成三态检测与单目标换班，未整体完成**；DG-07 整体未完成，
-  **Data Gate 仍保持 Reopened**，不得解除真实端到端 rollout gate。
+## 本次批准输出规则
+- feasible：完整建议形成，阶段要求认证且语义明确的硬条件通过，无影响可执行性的unresolved。
+- partially_feasible：未知/必要决策未完成，尚未证明完整目标无解。
+- infeasible：本次目标和允许操作范围内有完整无解证据，不按内部三态优先级映射。
+- selection_required 是2026-10-05负责人新确认的约定，不是此前公共枚举；有CLEAR但未选择时使用。
+- schedule_unknown仅描述来源快照缺排课；未用UNKNOWN不自动降级，已知完整无解证据不被无关UNKNOWN抹除。
+- 未定非时间语义使用已有manual_confirmation：先修通过/并修证据、相对学期、激活的Preference、方案容量信息、多校区通勤。未定规则不筛班、不评分、不证明无解，也不认证feasible。
+- 不生成未批准风险等级，risks=[]；摘要说明受限认证范围和输入数据标签，不保证学校选课成功。
 
-## 本轮边界与数据
-- 不涉及跨校区通勤、学分上限、Preference 权重或学业优先级。
-- 当前功能仅使用 Mock 数据验证，尚未完成真实数据验证。
-  测试内使用合成对象；现有 `mock_data/` 未修改。
-- 空课表：已知教学班返回 CLEAR；未知教学班仍为 UNKNOWN。
-  CLEAR 只表示本轮输入范围内的时间判断，不表示整体方案可行。
-- 换班函数要求原班存在；空当前课表报错。成功仅确认替代班与剩余课表无时间冲突，
-  不确认其他课程彼此无冲突，也不判断容量、教师偏好、学分或先修可行性。
+## 验证
+- 本阶段共210项正式Mock测试（初稿102项，本次增加108项并修正旧夹具）；Planner合计 **342 passed / 1 warning**。
+- 相关契约/Mock Schema/Integration：**127 passed / 2 skipped / 1 warning**。
+- 后端全量：**938 passed / 2 skipped / 1 warning**，最终运行记录见WORKLOG；git diff --check通过。
+- 1 warning为既有Starlette/httpx弃用提示，无新增skip。
+- 当前功能仅使用Mock数据验证，尚未完成真实数据验证。测试为合成对象，现有mock_data未修改。
 
-## 下一步
-- Review 本阶段实现和测试。
-- 后续按确认任务实现完整 Provider、PlanResult 与方案安全处理；
-  通勤与硬/软约束仍需人工确认。
-- 只消费 Curriculum 提供的先修边，不生成学业优先级。
+## 未完成与边界
+- 受限Provider不是完整Planner MVP；候选展示→人工选择→回传→正式repair产品链本阶段不实现。
+- 非时间正式执行规则（容量、学分统计口径、通勤、先修证据、学期映射、硬/软分类）仍需人工确认。
+- 无连锁换班、全局目标优化、OR-Tools、自动优先级或跨学期规划。
+- 搜索已缓存并剪枝，不构造完整笛卡尔积；一般约束组合的最坏复杂度仍为指数级，不能承诺任意规模实时完成。未加入超时/节点限制，搜索未完成绝不生成infeasible。
+- 真实联调、产品API接线和Architecture Reviewer未完成。
+- Schema/Interface/公共模型/Integration/其他成员模块/依赖未修改。
+- **DG-07整体未完成，Data Gate保持Reopened**，DG-07D与评审gate未解除，真实端到端rollout不开放。
+
+## 运行与排查
+- Python导入 `from app.planner import RestrictedPlannerProvider` 并用冻结四参数调用plan；网页仍是Mock回放，无新增API。
+- 从backend运行 `.venv/Scripts/python.exe -B -m pytest tests/test_planner_provider.py tests/test_planner_conflicts.py tests/test_planner_section_repair.py -o addopts= -q -p no:cacheprovider`。
+- 先查输入学期、重复身份、空meetings、unresolved和明确选择证据；partial中保留的课表不是已认证课表。
