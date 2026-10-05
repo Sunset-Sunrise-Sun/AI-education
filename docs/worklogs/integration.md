@@ -33,3 +33,16 @@
 - 显式 `mock` 被拒绝；缺失 `data_source` 时公共模型会采用默认值 `mock`，随后同样由 Real API 边界返回 422。
 - 校验只约束 Real HTTP 输入，不修改 Planner 算法、frozen Provider contract 或公共 Schema。
 - 验证：targeted **55 passed**；全量 backend **2048 passed / 2 skipped / 2 failed**。两项失败仍为既有 Curriculum Windows 环境问题。
+
+### 2026-10-05 - Case A production runtime wiring
+
+- 从 `main@d7e17eedcf8d25c20b8a31e01a2e3ec3711ec32f` 创建 `feature/case-a-runtime-wiring`。
+- Provider 盘点：Curriculum 可直接使用 `CurriculumCaseProvider` + 仓库外显式 case manifest；Course Data 可直接使用 `SnapshotCourseDataProvider` + Capture Bridge；Planner 可直接使用 `RestrictedPlannerProvider`。实现均为 production-capable，但真实输入工件的 readiness 独立判定。
+- 将 `planning_runtime.py` 扩展为默认关闭、显式配置、可诊断的 factory。配置项为 `APP_REAL_CASE_A_ENABLED`、`APP_CASE_A_CURRICULUM_CASE_PATH`、`APP_COURSE_SNAPSHOT_PATH`、`APP_COURSE_SNAPSHOT_SOURCE`；不提供默认路径，不扫描文件系统。
+- Curriculum 只接受 `data_source=real`、Case A target version、`as_of_term=2025-2` 及仓库内已批准 scope decisions，并在装配时验证 `get_makeup_tasks()` 可投影；没有手写 23 条任务或状态统计。
+- Course Data 复用 Capture Bridge 与分页 completeness 证据链；只有 `snapshot.is_complete` 才构造 Provider。partial、损坏、缺失或 Mock source 均返回内部 `course_data_not_ready`，不进入 Planner。
+- Planner 直接实例化现有 deterministic `RestrictedPlannerProvider`；未新增算法、偏好执行语义或约束。
+- API 外部契约不变：runtime unavailable 仍为 `503 real_pipeline_not_configured`；三类 Provider 均就绪时沿既有 `PlanningOrchestrator` 返回 `PlanResult`；无 Mock fallback。
+- 新增测试使用人工 source-shaped 本地工件，覆盖默认关闭、缺失 Curriculum、缺失/partial Course Data、损坏输入、Mock 拒绝、非法 enable 配置、真实 Provider identity、production dependency 到 API 的 200 路径及 503 路径。测试工件不是 Real Case A 数据。
+- 验证：targeted **358 passed**；`python -m compileall -q app` 通过；全量 backend **2059 passed / 2 skipped / 2 failed**。两项失败与基线相同，均为既有 Curriculum Windows 环境差异（ZIP 反斜杠成员、当前绝对路径日期含 `-1`），本轮未修改 Curriculum。
+- Runtime wiring complete；仓库当前只有两页 partial 采集证据，没有 complete 2026-1 CourseOffering snapshot，因此 **完整 Real Case A E2E 仍被该 snapshot 阻塞，未宣称 REAL E2E PASSED**。
