@@ -5,10 +5,13 @@
  * 定位
  * ----
  * 本文件是 **SYSU-specific Transport 的浏览器侧实现**。
- * 它提供三件事：
- *   1. `collect()` —— 串行取页 → 最小化字段 + 脱敏 → 产出本地 Capture Bundle；
- *   2. `diagnoseSchedulePresence()` —— **只取第 1 页一次**的**结构诊断**（只统计，不产出数据）；
- *   3. `diagnoseMissingScheduleCorrelation()` —— 同样**只取第 1 页一次**的
+ * 它提供四件事：
+ *   1. `collect()` —— 串行取页 → 最小化字段 + 脱敏 → 产出**一个**本地 Capture Bundle；
+ *   2. `collectSharded()` —— **五校区 shard 编排**：
+ *      `baseline_before → 五校区串行 collect → baseline_after → 外层 diagnostics`，
+ *      产出**五个独立裸 Capture Bundle** + **一个外层 diagnostics 对象**；
+ *   3. `diagnoseSchedulePresence()` —— **只取第 1 页一次**的**结构诊断**（只统计，不产出数据）；
+ *   4. `diagnoseMissingScheduleCorrelation()` —— 同样**只取第 1 页一次**的
  *      **相关性诊断**：比较"缺 `teachingTimePlaceStr`"与"该字段非空"两组 row
  *      的**字段聚合结构**，用来看前者是否表现出一致的结构特征。
  *
@@ -22,6 +25,7 @@
  * 用户必须在控制台**显式调用**：
  *
  *     await window.XuehangSysuCollector.collect({ semester: "2026-1" })
+ *     await window.XuehangSysuCollector.collectSharded({ semester: "2026-1", maxPages: 20 })
  *     await window.XuehangSysuCollector.diagnoseSchedulePresence({ semester: "2026-1" })
  *     await window.XuehangSysuCollector.diagnoseMissingScheduleCorrelation({ semester: "2026-1" })
  *
@@ -34,6 +38,13 @@
  *
  * `toJson()` 输出的**顶层就是** `format` / `semester` / `first_page_no` / `page_size` / `pages`，
  * 可直接交给 Python 的 `load_capture_bundle(...)`。
+ *
+ * 五校区结果取出方式（⛔ diagnostics **不**进入裸 bundle）：
+ *
+ *     const sharded = await window.XuehangSysuCollector.collectSharded({ semester: "2026-1", maxPages: 20 });
+ *     for (const shard of sharded.shards) { console.log(shard.shard_id, shard.bundle); }
+ *     window.XuehangSysuCollector.toShardJson(sharded, "东校园");      // 某个 shard 的裸 bundle
+ *     window.XuehangSysuCollector.toDiagnosticsJson(sharded);        // 外层 diagnostics
  *
  * ⛔ 参数归属
  * ----------
@@ -89,6 +100,33 @@
   /** 默认只做 2 页 smoke test；50 是**客户端安全上限**，不是学校系统限制。 */
   var DEFAULT_MAX_PAGES = 2;
   var ABSOLUTE_MAX_PAGES = 50;
+
+  /**
+   * 五校区 shard 分页固定使用的单页大小（= 已验证的 `DEFAULT_PAGE_SIZE`）。
+   *
+   * ⛔ `collectSharded()` **不接受**调用方传入 `pageSize`（严格白名单拒绝）。
+   */
+  var SHARD_PAGE_SIZE = DEFAULT_PAGE_SIZE;
+
+  /** 校区维度请求参数名（与已取证的 UI 参数一致）。 */
+  var SHARD_PARAM_NAME = "openingSchoolNumber";
+
+  /**
+   * 已批准的五个校区 shard —— **顺序即请求顺序**（稳定、可复现）。
+   *
+   * ⚠️ `openingSchoolNumber` 由负责人在官方 UI 中**人工取证**；
+   * ⛔ 不猜其它校区、⛔ 不自动读取下拉框、⛔ 不从任何接口发现 shard 列表、
+   * ⛔ 不接受调用方传入自定义 shard。
+   *
+   * ⛔ 这些是**请求参数**（校区维度），不是 row 字段：它们**不会**进入 Capture Bundle。
+   */
+  var APPROVED_SHARDS = [
+    { shard_id: "东校园", openingSchoolNumber: "5063559" },
+    { shard_id: "北校园", openingSchoolNumber: "5062202" },
+    { shard_id: "南校园", openingSchoolNumber: "5062201" },
+    { shard_id: "深圳校区", openingSchoolNumber: "333291143" },
+    { shard_id: "珠海校区", openingSchoolNumber: "5062203" }
+  ];
 
   /** Capture Bundle 格式标识（Course Data **内部**交换格式，不是公共 Schema）。 */
   var CAPTURE_FORMAT = "sysu-opening-courses-capture-v1";
@@ -181,7 +219,17 @@
   // ---------------------------------------------------------------------
 
   function fail(message) {
-    throw new Error("[学航采集器] " + message);
+    throw new Error(ERROR_PREFIX + message);
+  }
+
+  /** 错误信息前缀（包装下层错误时用它去重，避免出现两个前缀）。 */
+  var ERROR_PREFIX = "[学航采集器] ";
+
+  /** 去掉已经带上的前缀（只用于**包装**下层错误信息时）。 */
+  function unwrapErrorMessage(error) {
+    var message = error && error.message ? error.message : String(error);
+
+    return message.indexOf(ERROR_PREFIX) === 0 ? message.slice(ERROR_PREFIX.length) : message;
   }
 
   function sleep(ms) {
@@ -574,12 +622,34 @@
   }
 
   /**
+   * 构造请求 body 的 `param`。
+   *
+   * - `openingSchoolNumber === undefined` → **只有** `yearTerm`（baseline 请求形态）；
+   * - 传入已批准校区号 → 追加 `openingSchoolNumber`（shard 请求形态）。
+   *
+   * ⛔ 不传时**不写** `openingSchoolNumber: undefined`：不依赖 JSON 序列化的副作用，
+   * 直接把键省掉（否则"键存在但值为 undefined"与"不带该维度"在语义上会混淆）。
+   */
+  function buildRequestParam(semester, openingSchoolNumber) {
+    if (openingSchoolNumber === undefined) {
+      return { yearTerm: semester };
+    }
+
+    var param = { yearTerm: semester };
+    param[SHARD_PARAM_NAME] = openingSchoolNumber;
+    return param;
+  }
+
+  /**
    * 取一页：same-origin POST，认证状态由浏览器自己带上。
+   *
+   * `openingSchoolNumber` 为 `undefined` 时是 **baseline（全量）** 请求；
+   * 传入已批准校区号时是 **该 shard** 的请求。
    *
    * `?_t=` 只是**复现已观察到的请求形态**（已观察请求带时间戳参数），
    * 不代表任何业务语义。
    */
-  async function requestPage(semester, pageNo, pageSize) {
+  async function requestPage(semester, pageNo, pageSize, openingSchoolNumber) {
     var url = ENDPOINT_PATH + "?_t=" + Date.now();
 
     var response;
@@ -592,7 +662,7 @@
           pageNo: pageNo,
           pageSize: pageSize,
           total: true,
-          param: { yearTerm: semester }
+          param: buildRequestParam(semester, openingSchoolNumber)
         })
       });
     } catch (error) {
@@ -630,11 +700,12 @@
   // 主流程：必须由用户显式调用
   // ---------------------------------------------------------------------
 
-  async function collect(options) {
-    requireAllowedHost();
-
-    var opts = options || {};
-
+  /**
+   * 校验并解析 `collect()` / `collectSharded()` **共用**的分页选项。
+   *
+   * ⛔ 只接受 SYSU 已验证的取值；⛔ 校验全部发生在**任何取页调用之前**。
+   */
+  function resolvePagingOptions(opts) {
     var semester = opts.semester;
     if (typeof semester !== "string" || semester.trim() === "") {
       fail('必须显式提供非空 semester（例如 "2026-1"）。');
@@ -669,35 +740,43 @@
       fail("delayMs 不得小于 " + MIN_DELAY_MS + " 毫秒（串行、低频）。");
     }
 
-    // 超过默认 smoke 页数时，必须由用户明确确认。
-    if (maxPages > DEFAULT_MAX_PAGES) {
-      var confirmed = window.confirm(
-        "即将对本人已授权可见的 " + semester + " 开课数据执行串行采集。\n" +
-          "pageSize=" + pageSize + "\n" +
-          "最多请求 " + maxPages + " 页\n" +
-          "请求间隔至少 " + delayMs / 1000 + " 秒\n" +
-          "是否继续？"
-      );
-      if (!confirmed) {
-        return { cancelled: true, requests: 0, bundle: null };
-      }
-    }
+    return {
+      semester: semester,
+      pageSize: pageSize,
+      firstPageNo: firstPageNo,
+      maxPages: maxPages,
+      delayMs: delayMs
+    };
+  }
 
+  /**
+   * **唯一**的分页循环（`collect()` 与每个 shard 都走这里）。
+   *
+   * - 严格串行：一页一页取，中间 sleep；⛔ 不并发、⛔ 不预取、⛔ 不重试、⛔ 不跳页；
+   * - `firstPageNo` 恒为 `FIRST_PAGE_NO`（1）：调用方**无法**改变起始页；
+   * - `expectedTotal` 取**本次第一页**的 `data.total`；中途变化 → 整体失败；
+   * - `accumulatedRows === expectedTotal` → `reached_total` 并停止。
+   *
+   * ⚠️ `openingSchoolNumber === undefined` 时为 **baseline（全量）** 请求形态；
+   * 传入已批准校区号时为**该 shard** 的请求形态。
+   *
+   * 返回值只有结构性计数与**已脱敏**的 pages（不判断完整性、不产出 bundle）。
+   */
+  async function collectPages(semester, pageSize, maxPages, delayMs, openingSchoolNumber) {
     var pages = [];
     var expectedTotal = null;
     var accumulatedRows = 0;
     var requests = 0;
     var stoppedReason = "max_pages";
 
-    // 严格串行：一页一页取，中间 sleep；不并发、不预取。
     for (var index = 0; index < maxPages; index += 1) {
-      var currentPageNo = firstPageNo + index;
+      var currentPageNo = FIRST_PAGE_NO + index;
 
       if (index > 0) {
         await sleep(delayMs);
       }
 
-      var data = await requestPage(semester, currentPageNo, pageSize);
+      var data = await requestPage(semester, currentPageNo, pageSize, openingSchoolNumber);
       requests += 1;
 
       if (expectedTotal === null) {
@@ -744,21 +823,336 @@
     }
 
     return {
-      cancelled: false,
-      requests: requests,
-      stoppedReason: stoppedReason,
-      accumulatedRows: accumulatedRows,
+      pages: pages,
       expectedTotal: expectedTotal,
+      accumulatedRows: accumulatedRows,
+      requests: requests,
+      stoppedReason: stoppedReason
+    };
+  }
+
+  /**
+   * 只读**一页**并返回其 `data.total`（baseline 探针）。
+   *
+   * ⛔ 请求体**只有** `yearTerm`（不带 `openingSchoolNumber`）；
+   * ⛔ 不做字段最小化、⛔ 不做脱敏、⛔ 不产出 bundle —— 它只读一个整数。
+   * ⛔ 只发**一次**请求（不循环、不重试）。
+   */
+  async function requestReportedTotal(semester) {
+    var data = await requestPage(semester, FIRST_PAGE_NO, SHARD_PAGE_SIZE, undefined);
+    return data.total;
+  }
+
+  async function collect(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+    var resolved = resolvePagingOptions(opts);
+
+    // 超过默认 smoke 页数时，必须由用户明确确认。
+    if (resolved.maxPages > DEFAULT_MAX_PAGES) {
+      var confirmed = window.confirm(
+        "即将对本人已授权可见的 " + resolved.semester + " 开课数据执行串行采集。\n" +
+          "pageSize=" + resolved.pageSize + "\n" +
+          "最多请求 " + resolved.maxPages + " 页\n" +
+          "请求间隔至少 " + resolved.delayMs / 1000 + " 秒\n" +
+          "是否继续？"
+      );
+      if (!confirmed) {
+        return { cancelled: true, requests: 0, bundle: null };
+      }
+    }
+
+    // ⛔ 不带 openingSchoolNumber：`collect()` 仍是**全量**（baseline）入口。
+    var core = await collectPages(
+      resolved.semester,
+      resolved.pageSize,
+      resolved.maxPages,
+      resolved.delayMs,
+      undefined
+    );
+
+    return {
+      cancelled: false,
+      requests: core.requests,
+      stoppedReason: core.stoppedReason,
+      accumulatedRows: core.accumulatedRows,
+      expectedTotal: core.expectedTotal,
       // 明确：本采集器**不判断**完整性，complete / partial 交给 Python Pagination Core。
       claimedComplete: false,
       bundle: {
         format: CAPTURE_FORMAT,
-        semester: semester,
-        first_page_no: firstPageNo,
-        page_size: pageSize,
-        pages: pages
+        semester: resolved.semester,
+        first_page_no: resolved.firstPageNo,
+        page_size: resolved.pageSize,
+        pages: core.pages
       }
     };
+  }
+
+  // ---------------------------------------------------------------------
+  // 五校区 shard 编排（Architecture Review 已批准）
+  //
+  //   baseline_before → 五校区**串行** collect → baseline_after → 外层 diagnostics
+  //
+  // ⛔ 不改 Capture Bundle format：每个 shard 产出仍是**同一格式**的裸 bundle；
+  // ⛔ diagnostics **不进入**任何裸 bundle；
+  // ⛔ 不绕过深分页（offset >= 6500 的 HTTP 600 由**校区维度分片**规避，
+  //    而不是靠跳页 / 重编号 / 重试）。
+  // ---------------------------------------------------------------------
+
+  /** `collectSharded()` 严格白名单允许的 options 键（其余一律在发请求前拒绝）。 */
+  var SHARDED_ALLOWED_OPTIONS = ["semester", "maxPages", "delayMs"];
+
+  /**
+   * 抛出一个**带 diagnostics 的错误**。
+   *
+   * ⛔ 整体失败时**不产出任何 bundle**；但把已经采集到的结构化计数附在
+   * `error.diagnostics` 上，方便操作者在控制台查看：
+   *
+   *     try { await collectSharded(...) } catch (e) { console.log(e.diagnostics) }
+   */
+  function failWithDiagnostics(message, diagnostics) {
+    var error = new Error(ERROR_PREFIX + message);
+    error.diagnostics = diagnostics;
+    throw error;
+  }
+
+  /**
+   * 五校区 shard 采集编排。
+   *
+   * ```text
+   * baseline_before（{yearTerm} 单次探针，只读 total）
+   *        ↓
+   * 五个 shard 依次串行采集（每个 shard 从 pageNo=1 开始、pageSize=200、
+   *   expectedTotal 取**本 shard 第一页**真实 total、accumulatedRows == expectedTotal
+   *   时以 reached_total 停止；保留既有 delay / guard / fail-closed）
+   *        ↓
+   * baseline_after（同 baseline_before）
+   * ```
+   *
+   * 整体失败（`fail()` 抛出，⛔ **不产出任何 bundle**）的情形：
+   *
+   * 1. `baseline_before !== baseline_after`（采集窗口内数据集合发生变化）；
+   * 2. 任一 shard 未取满（`stoppedReason !== "reached_total"`）；
+   * 3. 五个 shard 的 `expectedTotal` 之和 !== baseline（分片未覆盖全体）。
+   *
+   * ⚠️ 第 2 / 3 条与 Python 侧已 Review 的 sharded 编排**同一口径**：
+   * 这里只是**提前**失败，避免把明知不可用的结果交给 Python 完整性链；
+   * 完整性判定的**权威仍在 Python**（本采集器仍不判断 complete / partial）。
+   *
+   * ⛔ 严格白名单：只接受 `semester` / `maxPages` / `delayMs`。
+   * ⛔ 不接受调用方传入 `pageSize` / `firstPageNo` / 自定义 shard 列表。
+   */
+  async function collectSharded(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var optionNames = Object.keys(opts);
+    var unexpected = optionNames.filter(function (name) {
+      return SHARDED_ALLOWED_OPTIONS.indexOf(name) === -1;
+    });
+    if (unexpected.length > 0) {
+      fail(
+        "五校区采集只接受 " + SHARDED_ALLOWED_OPTIONS.join(" / ") +
+          "（收到 " + unexpected.length + " 个其它参数）。已停止；参数名不予回显。"
+      );
+    }
+
+    var resolved = resolvePagingOptions(opts);
+
+    // ⛔ pageSize 不在白名单里：下面的取值恒为已人工验证的 SHARD_PAGE_SIZE。
+    var pageSize = SHARD_PAGE_SIZE;
+
+    if (resolved.maxPages > DEFAULT_MAX_PAGES) {
+      var confirmed = window.confirm(
+        "即将对本人已授权可见的 " + resolved.semester + " 开课数据执行**五校区串行采集**。\n" +
+          "请求顺序：baseline → " + APPROVED_SHARDS.length + " 个校区 shard → baseline\n" +
+          "pageSize=" + pageSize + "\n" +
+          "每个 shard 最多请求 " + resolved.maxPages + " 页\n" +
+          "请求间隔至少 " + resolved.delayMs / 1000 + " 秒\n" +
+          "是否继续？"
+      );
+      if (!confirmed) {
+        return { cancelled: true, requests: 0, shards: [], diagnostics: null };
+      }
+    }
+
+    var requests = 0;
+    var baselineBefore = null;
+    var baselineAfter = null;
+    var shardResults = [];
+    var shardDiagnostics = [];
+
+    /**
+     * 当前已采集到的**外层 diagnostics**（失败时也用它，所以是"增量快照"）。
+     *
+     * 字段名照 Architecture Review 给定的清单。
+     */
+    function makeDiagnostics() {
+      var totalSum = 0;
+      var pageSum = 0;
+      for (var index = 0; index < shardDiagnostics.length; index += 1) {
+        totalSum += shardDiagnostics[index].expectedTotal;
+        pageSum += shardDiagnostics[index].expected_pages;
+      }
+
+      return {
+        semester: resolved.semester,
+        page_size: pageSize,
+        shard_count: shardDiagnostics.length,
+        approved_shard_count: APPROVED_SHARDS.length,
+        baseline_before: baselineBefore,
+        baseline_after: baselineAfter,
+        shard_total_sum: totalSum,
+        // ⛔ 只作 diagnostics：不得参与任何完整性 / complete 判定。
+        expected_pages_total: pageSum,
+        shards: shardDiagnostics.slice()
+      };
+    }
+
+    // ---- baseline_before -------------------------------------------------
+    baselineBefore = await requestReportedTotal(resolved.semester);
+    requests += 1;
+
+    // ---- 五个 shard：**串行**，顺序即已批准顺序 --------------------------
+    for (var shardIndex = 0; shardIndex < APPROVED_SHARDS.length; shardIndex += 1) {
+      var shard = APPROVED_SHARDS[shardIndex];
+
+      // 每个 shard 的**第一个**请求也与前一个请求至少间隔 delayMs。
+      await sleep(resolved.delayMs);
+
+      var core;
+      try {
+        core = await collectPages(
+          resolved.semester,
+          pageSize,
+          resolved.maxPages,
+          resolved.delayMs,
+          shard.openingSchoolNumber
+        );
+      } catch (error) {
+        // ⛔ 不回显任何 row 取值：下层错误信息本身只含页码 / 字段名 / 计数。
+        // 带上本次已经采集到的 diagnostics，失败原因与进度都能在控制台看到。
+        failWithDiagnostics(
+          "shard " + shard.shard_id + " 采集失败：" + unwrapErrorMessage(error) +
+            "（已整体停止，不产出任何 bundle）",
+          makeDiagnostics()
+        );
+      }
+      requests += core.requests;
+
+      shardDiagnostics.push({
+        shard_id: shard.shard_id,
+        openingSchoolNumber: shard.openingSchoolNumber,
+        expectedTotal: core.expectedTotal,
+        accumulatedRows: core.accumulatedRows,
+        stoppedReason: core.stoppedReason,
+        page_count: core.pages.length,
+        // ⛔ 只作 diagnostics（ceil(expectedTotal / pageSize)）：
+        //    不得参与任何完整性判定；页码数不是证据。
+        expected_pages: Math.ceil(core.expectedTotal / pageSize)
+      });
+
+      // ② 任一 shard 未取满 → 立即整体停止（不再继续打学校接口）。
+      if (core.stoppedReason !== "reached_total" || core.accumulatedRows !== core.expectedTotal) {
+        failWithDiagnostics(
+          "shard " + shard.shard_id + " 未取满：累计 " + core.accumulatedRows +
+            " / total " + core.expectedTotal + "（停止原因 " + core.stoppedReason +
+            "）。已整体停止，不产出任何 bundle；请提高 maxPages 后重跑。",
+          makeDiagnostics()
+        );
+      }
+
+      shardResults.push({
+        shard_id: shard.shard_id,
+        openingSchoolNumber: shard.openingSchoolNumber,
+        expectedTotal: core.expectedTotal,
+        accumulatedRows: core.accumulatedRows,
+        stoppedReason: core.stoppedReason,
+        // 裸 Capture Bundle：顶层只有 format / semester / first_page_no / page_size / pages。
+        bundle: {
+          format: CAPTURE_FORMAT,
+          semester: resolved.semester,
+          first_page_no: resolved.firstPageNo,
+          page_size: pageSize,
+          pages: core.pages
+        }
+      });
+    }
+
+    // ---- ③ 分片覆盖性（与 Python 侧同一口径，提前失败） -------------------
+    var coveredTotal = 0;
+    for (var coverIndex = 0; coverIndex < shardDiagnostics.length; coverIndex += 1) {
+      coveredTotal += shardDiagnostics[coverIndex].expectedTotal;
+    }
+    if (coveredTotal !== baselineBefore) {
+      failWithDiagnostics(
+        "五个 shard 的 total 之和(" + coveredTotal + ") != baseline(" + baselineBefore +
+          ")；分片未覆盖全体或与基线不一致。已整体停止，不产出任何 bundle。",
+        makeDiagnostics()
+      );
+    }
+
+    // ---- baseline_after（与 baseline_before 同一窗口内对拍） -------------
+    await sleep(resolved.delayMs);
+    baselineAfter = await requestReportedTotal(resolved.semester);
+    requests += 1;
+
+    // ① baseline sandwich：不等价 → 整体失败，⛔ 不产出任何 bundle。
+    if (baselineBefore !== baselineAfter) {
+      failWithDiagnostics(
+        "baseline_before(" + baselineBefore + ") != baseline_after(" + baselineAfter +
+          ")；该学期数据集合在采集窗口内发生变化（历史 6892 → 现 6880 属已知漂移）。" +
+          "已整体停止，不产出任何 bundle。",
+        makeDiagnostics()
+      );
+    }
+
+    return {
+      cancelled: false,
+      requests: requests,
+      semester: resolved.semester,
+      page_size: pageSize,
+      shards: shardResults,
+      diagnostics: makeDiagnostics()
+    };
+  }
+
+  /**
+   * 取某个 shard 的**裸** Capture Bundle（对象，可直接交给 Python `load_capture_bundle`）。
+   *
+   * ⛔ 只接受**成功完成**的五校区采集结果；⛔ **不把 diagnostics 塞进 bundle**；
+   * ⛔ 找不到该 shard 时失败，且**不回显**调用方给出的名字。
+   */
+  function shardBundle(result, shardId) {
+    if (!result || result.cancelled === true || !Array.isArray(result.shards)) {
+      fail(
+        "没有可用的五校区采集结果（采集被取消或未完成）。本采集器不会生成伪 bundle。"
+      );
+    }
+
+    for (var index = 0; index < result.shards.length; index += 1) {
+      if (result.shards[index].shard_id === shardId) {
+        return result.shards[index].bundle;
+      }
+    }
+
+    fail("五校区采集结果里没有该 shard（只接受五个已批准校区名）。");
+  }
+
+  /** 某个 shard 裸 Capture Bundle 的 JSON 文本（⛔ 不含 diagnostics）。 */
+  function toShardJson(result, shardId) {
+    return JSON.stringify(shardBundle(result, shardId), null, 2);
+  }
+
+  /** 外层 diagnostics 的 JSON 文本（⛔ diagnostics **不**进入任何裸 bundle）。 */
+  function toDiagnosticsJson(result) {
+    if (!result || result.cancelled === true || !result.diagnostics) {
+      fail("没有可序列化的 diagnostics（采集被取消或未完成）。");
+    }
+    return JSON.stringify(result.diagnostics, null, 2);
   }
 
   // ---------------------------------------------------------------------
@@ -859,6 +1253,7 @@
     semester = semester.trim();
 
     // 只取第 1 页、只取一次。
+    // ⛔ **不传第 4 个参数** = baseline（全量）形态：请求体只有 `yearTerm`，不做任何分片。
     var data = await requestPage(semester, DIAGNOSTIC_PAGE_NO, DIAGNOSTIC_PAGE_SIZE);
 
     var summary = summarizeSchedulePresence(data.rows);
@@ -1360,6 +1755,7 @@
     }
 
     // 只取第 1 页、只取一次。
+    // ⛔ **不传第 4 个参数** = baseline（全量）形态：请求体只有 `yearTerm`，不做任何分片。
     var data = await requestPage(semester, CORRELATION_PAGE_NO, CORRELATION_PAGE_SIZE);
     var rows = data.rows;
 
@@ -1397,10 +1793,16 @@
 
   window.XuehangSysuCollector = {
     collect: collect,
+    collectSharded: collectSharded,
     diagnoseSchedulePresence: diagnoseSchedulePresence,
     summarizeSchedulePresence: summarizeSchedulePresence,
     diagnoseMissingScheduleCorrelation: diagnoseMissingScheduleCorrelation,
     toJson: toJson,
+    shardBundle: shardBundle,
+    toShardJson: toShardJson,
+    toDiagnosticsJson: toDiagnosticsJson,
+    APPROVED_SHARDS: APPROVED_SHARDS,
+    SHARD_PAGE_SIZE: SHARD_PAGE_SIZE,
     DIAGNOSTIC_PAGE_NO: DIAGNOSTIC_PAGE_NO,
     DIAGNOSTIC_PAGE_SIZE: DIAGNOSTIC_PAGE_SIZE,
     CORRELATION_PAGE_NO: CORRELATION_PAGE_NO,

@@ -1505,3 +1505,91 @@
   ⛔ 未改 PR #39；⛔ 未设计 runtime manifest / provenance 格式；⛔ 未碰 SHA-256 gate；
   ⛔ JS 侧五校区 orchestration **仍未实现**。
 - 下一步：等待 Architecture Review（之后再决定如何接入 PR #39 的 exact-artifact gate）。
+
+### 2026-10-05 - 五校区分片合并（方案 B）：JS 侧 sharded collector orchestration
+
+- 触发：Architecture Review **通过**上一轮的 Python 侧 sharded 编排，批准下一阶段实现
+  **JS 侧 sharded collector orchestration**，目标链路：
+  `baseline_before → 五校区串行 collect → baseline_after → 外层 diagnostics`，
+  输出 **5 个独立裸 Capture Bundle + 1 个外层 diagnostics 对象**（⛔ diagnostics 不进裸 bundle）。
+- **五个已批准 shard（源码常量 `APPROVED_SHARDS`，顺序 = 请求顺序）**：
+  东校园 `5063559` / 北校园 `5062202` / 南校园 `5062201` /
+  深圳校区 `333291143` / 珠海校区 `5062203`；
+  ⛔ 不猜其它校区、⛔ 不自动读下拉框、⛔ 不接受调用方传入 shard 列表。
+- **新增入口 `collectSharded({ semester, maxPages, delayMs })`**（必须显式调用）：
+  - baseline 请求 `param: { yearTerm }`（**只有** `yearTerm`，⛔ 不带校区维度），
+    只取第 1 页一次、**只读 `data.total`**（⛔ 不最小化 / 不脱敏 / 不产出 bundle）；
+  - shard 请求 `param: { yearTerm, openingSchoolNumber }`；
+  - 每个 shard：`pageNo` 从 **1** 起、`pageSize` 固定 **200**、
+    `expectedTotal` 取**本 shard 第一页**真实 total、`accumulatedRows == expectedTotal`
+    时以 `reached_total` 停止；
+  - 全程严格串行：每个 shard 的第一个请求也与前一个请求至少间隔 `delayMs`
+    （下限仍是既有的 1000ms），⛔ 无并发 / 无预取 / 无重试 / ⛔ 不跳页。
+- **重构（⛔ 不改行为）**：把 `collect()` 的分页循环抽成 **唯一**的 `collectPages()`，
+  `collect()` 与每个 shard 都复用它 —— 因此 `pageNo` 锁 1、`pageSize` 校验、
+  total 中途变化即失败、`minimizeRow` + 教师脱敏、串行 sleep 全部是**同一份实现**；
+  共用选项校验抽成 `resolvePagingOptions()`；新增 `buildRequestParam()` 决定 `param` 形态。
+  ⛔ 既有 45 个 Node 用例**全部继续通过**（行为未变）。
+- **整体失败（抛出，⛔ 不产出任何 bundle）**：
+  1. `baseline_before !== baseline_after`；
+  2. 任一 shard 未取满 → **立即**停止（不再请求后面的校区，fail fast，少打学校接口）；
+  3. Σ shard `expectedTotal` != baseline（与 Python 侧 C6 同一口径，只是**提前**失败；
+     完整性权威仍在 Python）。
+  失败时错误对象带 `.diagnostics`（已采集到的结构化计数），便于控制台排查。
+- **严格白名单**：只接受 `semester` / `maxPages` / `delayMs`；
+  ⛔ `pageSize`（固定 200）/ `firstPageNo`（固定 1）/ 自定义 shard 列表都不接受覆盖；
+  拒绝时**不回显**调用方给出的参数名；⛔ 校验早于任何请求。
+- **外层 diagnostics**（照 Review 清单）：
+  `baseline_before` / `baseline_after` / `shard_total_sum` / `expected_pages_total` /
+  `semester` / `page_size` / `shard_count` / `approved_shard_count`，以及每个 shard 的
+  `shard_id` / `openingSchoolNumber` / `expectedTotal` / `accumulatedRows` /
+  `stoppedReason` / `page_count` / `expected_pages`；
+  ⛔ 只有结构化计数：**不含**任何 row / 课程号 / 课程名 / 教学班号 / 教师 / 教室 / 原文。
+- **`expected_pages = ceil(total / page_size)` 只作 diagnostics**：
+  ⛔ 不参与任何 complete / 完整性判定（判据只有 `accumulatedRows == expectedTotal`）；
+  静止断言锁死"`Math.ceil` 只出现在写 diagnostics 的那一处"，行为用例锁死
+  "学校返回半页、`page_count != expected_pages` 时**仍然必须成功**"。
+- **取值方式**：`shardBundle(result, shardId)` / `toShardJson(result, shardId)` /
+  `toDiagnosticsJson(result)`；⛔ 既有的 `toJson(result)` **拒绝**五校区结果
+  （它不是单个裸 bundle），取消 / 未完成时所有序列化入口一律失败。
+- **新增 Node 测试**：`tools/sysu_course_offering_collector.test.mjs` **45 → 70 项**
+  （新增 25 项：正常链路 / 请求顺序与请求体形态 / 多页 shard / 半页 `expected_pages` /
+  baseline 漂移两个方向 / 未取满 fail fast（断言**没有**请求后续校区）/
+  覆盖性（断言**没有**发 baseline_after）/ 取消 / 白名单 4 项 / 限速 / semester 校验 /
+  裸 bundle 与 diagnostics 分离 / 取消结果不可序列化 / shard 内解析失败（带 shard 名、
+  **单一前缀**、附 diagnostics、不回显字段取值）/ shard 内 teacher 仍脱敏 /
+  diagnostics 无 row 内容）。
+  ⛔ 零网络：假 `fetch` 按请求体路由 + 假 `setTimeout`（**立即 resolve 但记录延迟**，
+  因此"串行最小间隔"是被断言的，不是被跳过的）；
+  ⛔ 所有 row 人工虚构；真实分片数字不进测试常量。
+- **新增 / 调整静态守卫**：`backend/tests/test_sysu_collector_guard.py` **65 → 78 项**
+  （13 项新增：五校区常量恰好是已批准五个、入口暴露且不自动调用、严格白名单、
+  baseline 探针无校区维度、校区请求取自源码常量、baseline sandwich 顺序与整体失败、
+  未取满 fail fast、覆盖性、**只有一个分页核心**（`collectPages`）且无并发/重试、
+  `expected_pages` 只作 diagnostics、diagnostics 无 row 内容、裸 bundle 恰好 5 个键
+  且不含 diagnostics、序列化入口拒绝未完成结果）。
+  ⚠️ **本轮如实调整了 3 处既有守卫的作用域**（都不是放宽）：
+  1. `test_diagnostic_uses_the_shared_request_path`：`await requestPage(` 计数
+     3 → 4（新增了 baseline 探针这一条**共用**取页路径），并补上"`fetch(` 仍只有 1 处"；
+  2. `test_collector_bundle_keys_match_python_bridge_expectation`：原来的**全文子串**
+     断言 `"firstPageNo: firstPageNo" not in source` 改为**逐个 bundle 字面量**检查
+     顶层键是否 snake_case（现在源码里合法地存在 camelCase 的 JS 局部对象）；
+     对"bundle 元数据不得用 camelCase 请求参数名"这一**原意**而言更严格；
+  3. `test_correlation_diagnostic_does_not_touch_collect_or_2c1b`：`collect()` 切片
+     终点收窄到五校区段落标记，避免把新段落误算进 `collect()`。
+- **non-vacuity（JS mutation 10 项，脚本在 repo 外，未入库）**：逐一改坏
+  sandwich / 未取满 fail-closed / 覆盖性 / 严格白名单 / `expected_pages` 变判据 /
+  baseline 请求形态 / `shardBundle` 回显名字 / diagnostics 夹带 row / 取消语义 /
+  最小间隔 → **每一个都至少 1 个 Node 用例变红**（未取满 fail-fast 与"不再请求后续校区"
+  也是被断言的）；其中白名单、`expected_pages`、diagnostics 夹带 row 三项
+  **同时**被静态守卫抓到（J5 显示改了判定后守卫与 Node 用例同时红）。
+- 测试结果：collector node **69 passed**；collector guard **78 passed**；
+  full backend **2 failed / 2198 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例，未修、未 skip、未删）；
+  `node --check` exit 0；`compileall` exit 0；Python sharded 编排 **31 passed**（未改代码）。
+- **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
+  ⛔ **未跑真实五校区全量采集**（只跑假 `fetch` 的 synthetic 用例）。
+- **本轮未做**：⛔ 未改 Capture Bundle format；⛔ 未改
+  `backend/app/course_data/sharded_capture.py`；⛔ 未改 `planning_runtime.py`；
+  ⛔ 未改 PR #39；⛔ 未设计 runtime manifest / provenance 格式；⛔ 未碰 SHA-256 gate。
+- 下一步：等待 Architecture Review。

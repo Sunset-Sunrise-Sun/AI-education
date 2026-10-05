@@ -513,3 +513,585 @@ test("teachingTimePlaceStr 属性缺失：仍不创建该 key（DG-07B 不变）
     "属性不存在时不得创建该 key",
   );
 });
+
+// ===========================================================================
+// 五校区 shard 编排（baseline_before → 五校区串行 → baseline_after）
+//
+// ⛔ 全程零网络：`fetch` 被替换为**假的 same-origin 实现**，按请求体里的
+//    `openingSchoolNumber` / `pageNo` 返回**人工虚构**的页。
+// ⛔ 所有 row / 课程 / 教师 / 教室均为虚构；真实分片数字（1071/405/…）不进来。
+// ⛔ `setTimeout` 也被替换：`sleep()` 立即 resolve，但**仍然记录请求的毫秒数**，
+//    因此"串行 + 最小间隔"是被断言的，而不是被跳过的。
+// ===========================================================================
+
+/** 已批准的五个 shard（与源码常量同值；这里只用于断言"请求真的按这个顺序发"）。 */
+const SHARDS = [
+  { shard_id: "东校园", openingSchoolNumber: "5063559" },
+  { shard_id: "北校园", openingSchoolNumber: "5062202" },
+  { shard_id: "南校园", openingSchoolNumber: "5062201" },
+  { shard_id: "深圳校区", openingSchoolNumber: "333291143" },
+  { shard_id: "珠海校区", openingSchoolNumber: "5062203" },
+];
+
+/** 人工虚构的每个校区行数（合计 13）；全部 <= 200 ⇒ 每个 shard 只需 1 页。 */
+const SHARD_ROW_COUNTS = [3, 1, 4, 2, 3];
+const TOTAL_ROWS = SHARD_ROW_COUNTS.reduce((sum, count) => sum + count, 0);
+
+const BUNDLE_KEYS = ["format", "semester", "first_page_no", "page_size", "pages"];
+
+function fakeResponse(payload) {
+  return {
+    status: 200,
+    ok: true,
+    headers: { get: () => "application/json;charset=UTF-8" },
+    json: async () => payload,
+  };
+}
+
+/** 某个 shard 的若干条人工虚构 row（classNumber 唯一，便于断言不丢行）。 */
+function shardRows(prefix, count) {
+  return Array.from({ length: count }, (_, index) =>
+    Object.assign(rawRow(`1-8周/星期五/第5-6节/${LOCATION}`), {
+      classNumber: `${prefix}-${String(index + 1).padStart(4, "0")}`,
+    }),
+  );
+}
+
+/** 五个校区的默认行集合（按已批准顺序）。 */
+function defaultCampuses(rowCounts = SHARD_ROW_COUNTS) {
+  return SHARDS.map((shard, index) => ({
+    openingSchoolNumber: shard.openingSchoolNumber,
+    rows: shardRows(`SYN${index + 1}`, rowCounts[index]),
+  }));
+}
+
+/**
+ * 在隔离 VM 里加载采集器，注入：
+ *   - 假 `fetch`：按 `openingSchoolNumber` / `pageNo` 返回人造页；
+ *   - 假 `setTimeout`：立即 resolve，但记录请求的延迟（用于断言串行间隔）；
+ *   - 可配置的 `window.confirm`。
+ */
+function loadShardedCollector(options = {}) {
+  const campuses = options.campuses || defaultCampuses();
+  const baselineTotals = options.baselineTotals || [TOTAL_ROWS, TOTAL_ROWS];
+  const pageRows =
+    options.pageRows ||
+    ((rows, pageNo, pageSize) => rows.slice((pageNo - 1) * pageSize, pageNo * pageSize));
+
+  const calls = [];
+  const timers = [];
+  const confirms = [];
+  const byNumber = new Map(campuses.map((campus) => [campus.openingSchoolNumber, campus.rows]));
+  let baselineReads = 0;
+
+  const sandbox = {
+    console,
+    Date,
+    JSON,
+    Promise,
+    Error,
+    Number,
+    Array,
+    String,
+    Object,
+    Math,
+    clearTimeout: () => {},
+    setTimeout: (callback, ms) => {
+      timers.push(ms);
+      queueMicrotask(callback);
+      return timers.length;
+    },
+    fetch: async (url, init) => {
+      const body = JSON.parse(init.body);
+      const campus = body.param.openingSchoolNumber;
+
+      calls.push({
+        campus,
+        pageNo: body.pageNo,
+        pageSize: body.pageSize,
+        paramKeys: Object.keys(body.param),
+      });
+
+      if (campus === undefined) {
+        const total = baselineTotals[Math.min(baselineReads, baselineTotals.length - 1)];
+        baselineReads += 1;
+        // baseline 只读 total：这里故意给空 rows，证明探针不看 rows。
+        return fakeResponse({ code: 200, data: { total, rows: [] } });
+      }
+
+      const rows = byNumber.get(campus);
+      assert.ok(rows !== undefined, `假 fetch 收到未批准的校区号：${campus}`);
+
+      return fakeResponse({
+        code: 200,
+        data: { total: rows.length, rows: pageRows(rows, body.pageNo, body.pageSize) },
+      });
+    },
+  };
+
+  sandbox.window = {
+    location: { hostname: "jwxt.sysu.edu.cn" },
+    confirm: (message) => {
+      confirms.push(message);
+      return options.confirmResult === undefined ? true : options.confirmResult;
+    },
+    XuehangSysuCollector: undefined,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(SOURCE, sandbox, { filename: "sysu_course_offering_collector.js" });
+
+  return { collector: sandbox.window.XuehangSysuCollector, calls, timers, confirms };
+}
+
+/** 捕获 `collectSharded()` 抛出的错误（整体失败时用于检查 message / diagnostics）。 */
+async function captureRejection(run) {
+  try {
+    await run();
+  } catch (error) {
+    return error;
+  }
+  throw new Error("本应整体失败，但调用成功了");
+}
+
+// ---------------------------------------------------------------------------
+// 1. 正常链路
+// ---------------------------------------------------------------------------
+
+test("五校区：baseline → 5 shard → baseline，产出 5 个裸 bundle + 1 个 diagnostics", async () => {
+  const { collector, calls, timers } = loadShardedCollector();
+
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+
+  // 请求顺序：baseline → 五个已批准校区（固定顺序）→ baseline
+  assert.deepEqual(
+    calls.map((call) => call.campus),
+    [undefined, ...SHARDS.map((shard) => shard.openingSchoolNumber), undefined],
+  );
+  assert.equal(calls.length, 7);
+  assert.equal(result.requests, 7);
+  assert.equal(result.cancelled, false);
+
+  // baseline 请求只有 yearTerm；shard 请求带已批准校区号
+  assert.deepEqual(calls[0].paramKeys, ["yearTerm"]);
+  assert.deepEqual(calls[6].paramKeys, ["yearTerm"]);
+  for (const call of calls.slice(1, 6)) {
+    assert.deepEqual(call.paramKeys, ["yearTerm", "openingSchoolNumber"]);
+  }
+
+  // 每个 shard 都从 pageNo=1 开始、pageSize 固定 200
+  for (const call of calls.slice(1, 6)) {
+    assert.equal(call.pageNo, 1);
+    assert.equal(call.pageSize, 200);
+  }
+
+  // 五个独立裸 bundle（⛔ 顶层恰好 5 个键，⛔ 不含 diagnostics）
+  assert.equal(result.shards.length, 5);
+  result.shards.forEach((shard, index) => {
+    assert.equal(shard.shard_id, SHARDS[index].shard_id);
+  });
+
+  let seen = 0;
+  for (const shard of result.shards) {
+    // ⚠️ `Object.keys` 返回的是 VM realm 的数组，不能和宿主数组做 deepStrictEqual
+    assert.equal(
+      Object.keys(shard.bundle).sort().join(","),
+      [...BUNDLE_KEYS].sort().join(","),
+    );
+    assert.equal(shard.bundle.format, "sysu-opening-courses-capture-v1");
+    assert.equal(shard.bundle.semester, SEMESTER);
+    assert.equal(shard.bundle.first_page_no, 1);
+    assert.equal(shard.bundle.page_size, 200);
+    assert.equal(shard.bundle.pages.length, 1);
+    assert.equal(shard.bundle.pages[0].page_no, 1);
+    seen += shard.bundle.pages[0].response.data.rows.length;
+  }
+  assert.equal(seen, TOTAL_ROWS, "五个 shard 必须逐条产出，不丢行");
+});
+
+test("五校区：diagnostics 记录 baseline 与每个 shard 的结构计数", async () => {
+  const { collector } = loadShardedCollector();
+
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  const diagnostics = result.diagnostics;
+
+  assert.equal(diagnostics.baseline_before, TOTAL_ROWS);
+  assert.equal(diagnostics.baseline_after, TOTAL_ROWS);
+  assert.equal(diagnostics.shard_count, 5);
+  assert.equal(diagnostics.approved_shard_count, 5);
+  assert.equal(diagnostics.shard_total_sum, TOTAL_ROWS);
+  assert.equal(diagnostics.page_size, 200);
+
+  assert.equal(diagnostics.shards.length, 5);
+
+  diagnostics.shards.forEach((record, index) => {
+    assert.equal(record.shard_id, SHARDS[index].shard_id);
+    assert.equal(record.openingSchoolNumber, SHARDS[index].openingSchoolNumber);
+    assert.equal(record.expectedTotal, SHARD_ROW_COUNTS[index]);
+    assert.equal(record.accumulatedRows, SHARD_ROW_COUNTS[index]);
+    assert.equal(record.stoppedReason, "reached_total");
+    assert.equal(record.page_count, 1);
+    assert.equal(record.expected_pages, 1);
+  });
+});
+
+test("五校区：串行且每个请求之间至少间隔 delayMs（含 shard 之间）", async () => {
+  const { collector, timers } = loadShardedCollector();
+
+  await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+
+  // 5 个 shard 各一次 + baseline_after 一次；每个都是 MIN_DELAY_MS 以上
+  assert.equal(timers.length, 6);
+  for (const ms of timers) {
+    assert.equal(ms, 1000);
+  }
+});
+
+test("五校区：只弹一次确认框（不是每个 shard 各弹一次）", async () => {
+  const { collector, confirms } = loadShardedCollector();
+
+  await collector.collectSharded({ semester: SEMESTER, maxPages: 3, delayMs: 1000 });
+
+  assert.equal(confirms.length, 1);
+  assert.ok(confirms[0].includes("五校区串行采集"), `确认文案应说明五校区，实际：${confirms[0]}`);
+});
+
+test("五校区：默认 maxPages 下不弹确认框", async () => {
+  const { collector, confirms } = loadShardedCollector();
+
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+
+  assert.equal(confirms.length, 0);
+  assert.equal(result.shards.length, 5);
+});
+
+// ---------------------------------------------------------------------------
+// 2. 多页 shard / expected_pages 只作 diagnostics
+// ---------------------------------------------------------------------------
+
+test("多页 shard：累加到 expectedTotal 后 reached_total 停止", async () => {
+  const rowCounts = [205, 1, 4, 2, 3];
+  const { collector, calls } = loadShardedCollector({
+    campuses: defaultCampuses(rowCounts),
+    baselineTotals: [215, 215],
+  });
+
+  const result = await collector.collectSharded({ semester: SEMESTER, maxPages: 2, delayMs: 1000 });
+
+  const east = result.diagnostics.shards[0];
+  assert.equal(east.expectedTotal, 205);
+  assert.equal(east.accumulatedRows, 205);
+  assert.equal(east.stoppedReason, "reached_total");
+  assert.equal(east.page_count, 2);
+  assert.equal(east.expected_pages, 2);
+
+  const eastCalls = calls.filter((call) => call.campus === "5063559");
+  assert.deepEqual(
+    eastCalls.map((call) => call.pageNo),
+    [1, 2],
+    "同一 shard 内页码必须从 1 连续递增",
+  );
+
+  const first = result.shards[0].bundle.pages[0];
+  const second = result.shards[0].bundle.pages[1];
+  assert.equal(first.response.data.rows.length, 200);
+  assert.equal(second.response.data.rows.length, 5);
+  assert.equal(second.response.data.total, 205, "每页都必须带同一个 total");
+});
+
+test("⛔ expected_pages 只作 diagnostics：页数与 ceil 不一致也必须成功", async () => {
+  // 学校侧返回"半页"（每页 100 行），因此 300 行要 3 页，而 ceil(300/200)=2。
+  const campuses = defaultCampuses([300, 1, 4, 2, 3]);
+  const { collector } = loadShardedCollector({
+    campuses,
+    baselineTotals: [310, 310],
+    pageRows: (rows, pageNo) => rows.slice((pageNo - 1) * 100, pageNo * 100),
+  });
+
+  const result = await collector.collectSharded({ semester: SEMESTER, maxPages: 3, delayMs: 1000 });
+
+  const east = result.diagnostics.shards[0];
+  assert.equal(east.page_count, 3);
+  assert.equal(east.expected_pages, 2);
+  assert.notEqual(east.page_count, east.expected_pages);
+  assert.equal(east.accumulatedRows, 300);
+  assert.equal(east.stoppedReason, "reached_total");
+  assert.equal(result.diagnostics.baseline_after, 310);
+});
+
+// ---------------------------------------------------------------------------
+// 3. 整体失败：baseline sandwich / 未取满 / 覆盖性
+// ---------------------------------------------------------------------------
+
+test("baseline 漂移（after 变大）：整体失败，且 diagnostics 记下两个 baseline", async () => {
+  const { collector } = loadShardedCollector({
+    baselineTotals: [TOTAL_ROWS, TOTAL_ROWS + 1],
+  });
+
+  const error = await captureRejection(() =>
+    collector.collectSharded({ semester: SEMESTER, delayMs: 1000 }),
+  );
+
+  assert.ok(error.message.includes("baseline_before"), `实际：${error.message}`);
+  assert.ok(error.message.includes("baseline_after"), `实际：${error.message}`);
+  assert.equal(error.diagnostics.baseline_before, TOTAL_ROWS);
+  assert.equal(error.diagnostics.baseline_after, TOTAL_ROWS + 1);
+  assert.equal(error.diagnostics.shards.length, 5);
+});
+
+test("baseline 漂移（after 变小）：同样整体失败", async () => {
+  const { collector } = loadShardedCollector({
+    baselineTotals: [TOTAL_ROWS, TOTAL_ROWS - 1],
+  });
+
+  const error = await captureRejection(() =>
+    collector.collectSharded({ semester: SEMESTER, delayMs: 1000 }),
+  );
+
+  assert.equal(error.diagnostics.baseline_before, TOTAL_ROWS);
+  assert.equal(error.diagnostics.baseline_after, TOTAL_ROWS - 1);
+});
+
+test("shard 未取满：立即整体停止，⛔ 不再继续打其它校区", async () => {
+  const { collector, calls } = loadShardedCollector({
+    campuses: defaultCampuses([205, 1, 4, 2, 3]),
+    baselineTotals: [215, 215],
+  });
+
+  const error = await captureRejection(() =>
+    collector.collectSharded({ semester: SEMESTER, maxPages: 1, delayMs: 1000 }),
+  );
+
+  assert.ok(error.message.includes("东校园"), `实际：${error.message}`);
+  assert.ok(error.message.includes("未取满"), `实际：${error.message}`);
+
+  // baseline + 仅东校园的第 1 页；其它校区**没有**被请求
+  assert.deepEqual(
+    calls.map((call) => call.campus),
+    [undefined, "5063559"],
+  );
+
+  assert.equal(error.diagnostics.shards.length, 1);
+  assert.equal(error.diagnostics.shards[0].stoppedReason, "max_pages");
+  assert.equal(error.diagnostics.shards[0].accumulatedRows, 200);
+  assert.equal(error.diagnostics.baseline_after, null, "失败前不应再发 baseline_after");
+});
+
+test("Σ shard total != baseline：整体失败（不再发 baseline_after）", async () => {
+  const { collector, calls } = loadShardedCollector({
+    baselineTotals: [TOTAL_ROWS - 1, TOTAL_ROWS - 1],
+  });
+
+  const error = await captureRejection(() =>
+    collector.collectSharded({ semester: SEMESTER, delayMs: 1000 }),
+  );
+
+  assert.ok(error.message.includes("分片未覆盖全体或与基线不一致"), `实际：${error.message}`);
+  assert.equal(calls.length, 6, "baseline + 五个校区后即失败，不再发 baseline_after");
+  assert.equal(error.diagnostics.shard_count, 5);
+  assert.equal(error.diagnostics.baseline_after, null);
+});
+
+test("取消确认：不发出任何请求，也不产出 bundle / diagnostics", async () => {
+  const { collector, calls } = loadShardedCollector({ confirmResult: false });
+
+  const result = await collector.collectSharded({
+    semester: SEMESTER,
+    maxPages: 3,
+    delayMs: 1000,
+  });
+
+  assert.equal(result.cancelled, true);
+  assert.equal(result.shards.length, 0);
+  assert.equal(result.diagnostics, null);
+  assert.equal(calls.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// 4. 参数白名单 / 限速
+// ---------------------------------------------------------------------------
+
+for (const [label, options] of [
+  ["pageSize 覆盖", { pageSize: 100 }],
+  ["firstPageNo 覆盖", { firstPageNo: 2 }],
+  ["自定义 shard 列表", { shardIds: ["东校园"] }],
+  ["未知参数", { foo: 1 }],
+]) {
+  test(`五校区：${label} 在发请求之前被拒绝`, async () => {
+    const { collector, calls } = loadShardedCollector();
+
+    const error = await captureRejection(() =>
+      collector.collectSharded(Object.assign({ semester: SEMESTER }, options)),
+    );
+
+    assert.equal(calls.length, 0, "白名单校验必须早于任何请求");
+    // ⛔ 不回显调用方给出的键名（错误信息只列允许项）
+    for (const name of Object.keys(options)) {
+      assert.ok(!error.message.includes(name), `⛔ 不得回显参数名：${name}`);
+    }
+    assert.ok(error.message.includes("参数名不予回显"), `实际：${error.message}`);
+  });
+}
+
+test("五校区：delayMs 低于下限被拒绝，且不发请求", async () => {
+  const { collector, calls } = loadShardedCollector();
+
+  await captureRejection(() =>
+    collector.collectSharded({ semester: SEMESTER, delayMs: 999 }),
+  );
+
+  assert.equal(calls.length, 0);
+});
+
+test("五校区：semester 缺失 / 为空被拒绝", async () => {
+  for (const bad of [undefined, "", "   "]) {
+    const { collector, calls } = loadShardedCollector();
+
+    await captureRejection(() => collector.collectSharded({ semester: bad }));
+
+    assert.equal(calls.length, 0);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 5. 序列化边界：裸 bundle 与 diagnostics 严格分开
+// ---------------------------------------------------------------------------
+
+test("五校区：toShardJson 输出裸 bundle，toDiagnosticsJson 输出外层 diagnostics", async () => {
+  const { collector } = loadShardedCollector();
+
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+
+  const east = JSON.parse(collector.toShardJson(result, "东校园"));
+  assert.equal(Object.keys(east).sort().join(","), [...BUNDLE_KEYS].sort().join(","));
+  assert.equal(east.semester, SEMESTER);
+
+  const diagnostics = JSON.parse(collector.toDiagnosticsJson(result));
+  assert.equal(diagnostics.baseline_before, TOTAL_ROWS);
+  assert.equal(diagnostics.shards.length, 5);
+
+  // ⛔ diagnostics 不得混进裸 bundle
+  const bundleText = collector.toShardJson(result, "东校园");
+  for (const forbidden of ["diagnostics", "expected_pages", "baseline_before", "stoppedReason"]) {
+    assert.ok(!bundleText.includes(forbidden), `⛔ 裸 bundle 不得含 ${forbidden}`);
+  }
+});
+
+test("五校区：shardBundle 只接受已批准校区名，且不回显其它名字", async () => {
+  const { collector } = loadShardedCollector();
+
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+
+  for (const shard of SHARDS) {
+    const bundle = collector.shardBundle(result, shard.shard_id);
+    assert.equal(bundle.semester, SEMESTER);
+    assert.equal(bundle.page_size, 200);
+  }
+
+  const error = await captureRejection(async () =>
+    collector.shardBundle(result, "未批准校区哨兵"),
+  );
+  assert.ok(!error.message.includes("未批准校区哨兵"), "⛔ 不得回显调用方给出的名字");
+});
+
+test("五校区：toJson() 拒绝五校区结果（它不是单个裸 bundle）", async () => {
+  const { collector } = loadShardedCollector();
+
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+
+  await assert.rejects(async () => collector.toJson(result), /伪 bundle/);
+});
+
+test("五校区：取消结果无法被任何序列化入口使用", async () => {
+  const { collector } = loadShardedCollector({ confirmResult: false });
+
+  const result = await collector.collectSharded({
+    semester: SEMESTER,
+    maxPages: 3,
+    delayMs: 1000,
+  });
+
+  await assert.rejects(async () => collector.shardBundle(result, "东校园"));
+  await assert.rejects(async () => collector.toShardJson(result, "东校园"));
+  await assert.rejects(async () => collector.toDiagnosticsJson(result));
+});
+
+test("五校区：某个 shard 内解析失败 → 带 shard 名、单一前缀、并附 diagnostics", async () => {
+  const campuses = defaultCampuses();
+  // 北校园第 1 条：5 字段二义形态（既非明确 teacher 也非明确 location）→ fail closed
+  campuses[1].rows[0] = Object.assign(
+    rawRow(`1-8周/星期五/第5-6节/示例-教师A/${ACTIVITY}`),
+    { classNumber: "SYN2-BAD" },
+  );
+
+  const { collector, calls } = loadShardedCollector({ campuses });
+
+  const error = await captureRejection(() =>
+    collector.collectSharded({ semester: SEMESTER, delayMs: 1000 }),
+  );
+
+  assert.ok(error.message.includes("北校园"), `实际：${error.message}`);
+  assert.ok(error.message.includes("不猜语义"), `实际：${error.message}`);
+  assert.equal(
+    error.message.split("[学航采集器]").length - 1,
+    1,
+    "⛔ 包装后的错误信息不得出现两个前缀",
+  );
+  assert.ok(!error.message.includes("示例-教师A"), "⛔ 不得回显二义字段取值");
+
+  // 已经完成的 shard 进度保留在 diagnostics 里；失败 shard 之后不再请求
+  assert.equal(error.diagnostics.shard_count, 1);
+  assert.equal(error.diagnostics.shards[0].shard_id, "东校园");
+  assert.deepEqual(
+    calls.map((call) => call.campus),
+    [undefined, "5063559", "5062202"],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 6. 隐私：shard 路径仍走同一套最小化 / 脱敏
+// ---------------------------------------------------------------------------
+
+test("五校区：shard bundle 内的 teacher 仍被脱敏", async () => {
+  const campuses = defaultCampuses();
+  campuses[2].rows[0] = Object.assign(
+    rawRow(`1-8周/星期五/第5-6节/${TEACHER}/${ACTIVITY}`),
+    { classNumber: "SYN3-PRIVACY" },
+  );
+
+  const { collector } = loadShardedCollector({ campuses });
+
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  const rows = result.shards[2].bundle.pages[0].response.data.rows;
+
+  const redacted = rows.find((row) => row.classNumber === "SYN3-PRIVACY");
+  assert.ok(redacted.teachingTimePlaceStr.includes("REDACTED"));
+  assert.ok(!redacted.teachingTimePlaceStr.includes(TEACHER), "⛔ 真实 teacher 不得进入 shard bundle");
+
+  const diagnosticsText = collector.toDiagnosticsJson(result);
+  for (const forbidden of [TEACHER, "courseNum", "courseName", "classNumber", "teachingTimePlaceStr", "SYN3"]) {
+    assert.ok(!diagnosticsText.includes(forbidden), `⛔ diagnostics 不得含 ${forbidden}`);
+  }
+});
+
+test("五校区：diagnostics 只有结构化计数，没有任何 row / 课程取值", async () => {
+  const { collector } = loadShardedCollector();
+
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+
+  const serialized = JSON.stringify(result.diagnostics);
+
+  for (const forbidden of [
+    "SYN1",
+    "courseNum",
+    "courseName",
+    "classNumber",
+    "teachingTimePlaceStr",
+    "REDACTED",
+    LOCATION,
+    '"rows"',
+    "raw_rows",
+  ]) {
+    assert.ok(!serialized.includes(forbidden), `⛔ diagnostics 不得含 ${forbidden}`);
+  }
+});

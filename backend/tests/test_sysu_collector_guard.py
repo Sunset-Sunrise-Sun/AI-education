@@ -234,15 +234,49 @@ def test_collector_to_json_refuses_cancelled_or_empty_result(collector_source: s
     assert reject_index < serialize_index
 
 
+def _bundle_literal_slices(collector_source: str) -> list[str]:
+    """所有 `bundle: { ... }` 字面量的文本切片（用于检查**bundle 顶层键**）。
+
+    ⚠️ 作用域说明：本轮起有两个 bundle 构造点（`collect()` 与五校区编排里
+    每个 shard 各一份），因此"bundle 顶层必须是 snake_case"这条断言必须
+    按**字面量**检查，而不是对全文做子串检查 —— 全文里合法地存在
+    camelCase 的 JS 局部对象（例如 `resolvePagingOptions()` 的返回值）。
+    """
+
+    slices: list[str] = []
+    cursor = 0
+
+    while True:
+        start = collector_source.find("bundle: {", cursor)
+        if start == -1:
+            break
+        end = collector_source.find("}", start)
+        assert end != -1, "bundle 字面量没有闭合"
+        slices.append(collector_source[start:end])
+        cursor = end + 1
+
+    return slices
+
+
 def test_collector_bundle_keys_match_python_bridge_expectation(collector_source: str) -> None:
     """bundle 顶层键必须与 Python Capture Bridge 的校验键一致（`first_page_no` 等 snake_case）。"""
 
     for key in ("format", "semester", "first_page_no", "page_size", "pages"):
         assert key + ":" in collector_source, f"bundle 缺少键：{key}"
 
-    # 不得把 SYSU 的 camelCase 请求参数名写进 bundle 元数据
-    assert "firstPageNo: firstPageNo" not in collector_source
-    assert "pageSize: pageSize," in collector_source  # 仅出现在请求 body 中
+    # ⛔ 每一个 bundle 字面量的顶层键都必须是 snake_case
+    literals = _bundle_literal_slices(collector_source)
+    assert len(literals) == 2, "预期恰好两个 bundle 构造点（collect / 五校区 shard）"
+
+    for literal in literals:
+        for key in ("format:", "semester:", "first_page_no:", "page_size:", "pages:"):
+            assert key in literal, f"bundle 字面量缺少键：{key}"
+
+        for camel in ("firstPageNo:", "pageSize:", "pageNo:"):
+            assert camel not in literal, f"bundle 顶层不得使用 camelCase 请求参数名：{camel}"
+
+    # 请求 body 仍用 camelCase（只出现在请求里）
+    assert "pageSize: pageSize," in collector_source
 
 
 # ---------------------------------------------------------------------------
@@ -488,10 +522,15 @@ def test_diagnostic_is_exposed_and_not_auto_called(collector_source: str) -> Non
 def test_diagnostic_uses_the_shared_request_path(collector_source: str) -> None:
     """诊断复用既有取页函数（不复制认证 / 请求逻辑）。"""
 
-    # 1 处定义 + 每个"只取一页一次"的入口各 1 处调用
-    # （`collect()` 是唯一的多页入口；2C1B / 2C1C 诊断各只调一次）
+    # 1 处定义 + 每个取页入口各 1 处调用：
+    #   `collectPages()` 分页循环（`collect()` 与每个 shard 都走它）、
+    #   `requestReportedTotal()` baseline 探针、
+    #   2C1B / 2C1C 诊断各只调一次。
     assert collector_source.count("requestPage(") == collector_source.count("await requestPage(") + 1
-    assert collector_source.count("await requestPage(") == 3
+    assert collector_source.count("await requestPage(") == 4
+
+    # 唯一的 `fetch(` 仍在 `requestPage` 内部（⛔ 新增入口不得自己发请求）
+    assert collector_source.count("fetch(") == 1
 
     slice_ = _diagnose_slice(collector_source)
     assert "await requestPage(" in slice_
@@ -1150,7 +1189,7 @@ def test_correlation_diagnostic_does_not_touch_collect_or_2c1b(collector_source:
 
     # C1C 不得被 collect() 调用（它只是并列入口，不参与生产链路）
     start = collector_source.index("async function collect(")
-    end = collector_source.index("// 结构诊断（Phase 2B-2C1B）")
+    end = collector_source.index(_SHARDED_SECTION_START)
     collect_body = collector_source[start:end]
 
     for forbidden in (
@@ -1160,3 +1199,350 @@ def test_correlation_diagnostic_does_not_touch_collect_or_2c1b(collector_source:
         "summarizeFieldShape",
     ):
         assert forbidden not in collect_body, f"collect() 不得引入 C1C：{forbidden}"
+
+
+# ---------------------------------------------------------------------------
+# 五校区 shard 编排（Architecture Review 已批准）
+#
+#   baseline_before → 五校区串行 collect → baseline_after → 外层 diagnostics
+#
+# ⛔ 本段仍是**源码级**检查；运行时行为由
+# `node --test tools/sysu_course_offering_collector.test.mjs` 覆盖。
+# ---------------------------------------------------------------------------
+
+_SHARDED_SECTION_START = "// 五校区 shard 编排（Architecture Review 已批准）"
+_SHARDED_DIAGNOSTIC_START = "async function collectSharded("
+_COLLECT_CORE_START = "async function collectPages("
+_SHARDED_BUNDLE_START = "function shardBundle("
+
+_SHARDED_CAMPUS_CONSTANTS = (
+    ("东校园", "5063559"),
+    ("北校园", "5062202"),
+    ("南校园", "5062201"),
+    ("深圳校区", "333291143"),
+    ("珠海校区", "5062203"),
+)
+
+
+def _approved_shards_slice(collector_source: str) -> str:
+    """`APPROVED_SHARDS` 常量块（**唯一**的 shard 清单定义处）。"""
+
+    start = collector_source.index("var APPROVED_SHARDS = [")
+    end = collector_source.index("];", start)
+
+    return collector_source[start:end]
+
+
+def _sharded_section_slice(collector_source: str) -> str:
+    """整个五校区编排段（常量除外，常量在文件顶部的常量区）。"""
+
+    start = collector_source.index(_SHARDED_SECTION_START)
+    end = collector_source.index("// 结构诊断（Phase 2B-2C1B）")
+
+    return collector_source[start:end]
+
+
+def _collect_sharded_slice(collector_source: str) -> str:
+    """`collectSharded()` 的函数体（含嵌套的 `makeDiagnostics()`）。"""
+
+    start = collector_source.index(_SHARDED_DIAGNOSTIC_START)
+    end = collector_source.index(_SHARDED_BUNDLE_START)
+
+    return collector_source[start:end]
+
+
+def test_sharded_constants_are_the_five_approved_campuses(collector_source: str) -> None:
+    """⛔ shard 清单**只能**是已人工取证的五个校区（不猜、不自动发现）。"""
+
+    block = _approved_shards_slice(collector_source)
+
+    assert block.count("shard_id:") == 5
+
+    for shard_id, opening_school_number in _SHARDED_CAMPUS_CONSTANTS:
+        assert f'shard_id: "{shard_id}"' in block
+        assert f'openingSchoolNumber: "{opening_school_number}"' in block
+
+    # 每个已批准校区号在**整个源码**里只出现一次（不散落在多处）
+    for _, opening_school_number in _SHARDED_CAMPUS_CONSTANTS:
+        assert collector_source.count(f'"{opening_school_number}"') == 1
+
+
+def test_sharded_entry_is_exposed_and_not_auto_called(collector_source: str) -> None:
+    """五校区入口必须显式暴露，且**加载脚本不得自动调用**。"""
+
+    assert "collectSharded: collectSharded" in collector_source
+
+    expose_index = collector_source.rindex("window.XuehangSysuCollector")
+    remainder = collector_source[expose_index + len("window.XuehangSysuCollector") :]
+
+    assert "collectSharded(" not in remainder, "挂载之后不得自动调用五校区采集"
+    assert "shardBundle(" not in remainder
+    assert "toShardJson(" not in remainder
+    assert "toDiagnosticsJson(" not in remainder
+
+
+def test_sharded_rejects_any_option_outside_the_whitelist(collector_source: str) -> None:
+    """⛔ 严格白名单：只接受 `semester` / `maxPages` / `delayMs`，其它键发请求前拒绝。
+
+    ⛔ `pageSize` / `firstPageNo` / 自定义 shard 列表**都不接受覆盖**
+    （五校区固定 `pageSize=200`、`pageNo` 从 1 起、shard 清单是源码常量）。
+    """
+
+    assert 'var SHARDED_ALLOWED_OPTIONS = ["semester", "maxPages", "delayMs"];' in collector_source
+
+    body = _collect_sharded_slice(collector_source)
+
+    assert "SHARDED_ALLOWED_OPTIONS.indexOf(name) === -1" in body
+    assert "if (unexpected.length > 0) {" in body
+
+    # 白名单校验必须早于任何取页调用
+    assert body.index("var optionNames = Object.keys(opts);") < body.index(
+        "await requestReportedTotal("
+    )
+
+    # ⛔ 不得把调用方提供的键名回显到错误信息
+    assert "unexpected.join(" not in body
+    assert "optionNames.join(" not in body
+
+    # ⛔ 不得从 options 读取 pageSize / firstPageNo / shard 列表
+    for forbidden in ("opts.pageSize", "opts.firstPageNo", "opts.shards", "opts.shardIds"):
+        assert forbidden not in body, f"五校区采集不得读取：{forbidden}"
+
+    for forbidden in ("opts.firstPageNo === undefined ?",):
+        assert forbidden not in collector_source
+
+
+def test_sharded_baseline_probe_has_no_campus_dimension(collector_source: str) -> None:
+    """baseline 请求只有 `yearTerm`：⛔ 不带 `openingSchoolNumber`。"""
+
+    builder = _js_function_slice(
+        collector_source, "function buildRequestParam(", "async function requestPage("
+    )
+
+    # 不传校区号 → 只有 yearTerm；传了 → 追加已批准维度
+    assert "if (openingSchoolNumber === undefined) {" in builder
+    assert "return { yearTerm: semester };" in builder
+    assert "param[SHARD_PARAM_NAME] = openingSchoolNumber;" in builder
+
+    probe = _js_function_slice(
+        collector_source, "async function requestReportedTotal(", "async function collect("
+    )
+
+    # 探针只取一页一次、只读 total，⛔ 不最小化 / 不脱敏 / 不产出 bundle
+    assert probe.count("await requestPage(") == 1
+    assert "return data.total;" in probe
+
+    for forbidden in ("minimizeRow", "redact", "bundle", "CAPTURE_FORMAT", "toJson", "for ("):
+        assert forbidden not in probe, f"baseline 探针不得出现：{forbidden}"
+
+
+def test_sharded_campus_requests_use_the_approved_constant(collector_source: str) -> None:
+    """每个 shard 的请求维度来自**源码常量**，⛔ 不来自调用方输入。"""
+
+    body = _collect_sharded_slice(collector_source)
+
+    assert "var shard = APPROVED_SHARDS[shardIndex];" in body
+    assert "shard.openingSchoolNumber" in body
+    assert "SHARD_PAGE_SIZE" in body
+    # ⛔ 不接受调用方传入 shard 列表 / 校区号
+    assert "opts.openingSchoolNumber" not in body
+    assert "options.shards" not in collector_source
+
+
+def test_sharded_keeps_the_baseline_sandwich(collector_source: str) -> None:
+    """`baseline_before` → 五个 shard → `baseline_after`，且不等价即整体失败。"""
+
+    body = _collect_sharded_slice(collector_source)
+
+    before_index = body.index("baselineBefore = await requestReportedTotal(")
+    shard_index = body.index("for (var shardIndex = 0;")
+    after_index = body.index("baselineAfter = await requestReportedTotal(")
+    compare_index = body.index("if (baselineBefore !== baselineAfter) {")
+
+    assert before_index < shard_index < after_index < compare_index, (
+        "顺序必须是 baseline_before → 五个 shard → baseline_after → 对拍"
+    )
+
+    # 对拍失败必须整体失败（带 diagnostics 抛出，⛔ 不返回任何 bundle）
+    assert "failWithDiagnostics(" in body[compare_index:]
+
+
+def test_sharded_fails_closed_on_an_incomplete_shard(collector_source: str) -> None:
+    """任一 shard 未取满（`stoppedReason !== "reached_total"`）→ 立即整体停止。"""
+
+    body = _collect_sharded_slice(collector_source)
+
+    assert 'core.stoppedReason !== "reached_total"' in body
+    assert "core.accumulatedRows !== core.expectedTotal" in body
+    assert "已整体停止，不产出任何 bundle" in body
+
+    # 检查必须发生在取 baseline_after **之前**（fail fast，不再继续打学校接口）
+    check_index = body.index('core.stoppedReason !== "reached_total"')
+    assert check_index < body.index("baselineAfter = await requestReportedTotal(")
+
+
+def test_sharded_fails_closed_on_coverage_mismatch(collector_source: str) -> None:
+    """Σ shard total != baseline → 整体失败（与 Python 侧同一口径，只是提前）。"""
+
+    body = _collect_sharded_slice(collector_source)
+
+    assert "if (coveredTotal !== baselineBefore) {" in body
+    assert "分片未覆盖全体或与基线不一致" in body
+
+
+def test_sharded_reuses_the_single_paging_core(collector_source: str) -> None:
+    """⛔ 只有一个分页循环：五个 shard 全部走 `collectPages()`。
+
+    这样 `pageNo` 从 1 起、`pageSize`、`expectedTotal` 取本 shard 第一页、
+    `reached_total` 停止、串行 delay 全部是**同一份**实现，不存在第二套分页逻辑。
+    """
+
+    assert collector_source.count("async function collectPages(") == 1
+    assert collector_source.count('stoppedReason = "reached_total";') == 1
+    assert collector_source.count("for (var index = 0; index < maxPages; index += 1)") == 1
+
+    body = _collect_sharded_slice(collector_source)
+
+    assert body.count("await collectPages(") == 1, "五个 shard 必须复用同一个分页核心"
+    assert "await sleep(resolved.delayMs);" in body, "每个 shard 的第一个请求也要间隔 delayMs"
+
+    # ⛔ 不得并发 / 定时轮询 / 重试
+    for forbidden in ("Promise.all", "Promise.allSettled", "Promise.race", "setInterval", "retry"):
+        assert forbidden not in body, f"五校区编排不得出现：{forbidden}"
+
+
+def test_sharded_expected_pages_is_diagnostics_only(collector_source: str) -> None:
+    """⛔ `expected_pages = ceil(total / page_size)` **只允许作 diagnostics**。
+
+    它**不得**参与 complete / 完整性判定：判据只有 `accumulatedRows == expectedTotal`。
+    """
+
+    body = _collect_sharded_slice(collector_source)
+
+    assert "expected_pages: Math.ceil(core.expectedTotal / pageSize)" in body
+
+    # ⛔ `Math.ceil` 只允许出现在"写 diagnostics 记录"这一处
+    assert body.count("Math.ceil(") == 1, "expected_pages 的计算只允许有一处（diagnostics）"
+
+    record_start = body.index("shardDiagnostics.push({")
+    record_end = body.index("});", record_start)
+    assert "Math.ceil(" in body[record_start:record_end]
+
+    # ⛔ 判定分支里不得出现页数计算
+    check_index = body.index('core.stoppedReason !== "reached_total"')
+    decision = body[check_index : body.index("}", check_index)]
+    assert "Math.ceil(" not in decision, "complete 判定不得使用 expected_pages"
+
+    # ⛔ 不得把 expected_pages 与任何东西比较（那就是让它参与判定）
+    for forbidden in (
+        "=== expected_pages",
+        "!== expected_pages",
+        "== expected_pages",
+        "!= expected_pages",
+        "< expected_pages",
+        "> expected_pages",
+        "expected_pages ===",
+        "expected_pages !==",
+        "expected_pages +",
+        "expected_pages -",
+    ):
+        assert forbidden not in collector_source, f"expected_pages 不得参与判定：{forbidden}"
+
+
+def test_sharded_diagnostics_carries_no_row_content(collector_source: str) -> None:
+    """外层 diagnostics 只有结构化计数：⛔ 无 row、无课程 / 教师 / 原文。"""
+
+    body = _collect_sharded_slice(collector_source)
+
+    diagnostic_start = body.index("function makeDiagnostics()")
+    diagnostic_end = body.index("// ---- baseline_before")
+    diagnostics = body[diagnostic_start:diagnostic_end]
+
+    for key in (
+        "baseline_before: baselineBefore",
+        "baseline_after: baselineAfter",
+        "shard_total_sum: totalSum",
+        "expected_pages_total: pageSum",
+        "shards: shardDiagnostics.slice()",
+    ):
+        assert key in diagnostics, f"diagnostics 缺少：{key}"
+
+    for forbidden in (
+        "pages:",
+        "rows",
+        "courseNum",
+        "courseName",
+        "classNumber",
+        "teachingTimePlaceStr",
+        "teacher",
+        "readObj",
+        "timePlaceId",
+    ):
+        assert forbidden not in diagnostics, f"diagnostics 不得包含：{forbidden}"
+
+    # 每个 shard 的诊断记录：照 Review 清单，且不含任何 row 内容
+    record_start = body.index("shardDiagnostics.push({")
+    record_end = body.index("});", record_start)
+    record = body[record_start:record_end]
+
+    for key in (
+        "shard_id: shard.shard_id",
+        "openingSchoolNumber: shard.openingSchoolNumber",
+        "expectedTotal: core.expectedTotal",
+        "accumulatedRows: core.accumulatedRows",
+        "stoppedReason: core.stoppedReason",
+        "page_count: core.pages.length",
+    ):
+        assert key in record, f"shard 诊断记录缺少：{key}"
+
+    for forbidden in ("rows", "courseNum", "teachingTimePlaceStr", "teacher", "readObj"):
+        assert forbidden not in record, f"shard 诊断记录不得包含：{forbidden}"
+
+
+def test_sharded_bundles_exclude_diagnostics(collector_source: str) -> None:
+    """⛔ diagnostics **不进入**裸 bundle：bundle 顶层只有 5 个键。"""
+
+    body = _collect_sharded_slice(collector_source)
+
+    bundle_start = body.index("bundle: {")
+    bundle_end = body.index("}", bundle_start)
+    bundle = body[bundle_start:bundle_end]
+
+    keys = {
+        line.strip().split(":")[0]
+        for line in bundle.splitlines()
+        if ":" in line and not line.strip().startswith("//")
+    }
+    keys.discard("bundle")
+
+    assert keys == {"format", "semester", "first_page_no", "page_size", "pages"}, (
+        f"shard 裸 bundle 顶层键必须恰好是 5 个，实际：{sorted(keys)}"
+    )
+    assert "diagnostics" not in bundle
+    assert "expected_pages" not in bundle
+
+
+def test_sharded_serializers_refuse_incomplete_results(collector_source: str) -> None:
+    """⛔ 取消 / 未完成时不得序列化任何 bundle 或 diagnostics。"""
+
+    shard_bundle = _js_function_slice(
+        collector_source, _SHARDED_BUNDLE_START, "function toShardJson("
+    )
+    assert "result.cancelled === true" in shard_bundle
+    assert "!Array.isArray(result.shards)" in shard_bundle
+    assert "本采集器不会生成伪 bundle" in shard_bundle
+    # ⛔ 找不到 shard 时不回显调用方给出的名字
+    assert "+ shardId" not in shard_bundle
+    assert "shardId +" not in shard_bundle
+
+    to_shard = _js_function_slice(
+        collector_source, "function toShardJson(", "function toDiagnosticsJson("
+    )
+    assert "JSON.stringify(shardBundle(result, shardId), null, 2)" in to_shard
+    # ⛔ 不得把 wrapper（含 diagnostics）序列化成 bundle
+    assert "JSON.stringify(result, null, 2)" not in to_shard
+
+    to_diagnostics = _js_function_slice(
+        collector_source, "function toDiagnosticsJson(", "// 结构诊断（Phase 2B-2C1B）"
+    )
+    assert "JSON.stringify(result.diagnostics, null, 2)" in to_diagnostics
