@@ -1767,6 +1767,42 @@
     multiset.set(token, current === undefined ? 1 : current + 1);
   }
 
+  // ---------------------------------------------------------------------
+  // Layout B 候选 `f3` 的**原始字段名命中**统计（Architecture Review 裁定 2026-10-05）
+  //
+  // 目的：`f3 == teachingName` 与 `f3 ∈ 已确认 activity 集合` 都是 0，
+  //       因此用**严格字符串相等**在 raw row 的**字符串字段**里找出 f3 命中哪些字段。
+  //
+  // ⛔ 只输出**字段名**与命中次数（⛔ 不输出 raw value / f3 原文 / teacher name / 任何 id）；
+  // ⛔ 只做**严格相等**（⛔ 无模糊匹配 / ⛔ 无 substring / ⛔ 无分词 / ⛔ 无大小写折叠）；
+  // ⛔ 多个字段同时命中 → **全部保留**（⛔ 不自行裁定哪一个才是答案）。
+  // ---------------------------------------------------------------------
+
+  /** Architecture Review 明确排除 + 已知内部 ID 字段（⛔ 不进入命中统计）。 */
+  var LAYOUT_B_F3_MATCH_EXCLUDED_FIELDS = [
+    "courseNum",
+    "classNumber",
+    "teachingTimePlaceStr",
+    // collector 既有的 structural-only 字段（内部 ID）
+    "timePlaceId"
+  ];
+
+  /**
+   * 内部 ID **形状**的字段名（**机械**规则，⛔ 不猜业务语义）：以 `Id` / `ID` 结尾。
+   *
+   * ⚠️ 这是字段**名**的形状规则（`timePlaceId` / `someInternalId` / `internalID` …），
+   * ⛔ **不是**对字段**取值**的模糊匹配。
+   */
+  var LAYOUT_B_F3_MATCH_EXCLUDED_FIELD_PATTERN = /[Ii][Dd]$/;
+
+  /** 该字段名是否被排除在 f3 命中统计之外。 */
+  function isExcludedMatchFieldName(fieldName) {
+    if (LAYOUT_B_F3_MATCH_EXCLUDED_FIELDS.indexOf(fieldName) !== -1) {
+      return true;
+    }
+    return LAYOUT_B_F3_MATCH_EXCLUDED_FIELD_PATTERN.test(fieldName);
+  }
+
   /** 多重集中命中集合的出现次数合计。 */
   function countMultisetTokensInSet(multiset, tokenSet) {
     var total = 0;
@@ -1790,7 +1826,14 @@
    * f4_activity_count                   其中 f4 满足现有 activity 非空规则者（⛔ 仅语法检查）
    * f3_in_confirmed_activity_set_count  其中 f3 ∈ 已确认 activity 集合者
    * f4_in_confirmed_activity_set_count  其中 f4 ∈ 已确认 activity 集合者
+   * f3_matching_raw_fields              字段名 → "f3 严格等于该字段的候选数"（只含 **>= 1** 命中）
    * ```
+   *
+   * `f3_matching_raw_fields` 只遍历 raw row 的**字符串类型字段**，只做**严格相等**
+   * （⛔ 无模糊匹配 / substring / 分词），并排除 `courseNum` / `classNumber` /
+   * `teachingTimePlaceStr` 与**内部 ID 字段**（见 `isExcludedMatchFieldName()`）；
+   * 多个字段同时命中时**全部保留**（⛔ 不自行裁定）。⛔ 只输出**字段名**与计数，
+   * ⛔ 不输出任何 raw value / f3 原文 / teacher name / 课程与教学班标识。
    *
    * **已确认 activity 集合**只来自**已确认 layout 的 activity 固定槽位**
    * （见 `confirmedActivitySlotIndex()`），**只在内存中构造**，⛔ 不返回、⛔ 不落盘、
@@ -1861,12 +1904,14 @@
     var expectedTotal = null;
     var accumulatedRows = 0;
 
-    // ---- 只在内存中的三个结构（⛔ 不返回 / ⛔ 不落盘 / ⛔ 不写 bundle / ⛔ 不写日志） ----
+    // ---- 只在内存中的结构（⛔ 不返回（除 f3 命中字段名外）/ ⛔ 不落盘 / ⛔ 不写 bundle） ----
     // 1) 已确认 activity 集合：只来自已确认 layout 的 activity 固定槽位；
-    // 2) / 3) 候选 f3、f4 的**内存多重集**：只为"顺序无关"求交，扫完即弃。
+    // 2) / 3) 候选 f3、f4 的**内存多重集**：只为"顺序无关"求交，扫完即弃；
+    // 4) f3 命中的**字段名 → 候选数**（唯一的对外输出，只有字段名，⛔ 无任何取值）。
     var confirmedActivityTokens = new Set();
     var candidateThirdTokens = new Map();
     var candidateFourthTokens = new Map();
+    var f3FieldMatchCounts = new Map();
 
     for (var index = 0; index < resolved.maxPages; index += 1) {
       var currentPageNo = FIRST_PAGE_NO + index;
@@ -1954,6 +1999,30 @@
           // ⚠️ 只记入**内存多重集**：等全部页扫完后才与集合求交（顺序无关）。
           addTokenOccurrence(candidateThirdTokens, thirdField);
           addTokenOccurrence(candidateFourthTokens, fourthField);
+
+          // ③ f3 在本行**字符串字段**里的**严格相等**命中（⛔ 只记录字段名 + 计数）
+          var rowFieldNames = Object.keys(row);
+          for (
+            var fieldIndex = 0;
+            fieldIndex < rowFieldNames.length;
+            fieldIndex += 1
+          ) {
+            var fieldName = rowFieldNames[fieldIndex];
+
+            if (isExcludedMatchFieldName(fieldName)) {
+              continue;
+            }
+            if (typeof row[fieldName] !== "string") {
+              continue;
+            }
+            if (thirdField === row[fieldName]) {
+              var matchedSoFar = f3FieldMatchCounts.get(fieldName);
+              f3FieldMatchCounts.set(
+                fieldName,
+                matchedSoFar === undefined ? 1 : matchedSoFar + 1
+              );
+            }
+          }
         }
       }
 
@@ -1981,6 +2050,16 @@
       confirmedActivityTokens
     );
 
+    // ⚠️ 只输出**字段名 → 命中候选数**（只含 >= 1 次命中的字段名）；
+    //    ⛔ 映射里没有任何 raw value / f3 原文 / id；字段名按码点排序，输出稳定。
+    var f3MatchingRawFields = Object.fromEntries(
+      Array.from(f3FieldMatchCounts.keys())
+        .sort()
+        .map(function (fieldName) {
+          return [fieldName, f3FieldMatchCounts.get(fieldName)];
+        })
+    );
+
     return {
       candidate_count: candidateCount,
       comparable_teaching_name_count: comparableTeachingNameCount,
@@ -1988,7 +2067,8 @@
       f4_equals_teaching_name_count: equalFourthCount,
       f4_activity_count: activityCount,
       f3_in_confirmed_activity_set_count: thirdInSetCount,
-      f4_in_confirmed_activity_set_count: fourthInSetCount
+      f4_in_confirmed_activity_set_count: fourthInSetCount,
+      f3_matching_raw_fields: f3MatchingRawFields
     };
   }
 

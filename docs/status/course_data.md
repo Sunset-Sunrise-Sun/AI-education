@@ -549,10 +549,17 @@ weeks | weekday | location | REDACTED | activity
 
 **一次性 Layout B 诊断（零留存；Architecture Review 裁定 2026-10-05）**：
 
-- **目的**：只回答字段**角色**问题——Layout B 的 `f3` / `f4` 各自是 activity 还是 teacher；
-- ⚠️ **第一次真实运行已否决 `f3 = teacher` 假设**：`candidate = 10` / `comparable = 10` /
-  `f3_equals_teaching_name = 0` / `f4_activity = 10`
-  ⇒ 因此本轮**只扩展诊断**（新增三个计数），⛔ parser / 脱敏 / 重抓全部不动；
+- **目的**：回答字段**角色**问题——Layout B 的 `f3` / `f4` 各自是什么；
+- **真实运行历史**（负责人执行，east-campus 授权会话；Builder 不代跑）：
+
+  ```text
+  第 1 次：candidate = 10 / comparable = 10 / f3 == teachingName = 0 / f4_activity = 10
+  第 2 次：candidate = 10 / comparable = 10
+           f3 == teachingName = 0      f4 == teachingName = 0
+           f3 ∈ 已确认 activity = 0     f4 ∈ 已确认 activity = 10
+  ```
+
+- ✅ **Architecture Review 正式确认：`f4 = activity`；`f3 = unknown`**（暂不修改 parser）；
 - **位置**：`tools/sysu_course_offering_collector.js` 的 `diagnoseLayoutBCandidates()`，
   在 collector 对 raw response 做 `minimizeRow()` **之前**直接读 raw rows（⛔ 不经过脱敏 / 最小化）；
 - **候选结构判定**（全部只看结构，⛔ 不比对课程名 / 教师名 / 学院，⛔ 无模糊匹配）：
@@ -584,7 +591,23 @@ weeks | weekday | location | REDACTED | activity
     （否则"provider 出现在候选之后"会被误判为不在集合中）；
   - ⚠️ 扫完仍**没有任何**已确认 activity 槽位 → **fail closed**（⛔ 不返回会被误读的 0）。
 
-- **只输出七个聚合计数**（单位 = 候选 segment；⛔ 无 rows / 无标识 / 无原文 / 无 token）：
+- **f3 的原始字段名命中统计**（本轮新增；用于定位 `f3 = unknown` 究竟是什么）：
+
+  ```text
+  对每个 Layout B 候选：遍历该 raw row 的**字符串类型字段**，
+  统计 `f3` **严格等于** 该字段取值的候选数
+  ⇒ 只输出 f3_matching_raw_fields: { 字段名 → 命中候选数 }（只含 **>= 1** 次命中的字段名）
+  ```
+
+  - ⛔ **只输出字段名**与计数（⛔ 不输出 raw value / f3 原文 / teacher name / 课程与教学班标识）；
+  - ⛔ **只做严格字符串相等**：⛔ 无模糊匹配、⛔ 无 substring、⛔ 无分词、⛔ 无大小写折叠；
+  - **排除字段**：`courseNum` / `classNumber` / `teachingTimePlaceStr` /
+    **内部 ID 字段**（具名字段 `timePlaceId` + **形状规则**：字段名以 `Id` / `ID` 结尾）；
+  - ⚠️ 多个字段同时命中 → **全部保留计数**（⛔ 不自行裁定哪一个才是答案）；
+  - ⚠️ 字段名按码点**排序**输出（结果稳定）；映射用 `Object.fromEntries` 构造
+    （⛔ 字段名 `__proto__` 不会污染原型）。
+
+- **输出**（单位 = 候选 segment；⛔ 无 rows / 无标识 / 无任何取值）：
 
   ```text
   candidate_count
@@ -594,6 +617,7 @@ weeks | weekday | location | REDACTED | activity
   f4_activity_count                    其中 f4 非空（**仅语法检查**）
   f3_in_confirmed_activity_set_count   其中 f3 ∈ 已确认 activity 集合者
   f4_in_confirmed_activity_set_count   其中 f4 ∈ 已确认 activity 集合者
+  f3_matching_raw_fields               字段名 → f3 严格等于该字段的候选数（只含 >= 1 命中）
   ```
 
 - ⛔ **raw row 没有 `teachingName` 属性 → `comparable` / 两个 `*_equals_*` 都不推进**
@@ -603,15 +627,14 @@ weeks | weekday | location | REDACTED | activity
   （多页请求 ⇒ **必须**受同一批次冷却约束）；✅ 参数严格白名单
   `semester` / `openingSchoolNumber` / `maxPages`；
 - ⛔ **不参与生产链路**：`collect()` / `collectSharded()` 都不调用它；
+- ⛔ **Layout B parser / 4 字段 redaction / East 重抓仍未获批准**（`f3` 角色未定）；
 - ⚠️ **真实 east-campus 诊断必须由负责人在其授权登录会话中手动执行**（Builder 不代跑）；
-- ⚠️ **判定门槛**（本轮）：`f3_equals_teacher = 0/10`、`f4_equals_teacher = 10/10`、
-  `f3_known_activity = 10/10`、`f4_known_activity = 0/10` 全部成立后，
-  才进入"Layout B = weeks | location | activity | teacher"的正式裁定与
-  4 字段 f4 脱敏 / parser / East 重抓。
 - ⚠️ **解释边界（必须与 Review 一起读）**：集合是从**本次扫描的语料**里枚举出来的，
   因此 `*_in_confirmed_activity_set_count = 0` 只表示"该 token 没有出现在本次已确认的
   activity 槽位中"，**不**等于"已证明它不是 activity"（可能是语料未覆盖该 token）；
   判定时必须与两个 `*_equals_teaching_name_count` 一起看，⛔ 不得单独用 0 下结论。
+- ⚠️ **`f3_matching_raw_fields` 为空映射**同样**不**等于"f3 不是任何字段的值"：
+  只表示"在本次 10 个候选所在 raw row 的（未被排除的）字符串字段中，没有严格相等的取值"。
 
 **2 字段（无 teacher）**：
 

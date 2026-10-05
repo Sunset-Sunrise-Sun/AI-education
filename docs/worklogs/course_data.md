@@ -2365,3 +2365,62 @@
   `*_in_confirmed_activity_set_count = 0` ≠ "已证明不是 activity"
   （可能只是该 token 未出现在已确认槽位里）；必须与两个 `*_equals_teaching_name_count`
   一起读，⛔ 不得单独据 0 下结论。
+
+### 2026-10-05 - Layout B 诊断第 3 轮：`f3` 的**原始字段名命中**统计（零留存）
+
+- **第 2 次真实运行结果**（负责人执行，east-campus 授权会话）：
+
+  ```text
+  candidate = 10        comparable teachingName = 10
+  f3 == teachingName = 0        f4 == teachingName = 0
+  f3 ∈ 已确认 activity = 0      f4 ∈ 已确认 activity = 10
+  ```
+
+- **Architecture Review 正式裁定**：✅ **`f4 = activity` 确认**；⚠️ **`f3 = unknown`**；
+  ⛔ **暂不修改 Layout B production parser**；✅ 只扩展一次性零留存诊断：
+  对每个 Layout B candidate，在 raw row 中遍历**字符串类型字段**，统计 `f3 == raw[fieldName]`，
+  最终只返回 `fieldName -> matched_candidate_count`（**只返回至少 1 次命中的字段名**）。
+- **实现**（`tools/sysu_course_offering_collector.js`；⛔ 仍不碰生产链路）：
+  - 新增第 8 个输出键 `f3_matching_raw_fields`（字段名 → 命中候选数）；
+  - **严格字符串相等**：`thirdField === row[fieldName]`（⛔ 无模糊匹配 / ⛔ 无 substring /
+    ⛔ 无分词 / ⛔ 无大小写折叠）；只遍历 `Object.keys(row)` 中 `typeof === "string"` 的字段；
+  - **排除**：`courseNum` / `classNumber` / `teachingTimePlaceStr`（字面量）
+    + **内部 ID**：具名 `timePlaceId` 与**形状规则** `/[Ii][Dd]$/`（字段**名**的机械规则，
+    ⛔ **不是**对取值的模糊匹配）；
+  - ⛔ **只输出字段名**与计数（映射里不写入任何 raw 取值；`row[fieldName]` 在代码中
+    只出现两次：类型判定 + 严格相等）；⛔ 多个字段同时命中 → **全部保留**（不自行裁定）；
+  - ⚠️ 字段名按**码点排序**输出（结果稳定）；用 `Object.fromEntries` 构造映射
+    ⇒ 字段名为 `__proto__` 时也**不污染原型**（已加合成测试）；
+  - 该统计**不需要跨页集合**，因此天然顺序无关；其余七个计数与集合逻辑**未改动**。
+- **合成测试**（`sysu_course_offering_collector.test.mjs`：113 → **118**）：
+  严格相等命中 `courseName` / `yearTerm` / `score` 且 `limitNumber`（数字）**不**命中；
+  按候选累计 + 多字段同时命中全部保留；`courseNum` / `classNumber` / `timePlaceId` /
+  `someInternalId` / `internalID` 全部**不出现**在映射里；**substring 不命中**（超串 / 子串两例）；
+  `__proto__` 字段名不污染原型；不泄露断言扩展到"任何取值都不得出现在输出中"
+  （字段名本身是映射的键，按本轮裁定允许）。
+- **静态守卫**（`test_sysu_collector_guard.py`：100 → **102**）：返回值恰好七个计数
+  + 一个字段名映射；命中循环只遍历字符串字段、只做严格相等、`row[fieldName]` 只出现 2 次、
+  映射只写字段名与计数（+1）、⛔ 无 `indexOf(` / `includes(` / `startsWith` / `toLowerCase` /
+  `split(` / `substring`；排除清单四名字段 + 形状规则 + 调用点；`teachingTimePlaceStr`
+  只作为排除清单字面量出现一次；映射构建不引用 `row[`。
+- **变异扫描**（`mutate_layout_b_diagnostic.py`：**34 个变异 34/34 全部变红**，
+  采集器 SHA-256 前后一致 `aef446ff…f670`，⛔ 文件已完整还原）：新增 N16 排除失效 /
+  N17 substring 匹配 / N19 不再要求相等 / N20 映射写入 raw 取值 / N21 不再排序；
+  P10 映射写入取值 / P11 去掉排除调用 / P12 不再排序 / P13 直接返回 Map /
+  P14 去掉类型判定。
+  ⚠️ **两处自查纠正（都曾造成假信号）**：
+  (1) `P12` 第一次报 **MISS** —— 变异脚本对真实文件用 `read_bytes().decode()`，
+  锚点是多行的而文件是 **CRLF** ⇒ 多行锚点永不命中；已改成"先归一化 LF 再写回 CRLF"；
+  (2) `P11` 第一次 **假绿灯** —— 守卫只断言函数名，被**函数定义处**满足；
+  已改为断言 `if (isExcludedMatchFieldName(fieldName)) {` 整个调用点。
+- **测试结果**：collector node **118 passed**；守卫 **102 passed**；
+  full backend **2 failed / 2411 passed / 2 skipped**（两个为**既有** Windows Curriculum 用例）；
+  `node --check` exit 0；`compileall app` exit 0。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未改 Layout B parser、⛔ 未做 4 字段 redaction、
+  ⛔ 未重抓正式 artifact、⛔ 未建 SQLite、⛔ 未改公共 Schema / mock_data /
+  `captured_pages.py` / Capture Bundle format / `sharded_capture.py` / store /
+  `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend；
+  ⛔ 真实材料（artifact / raw rows / 任何取值）未进入 Git。
+- **真实请求数：0**。
+- 下一步：负责人再跑一次同一诊断（同一命令），把 `fieldName -> count` 发回；
+  ⛔ 在此之前不裁定 `f3` 角色、不改 parser、不做 redaction、不重抓。

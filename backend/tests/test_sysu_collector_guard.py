@@ -1758,6 +1758,7 @@ _LAYOUT_B_RETURN_KEYS = (
     "f4_activity_count",
     "f3_in_confirmed_activity_set_count",
     "f4_in_confirmed_activity_set_count",
+    "f3_matching_raw_fields",
 )
 
 
@@ -1815,7 +1816,7 @@ def test_layout_b_diagnostic_is_not_in_any_production_path(collector_source: str
 def test_layout_b_diagnostic_returns_only_the_seven_aggregate_counts(
     collector_source: str,
 ) -> None:
-    """返回值**只有**七个聚合计数：⛔ 无 rows / 无标识 / 无 f3 / f4 / activity token。"""
+    """返回值**只有**七个聚合计数 + 一个字段名映射：⛔ 无 rows / 无取值 / 无 f3 / f4 原文。"""
 
     slice_ = _layout_b_diagnostic_slice(collector_source)
 
@@ -1830,21 +1831,22 @@ def test_layout_b_diagnostic_returns_only_the_seven_aggregate_counts(
     }
 
     assert keys == set(_LAYOUT_B_RETURN_KEYS), (
-        f"Layout B 诊断只允许返回七个聚合计数，实际：{sorted(keys)}"
+        f"Layout B 诊断只允许返回七个计数 + 一个字段名映射，实际：{sorted(keys)}"
     )
 
-    # ⛔ 返回值里不得出现任何原始内容 / 标识 / 分页元数据 / 集合本身
+    # ⛔ 返回值里不得出现任何原始内容 / 标识 / 分页元数据 / 集合与多重集本身
     for forbidden in (
-        "rows",
-        "teachingName",
+        "rows:",
+        "teachingName:",
         "segment",
-        "fields",
+        "data.rows",
         "token",
         "new Set(",
         "new Map(",
         "confirmedActivityTokens",
         "candidateThirdTokens",
         "candidateFourthTokens",
+        "f3FieldMatchCounts",
         "courseNum",
         "classNumber",
         "courseName",
@@ -2148,4 +2150,85 @@ def test_layout_b_has_no_name_heuristics_or_cjk_length_guessing(
     assert not re.search(r"token\.length", code)
     assert not re.search(r"\.trim\(\)\.length", code)
     assert not re.search(r"(thirdField|fourthField|segment)\.length", code)
+
+
+# ---------------------------------------------------------------------------
+# Layout B 候选 f3 的**原始字段名命中**统计（Architecture Review 裁定 2026-10-05）
+#
+# ⛔ 只输出字段名 + 命中计数；⛔ 严格相等；⛔ 排除 courseNum / classNumber /
+# teachingTimePlaceStr / 内部 ID 字段；⛔ 无 substring / 分词 / 模糊匹配。
+# ---------------------------------------------------------------------------
+
+
+def _layout_b_f3_match_loop(collector_source: str) -> str:
+    """截取 f3 命中统计的循环体（从 `Object.keys(row)` 到分页累加之前）。"""
+
+    code = _collector_code_only(_layout_b_diagnostic_slice(collector_source))
+
+    start = code.index("var rowFieldNames = Object.keys(row);")
+    end = code.index("accumulatedRows += data.rows.length;", start)
+    assert start < end
+
+    return code[start:end]
+
+
+def test_layout_b_f3_match_histogram_is_strict_and_names_only(
+    collector_source: str,
+) -> None:
+    """只遍历**字符串字段**、只做**严格相等**，且映射里只放**字段名**与计数。"""
+
+    loop = _layout_b_f3_match_loop(collector_source)
+
+    assert "var rowFieldNames = Object.keys(row);" in loop
+    assert 'typeof row[fieldName] !== "string"' in loop
+    assert "if (thirdField === row[fieldName]) {" in loop
+
+    # ⛔ raw 取值只允许出现在"类型判定"与"严格相等"两处（⛔ 不得写进映射）
+    assert loop.count("row[fieldName]") == 2
+
+    # ⛔ 映射的键只能是**字段名**，计数只能是 +1 / 1（⛔ 不得写入任何取值）
+    assert loop.count("f3FieldMatchCounts.set(") == 1
+    assert "matchedSoFar === undefined ? 1 : matchedSoFar + 1" in loop
+
+    # ⛔ 无模糊匹配 / substring / 分词 / 大小写折叠
+    for forbidden in ("indexOf(", "includes(", "startsWith", "toLowerCase", "split(", "substring"):
+        assert forbidden not in loop, f"⛔ f3 命中统计不得使用：{forbidden}"
+
+    # 输出稳定：字段名排序 + 普通对象映射
+    section_code = _collector_code_only(_layout_b_section_slice(collector_source))
+    assert "Object.fromEntries(" in section_code
+    assert "Array.from(f3FieldMatchCounts.keys())" in section_code
+    assert ".sort()" in section_code
+
+
+def test_layout_b_f3_match_histogram_excludes_ids_and_never_echoes_values(
+    collector_source: str,
+) -> None:
+    """排除 courseNum / classNumber / teachingTimePlaceStr / 内部 ID 字段名。"""
+
+    code = _collector_code_only(_layout_b_section_slice(collector_source))
+
+    start = code.index("LAYOUT_B_F3_MATCH_EXCLUDED_FIELDS = [")
+    end = code.index("];", start)
+    excluded = code[start:end]
+    for name in ("courseNum", "classNumber", "teachingTimePlaceStr", "timePlaceId"):
+        assert f'"{name}"' in excluded, f"排除清单缺少：{name}"
+
+    # 内部 ID **形状**规则（机械名称规则，⛔ 不是对取值的模糊匹配）
+    assert "LAYOUT_B_F3_MATCH_EXCLUDED_FIELD_PATTERN = /[Ii][Dd]$/" in code
+    assert "function isExcludedMatchFieldName(" in code
+    # ⚠️ 断言必须包含 `if (`：只断言函数名会被"函数定义处"满足（曾造成 P11 假绿灯）
+    assert "if (isExcludedMatchFieldName(fieldName)) {" in code
+    assert "LAYOUT_B_F3_MATCH_EXCLUDED_FIELDS.indexOf(fieldName) !== -1" in code
+
+    # teachingTimePlaceStr 只能作为**排除清单字面量**出现一次
+    # （读排课字段走 `row[SCHEDULE_FIELD]`，⛔ 不用字面量）
+    assert code.count("teachingTimePlaceStr") == 1
+
+    # ⛔ 映射的构建只使用 f3FieldMatchCounts（⛔ 不引用任何 row 字段值）
+    build_start = code.index("var f3MatchingRawFields = Object.fromEntries(")
+    build_end = code.index("return {", build_start)
+    build = code[build_start:build_end]
+    assert "row[" not in build
+    assert "f3FieldMatchCounts.get(fieldName)" in build
 

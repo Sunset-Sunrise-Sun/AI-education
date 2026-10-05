@@ -1493,6 +1493,7 @@ const LAYOUT_B_RETURN_KEYS = [
   "f4_activity_count",
   "f3_in_confirmed_activity_set_count",
   "f4_in_confirmed_activity_set_count",
+  "f3_matching_raw_fields",
 ];
 
 /** 七个已确认 layout 的 provider activity 取值（人工虚构、互不相同）。 */
@@ -1655,7 +1656,7 @@ test("Layout B 诊断：加载脚本不自动调用", async () => {
   assert.equal(calls.length, 0, "⛔ 仅加载不得发出任何请求");
 });
 
-test("Layout B 诊断：4 个真候选 + 5 个 near-miss + provider → 七个计数正确", async () => {
+test("Layout B 诊断：4 个真候选 + 5 个 near-miss + provider → 七个计数 + 字段名映射", async () => {
   const { result } = await runLayoutBDiagnostic(layoutBScenario());
 
   assertLayoutBCounts(result, {
@@ -1672,10 +1673,12 @@ test("Layout B 诊断：4 个真候选 + 5 个 near-miss + provider → 七个�
     f3_in_confirmed_activity_set_count: 0,
     // 候选 1 / 2 / 3 的 f4 == ACTIVITY ∈ 集合
     f4_in_confirmed_activity_set_count: 3,
+    // f3 在 raw row 字符串字段里的严格相等命中：只有 teachingName（与上面的 2 一致）
+    f3_matching_raw_fields: { teachingName: 2 },
   });
 });
 
-test("Layout B 诊断：返回值只有七个聚合计数，且不泄露任何输入取值", async () => {
+test("Layout B 诊断：返回值只有七个计数 + 字段名映射，且不泄露任何输入取值", async () => {
   const rows = layoutBScenario();
   const { result } = await runLayoutBDiagnostic(rows);
 
@@ -1683,8 +1686,8 @@ test("Layout B 诊断：返回值只有七个聚合计数，且不泄露任何�
 
   const serialized = JSON.stringify(result);
 
+  // ⛔ 任何**取值**都不得出现在输出里（字段名本身是映射的键，按本轮裁定允许输出）
   for (const forbidden of [
-    "teachingName",
     TEACHER,
     LAYOUT_B_TEACHER_OTHER,
     LAYOUT_B_PROVIDER_TEACHER,
@@ -1695,24 +1698,30 @@ test("Layout B 诊断：返回值只有七个聚合计数，且不泄露任何�
     CLASSROOM,
     "SYN-LB",
     "SYN-PRV",
-    "courseNum",
-    "courseName",
-    "classNumber",
+    "00000000",
     '"rows"',
     '"fields"',
     '"segments"',
     '"tokens"',
-    '"set"',
-    '"map"',
     "REDACTED",
     "第5-6节",
   ]) {
     assert.ok(!serialized.includes(forbidden), `⛔ 诊断输出不得含 ${forbidden}`);
   }
 
-  // 返回值里只有数字（⛔ 没有数组 / 对象 / 字符串）
+  // 七个计数必须是数字；字段名映射必须是 "字符串键 → >= 1 的正整数"
   for (const [key, value] of Object.entries(result)) {
+    if (key === "f3_matching_raw_fields") {
+      continue;
+    }
     assert.equal(typeof value, "number", `${key} 必须是数字计数`);
+  }
+
+  const matches = result.f3_matching_raw_fields;
+  assert.equal(typeof matches, "object");
+  for (const [fieldName, count] of Object.entries(matches)) {
+    assert.equal(typeof fieldName, "string");
+    assert.ok(Number.isInteger(count) && count >= 1, "⛔ 只返回 >= 1 次命中的字段名");
   }
 });
 
@@ -1734,6 +1743,7 @@ test("Layout B 诊断：命中目标形态（f3 = activity、f4 = teacher）", a
     f4_activity_count: 1,
     f3_in_confirmed_activity_set_count: 1,
     f4_in_confirmed_activity_set_count: 0,
+    f3_matching_raw_fields: {},
   });
 });
 
@@ -1747,6 +1757,166 @@ test("Layout B 诊断：不修改 raw row，也不产出任何 bundle", async ()
   assert.equal(result.bundle, undefined, "⛔ 诊断不得产出 bundle");
   assert.equal(result.pages, undefined, "⛔ 诊断不得保留 pages");
   assert.equal(result.rows, undefined, "⛔ 诊断不得保留 rows");
+});
+
+test("Layout B 诊断：f3 命中字段名统计 —— 严格相等、只遍历字符串字段", async () => {
+  const rows = [
+    // f3 == courseName（字符串）→ 命中
+    Object.assign(layoutBRow(`1-8周/${LOCATION}/示例课程/${ACTIVITY}`), {
+      classNumber: "SYN-LB-FN-1",
+      hasTeachingName: false,
+    }),
+    // f3 == yearTerm（字符串）→ 命中
+    Object.assign(layoutBRow(`1-8周/${LOCATION}/2026-1/${ACTIVITY}`), {
+      classNumber: "SYN-LB-FN-2",
+      hasTeachingName: false,
+    }),
+    // f3 == score（字符串 "3"）→ 命中
+    Object.assign(layoutBRow(`1-8周/${LOCATION}/3/${ACTIVITY}`), {
+      classNumber: "SYN-LB-FN-3",
+      hasTeachingName: false,
+    }),
+    // f3 == "90"：limitNumber 是**数字** 90 → 必须**不**命中（只遍历字符串字段）
+    Object.assign(layoutBRow(`1-8周/${LOCATION}/90/${ACTIVITY}`), {
+      classNumber: "SYN-LB-FN-4",
+      hasTeachingName: false,
+    }),
+    // f3 什么都不命中 → 不产生条目
+    Object.assign(layoutBRow(`1-8周/${LOCATION}/无任何命中/${ACTIVITY}`), {
+      classNumber: "SYN-LB-FN-5",
+      hasTeachingName: false,
+    }),
+    minimalProviderRow(),
+  ];
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(result.candidate_count, 5);
+  assert.deepEqual({ ...result.f3_matching_raw_fields }, {
+    courseName: 1,
+    score: 1,
+    yearTerm: 1,
+  });
+  // 字段名按码点排序 → 输出稳定
+  assert.deepEqual(Object.keys(result.f3_matching_raw_fields), [
+    "courseName",
+    "score",
+    "yearTerm",
+  ]);
+});
+
+test("Layout B 诊断：f3 命中统计按候选累计，且多字段同时命中全部保留", async () => {
+  const twoFields = Object.assign(rawRow(`1-8周/${LOCATION}/示例同名/${ACTIVITY}`), {
+    classNumber: "SYN-LB-MULTI",
+    examMode: "示例同名",
+    examModeName: "示例同名",
+  });
+
+  const rows = [
+    twoFields,
+    Object.assign(layoutBRow(`1-8周/${LOCATION}/示例课程/${ACTIVITY}`), {
+      classNumber: "SYN-LB-AGG-1",
+      hasTeachingName: false,
+    }),
+    Object.assign(layoutBRow(`2-9周/${LOCATION}/示例课程/${ACTIVITY}`), {
+      classNumber: "SYN-LB-AGG-2",
+      hasTeachingName: false,
+    }),
+    minimalProviderRow(),
+  ];
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(result.candidate_count, 3);
+  assert.deepEqual({ ...result.f3_matching_raw_fields }, {
+    courseName: 2,
+    examMode: 1,
+    examModeName: 1,
+  });
+});
+
+test("Layout B 诊断：f3 命中统计严格排除 courseNum / classNumber / 内部 ID / 排课字段", async () => {
+  const idRow = Object.assign(rawRow(`1-8周/${LOCATION}/内部ID值/${ACTIVITY}`), {
+    classNumber: "SYN-LB-ID",
+    timePlaceId: "内部ID值",
+  });
+  const internalIdRow = Object.assign(rawRow(`1-8周/${LOCATION}/另一个ID值/${ACTIVITY}`), {
+    classNumber: "SYN-LB-ID2",
+    someInternalId: "另一个ID值",
+  });
+  const upperIdRow = Object.assign(rawRow(`1-8周/${LOCATION}/大写ID值/${ACTIVITY}`), {
+    classNumber: "SYN-LB-ID3",
+    internalID: "大写ID值",
+  });
+
+  const rows = [
+    // f3 == courseNum → 排除
+    Object.assign(layoutBRow(`1-8周/${LOCATION}/00000000/${ACTIVITY}`), {
+      classNumber: "SYN-LB-EX-1",
+      hasTeachingName: false,
+    }),
+    // f3 == classNumber → 排除
+    Object.assign(layoutBRow(`1-8周/${LOCATION}/SYN-LB-EX-2/${ACTIVITY}`), {
+      classNumber: "SYN-LB-EX-2",
+      hasTeachingName: false,
+    }),
+    idRow,
+    internalIdRow,
+    upperIdRow,
+    minimalProviderRow(),
+  ];
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(result.candidate_count, 5);
+  assert.deepEqual({ ...result.f3_matching_raw_fields }, {}, "⛔ 被排除的字段名不得出现");
+});
+
+test("Layout B 诊断：f3 命中统计只做严格相等（⛔ 无 substring / 无分词）", async () => {
+  const rows = [
+    // courseName 是 f3 的**超串** → 不命中
+    Object.assign(layoutBRow(`1-8周/${LOCATION}/示例课程/${ACTIVITY}`), {
+      classNumber: "SYN-LB-SUB-1",
+      hasTeachingName: false,
+      courseName: "示例课程（含后缀）",
+    }),
+    // courseName 是 f3 的**子串** → 不命中
+    Object.assign(layoutBRow(`1-8周/${LOCATION}/示例课程/${ACTIVITY}`), {
+      classNumber: "SYN-LB-SUB-2",
+      hasTeachingName: false,
+      courseName: "示例",
+    }),
+    minimalProviderRow(),
+  ];
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(result.candidate_count, 2);
+  assert.deepEqual({ ...result.f3_matching_raw_fields }, {});
+});
+
+test("Layout B 诊断：f3 命中统计不泄露取值，且不污染对象原型", async () => {
+  const protoRow = Object.assign(rawRow(`1-8周/${LOCATION}/原型键值/${ACTIVITY}`), {
+    classNumber: "SYN-LB-PROTO",
+  });
+  Object.defineProperty(protoRow, "__proto__", {
+    value: "原型键值",
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+
+  const { result } = await runLayoutBDiagnostic([protoRow, minimalProviderRow()]);
+
+  assert.equal(result.candidate_count, 1);
+  assert.deepEqual(Object.keys(result.f3_matching_raw_fields), ["__proto__"]);
+  assert.equal(result.f3_matching_raw_fields["__proto__"], 1);
+
+  // ⛔ 不得污染原型：结果对象的原型仍是 Object.prototype
+  assert.equal(Object.getPrototypeOf(result.f3_matching_raw_fields), Object.prototype);
+  assert.equal({}.原型键值, undefined);
+  assert.equal(JSON.parse(JSON.stringify(result.f3_matching_raw_fields))["__proto__"], 1);
+  assert.ok(!JSON.stringify(result).includes("原型键值"), "⛔ 取值不得出现在输出中");
 });
 
 test("Layout B 诊断：没有 teachingName 时可比计数不推进（不猜）", async () => {
@@ -1765,6 +1935,7 @@ test("Layout B 诊断：没有 teachingName 时可比计数不推进（不猜）
     f4_activity_count: 1,
     f3_in_confirmed_activity_set_count: 0,
     f4_in_confirmed_activity_set_count: 1,
+    f3_matching_raw_fields: {},
   });
 });
 
@@ -1782,6 +1953,7 @@ test("Layout B 诊断：teachingName 属性存在但非字符串 → 可比较�
     f4_activity_count: 1,
     f3_in_confirmed_activity_set_count: 0,
     f4_in_confirmed_activity_set_count: 0,
+    f3_matching_raw_fields: {},
   });
 });
 
@@ -1984,6 +2156,8 @@ test("Layout B 诊断：多页 → 跨页累计，且第二页仍受全局 pacin
     f4_activity_count: 1,
     f3_in_confirmed_activity_set_count: 0,
     f4_in_confirmed_activity_set_count: 1,
+    // 该候选的 f3 == 本行 teachingName
+    f3_matching_raw_fields: { teachingName: 1 },
   });
 
   assert.ok(timers.length >= 1, "第二个请求必须先等待");
