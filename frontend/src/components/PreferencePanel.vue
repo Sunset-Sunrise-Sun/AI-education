@@ -17,6 +17,13 @@ defineProps<{
 
 <template>
   <div class="pref-grid">
+    <div class="pref-card pref-card--full">
+      <div class="pref-card__body">
+        <p class="pref-card__hint">
+          本区块仅展示 Preference 输入；前端不判断这些偏好是否已被 Planner 作为硬/软约束执行。
+        </p>
+      </div>
+    </div>
     <!-- 学分上限 -->
     <div class="pref-card">
       <div class="pref-card__header">
@@ -45,7 +52,7 @@ defineProps<{
           {{ preference.avoid_cross_campus ? '避免跨校区' : '允许跨校区选课' }}
         </span>
         <p class="pref-card__hint">
-          {{ preference.avoid_cross_campus ? '求解器将优先过滤产生跨校区通勤的教学班' : '允许调度不同校区的可用教学班' }}
+          已记录用户的跨校区偏好；当前是否作为正式求解约束执行，以 PlanResult 输出为准。
         </p>
       </div>
     </div>
