@@ -28,7 +28,7 @@
 > 时间 / 周次 / 地点**空白且无状态文字**，
 > 当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**、
 > **尚未取得 complete semester snapshot**；**G11 仍未 resolved**
-> （业务语义部分有界面证据，**契约缺口候选 DG-07 待架构裁决**）；
+> （学校侧业务原因仍未知；DG-07A / B / C 已实施并 Review，DG-07D 等待本分支最终复验 / merge）；
 > **production Curriculum / Planner provider 仍未接入**，
 > 因此**没有**任何一条真实数据链路端到端跑通，**也未新增任何 API**。
 >
