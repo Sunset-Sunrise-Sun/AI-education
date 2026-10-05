@@ -49,7 +49,7 @@ function courseLabel(courseId: string): string {
 
         <div class="plan-hero__kpis">
           <div class="kpi-item">
-            <span class="kpi-label">已选教学班</span>
+            <span class="kpi-label">建议课表教学班</span>
             <span class="kpi-val num">{{ planResult.selected_classes.length }}</span>
           </div>
           <div class="kpi-item">
@@ -78,7 +78,7 @@ function courseLabel(courseId: string): string {
       <div class="plan-section__header">
         <h3 class="plan-section__title">
           <span class="section-icon">✅</span>
-          已选教学班组合 (selected_classes)
+          建议课表教学班 (selected_classes)
         </h3>
         <span class="plan-section__badge">{{ planResult.selected_classes.length }} 个班级</span>
       </div>
@@ -93,10 +93,10 @@ function courseLabel(courseId: string): string {
             <span class="selected-card__course">{{ courseLabel(item.course_id) }}</span>
             <span class="mono selected-card__class">班号：{{ item.class_id }}</span>
           </div>
-          <span class="tag tag--selected">已排入</span>
+          <span class="tag tag--selected">建议纳入</span>
         </div>
       </div>
-      <p v-else class="empty-state">方案中无已排定教学班。</p>
+      <p v-else class="empty-state">当前建议课表中暂无教学班。</p>
     </section>
 
     <!-- 2. 方案调整变更 changes -->
@@ -110,7 +110,7 @@ function courseLabel(courseId: string): string {
       </div>
 
       <p class="section-desc">
-        求解器依据冲突消除算法或用户偏好进行的教学班换班记录，直观说明“由哪个班换到哪个班、为什么调整”。
+        Planner 返回的方案变更记录。具体调整原因以每条 change.reason 为准。
       </p>
 
       <div v-if="planResult.changes.length > 0" class="change-list">
@@ -148,7 +148,7 @@ function courseLabel(courseId: string): string {
           </div>
         </article>
       </div>
-      <p v-else class="empty-state">方案未发生教学班调整（无需换班）。</p>
+      <p v-else class="empty-state">本次 PlanResult 未返回方案变更记录。</p>
     </section>
 
     <!-- 3. 风险预警 risks -->
@@ -162,7 +162,7 @@ function courseLabel(courseId: string): string {
       </div>
 
       <p class="section-desc">
-        由求解器及上游规则直接标记的容量紧俏、选课竞争或学分安排风险，前端不改写风险级别。
+        前端仅展示 Planner 返回的 risk.level、risk.reason 与关联课程，不补充或推断风险类型。
       </p>
 
       <div v-if="planResult.risks.length > 0" class="risk-grid">
@@ -183,7 +183,7 @@ function courseLabel(courseId: string): string {
           <p class="risk-card__reason">{{ risk.reason }}</p>
         </div>
       </div>
-      <p v-else class="empty-state">未检测到显著方案风险。</p>
+      <p v-else class="empty-state">本次 PlanResult 未返回风险项。</p>
     </section>
 
     <!-- 4. 未解决事项 unresolved（重点展示） -->
@@ -200,7 +200,7 @@ function courseLabel(courseId: string): string {
 
       <div class="unresolved-alert-box">
         <strong>重要提示：</strong>
-        以下事项系统<strong>不会自行做假定或强行下结论</strong>。包含需教务老师人工复核的规则等价判定、缺失排课数据等。任何未解决项都会影响方案的实际落地执行。
+        以下事项系统<strong>不会自行做假定或强行下结论</strong>。具体含义以每条 unresolved 的 type 与 message 为准；未知类型也会原样保留并使用通用展示。
       </div>
 
       <div v-if="planResult.unresolved.length > 0" class="unresolved-list">
