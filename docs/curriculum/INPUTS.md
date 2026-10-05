@@ -41,6 +41,57 @@ Word 解析使用明确映射，不自动解释标题、分区、先修或学校
 
 核心列 `course_id`、`course_name`、`credit` 必须明确映射，`expected_headers` 必须逐列匹配。`requirement` 可为 `required`、`elective`、`unknown`。分类来自已确认分区时用固定值；来自独立列时，在 `columns` 映射 `requirement` 并提供精确的 `requirement_values`。不要根据名称推断必修或选修。
 
+### 两种显式模式：header 与 positional
+
+真实培养方案有两种版式，分别对应两种**互不混用**的 profile 模式。`mode` 缺省为 `header`。
+
+**`header` 模式**（原有行为，未放宽）：必须有 `header_row` 与 `expected_headers`，且 `expected_headers` 的键集合与 `columns` 完全一致；每个映射列的表头文字必须**逐字匹配**该行单元格，不匹配即失败。
+
+**`positional` 模式**：用于**完全没有列标题行**的培养方案（如真实 Case A 的两份文档：第 1、2 行为空，数据自第 3 行起，列义纯位置式）。只接受下列字段：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `mode` | 是 | 固定 `"positional"` |
+| `table_index` | 是 | 目标表序号（1 起） |
+| `data_start_row` | 是 | 数据起始行（1 起）。**不会**自动寻找"第一条像课程的行" |
+| `columns` | 是 | 逻辑字段 → 物理列号，**绝不推断** |
+| `row_filter` | 否 | 数据行**必须全部满足**的声明式条件 |
+| `exclude` | 否 | 命中任一即丢弃该行的声明式条件 |
+| `column_count` | 否 | 声明的表宽守卫（缺省取最大映射列号） |
+| `identity` | 否 | 结构锚点：`{column, values}`，列必须已在 `columns` 中声明 |
+| `course_name_lines` | 否 | 名称单元格为双语"中文\nEnglish"时，保留前 N 行（0=保留全部） |
+| `last_data_row` / `requirement` / `course_type` / `group_id` / `requirement_values` | 否 | 与 header 模式同义 |
+
+`header` 模式的 profile **不允许**出现 `data_start_row` / `row_filter` / `exclude` / `column_count` / `identity` / `course_name_lines`；`positional` 模式**不允许**出现 `header_row` / `expected_headers`。因此 `expected_headers: ""` 之类的写法不能被当作 positional 的旁路。
+
+**结构性守卫（drift 防护）**：
+
+- **行宽**：数据行的物理列必须覆盖全部映射列，否则失败（绝不静默返回空）。
+- **表宽**：数据行的物理列不得超过 `column_count`，否则失败——学校改版把整块列右移时必须报错而不是错列读取。
+- **身份锚点**：`identity` 声明某一（已映射）列必须出现指定值之一（取自首个数据行）。列被整体移动后锚点失配，导入失败。
+- **横向合并**：若某数据行存在 `gridSpan > 1` 的合并单元格且覆盖任一映射列，该行位置语义不唯一，导入失败。（纵向合并只是把分区标签下延，不影响位置，允许。）
+- **行选择**：`row_filter` / `exclude` 只使用声明式条件（`nonempty` / `numeric` / `equals` + 显式取值），没有任何内容猜测。分区标题、模块行、小计行由这些规则显式排除。
+
+没有任何自动回退：未知 `.docx`、无 profile、或 header 模式读无表头文档，一律 reject；不存在 `try header except positional`。
+
+```json
+{
+  "mode": "positional",
+  "table_index": 2,
+  "data_start_row": 3,
+  "column_count": 9,
+  "columns": {"sequence": 3, "course_id": 4, "course_name": 5, "credit": 6, "recommended_term_text": 9},
+  "course_name_lines": 1,
+  "row_filter": [{"column": 4, "condition": "nonempty"}, {"column": 6, "condition": "numeric"}],
+  "exclude": [{"column": 5, "condition": "equals", "values": ["小计", "合计"]}],
+  "identity": {"column": 4, "values": ["FL101"]},
+  "requirement": "required",
+  "course_type": "公必"
+}
+```
+
+真实 Case A 两份方案的声明式 profile 见 `backend/app/curriculum/plan_profiles.py`（只含表序号、列位置、锚点课程号与结构守卫，**不含**任何真实文件、路径、姓名、学号或成绩）。真实 `.docx` 本身仍留在受控本地目录，不入库。
+
 ```bash
 python -m app.curriculum --docx /private/plan.docx --profile /private/profile.json
 ```

@@ -112,3 +112,19 @@
 - 未完成/需要人工确认：Case A 真实 `as_of_term` 未确认；mixed 组历史额度切分需来源依据；课程等价与 prerequisite 未确认；真实 D2/D3/D4 端到端验收未完成；G11 与 complete 2026-1 snapshot 状态未变。
 - 对其他模块影响：Schema、Models、Interface、Integration、Planner、Course Data、Frontend 均未修改。
 - 下一步：等待项目 Architecture Review 复验；**不自行 merge main**。
+
+### 2026-10-05 - positional DOCX profile：真实培养方案可导入
+- 背景：真实 Case A validation 暴露 IMPLEMENTATION BLOCKER —— `遥感方案.docx` / `网安方案.docx` 是学校真实版式，课程表**没有列标题行**（第 1、2 行为空，数据自第 3 行起），而 `docx_reader` 强制要求 `expected_headers` 非空且逐字匹配，两份文档都无法导入。Architecture 决策：新增**显式 positional table profile**，不放宽旧 parser、不让 `expected_headers` 全局 optional、不自动猜列。
+- 设计：`mode` 显式声明 `header`（缺省，行为完全不变）或 `positional`。两种模式的 profile 字段集合互斥：header 模式禁止 `data_start_row` / `row_filter` / `exclude` / `column_count` / `identity` / `course_name_lines`；positional 模式禁止 `header_row` / `expected_headers`（因此空 `expected_headers` 无法被当作旁路）。未知 mode、额外字段、无 profile 均 reject；**没有 try header / except positional 式回退**。
+- positional 结构守卫：① 数据行物理列必须覆盖全部映射列，缺列即失败（不静默返回空）；② 数据行物理列不得超过声明的 `column_count`，学校改版整体移列时**失败而非错列读取**；③ `identity` 结构锚点（`{column, values}`，列必须已声明）必须在首个数据行起命中，锚点失配即失败；④ 横向 `gridSpan` 合并覆盖映射列时该行位置语义不唯一，失败（纵向合并仅下延分区标签，允许）；⑤ 行选择只用声明式 `row_filter`（全部满足）与 `exclude`（任一命中即丢弃），条件限 `nonempty` / `numeric` / `equals` + 显式取值，**无任何内容猜测或 NLP**；⑥ `course_name_lines` 显式声明双语名称单元格（"中文\nEnglish"）保留前 N 行。
+- 真实 Case A：新增 `backend/app/curriculum/plan_profiles.py`，为两份真实方案各声明 4 张课程表的 positional profile（其余为学分统计 / 学年学期统计等附表，不解析）。**只提交结构 profile**：表序号、列位置、锚点课程号、结构守卫，不含真实文件、本地绝对路径、姓名、学号或成绩；真实 `.docx` 仍在受控本地目录，未入库。
+- 真实导入结果：`遥感方案.docx` **84 条**课程条目（77 单学期 + 7 区间学期），0 issue；`网安方案.docx` **104 条**（97 + 7），0 issue；两者均可 `to_version()` 转成 `CurriculumVersion`。
+- 真实 Case A 层验证（`as_of_term = 2025-2`，evidence 类型 = case-owner confirmation，**非学校官方政策**）：scope 分类 historical 20 / future 77 / unresolved 7；matching 得 satisfied 12（与 D4 已确认且与目标同 ID 的 12 条一致：MA179/MA189/MA190/MAR103/MAR112/MAR115/MAR116/PE101/PE102/PSY199/PUB121/PUB1991）、possibly_equivalent 4、manual_confirmation 78。投影仍被阻断，原因见下。
+- 分层 blocker（预期内，未强行消除）：① 目标方案存在未声明课程组的选修条目 → `unrepresented_requirements`；② 7 个区间学期条目（MAR116/MAR117/MAR118/MAR119/PSY199/PUB178 等）为 unresolved，需逐条 `ConfirmedScopeDecision`。两者都**没有**擅自填写 decision、group 额度、course_id 或课程等价。
+- 新发现（记为 IMPLEMENTATION BUG，未自行修改）：D4 的 `PE102 体育` 记录被同时用于 identity 匹配 `PE102`（satisfied）与**名称候选**匹配 `PE201/PE202/PE305/PE302`（possibly_equivalent），即同一已修记录在 identity 命中后仍可作名称候选，产生 4 条误报的 name-candidate 任务。已按流程报告，等待 Architecture 决定，本轮不改匹配语义。
+- 修改文件：修改 `backend/app/curriculum/docx_reader.py`；新增 `backend/app/curriculum/plan_profiles.py`；新增 `backend/tests/test_curriculum_positional_docx.py`；更新 `docs/curriculum/INPUTS.md`、`docs/status/curriculum.md`、本文件。
+- 测试：新增 **42** 项 positional 测试（header 回归 4、positional happy path 5、fail-closed 与模式隔离 24、结构漂移 3 等），全量后端（`PYTHONUTF8=1`）：**1981 passed、2 failed、2 skipped**。
+- 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试，未放宽断言。
+- 使用数据：真实 D4 与两份真实培养方案**仅在本地受控目录只读使用**，未提交、未复制进仓库。**本轮结论仍是 Mock + 本地真实材料的 validation，不是真实端到端验收。**
+- 未完成/需要人工确认：7 条区间学期 decision；选修组额度定义；PHY137↔大学物理（工）上、大学英语↔大学外语、程序设计系列、MAR110↔MAR108 的课程认定；真实 as_of_term 的正式依据；G11 与 complete 2026-1 snapshot 未变。
+- 下一步：等待 Architecture Review 决定 positional 设计是否接受，以及上述 IMPLEMENTATION BUG 的处理方式；**不自行 merge main**。
