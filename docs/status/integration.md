@@ -10,6 +10,15 @@
 - 真实入口不引用 `mock_service`，Provider 运行期异常不被吞掉，也不会回退到 Mock；
 - 永久 Mock 通道仍为 `/api/v1/mock/*`，只有该路径携带 `X-Data-Source: mock`。
 
+## Real E2E acceptance criteria prepared
+
+- 已新增验收文档包 `docs/e2e/`：`REAL_CASE_A_ACCEPTANCE.md`（正式定义 + 等级）、
+  `COURSE_DATA_SNAPSHOT_CHECKLIST.md`（快照清单 + provenance OPEN ITEM）、
+  `REAL_E2E_TEST_MATRIX.md`（验收矩阵）、`DEMO_RUNBOOK.md`（演示手册）；
+- 定义了「Real Case A E2E PASSED」必须**同时**满足的 10 条条件，
+  以及四档验收等级（LEVEL 0–3）；
+- **当前状态：`LEVEL 0 on main`** —— 真实入口仍返回 503 `real_pipeline_not_configured`。
+
 ## 当前边界
 
 - 未修改 `/schemas/`、frozen Provider contract 或 `PlanningOrchestrator`；
