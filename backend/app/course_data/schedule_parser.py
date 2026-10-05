@@ -177,11 +177,16 @@ class ParsedScheduleSegment:
       见下）；
     - `teacher` / `activity` —— 真实存在、但**当前公共契约不承载**的内部保真信息；
     - `schedule_qualifier` —— **non-concrete** segment 携带的限定词
-      （目前唯一已确认取值：`"校外"`）。
+      （目前唯一已确认取值：`"校外"`）；
+    - `schedule_weeks` —— **non-concrete** segment 已展开的周次
+      （例如 `12-19周校外` → `[12, …, 19]`）。
 
     ⚠️ `meeting is None` 表示该 segment **有课程安排信息，但不足以确定时间冲突**
     （没有 weekday / sections / 具体地点）。此时：
 
+    - `schedule_weeks` **必须**保存已解析的周次 ——
+      ⛔ 否则周次信息在 `meeting is None` 时就**永久丢失**（`meeting.weeks` 不存在，
+      而 qualifier 里也没有周次），后续无法回答"这门见习课到底排在第几周"；
     - ⛔ **不得**把 `weekday=None` / `sections=None` 塞进公共 `Meeting`；
     - ⛔ **不得**把 qualifier 伪装成 `Meeting.campus`（`"校外"` 不是具体校区，
       与 `openingSchoolName → campus` 是两回事）；
@@ -190,6 +195,9 @@ class ParsedScheduleSegment:
     因此该 segment 由 `extract_meetings()` **不投影**为 `Meeting`，
     但 **`ParsedScheduleSegment` 本身仍保留**（⛔ 不是静默丢弃）。
 
+    ⚠️ `schedule_weeks` 只用于 non-concrete segment；
+    concrete segment 的周次仍在 `meeting.weeks`（此处为 `None`）。
+
     ⚠️ 这不是 Schema、不是 DTO、不是 Integration 公共接口。
     """
 
@@ -197,6 +205,7 @@ class ParsedScheduleSegment:
     teacher: str | None
     activity: str
     schedule_qualifier: str | None = None
+    schedule_weeks: list[int] | None = None
 
 
 def parse_weekday(token: str) -> int:
@@ -397,6 +406,9 @@ def _try_parse_non_concrete_fields(
     - `weeks_token` = `12-19周` → 交给 `expand_weeks()`
     - `qualifier`    = `校外`    → 单独存入 `schedule_qualifier`（⛔ 不伪装成 campus）
 
+    展开后的周次存入 **`schedule_weeks`**：因为 `meeting is None`，
+    `meeting.weeks` 不存在，若不在此保存，周次信息会**永久丢失**。
+
     ⛔ qualifier 是**白名单**：`12-19周XXX` 一律不匹配 → 整体失败。
     """
 
@@ -414,11 +426,13 @@ def _try_parse_non_concrete_fields(
     )
 
     # non-concrete：没有 weekday / sections / 具体地点 / teacher。
+    # ⚠️ 周次**必须**随 segment 保留（meeting 为 None，别处无处存放）。
     return ParsedScheduleSegment(
         meeting=None,
         teacher=None,
         activity=activity,
         schedule_qualifier=qualifier,
+        schedule_weeks=weeks,
     )
 
 

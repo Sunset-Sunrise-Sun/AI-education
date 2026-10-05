@@ -291,6 +291,63 @@ def test_non_concrete_segment_is_parsed_without_meeting() -> None:
     assert segment.activity == "实验实践环节"
 
 
+def test_non_concrete_segment_retains_expanded_weeks() -> None:
+    """⚠️ `meeting is None` 时，**展开后的周次必须保存在内部字段** `schedule_weeks`。
+
+    否则周次会**永久丢失**：`meeting.weeks` 不存在，`schedule_qualifier` 里也没有周次，
+    后续无法回答"这门见习课排在第几周"。
+    """
+
+    (segment,) = parse_teaching_time_place("12-19周校外/实验实践环节")
+
+    assert segment.schedule_weeks == list(range(12, 20))
+    # 周次确实是从**拆出来的 weeks token** 展开的（12..19 连续）
+    assert segment.schedule_weeks is not None
+    assert segment.schedule_weeks[0] == 12
+    assert segment.schedule_weeks[-1] == 19
+
+
+def test_non_concrete_weeks_survive_extract_meetings() -> None:
+    """⛔ `extract_meetings()` 不投影 non-concrete，但**不得**因此丢失周次信息。"""
+
+    segments = parse_teaching_time_place("12-19周校外/实验实践环节")
+
+    assert extract_meetings(segments) == []
+    # 原始 segment 仍带着周次
+    assert segments[0].schedule_weeks == list(range(12, 20))
+    assert segments[0].schedule_qualifier == "校外"
+
+
+def test_concrete_segment_leaves_schedule_weeks_none() -> None:
+    """concrete segment 的周次在 `meeting.weeks`，`schedule_weeks` 保持 `None`。"""
+
+    (segment,) = parse_teaching_time_place(_segment("1-5周", "星期一", "第1-2节"))
+
+    assert segment.schedule_weeks is None
+    assert segment.meeting is not None
+    assert segment.meeting.weeks == [1, 2, 3, 4, 5]
+
+
+def test_mixed_segments_carry_weeks_in_their_respective_fields() -> None:
+    """混合时各自把周次放在各自字段：concrete → `meeting.weeks`；non-concrete → `schedule_weeks`。"""
+
+    text = ",".join(
+        [
+            _segment("1-8周", "星期五", "第5-6节"),
+            "12-19周校外/实验实践环节",
+        ]
+    )
+
+    segments = parse_teaching_time_place(text)
+
+    assert segments[0].meeting is not None
+    assert segments[0].meeting.weeks == list(range(1, 9))
+    assert segments[0].schedule_weeks is None
+
+    assert segments[1].meeting is None
+    assert segments[1].schedule_weeks == list(range(12, 20))
+
+
 def test_non_concrete_segment_weeks_are_expanded_from_token_not_whole_field() -> None:
     """⚠️ 周次必须来自**拆出来的 weeks token**，⛔ 不能把 `12-19周校外` 整串送进 `expand_weeks()`。
 

@@ -490,6 +490,10 @@ segment separator = ","      field separator = "/"
   `ParsedScheduleSegment.schedule_qualifier`；
 - ⚠️ **不能整串**把 `12-19周校外` 交给 `expand_weeks()` —— 它只认识 `<weeks token>`：
   必须先拆成 `weeks_token = "12-19周"`（→ `expand_weeks`）与 `qualifier = "校外"`；
+- ✅ **展开后的周次必须保存在内部字段 `schedule_weeks`**（例如 `12-19周校外` → `[12..19]`）：
+  因为 `meeting is None`，`meeting.weeks` 不存在，若不在此保存，
+  周次信息会**永久丢失**，后续无法回答"这门见习课排在第几周"。
+  ⛔ concrete segment 的 `schedule_weeks` 保持 `None`（其周次仍在 `meeting.weeks`）；
 - ⛔ qualifier 是**白名单**（目前只有 `校外`）：`12-19周XXX` 一律拒绝；
   后续按新真实证据逐个加入，⛔ **不预先泛化**；
 - `extract_meetings()` **不投影** non-concrete segment，但

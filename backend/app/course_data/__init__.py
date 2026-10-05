@@ -51,7 +51,9 @@ CourseDataProvider.get_course_offerings(semester)
 - ⚠️ **non-concrete schedule segment**（2026-1 真实证据）：
   `12-19周校外/实验实践环节` 这类 2 字段段的 `meeting = None`
   （没有 weekday / sections / 具体地点），qualifier 存入
-  `ParsedScheduleSegment.schedule_qualifier`，⛔ **不伪装成 `campus`**；
+  `ParsedScheduleSegment.schedule_qualifier`（⛔ **不伪装成 `campus`**），
+  已展开的周次存入 **`ParsedScheduleSegment.schedule_weeks`**
+  （⛔ 否则 `meeting is None` 时周次会永久丢失）；
   `extract_meetings()` 不投影它，但 segment 本身**仍保留**。
   只有这类段的 `CourseOffering` → `meetings == []` → 按 **DG-07** 视为 **schedule UNKNOWN**。
 """

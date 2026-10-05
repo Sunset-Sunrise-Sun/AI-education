@@ -1235,6 +1235,14 @@
 - **内部对象**：`ParsedScheduleSegment.meeting` 改为 **`Meeting | None`**；
   新增 **`schedule_qualifier: str | None = None`**。
   ⛔ **未修改**公共 `Meeting` / `CourseOffering` / `schemas` / Provider contracts。
+- **⚠️ Review 追加修复（周次丢失）**：初版 2 字段分支**只计算不保存**周次 ——
+  `weeks = expand_weeks(weeks_token)` 的结果没有传入 `ParsedScheduleSegment`，
+  于是 `meeting is None` 时周次**永久丢失**（`meeting.weeks` 不存在，
+  `schedule_qualifier` 里也没有周次）。现已新增内部字段
+  **`schedule_weeks: list[int] | None = None`** 并真正保存
+  （`12-19周校外` → `[12..19]`）；concrete segment 该字段保持 `None`。
+  新增 5 项测试锁定（含"周次在 `extract_meetings()` 之后仍存在"与混合场景）；
+  非空验证：移除保存语句后 **失败 3 项**。
 - **`extract_meetings()`**：只投影 `meeting is not None` 的 segment；
   ⛔ **不是静默丢弃** —— `ParsedScheduleSegment` 仍完整保留在解析结果中。
 - **importer 三类状态**（严格分开，⛔ 不混用）：
