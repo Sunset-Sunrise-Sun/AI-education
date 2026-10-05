@@ -197,3 +197,14 @@
 - 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
 - 使用数据：真实 D4 与两份培养方案仅在本地受控目录只读使用，未提交、未复制进仓库；新增文件不含姓名/学号/成绩/GPA/排名，也不含私有 DOCX。
 - 下一步：等待 Architecture Review 与负责人对 PUB178 的业务确认；**不 push、不开 PR、不 merge main**。
+
+### 2026-10-05 - PUB178 case-owner 裁定 future：Real Case A 首次打通
+- case owner 裁定：PUB178 劳动教育 `2025-1~2028-2` 在 Real Case A 记为 `future`。理由：该培养方案安排窗口横跨 `as_of_term=2025-2` 且持续至 2028-2，没有证据表明必须在转专业时点前完成，也没有阶段性拆分规则；为避免把仍有后续履行窗口的要求误判成历史欠修，本 Case 按 future 处理。该裁决**仅是 case-owner-confirmed 的 Case A 输入**，未升级为通用 scope 算法或学校官方政策。
+- 实现：`case_a_decisions.py` 新增 `_CASE_OWNER_CONFIRMED_CROSSING`（PUB178）并入 `CONFIRMED_SCOPE_DECISIONS`（现 4 条，全 `future`），并以 `CASE_OWNER_FUTURE_RATIONALE` 记录裁定理由；原 `UNDECIDED_CROSSING_CUTOFF` 移除（该条目已被裁定，不再处于"未决"状态）。**未改任何算法或 parser**。
+- 文档修复：`docs/status/curriculum.md` 中 `MakeupTask[]` 段落与 `- 最新后端回归：` 之间**缺失换行**（两条 bullet 被并成一行）已修复并复核。
+- **Real Case A 首次打通（实测）**：target_records 94 / completed_records 24 / historical 20 / future 71 / unresolved 3（均为已 satisfied 的 range 条目，按冻结语义不阻断）；`unrepresented_requirements = ()`、`group_gaps = ()`；**projection_ready = True**，`CurriculumProvider.get_makeup_tasks()` 成功返回 **makeup_task_count = 23** —— satisfied 12 / manual_confirmation 11 / required 0 / possibly_equivalent 0；总学分 58（satisfied 32 + manual_confirmation 26）。23 条**全部为 historical** 条目（推荐学期均 ≤ 2025-2），future unmet 条目不出现在 `MakeupTask[]` 中。
+- 修改文件：`backend/app/curriculum/case_a_decisions.py`、`backend/tests/test_curriculum_case_a_scope_decisions.py`、`docs/status/curriculum.md`、本文件。
+- 测试：Case A decision 测试 12 → **13** 项（新增"横跨区间由 case-owner 裁定为 future"与"4 条 decision 全为 future 且逐条绑定 requirement entry"；原先的"横跨必须未决"断言随裁定更新，不再是同义测试）。全量后端（`PYTHONUTF8=1`）：**2032 passed、2 failed、2 skipped**。
+- 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
+- 使用数据：真实 D4 与两份培养方案仅在本地受控目录只读使用，未提交、未复制进仓库；仓库内文件不含姓名/学号/成绩/GPA/排名，也不含私有 DOCX。
+- 下一步：等待 Architecture Review 对该 Case A 输入与首次打通结果的复核；**不 push、不开 PR、不 merge main**。

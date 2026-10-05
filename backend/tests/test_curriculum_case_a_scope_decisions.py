@@ -26,11 +26,11 @@ import pytest
 
 from app.curriculum.case_a_decisions import (
     AS_OF_TERM,
+    CASE_OWNER_FUTURE_RATIONALE,
     CASE_TARGET_VERSION_ID,
     CONFIRMED_SCOPE_DECISIONS,
     DECISION_EVIDENCE,
     SATISFIED_UNRESOLVED_NO_DECISION,
-    UNDECIDED_CROSSING_CUTOFF,
     confirmed_scope_decisions,
 )
 from app.curriculum.errors import CurriculumNormalizationError
@@ -47,22 +47,37 @@ def test_case_a_cutoff_is_the_owner_confirmed_term() -> None:
     assert AS_OF_TERM == "2025-2"
 
 
-def test_only_ranges_entirely_after_the_cutoff_are_decided_future() -> None:
-    assert len(CONFIRMED_SCOPE_DECISIONS) == 3
-    for record in CONFIRMED_SCOPE_DECISIONS:
+def test_ranges_entirely_after_the_cutoff_are_decided_future() -> None:
+    """MAR117 / MAR118 / MAR119 lie wholly beyond the cut-off, so they are future."""
+    wholly_after = [
+        record for record in CONFIRMED_SCOPE_DECISIONS
+        if record["target_course_id"] in {"MAR117", "MAR118", "MAR119"}
+    ]
+    assert len(wholly_after) == 3
+    for record in wholly_after:
         assert record["decision"] == "future"
         start, end = record["recommended_term_text"].split("~")
         assert start > AS_OF_TERM and end > AS_OF_TERM, record
 
 
-def test_the_crossing_range_is_deliberately_undecided() -> None:
-    """2025-1~2028-2 spans the cut-off, so no decision may be recorded for it."""
-    crossing = UNDECIDED_CROSSING_CUTOFF
-    start, end = crossing["recommended_term_text"].split("~")
-    assert start <= AS_OF_TERM < end, "the undecided entry must actually cross"
-    decided_ids = {record["target_course_id"] for record in CONFIRMED_SCOPE_DECISIONS}
-    assert crossing["course_id"] not in decided_ids
-    assert crossing["question"]
+def test_the_crossing_range_is_decided_future_by_case_owner_ruling() -> None:
+    """PUB178 crosses the cut-off; its ``future`` ruling is an explicit case input."""
+    crossing = [r for r in CONFIRMED_SCOPE_DECISIONS if r["target_course_id"] == "PUB178"]
+    assert len(crossing) == 1
+    record = crossing[0]
+    start, end = record["recommended_term_text"].split("~")
+    assert start <= AS_OF_TERM < end, "the crossing entry must actually cross"
+    assert record["decision"] == "future"
+    # The ruling is recorded as a case-owner input, not as school policy.
+    assert record["evidence"].startswith("case-owner-confirmed://")
+    assert CASE_OWNER_FUTURE_RATIONALE
+
+
+def test_all_case_a_decisions_are_future_and_bound_to_entries() -> None:
+    assert len(CONFIRMED_SCOPE_DECISIONS) == 4
+    assert {record["decision"] for record in CONFIRMED_SCOPE_DECISIONS} == {"future"}
+    records = [record["target_source_record"] for record in CONFIRMED_SCOPE_DECISIONS]
+    assert len(set(records)) == len(records), "one decision per requirement entry"
 
 
 def test_satisfied_range_terms_need_no_decision() -> None:
