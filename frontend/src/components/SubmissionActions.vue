@@ -1,29 +1,35 @@
 <script setup lang="ts">
-import { DATA_MODE_LABEL } from '../state/userInput'
-import type { DataMode } from '../config'
+import { PLAN_RESULT_SOURCE_LABEL } from '../state/userInput'
+import type { PlanResultSource } from '../config'
 
 /**
- * 数据模式（Mock / Real）与提交区。
+ * **规划结果来源**与提交区。
  *
  * 边界（本轮最重要的一条之一）：
- * - 页面必须能明确显示**当前数据模式**；
+ * - 页面显示的是**规划结果的来源**（局部 provenance），
+ *   不是"整页数据模式"：`POST /api/v1/plan` 只返回 `PlanResult`，
+ *   培养要求评估 / 教学班 / 偏好仍全部是 Mock 演示数据；
  * - Real Planning 接口（`POST /api/v1/plan`）尚未合并进 main 时，
  *   提交按钮**保持 disabled**，并且**绝不**把 Real 提交偷偷改调 Mock 接口；
  * - ⛔ 本组件不发任何请求，只表达"当前是否可用"与把点击事件交给父级。
  */
 defineProps<{
-  /** 当前数据模式。 */
-  mode: DataMode
+  /** 规划结果的来源。 */
+  mode: PlanResultSource
   /** Real Planning 接口是否已可用（由 `VITE_PLAN_API_ENABLED` 决定）。 */
   planApiEnabled: boolean
-  /** 是否可提交（输入完整性 + provenance 门禁，均不是可行性判断）。 */
+  /** 是否可提交（输入完整性 + 课表 provenance 门禁，均不是可行性判断）。 */
   inputValid: boolean
   /** 是否正在提交。 */
   submitting: boolean
   /** Real Planning 失败时的错误信息；没有失败时为空字符串。 */
   errorMessage?: string
-  /** provenance 门禁：当前课表含 Mock 教学班 → 禁止提交到 Real Planning。 */
-  scheduleProvenanceBlocked?: boolean
+  /**
+   * 课表 provenance 门禁的阻止原因（fail closed）；`null` 表示通过。
+   *
+   * 不同原因对应不同提示（含 Mock 教学班 vs 来源未经确认）。
+   */
+  scheduleBlockReason?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -39,7 +45,7 @@ const emit = defineEmits<{
         :class="mode === 'real' ? 'tag--source-real' : 'tag--source-mock'"
         data-testid="data-mode-tag"
       >
-        {{ DATA_MODE_LABEL[mode] }}
+        {{ PLAN_RESULT_SOURCE_LABEL[mode] }}
       </span>
       <span class="uig-mode__hint" data-testid="data-mode-hint">
         <template v-if="mode === 'mock'">
@@ -63,24 +69,28 @@ const emit = defineEmits<{
         {{ submitting ? '正在请求 Real Planning…' : '生成规划（Real Planning）' }}
       </button>
 
-      <!-- provenance 门禁优先提示：这是"课表来源不对"，与表单填错是两件事 -->
+      <!-- 课表 provenance 门禁（fail closed）：这是"课表来源不对"，与表单填错是两件事 -->
       <p
-        v-if="scheduleProvenanceBlocked"
+        v-if="scheduleBlockReason"
         class="uig-error"
         data-testid="schedule-provenance-blocked-hint"
         role="alert"
       >
-        当前课表来源为 Mock 教学班，不能提交到 Real Planning。
+        {{ scheduleBlockReason }}
         <br />
-        真实教学班（<code class="mono">data_source = "real"</code>）接入前，请先取消勾选当前课表中的 Mock 教学班，
-        或保持当前课表为空。
+        门禁只放行两种情况：<strong>当前课表为空</strong>，或<strong>每一项都明确为真实教学班</strong>
+        （<code class="mono">data_source = "real"</code>）。含 Mock、来源混合或来源未经确认时一律阻止。
       </p>
-      <p v-if="!planApiEnabled" class="uig-field__hint" data-testid="real-plan-disabled-hint">
+      <p
+        v-if="!planApiEnabled"
+        class="uig-field__hint"
+        data-testid="real-plan-disabled-hint"
+      >
         真实规划接口 <code class="mono">POST /api/v1/plan</code> 尚在并行开发中（<code class="mono">feature/real-plan-api</code>），
         因此该按钮暂不可用。Mock 演示通道保持原样，<strong>不会</strong>在 Real 提交失败时回退到 Mock。
       </p>
       <p
-        v-else-if="scheduleProvenanceBlocked"
+        v-else-if="scheduleBlockReason"
         class="uig-field__hint"
         data-testid="real-plan-provenance-hint"
       >

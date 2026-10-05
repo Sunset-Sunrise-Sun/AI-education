@@ -20,7 +20,9 @@ import App from '@/App.vue'
 /** Mock Demo 通道返回的 PlanResult（必须可被识别为"演示结果"）。 */
 const MOCK_PLAN_RESULT = {
   status: 'infeasible',
-  selected_classes: [],
+  // 刻意引用与 Mock teaching class 同号的 CSE201：用于验证
+  // "Mock 的 courseNameById 只允许用于 Mock 结果"。
+  selected_classes: [{ course_id: 'CSE201', class_id: 'CSE201-01' }],
   changes: [],
   risks: [],
   unresolved: [],
@@ -117,6 +119,53 @@ describe('Real Planning 结果渲染与 provenance', () => {
     expect(wrapper.text()).not.toContain('MOCK_DEMO_PLAN_MARKER')
     // 3) provenance 精确到"规划结果"
     expect(wrapper.find('[data-testid="plan-result-provenance"]').text()).toBe('Real')
+  })
+
+  it('Real 结果区不使用 Mock 的 courseNameById：Mock 课程名不泄漏', async () => {
+    const wrapper = await mountApp()
+
+    // Real 返回的 selected_classes 引用了 Mock 教学班同号课程 CSE201
+    expect(REAL_PLAN_RESULT.selected_classes[0].course_id).toBe('CSE201')
+
+    const planSection = () => wrapper.find('#section-plan')
+
+    // 提交前（Mock 结果）：结果区**可以**用 Mock 课程名做显示查找
+    expect(planSection().text()).toContain('MOCK_OFFERING_NAME')
+
+    await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
+    await flushPromises()
+
+    // 提交后（Real 结果）：结果区**不得**出现 Mock 课程名，
+    // 只显示 Real 返回的课程号本身（courseNameById 被传空表）
+    expect(planSection().text()).not.toContain('MOCK_OFFERING_NAME')
+    expect(planSection().text()).toContain('CSE201')
+    expect(wrapper.find('[data-testid="plan-result-provenance"]').text()).toBe('Real')
+  })
+
+  it('Real 提交后，输入区 provenance 标记显示"规划结果来源：Real"（局部文案）', async () => {
+    const wrapper = await mountApp()
+
+    expect(wrapper.find('[data-testid="data-mode-tag"]').text()).toContain('规划结果来源：Mock')
+
+    await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
+    await flushPromises()
+
+    const tag = wrapper.find('[data-testid="data-mode-tag"]').text()
+    expect(tag).toContain('规划结果来源：Real')
+    expect(tag).not.toContain('当前数据模式')
+  })
+
+  it('Real 请求体中的 current_schedule 为空（Mock 教学班未被提交）', async () => {
+    const wrapper = await mountApp()
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
+
+    await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
+    await flushPromises()
+
+    const planCall = fetchMock.mock.calls.find((call) => String(call[0]).includes('/api/v1/plan'))
+    expect(planCall).toBeDefined()
+    const body = JSON.parse((planCall![1] as RequestInit).body as string)
+    expect(body.current_schedule).toEqual([])
   })
 
   it('provenance 精确：基础演示数据仍标 Mock，不整页冒充 Real', async () => {

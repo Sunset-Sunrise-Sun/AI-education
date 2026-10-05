@@ -1792,3 +1792,36 @@
 - 是否修改 backend：**否**。公共接口是否变化：**否**（未改 `schemas/`、`docs/interfaces/`）。
 - 下一步：等待 Architecture Review。
 
+### 2026-10-06 - provenance 收紧：Real 结果不用 Mock 课程名 / 门禁 fail closed / 文案与页脚修正
+
+- 触发：patch Review 第二轮反馈（4 项最小修改）。
+- **1. Real PlanResult 禁止使用 Mock `courseNameById`**：
+  - 新增 `planResultCourseNameById`，在 `planResultMode === 'real'` 时传 **空表 `{}`** 给 `PlanResultPanel`；
+  - 原因：`courseNameById` 由 Mock 教学班 / 补修任务构建，属**页面基础展示数据**，
+    若用于 Real 结果会把 Mock 课程名泄漏进 Real 结果区（provenance 污染）；
+  - 测试：`plan-result-provenance.spec.ts` 新增用例——
+    Mock 结果区**可以**显示 Mock 课程名，Real 结果区**不得**出现 Mock 课程名，只显示课程号本身。
+- **2. 全局式文案改为局部 provenance**：
+  - `DATA_MODE_LABEL`（"当前数据模式：Mock / Real"）→ `PLAN_RESULT_SOURCE_LABEL`
+    （"**规划结果来源：Mock / Real**"）；类型 `DataMode` → `PlanResultSource`；
+  - 理由：`POST /api/v1/plan` 只返回 `PlanResult`，不能用全局说法；
+  - 测试断言文案包含"规划结果来源："且**不含**"当前数据模式"。
+- **3. 页脚修正**：删除"Real 规划输入中的教学班仍是 Mock"这一**不准确**表述，
+  改为区分「**页面基础展示数据**（`GET /api/v1/mock/demo`）」与
+  「**规划结果**（`POST /api/v1/plan` 或 Mock 通道）」两类来源，并说明两者来源相互独立。
+- **4. 课表 provenance 门禁改为 fail closed**：
+  - 原实现 `!hasMockSchedule(form)` 是**fail open** 的（来源未知 → 放行）；
+  - 现改为 `form.currentSchedule.every(isRealSourceOffering)` —— **只放行**
+    "空课表"或"每一项都明确为 `real`"；含 Mock、real+mock 混合、缺 `data_source`、
+    取值异常（如 `"unknown"`）**一律拒绝**；
+  - 新增 `isRealSourceOffering()` 与 `scheduleProvenanceBlockReason()`（区分两类阻止原因），
+    `evaluatePlanSubmission()` 改用后者；`SubmissionActions` 按原因显示不同提示。
+- 修改文件：`frontend/src/App.vue`、`frontend/src/state/userInput.ts`、`frontend/src/config.ts`、
+  `frontend/src/components/UserInputPanel.vue`、`frontend/src/components/SubmissionActions.vue`、
+  `frontend/tests/{schedule-provenance-gate,plan-result-provenance,user-input-panel}.spec.ts`、
+  `docs/status/agent_frontend.md`、本文件。
+- 测试结果：`npm test` → **82 passed / 82**（7 文件）；`npm run build` → 成功；
+  `npm run test:scenarios` → 既有 14 项全部通过。
+- 是否修改 backend：**否**。公共接口是否变化：**否**。
+- 下一步：等待 Architecture Review。
+

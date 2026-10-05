@@ -11,15 +11,18 @@
 
 import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { defineComponent, h, ref } from 'vue'
+import { defineComponent, h, nextTick, ref } from 'vue'
 import UserInputPanel from '@/components/UserInputPanel.vue'
 import { PLAN_ENDPOINT } from '@/config'
 import {
   MOCK_SCHEDULE_BLOCK_REASON,
+  UNVERIFIED_SCHEDULE_BLOCK_REASON,
   createDefaultUserInputForm,
   evaluatePlanSubmission,
   hasMockSchedule,
+  isRealSourceOffering,
   isScheduleSubmittableToRealPlanning,
+  scheduleProvenanceBlockReason,
   toggleCurrentScheduleOffering,
 } from '@/state/userInput'
 import type { UserInputForm } from '@/state/userInput'
@@ -50,20 +53,45 @@ const MOCK_PLAN_ENDPOINT = PLAN_ENDPOINT
 
 /**
  * 宿主组件 = `App.vue` 的真实用法：
- * 把 provenance 门禁结果传给面板，并复制 `submitRealPlan()` 的两道守卫。
+ * 传 `scheduleBlockReason`（生产用的纯函数），并用 `evaluatePlanSubmission` 做提交守卫。
+ *
+ * 额外提供 `select(offering)`：用于注入**来源未经确认**或**不在来源列表中**的教学班
+ * （`CurrentScheduleInput` 只能勾选已加载的教学班，无法直接构造这种状态）。
  */
 function mountPanel(offerings: CourseOffering[]) {
   const form = ref<UserInputForm>(createDefaultUserInputForm())
+  const fetchRealPlan = vi.fn(() => Promise.resolve({}))
 
   function submitRealPlan(): void {
-    if (!isScheduleSubmittableToRealPlanning(form.value)) {
+    const gate = evaluatePlanSubmission(form.value)
+    if (!gate.allowed) {
       return
     }
-    void fetchRealPlan(buildRequest())
+    void fetchRealPlan({ semester: form.value.semester })
   }
 
-  const buildRequest = () => ({ semester: form.value.semester })
-  const fetchRealPlan = vi.fn(() => Promise.resolve({}))
+  /**
+   * 直接构造当前课表（用于 unknown 来源等面板无法表达的边界）。
+   *
+   * ⚠️ 不走 `toggleCurrentScheduleOffering`：那个函数会拒绝不在来源列表中的教学班
+   * （它自己也是 fail closed），因此这里直接写状态。
+   */
+  function select(offering: CourseOffering): void {
+    const already = form.value.currentSchedule.some(
+      (item) => item.course_id === offering.course_id && item.class_id === offering.class_id,
+    )
+    form.value = {
+      ...form.value,
+      currentSchedule: already
+        ? form.value.currentSchedule.filter(
+            (item) =>
+              !(
+                item.course_id === offering.course_id && item.class_id === offering.class_id
+              ),
+          )
+        : [...form.value.currentSchedule, offering],
+    }
+  }
 
   const Host = defineComponent({
     setup() {
@@ -74,7 +102,7 @@ function mountPanel(offerings: CourseOffering[]) {
           planApiEnabled: true,
           submitting: false,
           mode: 'mock',
-          scheduleProvenanceBlocked: !isScheduleSubmittableToRealPlanning(form.value),
+          scheduleBlockReason: scheduleProvenanceBlockReason(form.value),
           onSubmitReal: submitRealPlan,
           'onUpdate:form': (value: UserInputForm) => {
             form.value = value
@@ -83,7 +111,7 @@ function mountPanel(offerings: CourseOffering[]) {
     },
   })
 
-  return { wrapper: mount(Host), form, fetchRealPlan, submitRealPlan }
+  return { wrapper: mount(Host), form, fetchRealPlan, submitRealPlan, select }
 }
 
 describe('provenance 门禁：Mock 课表禁止提交 Real Planning', () => {
@@ -114,15 +142,51 @@ describe('provenance 门禁：Mock 课表禁止提交 Real Planning', () => {
     expect(hasMockSchedule(form)).toBe(true)
   })
 
-  it('isScheduleSubmittableToRealPlanning：空 / 全 real → 允许；含 mock → 禁止', () => {
+  it('isScheduleSubmittableToRealPlanning 是 fail closed 的：只放行"空"或"每项 real"', () => {
     const form = createDefaultUserInputForm()
+    // 空 → 放行
     expect(isScheduleSubmittableToRealPlanning(form)).toBe(true)
 
+    // 每项 real → 放行
     form.currentSchedule = [REAL_OFFERING]
     expect(isScheduleSubmittableToRealPlanning(form)).toBe(true)
+    form.currentSchedule = [REAL_OFFERING, offering({ class_id: 'CSE202-02', data_source: 'real' })]
+    expect(isScheduleSubmittableToRealPlanning(form)).toBe(true)
 
+    // 含 mock → 拒绝
     form.currentSchedule = [MOCK_OFFERING]
     expect(isScheduleSubmittableToRealPlanning(form)).toBe(false)
+
+    // real + mock 混合 → 拒绝
+    form.currentSchedule = [REAL_OFFERING, MOCK_OFFERING]
+    expect(isScheduleSubmittableToRealPlanning(form)).toBe(false)
+
+    // 来源未经确认（缺字段 / 其它取值）→ **拒绝**（不是放行）
+    form.currentSchedule = [offering({ data_source: undefined as unknown as 'mock' })]
+    expect(isScheduleSubmittableToRealPlanning(form)).toBe(false)
+    form.currentSchedule = [offering({ data_source: 'unknown' as unknown as 'mock' })]
+    expect(isScheduleSubmittableToRealPlanning(form)).toBe(false)
+  })
+
+  it('isRealSourceOffering 只认显式 real', () => {
+    expect(isRealSourceOffering(REAL_OFFERING)).toBe(true)
+    expect(isRealSourceOffering(MOCK_OFFERING)).toBe(false)
+    expect(isRealSourceOffering(offering({ data_source: undefined as unknown as 'mock' }))).toBe(false)
+  })
+
+  it('阻止原因区分"含 Mock"与"来源未经确认"', () => {
+    const form = createDefaultUserInputForm()
+    expect(scheduleProvenanceBlockReason(form)).toBe(null)
+
+    form.currentSchedule = [MOCK_OFFERING]
+    expect(scheduleProvenanceBlockReason(form)).toBe(MOCK_SCHEDULE_BLOCK_REASON)
+
+    form.currentSchedule = [offering({ data_source: undefined as unknown as 'mock' })]
+    expect(scheduleProvenanceBlockReason(form)).toBe(UNVERIFIED_SCHEDULE_BLOCK_REASON)
+
+    // 混合（real + 未知）也归入"来源未经确认"
+    form.currentSchedule = [REAL_OFFERING, offering({ class_id: 'X-01', data_source: undefined as unknown as 'mock' })]
+    expect(scheduleProvenanceBlockReason(form)).toBe(UNVERIFIED_SCHEDULE_BLOCK_REASON)
   })
 
   /* ---------- 交互层面：阻止提交且 fetch 0 次 ---------- */
@@ -149,6 +213,44 @@ describe('provenance 门禁：Mock 课表禁止提交 Real Planning', () => {
     await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
     expect(fetchMock).not.toHaveBeenCalled()
     expect(fetchRealPlan).not.toHaveBeenCalled()
+  })
+
+  it('来源未经确认（缺 data_source）→ fail closed 阻止提交 → fetch 0 调用', async () => {
+    const unknown = offering({
+      course_id: 'CSE999',
+      class_id: 'CSE999-01',
+      data_source: undefined as unknown as 'mock',
+    })
+    const { wrapper, form, fetchRealPlan, submitRealPlan, select } = mountPanel([])
+
+    select(unknown)
+    await nextTick()
+
+    expect(form.value.currentSchedule).toHaveLength(1)
+    expect(isScheduleSubmittableToRealPlanning(form.value)).toBe(false)
+
+    // 提示是"来源未经确认"，不是"含 Mock"
+    const hint = wrapper.find('[data-testid="schedule-provenance-blocked-hint"]')
+    expect(hint.exists()).toBe(true)
+    expect(hint.text()).toContain('来源未经确认')
+
+    submitRealPlan()
+    expect(fetchRealPlan).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('real 与 mock 混合 → 拒绝（不因含 real 而放行）→ fetch 0 调用', async () => {
+    const { form, fetchRealPlan, submitRealPlan, select } = mountPanel([])
+
+    select(REAL_OFFERING)
+    select(MOCK_OFFERING)
+
+    expect(form.value.currentSchedule).toHaveLength(2)
+    expect(isScheduleSubmittableToRealPlanning(form.value)).toBe(false)
+
+    submitRealPlan()
+    expect(fetchRealPlan).not.toHaveBeenCalled()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('程序化触发提交（绕过 disabled）同样被 provenance 守卫拦截 → fetch 0 调用', async () => {

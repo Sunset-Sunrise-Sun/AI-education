@@ -3,7 +3,7 @@
 > 最后更新：2026-10-06（**Frontend User Input Gate Phase 1 已实现，待 Architecture Review**：
 > 前端新增真正的**用户输入区**（目标学期 / 转专业上下文 / 当前课表 / 可编辑 Preference / 成绩文件选择），
 > 并按 DG-03 语义输出 `current_schedule: CourseOffering[]`；
-> **Mock / Real 明确隔离**：页面显示"当前数据模式"，Real Planning 在接口就绪前按钮 **disabled**，
+> **Mock / Real 明确隔离**：页面显示**规划结果来源**（局部 provenance，非"整页数据模式"），Real Planning 在接口就绪前按钮 **disabled**，
 > **绝不**回退到 Mock；`POST /api/v1/plan` client 已预留且请求体只有
 > `semester` / `current_schedule` / `preference`；
 > ⛔ **未改 backend / Schema / Interface**；⛔ XLSX **只选择不解析**、前端**不生成**任何 `MakeupTask`。
@@ -745,10 +745,10 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 | `frontend/src/components/StudentContextForm.vue` | 目标学期 `semester` + 转专业上下文（原专业 / 目标专业 / 转入学期） |
 | `frontend/src/components/PreferenceForm.vue` | **可编辑** Preference（与只读的 `PreferencePanel.vue` 分工，后者未修改） |
 | `frontend/src/components/CurrentScheduleInput.vue` | 从已加载教学班勾选"当前已选"，输出 `CourseOffering[]` |
-| `frontend/src/components/SubmissionActions.vue` | 当前数据模式显示 + Real Planning 提交（接口就绪前 **disabled**） |
+| `frontend/src/components/SubmissionActions.vue` | 规划结果来源显示 + Real Planning 提交（接口就绪前 **disabled**） |
 | `frontend/src/state/userInput.ts` | **纯逻辑层**：字段规则 / 序列化 / 校验 / 请求组装（无 Vue、无 DOM、无网络） |
 | `frontend/src/api/plan.ts` | Real client：`POST /api/v1/plan`，**不 fallback 到 Mock** |
-| `frontend/src/config.ts` | 新增 `PLAN_ENDPOINT` / `PLAN_API_ENABLED` / Case context / `MAJOR_OPTIONS` 选项层 / `DataMode` |
+| `frontend/src/config.ts` | 新增 `PLAN_ENDPOINT` / `PLAN_API_ENABLED` / Case context / `MAJOR_OPTIONS` 选项层 / `PlanResultSource` |
 | `frontend/vitest.config.ts`、`frontend/tests/*.spec.ts` | 新增前端单元与交互测试（Vitest + @vue/test-utils + jsdom） |
 
 **关键边界（已落地并有测试锁定）**：
@@ -770,7 +770,7 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   ⛔ 不上传、不解析、不伪造分析结果；非 `.xlsx` 一律拒绝；
   页面**必须**显示"成绩文件上传分析将在真实 Curriculum User Input API 接入后启用"，
   并声明本页**不会**在前端生成任何补修任务（有测试断言选择文件后 `fetch` **零调用**）；
-- **Mock / Real 明确隔离**：页面显示"**当前数据模式：Mock / Real**"；
+- **Mock / Real 明确隔离**：页面显示"**规划结果来源：Mock / Real**"（**局部** provenance，不是整页数据模式）；
   `VITE_PLAN_API_ENABLED !== 'true'` 时 Real Planning 按钮 **disabled**；
   ⛔ 不在失败时回退到 `/api/v1/mock/demo`（有测试断言失败请求地址**不含** `/mock/`，
   且 client 源码不 import Mock 通道）；
@@ -786,7 +786,7 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 **验证结果**：
 
 ```text
-cd frontend && npm test              →  75 passed / 75（7 个测试文件）
+cd frontend && npm test              →  82 passed / 82（7 个测试文件）
 cd frontend && npm run build         →  成功（含 vue-tsc --noEmit 类型检查）
 cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过（Mock 通道未回归）
 ```
@@ -864,18 +864,36 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
   ③ 培养要求评估 / 教学班仍为 Mock 且仍带 `Mock` 标记、
   ④ Real 失败时保持 Mock 结果与 Mock provenance（不回退、不冒充）。
 
-**Blocker 2 — provenance 门禁（只看数据自身来源）**：
+**Blocker 2 — provenance 门禁（只看数据自身来源，fail closed）**：
 
-- 判定依据是 `current_schedule` 中任意 item 的 `data_source === 'mock'`，
-  与"页面当前处于哪个模式"**无关**；
-- **Mock 教学班 → 禁止提交 → `fetch` 0 次调用**，并显示
-  "当前课表来源为 Mock 教学班，不能提交到 Real Planning。"；
-- **空 `current_schedule` → 允许提交**（没有 provenance 不明的数据）；
-- **全部为 `real` 教学班 → 允许通过**门禁；
-- 守卫是**纯函数** `evaluatePlanSubmission(form) → { allowed, reason }`，
+- 判定依据是教学班自身的 `data_source`，与"页面当前处于哪个模式"**无关**；
+- **只放行两种情况**：**空课表**，或**每一项都明确为 `real`**；
+- 含 Mock、real 与 mock **混合**、或**来源未经确认**（缺 `data_source` / 取值异常）→ **一律阻止**；
+  ⛔ 不因"看起来像真实数据"而放行，必须**显式**确认为 `real`；
+- 阻止原因**区分**两类并给出不同提示：
+  含 Mock → "当前课表来源为 Mock 教学班，不能提交到 Real Planning。"；
+  来源未经确认 → "当前课表包含来源未经确认的教学班，不能提交到 Real Planning。"；
+- 阻止时 **`fetch` 0 次调用**；守卫是**纯函数**
+  `scheduleProvenanceBlockReason()` / `evaluatePlanSubmission(form) → { allowed, reason }`，
   同时被 `App.submitRealPlan()` 与测试使用（避免"测试自造守卫"的空转断言）。
 
-**验证**：`npm test` → **75 passed / 75**（7 文件）；`npm run build` → 成功；
+**Blocker 3（patch Review 第二轮补充）— Real 结果区不得使用 Mock 课程名**：
+
+- `courseNameById` 来自 Mock 教学班 / 补修任务，属**页面基础展示数据**；
+- 当**规划结果来自 Real** 时，传给 `PlanResultPanel` 的映射表一律为空（`{}`），
+  否则会出现"Real 结果 + Mock 课程名"的 provenance 污染；
+- 测试断言：Real 成功后结果区**不再出现** Mock 课程名，只显示 Real 返回的课程号本身。
+
+**文案修正（同一轮）**：
+
+- 全局式"当前数据模式：Mock / Real" → 改为**局部** provenance
+  "**规划结果来源：Mock / Real**"（`PLAN_RESULT_SOURCE_LABEL`，`DataMode` 更名 `PlanResultSource`）；
+  理由：`POST /api/v1/plan` 只返回 `PlanResult`，不能用全局说法；
+- 页脚删除"Real 规划输入中的教学班仍是 Mock"这一**不准确**表述，
+  改为区分「**页面基础展示数据**（`GET /api/v1/mock/demo`）」与「**规划结果**（`POST /api/v1/plan` 或 Mock 通道）」
+  两类来源，并说明两者来源相互独立。
+
+**验证**：`npm test` → **82 passed / 82**（7 文件）；`npm run build` → 成功；
 `npm run test:scenarios` → 既有 14 项全部通过。
 **测试有效性已实测**：回退 4 号区块渲染 → 渲染用例失败；禁用 provenance 分支 → 门禁用例失败（2 项）。
 
@@ -889,8 +907,8 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
   `VITE_PLAN_API_ENABLED` 默认关闭 → Real 提交按钮 disabled，且**不 fallback 到 Mock**；
   ⚠️ 该接口**只返回 `PlanResult`**（不含 MakeupTask / CourseOffering / Preference），
   因此前端只把**规划结果**标为 Real，其余区块仍为 Mock（见上方 provenance 修复）；
-  ⚠️ 提交受 **provenance 门禁**约束：`current_schedule` 含 `data_source = "mock"` 的教学班时
-  **禁止提交**（`fetch` 0 次）；空课表或全 real 课表可通过
+  ⚠️ 提交受 **课表 provenance 门禁**约束（**fail closed**）：只有**空课表**或**每项都明确为
+  `data_source = "real"`** 才放行；含 Mock、来源混合或来源未经确认时**禁止提交**（`fetch` 0 次）
 - 业务接口统一前缀 `/api/v1`；Mock 响应带 `X-Data-Source: mock`
 - **Integration 层（Phase 2B-1）**：`backend/app/integration/` 定义了
   `CurriculumProvider` / `CourseDataProvider` / `PlannerProvider` 三个 Protocol

@@ -86,15 +86,22 @@ export const MAJOR_OPTIONS: readonly MajorOption[] = [
   { value: '人工智能', label: '人工智能' },
 ]
 
-/** 当前数据模式。Mock 与 Real 必须能明确区分，不允许混用或静默回退。 */
-export type DataMode = 'mock' | 'real'
+/**
+ * **规划结果**的来源。
+ *
+ * ⚠️ 这是**局部** provenance，不是"整页数据模式"：
+ * `POST /api/v1/plan` 只返回 `PlanResult`，页面基础展示数据
+ * （培养要求评估 / 教学班 / 偏好）仍全部来自 Mock Demo。
+ * Mock 与 Real 必须能明确区分，不允许混用或静默回退。
+ */
+export type PlanResultSource = 'mock' | 'real'
 
 /**
- * 读取初始数据模式。
+ * 读取初始的规划结果来源。
  *
  * 在 Real API 合并进 main 之前恒为 `'mock'`；
- * 开关打开后也仍默认从 Mock 通道起步，由用户在页面上显式切换。
+ * 只有**成功调用** `POST /api/v1/plan` 之后才会变成 `'real'`。
  */
-export function initialDataMode(): DataMode {
+export function initialDataMode(): PlanResultSource {
   return 'mock'
 }

@@ -36,10 +36,17 @@ export const XLSX_EXTENSION = '.xlsx'
 export const GRADE_FILE_PENDING_NOTICE =
   '成绩文件上传分析将在真实 Curriculum User Input API 接入后启用。'
 
-/** 页面必须明确显示的 Mock / Real 数据模式文案。 */
-export const DATA_MODE_LABEL: Record<'mock' | 'real', string> = {
-  mock: '当前数据模式：Mock',
-  real: '当前数据模式：Real',
+/**
+ * **规划结果来源**的展示文案。
+ *
+ * ⚠️ 这是**局部** provenance 文案，不是"整页数据模式"：
+ * `POST /api/v1/plan` 只返回 `PlanResult`，
+ * 培养要求评估 / 教学班 / 偏好仍全部来自 Mock Demo，
+ * 因此不能用"当前数据模式"这种全局说法。
+ */
+export const PLAN_RESULT_SOURCE_LABEL: Record<'mock' | 'real', string> = {
+  mock: '规划结果来源：Mock',
+  real: '规划结果来源：Real',
 }
 
 const SEMESTER_RE = new RegExp(SEMESTER_PATTERN)
@@ -342,6 +349,20 @@ export const MOCK_SCHEDULE_BLOCK_REASON =
   '当前课表来源为 Mock 教学班，不能提交到 Real Planning。真实教学班接入前，请先清空当前课表中的 Mock 教学班。'
 
 /**
+ * 失败原因：当前课表中存在**来源未经确认**的教学班。
+ *
+ * 门禁是 **fail closed** 的：只有明确 `data_source === 'real'` 才放行，
+ * 混合（real + mock）或来源未知（缺字段 / 其它取值 / 损坏）一律拒绝。
+ */
+export const UNVERIFIED_SCHEDULE_BLOCK_REASON =
+  '当前课表包含来源未经确认的教学班，不能提交到 Real Planning。请只保留明确为真实来源（data_source = "real"）的教学班，或清空当前课表。'
+
+/** 教学班是否含有**明确真实**的来源标记。 */
+export function isRealSourceOffering(offering: CourseOffering): boolean {
+  return offering.data_source === 'real'
+}
+
+/**
  * 当前课表是否含有 Mock 来源的教学班。
  *
  * ⚠️ 只看 `data_source`，与"页面当前处于哪个模式"无关：
@@ -352,16 +373,31 @@ export function hasMockSchedule(form: UserInputForm): boolean {
 }
 
 /**
- * provenance 门禁：当前课表是否**允许**提交到 Real Planning。
+ * provenance 门禁（**fail closed**）：当前课表是否**允许**提交到 Real Planning。
  *
- * - **空课表** → 允许（没有 provenance 不明的数据）；
- * - **全部为 real 教学班** → 允许；
- * - **含任意 mock 教学班** → **禁止**（`fetch` 0 次调用）。
+ * 只有两种情形放行：
+ * - **空课表** → 允许（没有任何 provenance 不明的数据）；
+ * - **每一项都明确是 real** → 允许。
+ *
+ * 其余情况（含 mock、real 与 mock 混合、来源未知 / 字段缺失 / 取值异常）一律**拒绝**。
+ * ⛔ 不因"看起来像真实数据"而放行：必须**显式**确认来源。
  *
  * ⚠️ 这是**数据来源**校验，不是学业 / 排课可行性判断。
  */
 export function isScheduleSubmittableToRealPlanning(form: UserInputForm): boolean {
-  return !hasMockSchedule(form)
+  return form.currentSchedule.every(isRealSourceOffering)
+}
+
+/**
+ * 课表 provenance 门禁的**具体原因**（用于给用户精确提示）。
+ *
+ * 返回 `null` 表示通过门禁。
+ */
+export function scheduleProvenanceBlockReason(form: UserInputForm): string | null {
+  if (isScheduleSubmittableToRealPlanning(form)) {
+    return null
+  }
+  return hasMockSchedule(form) ? MOCK_SCHEDULE_BLOCK_REASON : UNVERIFIED_SCHEDULE_BLOCK_REASON
 }
 
 /**
@@ -407,7 +443,7 @@ export function isFormValid(form: UserInputForm): boolean {
  *
  * 两道**独立**条件，任一不满足都**不得发出请求**：
  * 1. 输入完整性（`isFormValid`）；
- * 2. provenance：当前课表不得含 Mock 教学班。
+ * 2. provenance：当前课表只能是空、或**每一项都明确为 real**（fail closed）。
  *
  * ⚠️ 这不是学业 / 排课可行性判断，只是"能不能发这个请求"。
  */
@@ -419,8 +455,9 @@ export function evaluatePlanSubmission(form: UserInputForm): {
     return { allowed: false, reason: '表单存在未修正的输入问题，已阻止提交；未发出任何请求。' }
   }
 
-  if (!isScheduleSubmittableToRealPlanning(form)) {
-    return { allowed: false, reason: MOCK_SCHEDULE_BLOCK_REASON }
+  const scheduleReason = scheduleProvenanceBlockReason(form)
+  if (scheduleReason !== null) {
+    return { allowed: false, reason: scheduleReason }
   }
 
   return { allowed: true, reason: '' }

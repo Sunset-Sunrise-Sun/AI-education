@@ -5,7 +5,7 @@ import PreferenceForm from './PreferenceForm.vue'
 import StudentContextForm from './StudentContextForm.vue'
 import SubmissionActions from './SubmissionActions.vue'
 import { MAJOR_OPTIONS } from '../config'
-import type { DataMode } from '../config'
+import type { PlanResultSource } from '../config'
 import type { CourseOffering } from '../types/contracts'
 import type { StudentContext, UserInputForm } from '../state/userInput'
 import {
@@ -39,15 +39,17 @@ const props = defineProps<{
   /** 是否正在提交。 */
   submitting: boolean
   /** 数据模式。 */
-  mode: DataMode
+  mode: PlanResultSource
   /** 当前数据来源标签（如实显示 Mock / Real）。 */
   dataSourceLabel?: string | null
   /** Real Planning 失败时的错误信息。 */
   planErrorMessage?: string
   /**
-   * provenance 门禁：当前课表含 Mock 教学班 → 不允许提交到 Real Planning。
+   * 课表 provenance 门禁的阻止原因（fail closed）。
+   *
+   * `null` = 通过（空课表，或每一项都明确为 real）。
    */
-  scheduleProvenanceBlocked?: boolean
+  scheduleBlockReason?: string | null
 }>()
 
 const emit = defineEmits<{
@@ -72,10 +74,10 @@ const inputValid = computed(() => isFormValid(props.form))
 /**
  * 是否可以提交到 Real Planning。
  *
- * 两道独立条件：输入完整性（`isFormValid`）+ **数据来源门禁**（课表不得含 Mock 教学班）。
+ * 两道独立条件：输入完整性（`isFormValid`）+ **课表数据来源门禁**（fail closed）。
  */
 const realSubmitEnabled = computed(
-  () => inputValid.value && !(props.scheduleProvenanceBlocked ?? false),
+  () => inputValid.value && !(props.scheduleBlockReason ?? null),
 )
 
 function onSemesterUpdate(value: string): void {
@@ -202,7 +204,7 @@ function clearGradeFile(): void {
       :input-valid="realSubmitEnabled"
       :submitting="submitting"
       :error-message="planErrorMessage"
-      :schedule-provenance-blocked="scheduleProvenanceBlocked ?? false"
+      :schedule-block-reason="scheduleBlockReason ?? null"
       @submit-real="emit('submit-real')"
     />
   </div>

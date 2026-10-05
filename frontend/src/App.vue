@@ -9,7 +9,7 @@ import TopStatusBar from './components/TopStatusBar.vue'
 import UserInputPanel from './components/UserInputPanel.vue'
 import { useDemoData } from './composables/useDemoData'
 import { DEMO_ENDPOINT, PLAN_API_ENABLED, initialDataMode } from './config'
-import { buildRealPlanRequest, createDefaultUserInputForm, evaluatePlanSubmission, isScheduleSubmittableToRealPlanning } from './state/userInput'
+import { buildRealPlanRequest, createDefaultUserInputForm, evaluatePlanSubmission, scheduleProvenanceBlockReason } from './state/userInput'
 import type { UserInputForm } from './state/userInput'
 import { fetchRealPlan } from './api/plan'
 import type { PlanResult } from './types/contracts'
@@ -37,20 +37,19 @@ const planErrorMessage = ref('')
 const planSubmitting = ref(false)
 
 /**
- * Real 提交是否被 **provenance 门禁**阻止。
+ * Real 提交是否被 **provenance 门禁**阻止（fail closed）。
  *
- * 在真实教学班接入前，Mock 教学班不得进入 Real Planning。
+ * 门禁只放行两种情况：**空课表**，或**每一项都明确为 real**。
+ * 含 Mock、real 与 mock 混合、或来源未经确认的教学班，一律阻止。
  */
-const realPlanScheduleBlocked = computed(
-  () => !isScheduleSubmittableToRealPlanning(userInput.value),
-)
+const planScheduleBlocked = computed(() => scheduleProvenanceBlockReason(userInput.value) !== null)
 
 /**
- * **规划结果**的 provenance —— 只看规划结果本身，不冒充整页数据来源。
+ * **规划结果**的来源 —— 只看规划结果本身，不冒充整页数据来源。
  *
  * ⚠️ `/api/v1/plan` 当前只返回 `PlanResult`：
  * MakeupTask / CourseOffering / Preference 仍全部来自 Mock Demo，
- * 因此**绝不能**把整个页面统一标成 Real。
+ * 因此这里只是**局部 provenance**，绝不把整个页面统一标成 Real。
  */
 const planResultMode = computed<'mock' | 'real'>(() =>
   realPlanResult.value ? 'real' : 'mock',
@@ -59,6 +58,34 @@ const planResultMode = computed<'mock' | 'real'>(() =>
 /** 当前实际渲染的规划结果：Real 成功后展示 Real，否则展示 Mock Demo 的结果。 */
 const displayedPlanResult = computed<PlanResult | null>(
   () => realPlanResult.value ?? data.value?.plan_result ?? null,
+)
+
+/**
+ * 课程号 -> 课程名映射表。
+ *
+ * ⚠️ **只用于 Mock 结果的展示**：
+ * 该映射表本身来自 Mock 教学班 / 补修任务，因此当**规划结果来自 Real** 时
+ * 必须传空表（`{}`），否则会把 Mock 课程名泄漏进 Real 结果区，
+ * 造成"Real 结果 + Mock 课程名"的 provenance 污染。
+ */
+const courseNameById = computed<Record<string, string>>(() => {
+  const map: Record<string, string> = {}
+
+  for (const task of data.value?.makeup_tasks ?? []) {
+    map[task.course_id] = task.course_name
+  }
+  for (const offering of data.value?.course_offerings ?? []) {
+    if (!map[offering.course_id]) {
+      map[offering.course_id] = offering.course_name
+    }
+  }
+
+  return map
+})
+
+/** 实际传给规划结果面板的课程名映射：Real 结果下一律为空。 */
+const planResultCourseNameById = computed<Record<string, string>>(() =>
+  planResultMode.value === 'real' ? {} : courseNameById.value,
 )
 
 async function submitRealPlan(): Promise<void> {
@@ -92,25 +119,8 @@ async function submitRealPlan(): Promise<void> {
 }
 
 /**
- * 课程号 -> 课程名映射表。
- *
- * 仅用于让界面中单纯携带 course_id 的对象（如 changes / preferred_courses）
- * 呈现更直观的课程名，不承担业务比对或等价逻辑。
+ * 课程号 -> 课程名映射表（原定义已上移，见 `planResultCourseNameById` 附近的说明）。
  */
-const courseNameById = computed<Record<string, string>>(() => {
-  const map: Record<string, string> = {}
-
-  for (const task of data.value?.makeup_tasks ?? []) {
-    map[task.course_id] = task.course_name
-  }
-  for (const offering of data.value?.course_offerings ?? []) {
-    if (!map[offering.course_id]) {
-      map[offering.course_id] = offering.course_name
-    }
-  }
-
-  return map
-})
 
 onMounted(() => {
   void load()
@@ -176,7 +186,7 @@ onMounted(() => {
           :mode="dataMode"
           :data-source-label="dataSource"
           :plan-error-message="planErrorMessage"
-          :schedule-provenance-blocked="realPlanScheduleBlocked"
+          :schedule-block-reason="scheduleProvenanceBlockReason(userInput)"
           @update:form="userInput = $event"
           @submit-real="submitRealPlan"
         />
@@ -318,7 +328,7 @@ onMounted(() => {
           <PlanResultPanel
             v-if="displayedPlanResult"
             :plan-result="displayedPlanResult"
-            :course-name-by-id="courseNameById"
+            :course-name-by-id="planResultCourseNameById"
           />
         </SectionCard>
       </template>
@@ -330,16 +340,17 @@ onMounted(() => {
           <strong>学航·转衔</strong> —— 面向高校转专业学生的 AI 学业路径重构 Agent 系统
         </p>
         <p class="footer-compliance">
-          数据声明：基础演示数据（培养要求评估、教学班、偏好）均由后端
-          <code class="mono">GET /api/v1/mock/demo</code> 通道提供。
+          数据声明：<strong>页面基础展示数据</strong>（历史培养要求评估、开课教学班、学生偏好）
+          由后端 <code class="mono">GET /api/v1/mock/demo</code> 通道提供，属<strong>演示数据</strong>。
+          <br />
           <template v-if="planResultMode === 'real'">
-            <br />
-            <strong>规划结果</strong>来自 <code class="mono">POST /api/v1/plan</code>（Real），
-            但其输入中的教学班仍是上述 Mock 演示数据，因此该方案<strong>不代表真实教务系统正式指令</strong>。
+            <strong>规划结果</strong>由 <code class="mono">POST /api/v1/plan</code> 返回（Real），
+            与上述基础展示数据的来源相互独立。
           </template>
           <template v-else>
-            全部课程信息、教师、教学班、学生偏好与求解方案均属<strong>演示数据</strong>，非真实教务系统正式指令。
+            <strong>规划结果</strong>当前同样来自上述 Mock 演示通道；尚未提交 Real Planning。
           </template>
+          两类内容均<strong>不代表真实教务系统正式指令</strong>。
         </p>
       </div>
     </footer>

@@ -84,9 +84,12 @@ describe('UserInputPanel 渲染', () => {
     expect(wrapper.find('[data-testid="grade-file-input"]').exists()).toBe(true)
   })
 
-  it('明确显示当前数据模式：Mock', () => {
+  it('明确显示规划结果来源：Mock（局部 provenance，不是整页数据模式）', () => {
     const { wrapper } = mountPanel()
-    expect(wrapper.find('[data-testid="data-mode-tag"]').text()).toContain('当前数据模式：Mock')
+    const tag = wrapper.find('[data-testid="data-mode-tag"]').text()
+    expect(tag).toContain('规划结果来源：Mock')
+    // 不得再使用"当前数据模式"这种全局说法
+    expect(tag).not.toContain('当前数据模式')
   })
 
   it('显示 Case A 默认的转专业上下文，且不出现学生身份信息', () => {
