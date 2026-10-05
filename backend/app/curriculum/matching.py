@@ -696,14 +696,20 @@ def build_curriculum_diff(
             # bar minus what is already satisfied. Plan capacity (mandatory tasks
             # or an explicit elective choice) stays a separate judgement made by
             # ``group_plan_covers_requirement``.
-            historical_members = [
-                match for match in matches
-                if match.target.group_id == group.group_id
-                and not (
-                    scope == GROUP_SCOPE_MIXED
-                    and bucket_by_record.get(match.target.source_record) == SCOPE_FUTURE
-                )
-            ]
+            # Same rule as ``_group_historical_bar``: only members whose own
+            # requirement entry is historical may cover the bar. A future member
+            # never does, at any status. Unscoped cases keep their original
+            # behaviour because they carry no buckets.
+            if makeup_scope is None:
+                historical_members = [
+                    match for match in matches if match.target.group_id == group.group_id
+                ]
+            else:
+                historical_members = [
+                    match for match in matches
+                    if match.target.group_id == group.group_id
+                    and bucket_by_record.get(match.target.source_record) == SCOPE_HISTORICAL
+                ]
             try:
                 covered = math.fsum(
                     match.target.credit for match in historical_members
@@ -719,8 +725,13 @@ def build_curriculum_diff(
                 bar = group.minimum_credit if historical_minimum is None else historical_minimum
                 remaining = max(bar - covered, 0.0)
         if remaining > 0:
-            if scope == GROUP_SCOPE_MIXED:
+            if scope == GROUP_SCOPE_MIXED and historical_minimum is None:
+                # No split decision exists, so the historical share of the group
+                # minimum cannot be derived from the source at all.
                 reason = "混合课程组的历史学分要求无法从来源分割，需人工确认。"
+            elif scope == GROUP_SCOPE_MIXED:
+                # The historical share IS confirmed; the credits are simply unmet.
+                reason = "历史额度已经确认，但仍存在未满足学分。"
             elif scope == GROUP_SCOPE_FUTURE:
                 reason = "课程组要求全部安排在历史范围之后。"
             else:
@@ -810,18 +821,31 @@ def _group_historical_bar(
     elif SCOPE_UNRESOLVED in member_buckets:
         return None
     else:
+        # A mixed group may already be covered, in which case it produces no
+        # GroupGap and the confirmed share has to be read straight from the case
+        # decision rather than falling back to the whole minimum credit.
         bar = minimum_credit
-    # A future member never covers the historical bar at *any* status: credits for
-    # a course the plan schedules after the cut-off are not historical evidence.
-    # An unresolved member cannot be placed either, so it does not cover it.
-    scoped = tuple(
-        match for match in members
-        if not (
-            buckets.get(match.target.source_record) == SCOPE_FUTURE
-            and match.status is not MakeupStatus.SATISFIED
+        if SCOPE_FUTURE in member_buckets:
+            decision = next(
+                (value for value in diff.confirmed_group_scope_decisions
+                 if value.group_id == group_id), None,
+            )
+            if decision is not None:
+                bar = decision.historical_minimum_credit
+    # The historical coverage pool contains ONLY members whose own requirement
+    # entry is classified historical. A future member must never cover the
+    # historical quota at any status -- satisfied, required, selected,
+    # possibly_equivalent or manual_confirmation -- because credits for a course
+    # the plan schedules after the cut-off are not historical evidence. An
+    # unresolved member cannot be placed either, so it stays out as well.
+    # Unscoped cases carry no buckets and keep their original behaviour.
+    if diff.makeup_scope is None:
+        scoped = members
+    else:
+        scoped = tuple(
+            match for match in members
+            if buckets.get(match.target.source_record) == SCOPE_HISTORICAL
         )
-        and buckets.get(match.target.source_record) != SCOPE_UNRESOLVED
-    )
     return bar, scoped
 
 
@@ -833,10 +857,10 @@ def group_plan_covers_requirement(diff: CurriculumDiff, group_id: str) -> bool:
     stay pending; capacity never changes a task's status or the earned gap.
 
     When an explicit makeup scope is active, coverage is judged against that
-    group's *historical* bar instead of its total minimum credit. A future
-    course never covers the historical bar, whether it is satisfied, selected or
-    merely mandatory; a group arranged entirely after the cut-off states no
-    historical requirement at all.
+    group's *historical* bar instead of its total minimum credit, and only
+    historical requirement entries may cover it. A future course never covers
+    the historical bar at any status (satisfied, required or selected); a group
+    arranged entirely after the cut-off states no historical requirement at all.
     """
     if not isinstance(diff, CurriculumDiff):
         raise CurriculumNormalizationError("diff: expected a CurriculumDiff")
@@ -962,7 +986,9 @@ def project_makeup_tasks(diff: CurriculumDiff) -> list[MakeupTask]:
                 emitted_course_ids.add(reference)
                 pending.append(reference)
     # Group scope evidence is attached per match, so it reaches only the tasks of
-    # the group whose explicit credit split actually produced the result.
+    # the group whose explicit credit split actually produced the result, and
+    # only the historical members that the split governs. A future member of the
+    # same group is not affected by the historical decision and carries nothing.
     group_scope_evidence = diff.confirmed_group_scope_evidence()
     tasks: list[MakeupTask] = []
     for match in diff.matches:
@@ -976,7 +1002,7 @@ def project_makeup_tasks(diff: CurriculumDiff) -> list[MakeupTask]:
         if entry_scope_evidence is not None:
             # An explicit human range decision stays auditable on the task.
             evidence += f"；人工范围确认依据：{entry_scope_evidence}"
-        if target.group_id is not None:
+        if target.group_id is not None and buckets.get(target.source_record) == SCOPE_HISTORICAL:
             group_evidence = group_scope_evidence.get(target.group_id)
             if group_evidence is not None:
                 evidence += f"；课程组历史额度确认依据：{group_evidence}"

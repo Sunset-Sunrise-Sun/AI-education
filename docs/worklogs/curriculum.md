@@ -98,3 +98,17 @@
 - 未完成/需要人工确认：Case A 真实 `as_of_term` 仍未确认；mixed 组历史额度切分需来源依据；课程等价认定与 prerequisite 仍未确认；真实 D2/D3/D4 端到端验收未完成；G11 与 complete 2026-1 snapshot 状态未变。
 - 对其他模块影响：公共 Schema、公共模型、Interface、Integration、Planner、Course Data、Frontend 均未修改。
 - 下一步：等待项目 Architecture Review 复验；**不自行 merge main**。
+
+### 2026-10-05 - MakeupScope 第四轮修复：历史覆盖池、组依据范围、mixed 组 reason
+- 本次目标：按复验意见只修 3 点，不扩范围。继续使用 `fix/curriculum-makeup-scope`；基线仍为 main `647e4908a302e3bec87823ccdb2d4a6033dccc15`。
+- 修复 A（历史覆盖池）：`_group_historical_bar()` 的历史覆盖池收紧为**只接受 bucket == historical 的组成员**（原条件会放行 `future + satisfied`）。future 成员无论 satisfied / required / selected / manual_confirmation / possibly_equivalent 一律不参与 `historical_minimum_credit` 覆盖。同一规则同步到 group gap 的 covered 计算。未 scoped 用例不带 bucket，保持原行为。新增直接断言 `group_plan_covers_requirement(diff, "GROUP-A") is False`（historical satisfied = 0、future satisfied = 6、bar = 6），不只检查 `GroupGap.remaining_credit`。
+- 修复 A 附带发现：当 mixed 组已被覆盖时不会产生 `GroupGap`，原逻辑会回退成“整个组最低学分”作为历史 bar，导致已确认的 split 被忽略。现改为在无 gap 时直接读取 `confirmed_group_scope_decisions` 的 `historical_minimum_credit`。
+- 修复 B（组依据过度传播）：`ConfirmedGroupScopeDecision.evidence` 现在只附加到该组内**本身属于历史范围**的已输出任务（`target.group_id` + entry bucket 双重条件）。同一组的 future satisfied 任务保持原输出语义但**不带** split evidence；不同组仍互不串。
+- 修复 C（mixed 组 reason）：`GroupGap.reason` 区分两种情形 —— 有 `ConfirmedGroupScopeDecision` 且已获得 `historical_minimum_credit`、但历史学分仍有缺口时，写“历史额度已经确认，但仍存在未满足学分”；只有 mixed 且无 split decision 时才写“无法从来源分割，需人工确认”。
+- 修改文件：修改 `backend/app/curriculum/matching.py`、`backend/tests/test_curriculum_scope_decisions.py`；更新 `docs/curriculum/INPUTS.md`、`docs/status/curriculum.md`、本文件。
+- 测试：本轮新增 **10** 项（scope 测试合计 94 + 60 = 154 项全部通过）。全量后端（`PYTHONUTF8=1`）：**1939 passed、2 failed、2 skipped**。
+- 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败，与本轮无关；未使用 skip/xfail/删除测试掩盖，也未放宽断言。
+- 使用数据：Mock（人工合成 `mock://` 数据）。**当前功能仅使用 Mock 数据验证，尚未完成真实数据验证。**
+- 未完成/需要人工确认：Case A 真实 `as_of_term` 未确认；mixed 组历史额度切分需来源依据；课程等价与 prerequisite 未确认；真实 D2/D3/D4 端到端验收未完成；G11 与 complete 2026-1 snapshot 状态未变。
+- 对其他模块影响：Schema、Models、Interface、Integration、Planner、Course Data、Frontend 均未修改。
+- 下一步：等待项目 Architecture Review 复验；**不自行 merge main**。

@@ -30,6 +30,7 @@ from app.curriculum.matching import (
     ConfirmedGroupScopeDecision,
     MakeupScope,
     build_curriculum_diff,
+    group_plan_covers_requirement,
 )
 from app.curriculum.requirements import normalize_curriculum_version
 from app.curriculum.terms import ConfirmedScopeDecision, scope_decisions
@@ -858,3 +859,141 @@ def test_group_evidence_mapping_is_per_group() -> None:
         "GROUP-A": "source://group-a-confirmed",
         "GROUP-B": "source://group-b-confirmed",
     }
+
+
+# ==========================================================================
+# Round 4 / Fix A: only historical members may cover historical_minimum_credit
+# ==========================================================================
+
+def test_group_coverage_is_false_when_only_a_future_satisfied_member_covers() -> None:
+    """Reviewer scenario: historical 0 satisfied, future satisfied 6, bar 6."""
+    payload = _mixed_split_payload(
+        members=[_course("H1", "h1", 3, "elective", "GROUP-A", term="2025-1"),
+                 _course("H2", "h2", 3, "elective", "GROUP-A", term="2025-2"),
+                 _course("F1", "f1", 6, "elective", "GROUP-A", term="2026-1")],
+        completed=[_completed("F1", "f1", 6)],
+    )
+    provider = _provider(payload)
+    diff = provider.get_curriculum_diff()
+    # Direct API check, not only the gap value.
+    assert group_plan_covers_requirement(diff, "GROUP-A") is False
+    assert diff.group_gaps[0].remaining_credit == 6
+    with pytest.raises(CurriculumNormalizationError):
+        provider.get_makeup_tasks()
+
+
+def test_historical_bar_is_not_covered_by_a_future_manual_confirmation_member() -> None:
+    payload = _mixed_split_payload(
+        members=[_course("H1", "h1", 6, "elective", "GROUP-A", term="2025-1"),
+                 _course("F1", "f1", 6, "elective", "GROUP-A", term="2026-2")],
+        historical_split=6,
+    )
+    diff = _provider(payload).get_curriculum_diff()
+    assert diff.scope_bucket_for_entry("row:F1") == "future"
+    assert group_plan_covers_requirement(diff, "GROUP-A") is False
+
+
+def test_historical_bar_is_not_covered_by_a_future_possibly_equivalent_member() -> None:
+    payload = _mixed_split_payload(
+        members=[_course("H1", "h1", 3, "elective", "GROUP-A", term="2025-1"),
+                 _course("H2", "h2", 3, "elective", "GROUP-A", term="2025-2"),
+                 _course("F1", "f1", 6, "elective", "GROUP-A", term="2026-2")],
+        completed=[_completed("H1", "h1", 3)],
+        historical_split=6,
+    )
+    diff = _provider(payload).get_curriculum_diff()
+    # Only the historical satisfied 3 credits count, so the bar of 6 is unmet.
+    assert group_plan_covers_requirement(diff, "GROUP-A") is False
+    assert diff.group_gaps[0].remaining_credit == 3
+
+
+def test_historical_only_satisfied_members_still_cover_the_bar() -> None:
+    """The positive control: the same shape succeeds when the 6 credits are historical."""
+    payload = _mixed_split_payload(
+        members=[_course("H1", "h1", 3, "elective", "GROUP-A", term="2025-1"),
+                 _course("H2", "h2", 3, "elective", "GROUP-A", term="2025-2"),
+                 _course("F1", "f1", 6, "elective", "GROUP-A", term="2026-1")],
+        completed=[_completed("H1", "h1", 3), _completed("H2", "h2", 3), _completed("F1", "f1", 6)],
+    )
+    diff = _provider(payload).get_curriculum_diff()
+    assert group_plan_covers_requirement(diff, "GROUP-A") is True
+    assert diff.group_gaps == ()
+
+
+# ==========================================================================
+# Round 4 / Fix B: group split evidence only on historical tasks
+# ==========================================================================
+
+def _future_member_evidence_payload():
+    return _payload(
+        new_courses=[_course("H1", "h1", 3, "elective", "GROUP-A", term="2025-1"),
+                     _course("F1", "f1", 3, "elective", "GROUP-A", term="2026-1")],
+        groups=[_group("GROUP-A", minimum=6)],
+        completed=[_completed("F1", "f1", 3), _completed("H1", "h1", 3)],
+        group_decisions=[{"target_version_id": "mock-new", "group_id": "GROUP-A",
+                          "historical_minimum_credit": 3,
+                          "evidence": "source://group-a-split"}],
+    )
+
+
+def test_group_split_evidence_reaches_the_historical_task() -> None:
+    tasks = {task.course_id: task for task in _provider(_future_member_evidence_payload()).get_makeup_tasks()}
+    assert "source://group-a-split" in tasks["H1"].source_evidence
+
+
+def test_group_split_evidence_does_not_reach_a_future_satisfied_task() -> None:
+    """A future member of the group is not governed by the historical decision."""
+    provider = _provider(_future_member_evidence_payload())
+    diff = provider.get_curriculum_diff()
+    assert diff.scope_bucket_for_entry("row:F1") == "future"
+    tasks = {task.course_id: task for task in provider.get_makeup_tasks()}
+    # The future satisfied member keeps its public output but carries no split evidence.
+    assert tasks["F1"].status.value == "satisfied"
+    assert "source://group-a-split" not in tasks["F1"].source_evidence
+
+
+def test_group_split_evidence_still_does_not_leak_across_groups() -> None:
+    tasks = {task.course_id: task for task in _provider(_two_group_payload()).get_makeup_tasks()}
+    assert "source://group-b-confirmed" not in tasks["H1"].source_evidence
+    assert "source://group-a-confirmed" not in tasks["H3"].source_evidence
+
+
+# ==========================================================================
+# Round 4 / Fix C: mixed group gap reason depends on whether a split exists
+# ==========================================================================
+
+def test_mixed_group_gap_reason_when_the_split_is_confirmed_but_unmet() -> None:
+    payload = _mixed_split_payload(
+        members=[_course("H1", "h1", 3, "elective", "GROUP-A", term="2025-1"),
+                 _course("H2", "h2", 3, "elective", "GROUP-A", term="2025-2"),
+                 _course("F1", "f1", 3, "elective", "GROUP-A", term="2026-1")],
+        historical_split=6,
+    )
+    gap = _provider(payload).get_curriculum_diff().group_gaps[0]
+    assert gap.historical_minimum_credit == 6
+    assert "历史额度已经确认" in gap.reason
+    assert "无法从来源分割" not in gap.reason
+
+
+def test_mixed_group_gap_reason_when_no_split_exists() -> None:
+    payload = _payload(
+        new_courses=[_course("H1", "h1", 3, "elective", "GROUP-A", term="2025-1"),
+                     _course("H2", "h2", 3, "elective", "GROUP-A", term="2025-2"),
+                     _course("F1", "f1", 3, "elective", "GROUP-A", term="2026-1")],
+        groups=[_group("GROUP-A", minimum=12)],
+    )
+    gap = _provider(payload).get_curriculum_diff().group_gaps[0]
+    assert gap.historical_ambiguous
+    assert "无法从来源分割" in gap.reason
+    assert "历史额度已经确认" not in gap.reason
+
+
+def test_mixed_group_with_a_confirmed_and_met_split_has_no_gap() -> None:
+    payload = _mixed_split_payload(
+        members=[_course("H1", "h1", 3, "elective", "GROUP-A", term="2025-1"),
+                 _course("H2", "h2", 3, "elective", "GROUP-A", term="2025-2"),
+                 _course("F1", "f1", 3, "elective", "GROUP-A", term="2026-1")],
+        completed=[_completed("H1", "h1", 3), _completed("H2", "h2", 3)],
+        historical_split=6,
+    )
+    assert _provider(payload).get_curriculum_diff().group_gaps == ()

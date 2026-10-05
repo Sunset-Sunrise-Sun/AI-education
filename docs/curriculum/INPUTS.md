@@ -183,9 +183,13 @@ case 可增加：
 
 `historical_minimum_credit` 只表示**历史部分**的额度，不是学校政策。它必须：不超过组最低学分、能被组内历史成员的实际学分总量满足、且只用于 mixed 组（对纯历史组或纯未来组会被拒绝）。未来选修选择不会被计入历史组额度。
 
-**历史额度只由历史事实覆盖**：mixed 组的历史额度**只能**由历史范围内的有效事实（已满足学分，或组内必修 / 明确选修计划）覆盖。**future 课程一律不参与历史额度计算**，无论它是 satisfied、required、selected 还是待确认 —— 计划安排在该时点之后的课程所获得的学分，不构成"历史要求已满足"的证据。
+**历史额度只由历史事实覆盖**：mixed 组的历史额度**只能**由 bucket 为 `historical` 的组成员覆盖。**future 成员一律不参与历史覆盖**，无论它处于 satisfied、required、selected、manual_confirmation 还是 possibly_equivalent —— 计划安排在该时点之后的课程，无论状态如何，都不构成"历史额度已满足"的证据。
 
-**组决策 evidence 的传播范围**：`confirmed_group_scope_decisions[].evidence` 只会附加到**该组内、确实受历史投影影响而输出的任务**上（按 `target.group_id` 匹配）。它不会进入其他组、其他课程的 `source_evidence`；没有 `group_id` 的课程、或没有 decision 的组，都不会凭空附加该依据。
+**组决策 evidence 的传播范围**：`confirmed_group_scope_decisions[].evidence` 只会附加到**该组内、且本身属于历史范围的已输出任务**上（按 `target.group_id` + entry bucket 双重匹配）。它不会进入同一组的 future 任务、其他组、其他课程，或没有 `group_id` 的课程。
+
+**组缺口的 reason 区分两种情形**：
+- mixed 组**没有** split decision（`historical_minimum_credit` 未知）→ 表示"历史学分要求无法从来源分割，需人工确认"；
+- mixed 组**已有** split decision 但历史学分仍有缺口 → 表示"历史额度已经确认，但仍存在未满足学分"（不再声称无法分割）。
 
 ### 语义边界（不得混用）
 
