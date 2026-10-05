@@ -367,14 +367,12 @@ def test_five_field_with_teacher_keeps_legacy_behaviour() -> None:
 @pytest.mark.parametrize(
     "teacher_like",
     [
-        "示例教师A",  # 无 '-' → 不是 location
-        "-示例教师A",  # 园区为空 → 不是 location
-        "示例教师A-",  # 教室为空 → 不是 location
-        "  -  ",  # 两侧都空 → 不是 location
+        "示例教师A",  # 无 '-' → 明确是 teacher
+        "示例教师B",  # 无 '-' → 明确是 teacher
     ],
 )
-def test_five_field_non_location_token_stays_teacher(teacher_like: str) -> None:
-    """无法明确判定为合法 location 的 token → 一律走 **旧的 teacher 结构**。"""
+def test_five_field_no_dash_token_is_teacher(teacher_like: str) -> None:
+    """5 字段判别（收紧后）：**无 `-`** → 明确是 teacher。"""
 
     text = "/".join(["1-8周", "星期五", "第5-6节", teacher_like, ACTIVITY])
 
@@ -385,20 +383,52 @@ def test_five_field_non_location_token_stays_teacher(teacher_like: str) -> None:
     assert segment.meeting.classroom is None
 
 
-def test_five_field_token_with_dash_is_a_location_by_grammar() -> None:
-    """⚠️ 如实记录既有 grammar 的边界：只要「非空园区 + '-' + 非空教室」成立就算 location。
+def test_five_field_three_segment_token_is_location() -> None:
+    """5 字段判别（收紧后）：**>= 3 个非空 `-` 分段** → 明确是 location。"""
 
-    本测试**不新增**任何规则，只是把"含 `-` 即按 location 解释"这一既有语义固定在测试里，
-    避免以后有人误以为它会被当作 teacher。
+    text = "/".join(["1-8周", "星期五", "第5-6节", LOCATION, ACTIVITY])
+
+    (segment,) = parse_teaching_time_place(text)
+
+    assert segment.meeting.campus == CAMPUS
+    assert segment.meeting.classroom == CLASSROOM
+    assert segment.teacher is None
+
+
+@pytest.mark.parametrize(
+    "ambiguous",
+    [
+        "示例-教师A",  # 2 段 → 二义
+        "-示例教师A",  # 2 段（园区空）→ 二义
+        "示例教师A-",  # 2 段（教室空）→ 二义
+        "  -  ",  # 2 段（两侧空）→ 二义
+        "示例校区-示例教学楼-",  # 3 段但末段为空 → 非空仅 2 段 → 二义
+    ],
+)
+def test_five_field_ambiguous_token_fails_closed(ambiguous: str) -> None:
+    """5 字段判别（收紧后）：**其余二义形态 → fail closed**（⛔ 不猜 teacher / location）。"""
+
+    text = "/".join(["1-8周", "星期五", "第5-6节", ambiguous, ACTIVITY])
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_teaching_time_place(text)
+
+    # 错误信息必须说明"不猜语义"，且**不回显**该字段取值
+    assert "不猜" in str(excinfo.value)
+    assert ambiguous not in str(excinfo.value)
+
+
+def test_five_field_ambiguous_does_not_silently_become_teacher_or_location() -> None:
+    """⚠️ **回归测试（本轮收紧的核心）**：
+
+    旧规则下 `A-B`（两段、含 `-`）会被判成 location，从而把可能的 teacher
+    静默错读成地点；收紧后必须**整体失败**，⛔ 既不得当成 teacher、也不得当成 location。
     """
 
     text = "/".join(["1-8周", "星期五", "第5-6节", "示例-教师A", ACTIVITY])
 
-    (segment,) = parse_teaching_time_place(text)
-
-    assert segment.meeting.campus == "示例"
-    assert segment.meeting.classroom == "教师A"
-    assert segment.teacher is None
+    with pytest.raises(CourseDataNormalizationError):
+        parse_teaching_time_place(text)
 
 
 def test_mixed_three_segment_string_from_real_evidence_shape() -> None:

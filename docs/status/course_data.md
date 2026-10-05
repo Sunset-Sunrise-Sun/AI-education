@@ -445,11 +445,19 @@ segment separator = ","      field separator = "/"
 ⛔ **不得再把第 4 / 5 字段无条件当成 teacher** —— 那会把 location 静默错读成 teacher，
 使 `Meeting.campus / classroom` 变成 `None`（**静默错误解释**）。
 
-**5 字段的判别规则**（唯一允许的判别方式）：只看 `fields[3]`——
-满足 **location grammar**（非空园区 + 至少一个 `-` + 非空教室，与 `_parse_location()` 同规则）
-→ 5 字段 A（`teacher = None`）；否则 → 5 字段 B（`location = None`）。
+**5 字段的判别规则**（**严格三态**，唯一允许的判别方式）：只看 `fields[3]`——
+
+```text
+无 "-"                → teacher   → 5 字段 B（无地点、有教师）
+>= 3 个非空 "-" 分段   → location  → 5 字段 A（有地点、无教师）
+其余二义形态           → 一律 fail closed（⛔ 不猜）
+```
+
 ⛔ 不根据 `courseName` / 学院 / `teachingName` 猜；⛔ 不引入模糊匹配；
-"无法明确判定为合法 location" 一律走**旧的 teacher 结构**。
+⛔ 二义形态**既不默认当 teacher、也不默认当 location**。
+⚠️ **不复用**宽松的通用 grammar：`_is_location_token()` 只要"非空园区 + `-` + 非空教室"
+就成立，会把 `A-B` 这种两段 token 判成 location，而那同样可能是含 `-` 的 teacher。
+⚠️ **本轮未收紧 6 字段**（其语义已由字段数确定），因此 5 / 6 字段存在已知不对称性。
 
 - ✅ **最多一个**末尾逗号：单个末尾逗号产生的空 segment **忽略**；
   ⛔ `seg,,` / `seg,,,`（多个末尾逗号）**失败**；
@@ -471,12 +479,14 @@ segment separator = ","      field separator = "/"
 **collector 脱敏同步（`tools/sysu_course_offering_collector.js`）**：
 
 - 新规则与 parser **一致**：
-  `4 字段` → 无 teacher，原样保留；`5 字段` → 按 **同一 location grammar** 判别，
-  是 location 则原样保留、否则把 `fields[3]` 置为 `REDACTED`；
+  `4 字段` → 无 teacher，原样保留；`5 字段` → 按**同一严格三态规则**判别
+  （无 `-` → teacher 则 `fields[3] = REDACTED`；`>= 3` 个非空 `-` 分段 → location 则原样保留；
+  其余二义 → fail closed）；
   `6 字段` → `fields[4]` 置为 `REDACTED`；
 - ⛔ 未知字段数（3、7+）继续 `fail()`；
 - ⛔ 空 teacher 仍**不得**被写成 `REDACTED`（不静默修复原始数据问题）；
-- JS 侧 `isLocationToken()` 与 Python `_parse_location()` **同规则**（按首个 `-` 切分）。
+- JS 侧 `classifyFiveFieldToken()` 与 Python `_classify_five_field_token()` **同规则**
+  （含同一门槛常量 `MIN_LOCATION_SEGMENTS = 3`）。
 
 **importer（零网络）**：
 

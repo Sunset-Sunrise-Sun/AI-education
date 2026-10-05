@@ -329,8 +329,8 @@ def test_collector_redacts_teacher_in_segments(collector_source: str) -> None:
     assert "fieldCount !== 4" in collector_source
     assert "fieldCount !== 5" in collector_source
     assert "fieldCount !== 6" in collector_source
-    # 5 字段必须**结构判别**，⛔ 不得无条件把 fields[3] 当 teacher
-    assert "isLocationToken(fields[3])" in collector_source
+    # 5 字段必须**严格三态判别**，⛔ 不得无条件把 fields[3] 当 teacher
+    assert "classifyFiveFieldToken(fields[3])" in collector_source
     # teacher 只在明确的两个分支被替换
     assert "fields[3] = REDACTED_TEACHER;" in collector_source
     assert "fields[4] = REDACTED_TEACHER;" in collector_source
@@ -339,16 +339,35 @@ def test_collector_redacts_teacher_in_segments(collector_source: str) -> None:
 
 
 def test_collector_location_grammar_matches_python_parser(collector_source: str) -> None:
-    """Collector 的 location 识别必须与 Python `_parse_location()` **同规则**。
+    """Collector 的 5 字段判别必须与 Python `_classify_five_field_token()` **同规则**。
 
-    同一套规则：按**首个** `-` 切分 → 非空园区 + 非空教室 才算 location。
+    收紧后的三态规则：
+    `无 "-"` → teacher；`>= 3 个非空 "-" 分段` → location；其余 → ambiguous（fail closed）。
     """
 
-    assert "function isLocationToken(token)" in collector_source
-    assert 'token.indexOf("-")' in collector_source
-    # ⛔ 必须按**第一个** '-' 切分（与 Python `partition("-")` 一致）
-    assert "token.slice(0, separatorIndex)" in collector_source
-    assert "token.slice(separatorIndex + 1)" in collector_source
+    assert "function classifyFiveFieldToken(token)" in collector_source
+    assert "function countNonEmptyDashSegments(token)" in collector_source
+    # 门槛常量与 Python `_MIN_LOCATION_SEGMENTS` 一致
+    assert "MIN_LOCATION_SEGMENTS = 3" in collector_source
+    # 三态返回值
+    assert 'return "teacher";' in collector_source
+    assert 'return "location";' in collector_source
+    assert 'return "ambiguous";' in collector_source
+    # 二义必须 fail closed（⛔ 不得静默当 teacher / location）
+    assert "classification === \"ambiguous\"" in collector_source
+
+
+def test_collector_does_not_reuse_generic_location_grammar_for_five_fields(
+    collector_source: str,
+) -> None:
+    """⛔ 5 字段**不得**复用宽松的通用 grammar 判定。
+
+    旧实现用 `isLocationToken(fields[3])`（"非空园区 + `-` + 非空教室"）判别 5 字段，
+    会把 `A-B` 这种两段 token 判成 location。收紧后必须走 `classifyFiveFieldToken`。
+    """
+
+    assert "isLocationToken(fields[3])" not in collector_source
+    assert "classifyFiveFieldToken(fields[3])" in collector_source
 
 
 def test_collector_source_is_plain_utf8_without_bom() -> None:

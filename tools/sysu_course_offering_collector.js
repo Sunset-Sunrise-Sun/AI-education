@@ -135,6 +135,13 @@
   /** segment 内 teacher 的脱敏占位符。 */
   var REDACTED_TEACHER = "REDACTED";
 
+  /**
+   * 明确判定为 location 所需的**最少非空 `-` 分段数**。
+   *
+   * ⚠️ 只用于 **5 字段的二义判别**；6 字段的语义已由字段数确定，不受此门槛约束。
+   */
+  var MIN_LOCATION_SEGMENTS = 3;
+
   // ---------------------------------------------------------------------
   // 基础工具
   // ---------------------------------------------------------------------
@@ -167,28 +174,49 @@
   // ---------------------------------------------------------------------
 
   /**
-   * `token` 是否满足 **location grammar**（纯结构判别）。
-   *
-   * 与 Python `schedule_parser._parse_location()` **完全同一套规则**：
-   * 非空园区 + 至少一个 `-` + 非空教室。
-   *
-   * ⛔ 这是**结构判别**，不比对课程名 / 学院 / 教师名，不做模糊匹配；
-   * "无法明确判定为合法 location" 一律返回 `false`（走旧的 teacher 结构）。
+   * 统计按 `-` 切分后**非空**（去空白后）的分段数量。
    */
-  function isLocationToken(token) {
+  function countNonEmptyDashSegments(token) {
+    var parts = token.split("-");
+    var count = 0;
+    for (var index = 0; index < parts.length; index += 1) {
+      if (parts[index].trim() !== "") {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * 判别 **5 字段** `fields[3]` 的语义（**严格三态**）。
+   *
+   * ```text
+   * 无 "-"                → "teacher"
+   * >= 3 个非空 "-" 分段   → "location"
+   * 其余二义形态           → "ambiguous" → 调用方 fail closed
+   * ```
+   *
+   * ⚠️ **为什么不复用 `isLocationToken()`**：后者只要"非空园区 + `-` + 非空教室"成立，
+   * 会把 `A-B` 这种**只有两段**的 token 判成 location —— 而它同样可能是一个
+   * **含 `-` 的 teacher**。5 字段本身二义，必须用更严格的门槛，
+   * 否则会重现"teacher / location 互相静默错读"。
+   *
+   * ⛔ 无法明确归类时**不猜**；⛔ 不比对课程名 / 学院 / 教师名，不做模糊匹配。
+   */
+  function classifyFiveFieldToken(token) {
     if (typeof token !== "string") {
-      return false;
+      return "ambiguous";
     }
 
-    var separatorIndex = token.indexOf("-");
-    if (separatorIndex === -1) {
-      return false;
+    if (token.indexOf("-") === -1) {
+      return "teacher";
     }
 
-    var campus = token.slice(0, separatorIndex).trim();
-    var classroom = token.slice(separatorIndex + 1).trim();
+    if (countNonEmptyDashSegments(token) >= MIN_LOCATION_SEGMENTS) {
+      return "location";
+    }
 
-    return campus !== "" && classroom !== "";
+    return "ambiguous";
   }
 
   /**
@@ -198,8 +226,10 @@
    *
    * ```text
    * 4 fields: weeks / weekday / sections / activity                  → 无 teacher，原样保留
-   * 5 fields: weeks / weekday / sections / location / activity       → 无 teacher，原样保留
-   *           weeks / weekday / sections / teacher  / activity       → fields[3] = REDACTED
+   * 5 fields: 需**严格三态**判别：
+   *            无 "-"              → teacher  → fields[3] = REDACTED
+   *            >= 3 个非空 "-" 分段 → location → 原样保留
+   *            其余二义形态         → fail closed
    * 6 fields: weeks / weekday / sections / location / teacher / activity → fields[4] = REDACTED
    * ```
    *
@@ -231,10 +261,23 @@
     }
 
     if (fieldCount === 5) {
-      // 5 字段需判别：location/activity（无 teacher） 或 teacher/activity。
-      if (isLocationToken(fields[3])) {
+      var classification = classifyFiveFieldToken(fields[3]);
+
+      if (classification === "ambiguous") {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "第 4 个字段既不能明确判定为 location（需 >= " + MIN_LOCATION_SEGMENTS +
+            " 个非空 '-' 分段），也不能明确判定为 teacher（需完全不含 '-'）。" +
+            "本采集器不猜语义，已整体停止（不回显该字段取值）。"
+        );
+      }
+
+      if (classification === "location") {
+        // 5 字段 A：有地点、无 teacher → 原样保留。
         return segment;
       }
+
+      // 5 字段 B：无地点、有 teacher。
       // ⛔ 替换前必须确认原 teacher 确实存在：
       // 空 teacher 若也被写成 REDACTED，等于**静默修复**了原始数据问题，
       // 会让下游 Python parser 误以为这条记录合法。

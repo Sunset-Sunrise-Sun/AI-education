@@ -21,15 +21,24 @@ field separator   = "/"
 ⛔ **不得再把第 4 / 5 字段无条件当成 teacher** —— 那会把 location 静默错读成 teacher，
 并导致 `Meeting.campus / classroom` 变成 `None`（**静默错误解释**）。
 
-### 5 字段的判别规则（唯一允许的判别方式）
+### 5 字段的判别规则（**严格三态**，唯一允许的判别方式）
 
 只看 `fields[3]`：
 
-- 满足 **location grammar**（见 `_parse_location()` 的同一套规则）→ 5 字段 A（有地点、无教师）；
-- 否则 → 5 字段 B（无地点、有教师）。
+```text
+无 "-"                → teacher    → 5 字段 B（无地点、有教师）
+>= 3 个非空 "-" 分段   → location   → 5 字段 A（有地点、无教师）
+其余二义形态           → 一律 fail closed（⛔ 不猜）
+```
 
 ⛔ 不根据 `courseName` / 学院 / `teachingName` 等字段猜；⛔ 不引入模糊匹配。
-"无法明确判定为合法 location"一律走**旧的 teacher 结构**。
+
+⚠️ **为什么不复用 `_is_location_token()`**：后者只要"非空园区 + `-` + 非空教室"成立，
+会把 `A-B` 这种**只有两段**的 token 判成 location —— 而它同样可能是一个**含 `-` 的 teacher**。
+5 字段本身二义，必须用更严格的门槛，否则会重现"teacher / location 互相静默错读"。
+
+⚠️ **本轮未收紧 6 字段**：6 字段的语义**已由字段数确定**，因此仍用通用
+`_parse_location()`；由此产生的 5 / 6 字段不对称性已记录为**已知风险**。
 
 - **最多一个末尾逗号**：`seg,` → 忽略末尾空 segment；
   ⛔ `seg,,` / `seg,,,`（多个末尾逗号）**失败**；
@@ -228,13 +237,13 @@ def _is_location_token(token: object) -> bool:
     """`token` 是否满足 **location grammar**。
 
     与 `_parse_location()` **完全同一套规则**（非空园区 + 至少一个 `-` + 非空教室），
-    只是以**布尔**形式表达，用于 5 字段的语义判别：
+    只是以**布尔**形式表达。
 
-    - ✅ 真 → 5 字段 A：`weeks / weekday / sections / location / activity`
-    - ⛔ 假 → 5 字段 B：`weeks / weekday / sections / teacher / activity`
+    ⚠️ 这是**通用**判定，用于 6 字段等**已经由字段数确定语义**的位置。
+    ⛔ 5 字段的**二义判别**不使用本函数 —— 它用更严格的 `_classify_five_field_token()`
+    （要求 `>= 3` 个非空 `-` 分段），以免把 `A-B` 形态的 teacher 误判成 location。
 
-    ⛔ 这是**纯结构判别**：不比对课程名 / 学院 / 教师名，不做模糊匹配。
-    "无法明确判定为合法 location" 一律返回 `False`（走旧的 teacher 结构）。
+    ⛔ 纯结构判别：不比对课程名 / 学院 / 教师名，不做模糊匹配。
 
     ⚠️ 本函数**不抛异常** —— 判别失败是正常分支，不是错误。
     """
@@ -247,6 +256,56 @@ def _is_location_token(token: object) -> bool:
         return False
 
     return bool(campus.strip()) and bool(classroom.strip())
+
+
+#: 5 字段 `fields[3]` 的三种判别结果。
+#: - `teacher` —— 明确是 teacher（无 `-`）
+#: - `location` —— 明确是 location（`>= 3` 个非空 `-` 分段）
+#: - `ambiguous` —— **二义形态**，一律 fail closed
+_FIVE_FIELD_TEACHER = "teacher"
+_FIVE_FIELD_LOCATION = "location"
+_FIVE_FIELD_AMBIGUOUS = "ambiguous"
+
+#: 明确判定为 location 所需的**最少非空 `-` 分段数**。
+_MIN_LOCATION_SEGMENTS = 3
+
+
+def _count_non_empty_dash_segments(token: str) -> int:
+    """统计按 `-` 切分后**非空**（去空白后）的分段数量。"""
+
+    return sum(1 for part in token.split("-") if part.strip() != "")
+
+
+def _classify_five_field_token(token: object) -> str:
+    """判别 5 字段 `fields[3]` 的语义（**严格三态**）。
+
+    判定规则（本轮收紧后）：
+
+    ```text
+    无 "-"                 → teacher    （明确是 teacher）
+    >= 3 个非空 "-" 分段    → location   （明确是 location）
+    其余二义形态            → ambiguous  → 调用方 fail closed
+    ```
+
+    ⚠️ **为什么不复用 `_is_location_token()`**：
+    后者只要"非空园区 + `-` + 非空教室"就成立，会把 `A-B` 这种
+    **只有两段**的 token 判成 location —— 而那同样可能是一个**含 `-` 的 teacher**。
+    对 5 字段这种**本身二义**的位置，必须用更严格的门槛，
+    否则会重现"把 teacher 当成 location（或反之）"的静默错读。
+
+    ⛔ 无法明确归入上面两类时**不猜**：返回 `ambiguous`，由调用方整体失败。
+    """
+
+    if not isinstance(token, str):
+        return _FIVE_FIELD_AMBIGUOUS
+
+    if "-" not in token:
+        return _FIVE_FIELD_TEACHER
+
+    if _count_non_empty_dash_segments(token) >= _MIN_LOCATION_SEGMENTS:
+        return _FIVE_FIELD_LOCATION
+
+    return _FIVE_FIELD_AMBIGUOUS
 
 
 def _require_non_empty_token(value: object, *, field: str, segment_index: int) -> str:
@@ -342,30 +401,43 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
             activity = _require_non_empty_token(
                 fields[3], field="activity", segment_index=offset
             )
-        elif field_count == FIELDS_WITH_LOCATION_AND_TEACHER:
+        elif field_count == FIELDS_FIVE:
+            # 5 字段**二义**：必须严格判别，⛔ 不得默认按 teacher 也不得默认按 location。
+            classification = _classify_five_field_token(fields[3])
+
+            if classification == _FIVE_FIELD_AMBIGUOUS:
+                raise CourseDataNormalizationError(
+                    f"teachingTimePlaceStr 的第 {offset} 段是 5 字段，"
+                    f"但其第 4 个字段既不能明确判定为 location"
+                    f"（需 >= {_MIN_LOCATION_SEGMENTS} 个非空 '-' 分段），"
+                    f"也不能明确判定为 teacher（需完全不含 '-'）。"
+                    f"本 parser 不猜语义，已整体停止（不回显该字段取值）"
+                )
+
+            if classification == _FIVE_FIELD_LOCATION:
+                # 5 字段 A：weeks / weekday / sections / location / activity
+                campus, classroom = _parse_location(fields[3], offset)
+                teacher = None
+            else:
+                # 5 字段 B：weeks / weekday / sections / teacher / activity
+                campus, classroom = None, None
+                teacher = _require_non_empty_token(
+                    fields[3], field="teacher", segment_index=offset
+                )
+
+            activity = _require_non_empty_token(
+                fields[4], field="activity", segment_index=offset
+            )
+        else:
             # 6 字段：weeks / weekday / sections / location / teacher / activity
+            # ⚠️ 6 字段的语义**已由字段数确定**，因此仍用通用 location grammar
+            # （本轮**未**收紧 6 字段；该不对称性已记录为已知风险）。
             campus, classroom = _parse_location(fields[3], offset)
             teacher = _require_non_empty_token(
                 fields[4], field="teacher", segment_index=offset
             )
             activity = _require_non_empty_token(
                 fields[5], field="activity", segment_index=offset
-            )
-        elif _is_location_token(fields[3]):
-            # 5 字段 A：weeks / weekday / sections / location / activity
-            campus, classroom = _parse_location(fields[3], offset)
-            teacher = None
-            activity = _require_non_empty_token(
-                fields[4], field="activity", segment_index=offset
-            )
-        else:
-            # 5 字段 B：weeks / weekday / sections / teacher / activity
-            campus, classroom = None, None
-            teacher = _require_non_empty_token(
-                fields[3], field="teacher", segment_index=offset
-            )
-            activity = _require_non_empty_token(
-                fields[4], field="activity", segment_index=offset
             )
 
         parsed.append(

@@ -1166,3 +1166,49 @@
   ⛔ **不在修完后自动继续全量采集** —— 等 Architecture Review 通过后由负责人重新执行。
 - 下一步：等待 Architecture Review。
 
+### 2026-10-05 - 收紧 5 字段判别为严格三态（二义一律 fail closed）
+
+- 触发：Review 指出上一版 5 字段判别**仍不够严格** ——
+  它复用通用 grammar（"非空园区 + `-` + 非空教室"），
+  于是 `A-B`（**只有两段**、含 `-`）会被判成 location，
+  而那同样可能是一个**含 `-` 的 teacher**，会重现"teacher / location 互相静默错读"。
+- **收紧后的规则**（只看 `fields[3]`，**严格三态**）：
+  ```text
+  无 "-"                → teacher   → 5 字段 B（无地点、有教师）
+  >= 3 个非空 "-" 分段   → location  → 5 字段 A（有地点、无教师）
+  其余二义形态           → 一律 fail closed（⛔ 不猜）
+  ```
+- **实现**：
+  - Python 新增 `_classify_five_field_token()`（三态）+ `_count_non_empty_dash_segments()`，
+    门槛常量 `_MIN_LOCATION_SEGMENTS = 3`；
+    `_is_location_token()` **保留**（供 6 字段等**已由字段数确定语义**的位置使用）——
+    ⛔ **未修改** `_parse_location()` 的通用解析规则；
+  - 5 字段分支改为按三态分流：`ambiguous` → `CourseDataNormalizationError`
+    （错误信息说明"不猜语义"且**不回显**该字段取值）；
+  - Collector 新增 `classifyFiveFieldToken()` + `countNonEmptyDashSegments()` +
+    `MIN_LOCATION_SEGMENTS = 3`，与 Python 同规则；
+    5 字段的 `ambiguous` → `fail()`。
+- **本轮未扩结构**：仍只支持 4 / 5 / 6 字段；⛔ 3 / 7+ 继续 fail closed；
+  ⛔ **未收紧 6 字段**（语义已由字段数确定）。
+- 测试：
+  - `test_course_data_schedule_parser.py` → **75 passed**
+    （新增：无 `-` → teacher；`>= 3` 个非空分段 → location；
+    **5 类二义形态 → fail closed**（含"三段但末段为空"→ 非空仅 2 段）；
+    **回归：`A-B` 不得再被静默当成 location**）；
+  - `tools/sysu_course_offering_collector.test.mjs` → **16 passed**
+    （新增同一组三态用例 + 二义 fail closed + 回归）；
+  - `test_sysu_collector_guard.py` → **61 passed**
+    （同步 5 字段 guard 到 `classifyFiveFieldToken`；
+    新增"⛔ 不得复用 `isLocationToken(fields[3])`"守卫）；
+  - 非空测试验证：把 `ambiguous` 分支改成不 fail（静默当 teacher）→ parser **失败 6 项**，
+    还原后全部通过。
+- 修改文件：`backend/app/course_data/schedule_parser.py`、
+  `tools/sysu_course_offering_collector.js`、
+  `backend/tests/test_course_data_schedule_parser.py`、
+  `backend/tests/test_sysu_collector_guard.py`、
+  `tools/sysu_course_offering_collector.test.mjs`、
+  `docs/status/course_data.md`、本文件。
+- **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
+  ⛔ 按指示**未重新执行真实 35 页采集**。
+- 下一步：等待 Architecture Review。
+

@@ -111,24 +111,10 @@ test("4 字段：不失败，且不插入 REDACTED", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// 5 字段：location/activity（无 teacher）
+// 5 字段判别（收紧后：严格三态）
 // ---------------------------------------------------------------------------
 
-test("5 字段 location/activity：保留 location，且不插入 REDACTED", async () => {
-  const text = `1-8周/星期五/第5-6节/${LOCATION}/${ACTIVITY}`;
-
-  const out = await collectSingle(text);
-
-  assert.equal(out, text, "5 字段 location 结构必须原样保留");
-  assert.ok(out.includes(LOCATION), "⛔ location 不得被脱敏掉");
-  assert.ok(!out.includes("REDACTED"), "⛔ 无 teacher 时不得插入 REDACTED");
-});
-
-// ---------------------------------------------------------------------------
-// 5 字段：teacher/activity（有 teacher）
-// ---------------------------------------------------------------------------
-
-test("5 字段 teacher/activity：teacher 被替换为 REDACTED", async () => {
+test("5 字段无 '-':明确是 teacher → fields[3] = REDACTED", async () => {
   const text = `1-8周/星期五/第5-6节/${TEACHER}/${ACTIVITY}`;
 
   const out = await collectSingle(text);
@@ -137,11 +123,66 @@ test("5 字段 teacher/activity：teacher 被替换为 REDACTED", async () => {
   assert.ok(!out.includes(TEACHER), "⛔ 真实 teacher 不得出现在产物中");
 });
 
+test("5 字段 >=3 个非空 '-' 分段:明确是 location → 原样保留", async () => {
+  const text = `1-8周/星期五/第5-6节/${LOCATION}/${ACTIVITY}`;
+
+  const out = await collectSingle(text);
+
+  assert.equal(out, text, "明确 location 必须原样保留");
+  assert.ok(!out.includes("REDACTED"), "⛔ 无 teacher 时不得插入 REDACTED");
+});
+
+for (const [label, ambiguous] of [
+  ["两段 A-B", "示例-教师A"],
+  ["园区为空", "-示例教师A"],
+  ["教室为空", "示例教师A-"],
+  ["两侧为空", "  -  "],
+  ["三段但末段为空", "示例校区-示例教学楼-"],
+]) {
+  test(`5 字段二义形态（${label}）：fail closed，不产出 bundle`, async () => {
+    const { collector } = loadCollector([
+      rawRow(`1-8周/星期五/第5-6节/${ambiguous}/${ACTIVITY}`),
+    ]);
+
+    await assert.rejects(
+      () => collector.collect({ semester: SEMESTER }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.ok(
+          error.message.includes("不猜语义"),
+          `错误信息应说明不猜语义，实际：${error.message}`,
+        );
+        // ⛔ 不回显该字段取值
+        assert.ok(
+          !error.message.includes(ambiguous),
+          "⛔ 二义字段取值不得出现在错误信息中",
+        );
+        return true;
+      },
+    );
+  });
+}
+
 // ---------------------------------------------------------------------------
-// 6 字段：location/teacher/activity
+// 回归：两段 token 不得再被当成 location（旧缺陷方向）
 // ---------------------------------------------------------------------------
 
-test("6 字段：teacher 被替换为 REDACTED，location 保留", async () => {
+test("回归：两段 token 不得再被静默当成 location", async () => {
+  const { collector } = loadCollector([
+    rawRow(`1-8周/星期五/第5-6节/示例-教师A/${ACTIVITY}`),
+  ]);
+
+  await assert.rejects(
+    () => collector.collect({ semester: SEMESTER }),
+    /不猜语义/,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// 6 字段：本轮**未**收紧（语义已由字段数确定），仍按通用 location grammar
+// ---------------------------------------------------------------------------
+
+test("6 字段 location/teacher/activity：teacher 被替换为 REDACTED，location 保留", async () => {
   const text = `1-8周/星期五/第5-6节/${LOCATION}/${TEACHER}/${ACTIVITY}`;
 
   const out = await collectSingle(text);
