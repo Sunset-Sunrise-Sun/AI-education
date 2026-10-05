@@ -147,6 +147,7 @@ case 可增加：
 ```
 
 - **主键是 `target_source_record`**（目标培养方案中的**具体 requirement entry**），不是 `course_id` —— 同一课程号可能在不同分组 / 荣誉课 / 重复条目中出现，范围决策必须针对具体条目。`target_course_id` 仅用于核对与诊断。
+- **scope 查询按条目进行**：内部的 bucket / evidence 查询都以 requirement entry 的 `source_record` 为键（`scope_bucket_for_entry` / `scope_evidence_for_entry`），**不提供按 `course_id` 的查询入口**。同一 course_id 的两条 entry 可以分别是 historical 与 future，互不串线；针对一条 entry 的人工确认**不会**一并解除同一 course_id 的另一条 entry。
 - `decision` 只允许 `historical` 或 `future`。`evidence` 必须非空，并会写入相关任务的 `source_evidence`（只放可追溯的 source reference，不含本地真实文件路径、姓名、学号、成绩或 GPA）。
 - **只能解除 parser 无法确认的 unresolved**：若某条目本来就有明确单学期（如 `2026-1`）并已由 `as_of_term` 自动得到 historical / future，那么针对它的 decision 属于与来源事实冲突，**直接报错，不静默覆盖**。
 - 校验：版本必须匹配；`source_record` 必须真实存在且与 `target_course_id` 一致；**重复 decision 拒绝**；额外字段拒绝；Real case 不得使用 `mock://` evidence（Mock case 允许）。
@@ -181,6 +182,10 @@ case 可增加：
 ```
 
 `historical_minimum_credit` 只表示**历史部分**的额度，不是学校政策。它必须：不超过组最低学分、能被组内历史成员的实际学分总量满足、且只用于 mixed 组（对纯历史组或纯未来组会被拒绝）。未来选修选择不会被计入历史组额度。
+
+**历史额度只由历史事实覆盖**：mixed 组的历史额度**只能**由历史范围内的有效事实（已满足学分，或组内必修 / 明确选修计划）覆盖。**future 课程一律不参与历史额度计算**，无论它是 satisfied、required、selected 还是待确认 —— 计划安排在该时点之后的课程所获得的学分，不构成"历史要求已满足"的证据。
+
+**组决策 evidence 的传播范围**：`confirmed_group_scope_decisions[].evidence` 只会附加到**该组内、确实受历史投影影响而输出的任务**上（按 `target.group_id` 匹配）。它不会进入其他组、其他课程的 `source_evidence`；没有 `group_id` 的课程、或没有 decision 的组，都不会凭空附加该依据。
 
 ### 语义边界（不得混用）
 

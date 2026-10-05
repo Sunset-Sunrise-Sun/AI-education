@@ -84,3 +84,17 @@
 - 未完成/需要人工确认：Case A 真实 `as_of_term` 仍未确认；混合课程组的历史额度切分需要来源依据；课程等价认定与 prerequisite 仍未确认；真实 D2/D3/D4 端到端验收未完成；G11 与 complete 2026-1 snapshot 状态未变。
 - 对其他模块影响：公共 Schema、公共模型、Interface、Integration、Planner、Course Data、Frontend 均未修改。
 - 下一步：等待项目 Architecture Review 复验；**不自行 merge main**。
+
+### 2026-10-05 - MakeupScope 第三轮修复：entry-level scope、mixed 组历史额度、组依据传播
+- 本次目标：按 Architecture Re-Review 的 `CHANGES REQUIRED` 只修三个实现级 blocker，不重新设计、不扩范围。继续使用 `fix/curriculum-makeup-scope`；基线仍为 main `647e4908a302e3bec87823ccdb2d4a6033dccc15`。
+- Blocker A（scope lookup 真正按 requirement entry）：`CurriculumDiff` 的 scope 查询改为以 `source_record` 为键 —— 新增 `scope_bucket_for_entry` / `scope_evidence_for_entry` / `scope_buckets_by_entry` / `unresolved_scope_entries`，**删除按 `course_id` 的 `scope_bucket()` 入口**。投影层（future / unresolved 判定、emit 集合）、组计算、任务依据查找全部改用 entry 键；`emit_records` / `passthrough_records` 亦按 entry 组织。同一 course_id 的多条 entry 不再串线，解除其中一条不会连带解除另一条。
+- Blocker B（mixed 组历史额度不得由 future 覆盖）：mixed 组的历史额度只由**历史范围内**的已满足学分或历史必修/明确选修计划覆盖；**future 课程一律不参与历史额度计算**（satisfied / required / selected 均不计）。future-only 组仍不阻断；历史组仍保持原严格规则；mixed 无切分仍 fail closed。同时保持 `group_gaps[].remaining_credit` 的既有"已得学分缺口"语义不变（不改为计划容量），避免影响既有 group 报告与测试口径。
+- Blocker C（组决策依据精确传播）：`confirmed_group_scope_decisions[].evidence` 现按 `target.group_id` 精确附加到受该组历史投影影响而输出的任务 `source_evidence`；不进入其他组、其他课程或没有 `group_id` 的课程，也不为没有 decision 的组凭空附加。
+- 顺带（非 blocker）：把投影层 `historical_unmet()` 重命名为语义准确的 `is_future_unmet()`。
+- 修改文件：修改 `backend/app/curriculum/matching.py`；修改/新增测试 `backend/tests/test_curriculum_scope_decisions.py`；更新 `docs/curriculum/INPUTS.md`、`docs/status/curriculum.md`、本文件。未改其他模块。
+- 测试：本轮新增 **20** 项（scope 测试合计 84 + 60 = 144 项全部通过），覆盖 entry-level 分类与依据不串线、同一 course_id 两条 unresolved 仅解除其一、mixed 组 future satisfied/required/selection 不计入历史额度、历史额度只由历史事实覆盖、组依据只进入本组任务（含双组互不串、非组课程不带）、组依据映射按组。全量后端（`PYTHONUTF8=1`）：**1929 passed、2 failed、2 skipped**。
+- 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），在本次改动前的基线上同样失败，与本轮无关；未使用 skip/xfail/删除测试掩盖，也未为通过测试放宽断言。过程中曾误改 group 覆盖语义与重复 course_id 守卫，均已在既有测试约束下恢复原语义。
+- 使用数据：Mock（人工合成 `mock://` 数据）。真实 D4 只在本地读取，未提交真实文件、逐行记录或私有配置。**当前功能仅使用 Mock 数据验证，尚未完成真实数据验证。**
+- 未完成/需要人工确认：Case A 真实 `as_of_term` 仍未确认；mixed 组历史额度切分需来源依据；课程等价认定与 prerequisite 仍未确认；真实 D2/D3/D4 端到端验收未完成；G11 与 complete 2026-1 snapshot 状态未变。
+- 对其他模块影响：公共 Schema、公共模型、Interface、Integration、Planner、Course Data、Frontend 均未修改。
+- 下一步：等待项目 Architecture Review 复验；**不自行 merge main**。

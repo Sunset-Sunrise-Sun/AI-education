@@ -168,9 +168,9 @@ def test_future_elective_unmet_never_becomes_a_current_makeup_task() -> None:
 
 def test_future_required_course_keeps_its_scope_classification_internally() -> None:
     diff = _provider(_input()).get_curriculum_diff()
-    assert diff.scope_bucket("SCOPE201") == SCOPE_FUTURE
-    assert diff.scope_bucket("SCOPE101") == SCOPE_HISTORICAL
-    assert diff.unresolved_scope_courses() == ()
+    assert diff.scope_bucket_for_entry("row:SCOPE201") == SCOPE_FUTURE
+    assert diff.scope_bucket_for_entry("row:SCOPE101") == SCOPE_HISTORICAL
+    assert diff.unresolved_scope_entries() == ()
     assert diff.makeup_scope is not None and diff.makeup_scope.as_of_term == "2025-2"
 
 
@@ -179,7 +179,7 @@ def test_exact_as_of_term_course_is_included() -> None:
     payload = _input()
     _set_term(payload, "SCOPE201", "2025-2")
     diff = _provider(payload).get_curriculum_diff()
-    assert diff.scope_bucket("SCOPE201") == SCOPE_HISTORICAL
+    assert diff.scope_bucket_for_entry("row:SCOPE201") == SCOPE_HISTORICAL
     assert "SCOPE201" in [task.course_id for task in _tasks(payload)]
 
 
@@ -199,7 +199,7 @@ def test_unknown_or_range_arrangement_term_blocks_projection(term) -> None:
     payload = _input()
     _set_term(payload, "SCOPE201", term)
     provider = _provider(payload)
-    assert provider.get_curriculum_diff().scope_bucket("SCOPE201") == SCOPE_UNRESOLVED
+    assert provider.get_curriculum_diff().scope_bucket_for_entry("row:SCOPE201") == SCOPE_UNRESOLVED
     with pytest.raises(CurriculumNormalizationError, match="scope") as excinfo:
         provider.get_makeup_tasks()
     if isinstance(term, str) and term:
@@ -305,8 +305,8 @@ def test_scope_decisions_require_an_explicit_scope() -> None:
     )
     diff = build_curriculum_diff(old, new, ())
     assert diff.makeup_scope is None
-    assert diff.scope_bucket("DEMO101") is None
-    assert diff.unresolved_scope_courses() == ()
+    assert diff.scope_bucket_for_entry("row:DEMO101") is None
+    assert diff.unresolved_scope_entries() == ()
     # Scope decisions cannot exist without the explicit scope that produced them.
     scope = MakeupScope(target_version_id="mock-new", as_of_term="2025-2", evidence="mock://scope-as-of")
     scoped = build_curriculum_diff(old, new, (), makeup_scope=scope)
