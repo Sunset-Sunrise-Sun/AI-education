@@ -129,9 +129,13 @@ from app.course_data.snapshot import (
     merge_offering_snapshots,
 )
 from app.course_data.store import (
+    ALLOWED_SCOPE_KINDS,
+    SCOPE_KIND_CAMPUS,
+    SCOPE_KIND_FULL_SEMESTER,
     CourseDataImport,
     CourseDataProvenance,
     CourseDataStoreError,
+    SnapshotScope,
     compute_artifact_sha256,
     import_offering_snapshot,
     initialize_course_data_store,
@@ -140,6 +144,7 @@ from app.course_data.store import (
 )
 
 __all__ = [
+    "ALLOWED_SCOPE_KINDS",
     "APPROVED_SHARD_IDS",
     "CAPTURE_FORMAT",
     "CapturedPagesFetcher",
@@ -150,11 +155,14 @@ __all__ = [
     "OfferingSnapshot",
     "OpeningCoursesPageFetcher",
     "ParsedScheduleSegment",
+    "SCOPE_KIND_CAMPUS",
+    "SCOPE_KIND_FULL_SEMESTER",
     "SHARDED_CAPTURE_SOURCE",
     "ShardedCaptureError",
     "ShardedCaptureSet",
     "ShardSource",
     "SnapshotCourseDataProvider",
+    "SnapshotScope",
     "build_course_offering",
     "collect_captured_pages_snapshot",
     "collect_opening_courses_snapshot",

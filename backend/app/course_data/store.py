@@ -24,13 +24,36 @@ list[CourseOffering]（公共契约对象）
 
 ## 本模块**不**做什么（硬边界）
 
-- ⛔ **不判断 completeness**：只接受上游已经判定为 `complete` 的 `OfferingSnapshot`
-  （`is_complete == false` → 拒绝写入 approved 路径），
+- ⛔ **不判断 completeness**：只接受上游已经判定为 `complete`（**在其声明 scope 内**）的
+  `OfferingSnapshot`（`is_complete == false` → 拒绝写入 approved 路径），
   也⛔ **不**在库里写任何"这份数据完整"的自我声明；
 - ⛔ 不接触 Capture Bundle / `captured_pages.py` / `sharded_capture.py` /
   collector / `planning_runtime.py` / PR #39 / `schemas/**` / Planner / Curriculum / frontend；
 - ⛔ 不联网、不读取 / 不保存任何认证材料；
 - ⛔ **不新增公共 Schema**：只持久化公共 `CourseOffering` **已有**的字段。
+
+## scope：`complete` **只在声明的 scope 内**成立（⛔ 不得改成全局含义）
+
+同一份 `is_complete == True` 可能是三种完全不同的东西，
+因此 import **必须由调用方显式声明 scope**（`SnapshotScope`）：
+
+```text
+campus        / <openingSchoolNumber>   某个校区 shard（例如 5062202）
+full_semester / <semester>              整个学期（例如 2026-1）
+```
+
+```text
+is_complete == complete **within the declared scope**
+```
+
+⛔ `complete` **不得**被解释为"全学期完整"：
+一个 `campus` 快照完整只说明**那个校区**在本次采集内取满了；
+本层⛔ 不产生任何 global completeness 暗示，也⛔ 不从
+`source` / 文件名 / rows **推断** scope —— 只如实记录调用方声明的那一个。
+
+⚠️ 按 case 裁剪的 scope（Case-A-scoped）的 id 语义尚未确证，
+因此**暂不在白名单内**（见 `ALLOWED_SCOPE_KINDS`）：这类快照当前会被明确拒绝，
+而不是被塞进一个含糊的 kind。
 
 ## `artifact_sha256` 的口径（⛔ 不得改动）
 
@@ -75,12 +98,16 @@ from app.course_data.snapshot import OfferingSnapshot
 from app.models.contracts import CourseOffering, DataSource, Meeting
 
 __all__ = [
+    "ALLOWED_SCOPE_KINDS",
     "ARTIFACT_SHA256_PATTERN",
     "COURSE_OFFERING_TABLE",
     "IMPORT_RECORD_TABLE",
+    "SCOPE_KIND_CAMPUS",
+    "SCOPE_KIND_FULL_SEMESTER",
     "CourseDataImport",
     "CourseDataProvenance",
     "CourseDataStoreError",
+    "SnapshotScope",
     "compute_artifact_sha256",
     "import_offering_snapshot",
     "initialize_course_data_store",
@@ -91,11 +118,24 @@ __all__ = [
 #: 教学班表（identity 是主键：⛔ 不允许按 `course_id` 覆盖不同教学班）。
 COURSE_OFFERING_TABLE = "course_offering"
 
-#: 导入记录表（artifact 级 provenance；同一 artifact 只记首次导入）。
+#: 导入记录表（artifact 级 provenance；同一 artifact **在同一 scope 下**只记首次导入）。
 IMPORT_RECORD_TABLE = "course_data_import"
 
 #: `artifact_sha256` 的形状：64 位十六进制（大小写都接受，落库统一小写）。
 ARTIFACT_SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+
+#: scope 的一个 kind：**校区 shard** 快照，`scope_id` = 该校区的 `openingSchoolNumber`。
+SCOPE_KIND_CAMPUS = "campus"
+
+#: scope 的一个 kind：**全学期**快照，`scope_id` = 该学期（必须等于快照 semester）。
+SCOPE_KIND_FULL_SEMESTER = "full_semester"
+
+#: 允许声明的 scope kind **白名单**（⛔ 不猜、⛔ 不放开为任意字符串）。
+#:
+#: ⚠️ Case-A-scoped（按某个 case 的课程集合裁剪）的 `scope_id` 取形**尚未确证**，
+#: 因此**暂不在白名单内**：这类快照当前会被明确拒绝，而不是被塞进一个含糊的 kind。
+#: 需要时请先给出它的 id 语义（case id？课程集合摘要？），再按流程加入。
+ALLOWED_SCOPE_KINDS: tuple[str, ...] = (SCOPE_KIND_CAMPUS, SCOPE_KIND_FULL_SEMESTER)
 
 #: 教学班表的**数据列**（参与"内容是否变化"的比较；provenance 列不参与）。
 _DATA_COLUMNS = (
@@ -127,27 +167,103 @@ CREATE TABLE IF NOT EXISTS {COURSE_OFFERING_TABLE} (
     meetings_json       TEXT    NOT NULL,
     artifact_sha256     TEXT    NOT NULL,
     imported_at         TEXT    NOT NULL,
+    scope_kind          TEXT    NOT NULL,
+    scope_id            TEXT    NOT NULL,
     PRIMARY KEY (semester, course_id, class_id)
 );
 
 CREATE TABLE IF NOT EXISTS {IMPORT_RECORD_TABLE} (
     artifact_sha256     TEXT    NOT NULL,
     semester            TEXT    NOT NULL,
+    scope_kind          TEXT    NOT NULL,
+    scope_id            TEXT    NOT NULL,
     source              TEXT,
     imported_at         TEXT    NOT NULL,
     completeness        TEXT    NOT NULL,
     loaded_count        INTEGER NOT NULL,
     reported_total      INTEGER,
     offering_count      INTEGER NOT NULL,
-    PRIMARY KEY (artifact_sha256, semester)
+    PRIMARY KEY (artifact_sha256, semester, scope_kind, scope_id)
 );
 """
 
 _REQUIRED_TABLES = (COURSE_OFFERING_TABLE, IMPORT_RECORD_TABLE)
 
+#: 当前 schema 的列清单（用于识别**过旧**的本地库并给出明确提示，⛔ 不自动迁移）。
+_EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
+    COURSE_OFFERING_TABLE: (
+        "semester",
+        "course_id",
+        "class_id",
+        "course_name",
+        "teacher",
+        "credit",
+        "capacity",
+        "remaining_capacity",
+        "source",
+        "data_source",
+        "meetings_json",
+        "artifact_sha256",
+        "imported_at",
+        "scope_kind",
+        "scope_id",
+    ),
+    IMPORT_RECORD_TABLE: (
+        "artifact_sha256",
+        "semester",
+        "scope_kind",
+        "scope_id",
+        "source",
+        "imported_at",
+        "completeness",
+        "loaded_count",
+        "reported_total",
+        "offering_count",
+    ),
+}
+
 
 class CourseDataStoreError(CourseDataNormalizationError):
     """本地 Course Data 库读写失败（继承统一错误类型，便于调用方一处捕获）。"""
+
+
+@dataclass(frozen=True)
+class SnapshotScope:
+    """一份快照的**采集 scope**（调用方**显式声明**，⛔ 绝不从 source / 文件名 / rows 推断）。
+
+    ```text
+    campus        / <openingSchoolNumber>   校区 shard
+    full_semester / <semester>              全学期
+    ```
+
+    ⚠️ **语义（Data Gate 口径，⛔ 不得改动）**：
+
+    ```text
+    is_complete == complete **within the declared scope**
+    ```
+
+    ⛔ `completeness == "complete"` **不得**被解释为"全学期完整"：
+    一个 `campus` 快照完整只说明**那个校区**在本次采集内取满了，
+    ⛔ 不说明整个学期完整。本层只**如实记录**调用方声明的 scope，
+    ⛔ 不据此生成任何 global completeness 暗示。
+    """
+
+    scope_kind: str
+    scope_id: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.scope_kind, str) or self.scope_kind not in ALLOWED_SCOPE_KINDS:
+            raise CourseDataStoreError(
+                f"scope_kind 必须是已确认的取值之一 {list(ALLOWED_SCOPE_KINDS)}，"
+                f"实际是 {self.scope_kind!r}（⛔ 不接受未确认的 scope，也不从其它字段推断）"
+            )
+
+        if not isinstance(self.scope_id, str) or not self.scope_id.strip():
+            raise CourseDataStoreError(
+                f"scope_id 必须是非空字符串（{self.scope_kind} 的 id 形态见 SnapshotScope 文档）"
+            )
+
+        object.__setattr__(self, "scope_id", self.scope_id.strip())
 
 
 @dataclass(frozen=True)
@@ -157,11 +273,13 @@ class CourseDataImport:
     - `inserted` / `updated` / `unchanged` 按**数据列**统计：
       `unchanged` 表示该 identity 已存在且数据完全一致
       （provenance 列仍会刷新为本次导入，见 `import_offering_snapshot()`）；
-    - `already_imported` —— 同一个 `(artifact_sha256, semester)` **此前已导入过**。
+    - `already_imported` —— 同一个 `(artifact_sha256, semester, scope)` **此前已导入过**。
     """
 
     artifact_sha256: str
     semester: str
+    scope_kind: str
+    scope_id: str
     imported_at: str
     inserted: int
     updated: int
@@ -171,10 +289,16 @@ class CourseDataImport:
 
 @dataclass(frozen=True)
 class CourseDataProvenance:
-    """artifact 级 provenance 记录（本地库的审计信息）。"""
+    """artifact 级 provenance 记录（本地库的审计信息）。
+
+    ⚠️ `scope_kind` / `scope_id` 是**声明值**：它说明这份 artifact
+    是在**哪个 scope 内**被判定 complete，⛔ 不是"全学期完整"的声明。
+    """
 
     artifact_sha256: str
     semester: str
+    scope_kind: str
+    scope_id: str
     source: str | None
     imported_at: str
     completeness: str
@@ -228,6 +352,33 @@ def _require_semester(value: object) -> str:
         raise CourseDataStoreError("semester 必须是非空字符串（例如 '2026-1'）")
 
     return value.strip()
+
+
+def _require_scope(scope: object, *, semester: str) -> SnapshotScope:
+    """校验调用方**显式声明**的 scope（⛔ 缺失 / 非法一律拒绝，⛔ 不从其它字段推断）。
+
+    - 必须是 `SnapshotScope`（构造时已白名单校验 kind / id）；
+    - `full_semester` 的 `scope_id` 必须**等于**快照的 semester
+      （否则就是一条自相矛盾的审计记录）；
+    - `campus` 的 `scope_id` 是校区 `openingSchoolNumber`：
+      本层⛔ **不**保存 / 不校验那张校区号表（唯一真源在采集侧），
+      只要求它是非空 id。
+    """
+
+    if not isinstance(scope, SnapshotScope):
+        raise CourseDataStoreError(
+            "必须显式传入 SnapshotScope（scope_kind + scope_id）；"
+            f"实际是 {type(scope).__name__}。"
+            "⛔ 不允许从 source / 文件名 / rows 推断 scope"
+        )
+
+    if scope.scope_kind == SCOPE_KIND_FULL_SEMESTER and scope.scope_id != semester:
+        raise CourseDataStoreError(
+            f"full_semester 的 scope_id({scope.scope_id!r}) 必须等于快照 semester"
+            f"({semester!r})；否则该审计记录自相矛盾"
+        )
+
+    return scope
 
 
 def _require_store_path(path: object, *, must_exist: bool) -> Path:
@@ -285,8 +436,28 @@ def _offering_payload(offering: CourseOffering) -> tuple[object, ...]:
     )
 
 
+def _column_names(connection: sqlite3.Connection, table: str) -> list[str]:
+    return [row["name"] for row in connection.execute(f"PRAGMA table_info({table})")]
+
+
+def _require_current_columns(connection: sqlite3.Connection) -> None:
+    """确认本地库的 schema 是**当前版本**（⛔ 不做自动迁移，⛔ 不静默降级读取）。"""
+
+    for table, expected in _EXPECTED_COLUMNS.items():
+        existing = _column_names(connection, table)
+        missing = [name for name in expected if name not in existing]
+
+        if missing:
+            raise CourseDataStoreError(
+                f"本地库的 {table} 表缺少列：{missing}；"
+                f"该库由更早的 schema 建立（例如尚没有 scope 列）。"
+                f"⛔ 本层不自动迁移，请重建本地库后重新导入"
+            )
+
+
 def _ensure_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(_DDL)
+    _require_current_columns(connection)
 
 
 def _require_schema(connection: sqlite3.Connection) -> None:
@@ -302,6 +473,8 @@ def _require_schema(connection: sqlite3.Connection) -> None:
         raise CourseDataStoreError(
             f"该 SQLite 文件不是 Course Data 本地库（缺少表：{missing}）"
         )
+
+    _require_current_columns(connection)
 
 
 @contextmanager
@@ -356,8 +529,9 @@ def import_offering_snapshot(
     snapshot: OfferingSnapshot,
     *,
     artifact_sha256: str,
+    scope: SnapshotScope,
 ) -> CourseDataImport:
-    """把一份**已判定 complete** 的 `OfferingSnapshot` upsert 进本地库。
+    """把一份**已判定 complete（在其声明 scope 内）**的 `OfferingSnapshot` upsert 进本地库。
 
     ⛔ 本层**不判断 completeness**，只按上游结论把关：
 
@@ -366,12 +540,22 @@ def import_offering_snapshot(
     snapshot.is_complete == True  → 逐条 upsert
     ```
 
-    identity = `(semester, course_id, class_id)`：
+    ⚠️ **scope 必须由调用方显式声明**（`scope_kind` + `scope_id`）：
 
-    - 同一 artifact 重复导入**幂等**（第二次 `inserted=0 / updated=0`）；
+    ```text
+    is_complete == complete **within the declared scope**
+    ```
+
+    ⛔ `complete` **不得**被解释为"全学期完整"：
+    `campus` 快照完整只说明**该校区**在本次采集内取满了。
+    ⛔ 本层**不**从 `source` / 文件名 / rows 推断 scope，也⛔ 不生成任何
+    global completeness 暗示；它只是**如实记录**调用方声明的那一个 scope。
+
+    identity = `(semester, course_id, class_id)`（⛔ 与 scope 无关）：
+
+    - 同一 `(artifact, semester, scope)` 重复导入**幂等**（第二次 `inserted=0 / updated=0`）；
     - ⛔ 不同 `class_id` 的同一门课**各自成行**，⛔ 绝不互相覆盖；
-    - 已存在且数据列一致时仍然刷新 provenance
-      （`artifact_sha256` / `imported_at` 指向**本次**导入）。
+    - 已存在且数据列一致时仍然刷新 provenance（含 scope）指向**本次**导入。
 
     `artifact_sha256` 由调用方显式给出（可用 `compute_artifact_sha256()`
     对原始 artifact 字节计算）；⛔ 本层不去读 Capture Bundle。
@@ -386,6 +570,7 @@ def import_offering_snapshot(
         )
 
     digest = _require_sha256(artifact_sha256)
+    declared_scope = _require_scope(scope, semester=snapshot.semester)
 
     if not snapshot.is_complete:
         raise CourseDataStoreError(
@@ -408,8 +593,9 @@ def import_offering_snapshot(
         already_imported = (
             connection.execute(
                 f"SELECT 1 FROM {IMPORT_RECORD_TABLE} "
-                "WHERE artifact_sha256 = ? AND semester = ?",
-                (digest, semester),
+                "WHERE artifact_sha256 = ? AND semester = ? "
+                "AND scope_kind = ? AND scope_id = ?",
+                (digest, semester, declared_scope.scope_kind, declared_scope.scope_id),
             ).fetchone()
             is not None
         )
@@ -436,12 +622,14 @@ def import_offering_snapshot(
                 f"""
                 INSERT INTO {COURSE_OFFERING_TABLE} (
                     semester, course_id, class_id, {', '.join(_DATA_COLUMNS)},
-                    artifact_sha256, imported_at
-                ) VALUES (?, ?, ?, {placeholders}, ?, ?)
+                    artifact_sha256, imported_at, scope_kind, scope_id
+                ) VALUES (?, ?, ?, {placeholders}, ?, ?, ?, ?)
                 ON CONFLICT (semester, course_id, class_id) DO UPDATE SET
                     {', '.join(f'{column} = excluded.{column}' for column in _DATA_COLUMNS)},
                     artifact_sha256 = excluded.artifact_sha256,
-                    imported_at = excluded.imported_at
+                    imported_at = excluded.imported_at,
+                    scope_kind = excluded.scope_kind,
+                    scope_id = excluded.scope_id
                 """,
                 (
                     semester,
@@ -450,20 +638,26 @@ def import_offering_snapshot(
                     *payload,
                     digest,
                     imported_at,
+                    declared_scope.scope_kind,
+                    declared_scope.scope_id,
                 ),
             )
 
-        # 同一 artifact 只保留**首次**导入记录（幂等，且不覆盖原始时间）。
+        # 同一 (artifact, semester, scope) 只保留**首次**导入记录（幂等，不覆盖原始时间）。
+        # ⚠️ scope 参与主键：同一份 artifact 若以**不同 scope** 声明，会各自留一条审计记录，
+        #    ⛔ 而不是被静默合并成一条含义不明的记录。
         connection.execute(
             f"""
             INSERT OR IGNORE INTO {IMPORT_RECORD_TABLE} (
-                artifact_sha256, semester, source, imported_at, completeness,
-                loaded_count, reported_total, offering_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                artifact_sha256, semester, scope_kind, scope_id, source, imported_at,
+                completeness, loaded_count, reported_total, offering_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 digest,
                 semester,
+                declared_scope.scope_kind,
+                declared_scope.scope_id,
                 record_source,
                 imported_at,
                 snapshot.completeness,
@@ -476,6 +670,8 @@ def import_offering_snapshot(
     return CourseDataImport(
         artifact_sha256=digest,
         semester=semester,
+        scope_kind=declared_scope.scope_kind,
+        scope_id=declared_scope.scope_id,
         imported_at=imported_at,
         inserted=inserted,
         updated=updated,
@@ -590,7 +786,9 @@ def load_course_data_provenance(
     """读回 artifact 级 provenance 记录（审计用；⛔ 不含任何教学班取值）。
 
     - `semester=None` → 全部学期的导入记录；
-    - 顺序：`ORDER BY imported_at, artifact_sha256`（确定、可复现）。
+    - 顺序：`ORDER BY imported_at, artifact_sha256, scope_kind, scope_id`（确定、可复现）；
+    - ⚠️ 每条记录都带**声明 scope**：`completeness == "complete"` 只在
+      该 scope 内成立，⛔ 不是"全学期完整"的声明。
     """
 
     parameters: list[object] = []
@@ -602,9 +800,10 @@ def load_course_data_provenance(
 
     with _open_store(path, must_exist=True, ensure_schema=False) as connection:
         rows = connection.execute(
-            "SELECT artifact_sha256, semester, source, imported_at, completeness, "
-            "loaded_count, reported_total, offering_count "
-            f"FROM {IMPORT_RECORD_TABLE} {where} ORDER BY imported_at, artifact_sha256",
+            "SELECT artifact_sha256, semester, scope_kind, scope_id, source, imported_at, "
+            "completeness, loaded_count, reported_total, offering_count "
+            f"FROM {IMPORT_RECORD_TABLE} {where} "
+            "ORDER BY imported_at, artifact_sha256, scope_kind, scope_id",
             parameters,
         ).fetchall()
 
@@ -612,6 +811,8 @@ def load_course_data_provenance(
         CourseDataProvenance(
             artifact_sha256=row["artifact_sha256"],
             semester=row["semester"],
+            scope_kind=row["scope_kind"],
+            scope_id=row["scope_id"],
             source=row["source"],
             imported_at=row["imported_at"],
             completeness=row["completeness"],

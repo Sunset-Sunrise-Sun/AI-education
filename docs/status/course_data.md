@@ -920,11 +920,35 @@ baseline_before != baseline_after → 整体不得标 complete，fail closed
 Capture Bundle
         ↓  （现有入口，本模块⛔不碰）
 OfferingSnapshot（completeness 已由上游判定）
-        ↓  import_offering_snapshot(path, snapshot, artifact_sha256=...)
+        ↓  import_offering_snapshot(path, snapshot, *, artifact_sha256, scope)
 本地 SQLite Course Data 库
         ↓  load_course_offerings(path, semester, course_ids=[...])
 list[CourseOffering]（公共契约对象）
 ```
+
+### scope：`complete` **只在声明的 scope 内**成立（⛔ 不得改成全局含义）
+
+同一份 `is_complete == True` 可能是三种完全不同的东西，
+所以 import **必须由调用方显式声明 `SnapshotScope`**：
+
+```text
+campus        / <openingSchoolNumber>   某个校区 shard（例如 5062202）
+full_semester / <semester>              整个学期（例如 2026-1）
+
+is_complete == complete **within the declared scope**
+```
+
+- ⛔ `complete` **不得**被解释为"全学期完整"：`campus` 快照完整只说明**那个校区**
+  在本次采集内取满了；
+- ⛔ **不从 `source` / 文件名 / rows 推断 scope**，也⛔ 不产生任何 global completeness 暗示；
+  声明什么就记什么（行为用例：`source` 里写着 `campus/…` 也不会改变声明值）；
+- ⛔ scope 参数**必填**（省略 → `TypeError`；显式 `None` / 字符串 → `CourseDataStoreError`）；
+- `full_semester` 的 `scope_id` **必须等于**快照 semester，否则该审计记录自相矛盾 → 拒绝；
+- `campus` 的 `scope_id` = 校区 `openingSchoolNumber`：本层⛔ **不保存 / 不校验**那张校区号表
+  （唯一真源在采集侧），只要求它是非空 id；
+- ⚠️ **Case-A-scoped 暂不在白名单内**：它的 `scope_id` 取形尚未确证，
+  因此这类快照当前被**明确拒绝**，而不是被塞进一个含糊的 kind
+  （需要时先给出 id 语义，再按流程加入 `ALLOWED_SCOPE_KINDS`）。
 
 **DB schema（两张表）**
 
@@ -934,32 +958,39 @@ course_offering（identity = 主键，⛔ 不允许按 course_id 覆盖不同教
   course_name, teacher, credit,
   capacity, remaining_capacity, source, data_source,
   meetings_json,                            ← 稳定 JSON（键排序 + 紧凑分隔符）
-  artifact_sha256, imported_at              ← 行级 provenance
+  artifact_sha256, imported_at,             ← 行级 provenance
+  scope_kind, scope_id                      ← 行级 scope（否则"这份 provenance 属于哪个 scope"有歧义）
 
-course_data_import（artifact 级审计；同一 artifact + semester 只记**首次**导入）
-  artifact_sha256, semester,                ← PRIMARY KEY (artifact_sha256, semester)
+course_data_import（artifact 级审计；同一 (artifact, semester, scope) 只记**首次**导入）
+  artifact_sha256, semester,
+  scope_kind, scope_id,                     ← PRIMARY KEY (artifact_sha256, semester, scope_kind, scope_id)
   source, imported_at, completeness,
   loaded_count, reported_total, offering_count
 ```
+
+⚠️ scope 参与审计表主键：同一份 artifact 若以**不同 scope** 声明，
+会各自留一条记录，⛔ 而不是被静默合并成一条含义不明的记录。
 
 **能力（内部 API）**
 
 | 函数 | 作用 |
 |---|---|
 | `initialize_course_data_store(path)` | 建立 / 复用本地库（幂等；⛔ 不自动建父目录） |
-| `import_offering_snapshot(path, snapshot, *, artifact_sha256)` | upsert 一份**已判定 complete** 的快照 |
+| `import_offering_snapshot(path, snapshot, *, artifact_sha256, scope)` | upsert 一份**在声明 scope 内 complete** 的快照 |
 | `load_course_offerings(path, semester, *, course_ids=None)` | 按学期取全部 / 按 `course_id` 集合取候选教学班 |
-| `load_course_data_provenance(path, *, semester=None)` | 读回 artifact 级 provenance（审计） |
+| `load_course_data_provenance(path, *, semester=None)` | 读回 artifact 级 provenance（含 scope，审计用） |
+| `SnapshotScope(scope_kind, scope_id)` | 调用方声明的 scope（构造即白名单校验） |
 | `compute_artifact_sha256(data)` | 对 artifact **原始字节**算 SHA-256（十六进制小写） |
 
-- **identity / upsert**：`(semester, course_id, class_id)`；
-  同一 artifact 重复导入**幂等**（第二次 `inserted=0 / updated=0 / unchanged=N`），
+- **identity / upsert**：`(semester, course_id, class_id)`（⛔ 与 scope 无关）；
+  同一 `(artifact, semester, scope)` 重复导入**幂等**（第二次 `inserted=0 / updated=0 / unchanged=N`），
   ⛔ **不同 `class_id` 的同一门课各自成行**；
-  数据列一致时仍刷新 provenance（`artifact_sha256` / `imported_at` 指向**本次**导入）；
+  数据列一致时仍刷新 provenance（`artifact_sha256` / `imported_at` / scope 指向**本次**导入）；
 - **查询**：`course_ids=None` → 该学期全部；`course_ids=[]` → **空集合 ⇒ 空列表**（⛔ 不是"不筛"）；
   返回顺序由 SQL 显式保证（`ORDER BY course_id, class_id`）；
 - **completeness**：⛔ 本层**不判断完整性**，`is_complete == False` **拒绝写入 approved 路径**；
-  库里也⛔ 不写任何"自封完整"的列，导入记录只**如实转述**上游的 `completeness`；
+  库里也⛔ 不写任何"自封完整" / "全学期完整"的列，导入记录只**如实转述**上游 `completeness` + 声明 scope；
+- **schema 版本**：库里若缺少 scope 列（更早 schema）→ **明确提示重建**，⛔ 不自动迁移、⛔ 不静默降级读取；
 - **`artifact_sha256` 口径（⛔ 不得改动）**：
   `SHA-256 = artifact identity / integrity ≠ acquisition provenance proof`；
   本层只是如实记录调用方给出的这个值，⛔ 不据此声称任何采集时间 / 采集者 / 授权状态；
@@ -972,18 +1003,26 @@ course_data_import（artifact 级审计；同一 artifact + semester 只记**首
   ⛔ **不新增** `selected_count` 列（那需要先走公共 Schema 变更流程）；
 - ⚠️ **未接 Provider**：⛔ 未改 `SnapshotCourseDataProvider` / `CourseDataProvider` 公共边界；
   "是否把 Provider 接到 SQLite" 是后续独立的 Architecture 决策；
-- 测试：`backend/tests/test_course_data_store.py`（**49 项，纯 synthetic、零网络、零真实数据**）：
+- 测试：`backend/tests/test_course_data_store.py`（**61 项，纯 synthetic、零网络、零真实数据**）：
   complete 导入成功 / partial 拒绝且**不写任何行** / 重复导入幂等 /
   identity 变更原地更新 / 同学期不同 `class_id` 各自保留 / 跨学期隔离 /
   `course_ids` 过滤（含空集合）/ 读回顺序（SQL 级）/ meetings 5 种形态 round-trip /
   稳定 JSON / 可空公共字段 / 混合来源不猜 /
   provenance 字段 round-trip（含行级列）/ 首次导入记录不被改写 / artifact 口径 /
   `artifact_sha256` 形状校验 / 非法输入 / 路径与 SQLite 文件损坏 / 外部库识别 /
-  被篡改的 `meetings` 与 `data_source` / schema 数据边界断言；
-- non-vacuity：**12 个 mutation 全部变红**（去掉 partial 拒绝 / identity 丢掉 `class_id` /
+  被篡改的 `meetings` 与 `data_source` / schema 数据边界断言 /
+  **scope 十二例**（campus 可导入 / campus round-trip / full_semester round-trip /
+  scope 缺失拒绝 / 非法 kind 与 id 拒绝 / `full_semester` id 必须等于 semester /
+  `source` 与文件名不改变声明 scope / 同 semester 不同 campus 各自审计 /
+  同一 artifact 两个 scope 两条记录且重复导入仍幂等 / 行级 scope 跟随后一次导入 /
+  过旧 schema 明确报错 / 库中无"全局完整"列）；
+- non-vacuity：**19 个 mutation 全部变红**（去掉 partial 拒绝 / identity 丢掉 `class_id` /
   不校验 `data_source` / 去掉 `ORDER BY` / JSON 不排序 / 不写 `teacher` /
   `already_imported` 恒 False / 空 `course_ids` 不短路 / 不校验 hash 形状 /
-  导入记录改 OR REPLACE / hash 不归一化 / 不检查外部库）——
+  导入记录改 OR REPLACE / hash 不归一化 / 不检查外部库 /
+  **审计记录不写 scope** / **审计主键不含 scope** / **不做 full_semester 交叉校验** /
+  **scope_kind 白名单失效** / **scope 从 source 推断** / **不检查过旧 schema** /
+  **行级 scope 写死**）——
   其中"去掉 `ORDER BY`"由 **SQL 级断言**抓到（纯行为用例无法区分"有保证"与"恰好一致"）。
 
 ### 尚未实现（待 Review 通过后）

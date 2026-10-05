@@ -1863,3 +1863,65 @@
   Curriculum / frontend；⛔ **未接** `SnapshotCourseDataProvider`（等 Architecture 决策）；
   ⛔ 未 push / 未开 PR / 未 merge。
 - 下一步：先做 Architecture Review，再决定是否把 `SnapshotCourseDataProvider` 接到 SQLite。
+
+### 2026-10-05 - 修正（Review Blocker）：store 增加**显式 scope**（campus / full_semester）
+
+- 触发：Architecture Review **基本通过，仅 1 个 Blocker** —— store 无法显式区分
+  `full semester snapshot` / `campus shard snapshot` / Case-A-scoped snapshot，
+  而 `snapshot.is_complete` 只表示"**在它自己的采集 scope 内**完整"，
+  ⛔ 不得被解释成全学期完整。
+- **新增 `SnapshotScope(scope_kind, scope_id)`**（frozen dataclass，构造即白名单校验）：
+
+  ```text
+  campus        / <openingSchoolNumber>   例如 campus / 5062202
+  full_semester / <semester>              例如 full_semester / 2026-1
+
+  is_complete == complete **within the declared scope**
+  ```
+- **调用方必须显式传入**（`import_offering_snapshot(..., scope=...)` 为**必填** kwarg）：
+  省略 → `TypeError`；显式 `None` / 字符串 / tuple / dict → `CourseDataStoreError`；
+  ⛔ **不从 `source` / 文件名 / rows 推断**（行为用例：`source` 写成 `campus/5062202/...`
+  也不会改变声明 scope；`source` 只原样保留为来源标注）。
+- **校验**：`scope_kind` 必须在 `ALLOWED_SCOPE_KINDS = ("campus", "full_semester")` 内；
+  `scope_id` 非空字符串；
+  `full_semester` 的 `scope_id` **必须等于**快照 semester（否则该审计记录自相矛盾）。
+  ⚠️ **Case-A-scoped 暂不在白名单**（其 `scope_id` 取形尚未确证）→ 当前明确拒绝，
+  ⛔ 不塞进一个含糊的 kind；需要时先给出 id 语义再按流程加入。
+- **DB schema 变更**：
+  - `course_data_import` 增加 `scope_kind` / `scope_id`，且**加入主键**
+    `PRIMARY KEY (artifact_sha256, semester, scope_kind, scope_id)`
+    —— 同一份 artifact 以不同 scope 声明时各自留一条审计记录，⛔ 不静默合并；
+  - `course_offering` 增加 `scope_kind` / `scope_id` 作为**行级** provenance
+    （否则"这条行的 provenance 属于哪个 scope"有歧义）；
+    identity 仍是 `(semester, course_id, class_id)`（⛔ 与 scope 无关），
+    行级 scope 跟随后一次导入；
+  - 新增 schema 自检：库里**缺 scope 列**（更早 schema）→ 明确提示重建，
+    ⛔ 不自动迁移、⛔ 不静默降级读取（读写两条路径都检查）。
+- **API**：`CourseDataImport` / `CourseDataProvenance` 增加 `scope_kind` / `scope_id`；
+  `load_course_data_provenance` 的排序改为
+  `ORDER BY imported_at, artifact_sha256, scope_kind, scope_id`（仍确定、可复现）；
+  `__all__` 增加 `SnapshotScope` / `ALLOWED_SCOPE_KINDS` / `SCOPE_KIND_CAMPUS` /
+  `SCOPE_KIND_FULL_SEMESTER`。
+- **语义边界（写进模块文档）**：⛔ 库里没有任何"全局 / 全学期完整"的列，
+  导入记录只如实转述上游 `completeness` + **声明的 scope**；
+  查询读回的仍是公共 `CourseOffering`（⛔ 不新增公共 Schema）。
+- **测试 49 → 61**（新增 scope 十二例）：campus complete 可导入 / campus round-trip /
+  full_semester round-trip / **scope 缺失拒绝**（省略 + 显式 None 等四种形态）/
+  **非法 scope 拒绝**（非法 kind 与 id、`case_a` 不在白名单）/
+  `full_semester` id 必须等于 semester / **不从 source 与文件名推断** /
+  **同 semester 不同 campus artifact 各自审计** /
+  同一 artifact 两个 scope → 两条记录且同 scope 重复导入仍幂等 /
+  行级 scope 跟随后一次导入 / 过旧 schema 明确报错 / 库中无"全局完整"列。
+- **non-vacuity（mutation 12 → 19，脚本在 repo 外）**：**19 / 19 全部变红**；
+  新增 7 项针对 scope：审计记录不写 scope / 审计主键不含 scope /
+  不做 `full_semester` 交叉校验 / `scope_kind` 白名单失效 /
+  **scope 从 `source` 推断**（10 项红）/ 不检查过旧 schema / 行级 scope 写死。
+- 测试结果：store **61 passed**；full backend **2 failed / 2265 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例，未修、未 skip、未删）；`compileall` exit 0。
+- **数据来源**：⛔ 未导入任何真实数据、⛔ 未读取任何 Capture Bundle、
+  ⛔ 未跑真实采集。
+- **本轮未做**：⛔ 未接 Provider；⛔ 未改公共 Schema；⛔ 未改 collector；
+  ⛔ 未改 `captured_pages.py` / Capture Bundle format / `sharded_capture.py` /
+  `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend；
+  ⛔ 未 push / 未开 PR / 未 merge。
+- 下一步：等待 Architecture Review。

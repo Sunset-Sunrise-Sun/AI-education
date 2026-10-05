@@ -28,9 +28,13 @@ from pathlib import Path
 import pytest
 
 from app.course_data import (
+    ALLOWED_SCOPE_KINDS,
+    SCOPE_KIND_CAMPUS,
+    SCOPE_KIND_FULL_SEMESTER,
     CourseDataNormalizationError,
     CourseDataStoreError,
     OfferingSnapshot,
+    SnapshotScope,
     compute_artifact_sha256,
     import_offering_snapshot,
     initialize_course_data_store,
@@ -44,6 +48,14 @@ OTHER_SEMESTER = "2026-2"
 ARTIFACT = compute_artifact_sha256(b"synthetic-artifact-bytes")
 OTHER_ARTIFACT = compute_artifact_sha256(b"another-synthetic-artifact")
 SOURCE = "capture-set://synthetic/2026-1/shards"
+
+#: 测试用的**显式 scope**（真实链路同样必须由调用方显式声明，⛔ 不推断）。
+CAMPUS_ID = "5062202"
+OTHER_CAMPUS_ID = "5063559"
+CAMPUS_SCOPE = SnapshotScope(scope_kind=SCOPE_KIND_CAMPUS, scope_id=CAMPUS_ID)
+OTHER_CAMPUS_SCOPE = SnapshotScope(scope_kind=SCOPE_KIND_CAMPUS, scope_id=OTHER_CAMPUS_ID)
+FULL_SCOPE = SnapshotScope(scope_kind=SCOPE_KIND_FULL_SEMESTER, scope_id=SEMESTER)
+OTHER_FULL_SCOPE = SnapshotScope(scope_kind=SCOPE_KIND_FULL_SEMESTER, scope_id=OTHER_SEMESTER)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +135,24 @@ def store_path(tmp_path: Path) -> Path:
     return path
 
 
+def _import(
+    path: Path,
+    snapshot: OfferingSnapshot,
+    *,
+    artifact_sha256: str,
+    scope: SnapshotScope = CAMPUS_SCOPE,
+):
+    """便捷包装：本文件多数用例只关心 upsert / 查询，scope 固定为 campus。
+
+    ⚠️ scope 自身的语义、拒绝路径与"不从 source / 文件名推断"由文件末尾的
+    **专门用例**用真实 API（`import_offering_snapshot`）覆盖。
+    """
+
+    return import_offering_snapshot(
+        path, snapshot, artifact_sha256=artifact_sha256, scope=scope
+    )
+
+
 def _raw_rows(path: Path) -> list[sqlite3.Row]:
     """直接读库（**测试专用**：验证 schema 级事实，不走公开 API）。"""
 
@@ -181,7 +211,7 @@ def test_import_complete_snapshot_round_trips_public_fields(store_path: Path) ->
         ]
     )
 
-    result = import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    result = _import(store_path, snapshot, artifact_sha256=ARTIFACT)
 
     assert (result.inserted, result.updated, result.unchanged) == (1, 0, 0)
     assert result.already_imported is False
@@ -196,7 +226,7 @@ def test_import_complete_snapshot_round_trips_public_fields(store_path: Path) ->
 def test_import_records_artifact_provenance(store_path: Path) -> None:
     snapshot = _snapshot([_offering()])
 
-    result = import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    result = _import(store_path, snapshot, artifact_sha256=ARTIFACT)
     records = load_course_data_provenance(store_path)
 
     assert len(records) == 1
@@ -218,7 +248,7 @@ def test_import_records_artifact_provenance(store_path: Path) -> None:
 
 def test_row_level_provenance_columns_are_written(store_path: Path) -> None:
     snapshot = _snapshot([_offering()])
-    import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT.upper())
+    _import(store_path, snapshot, artifact_sha256=ARTIFACT.upper())
 
     rows = _raw_rows(store_path)
 
@@ -230,10 +260,10 @@ def test_row_level_provenance_columns_are_written(store_path: Path) -> None:
 
 
 def test_import_across_semesters_keeps_one_record_per_artifact(store_path: Path) -> None:
-    import_offering_snapshot(
+    _import(
         store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT
     )
-    import_offering_snapshot(
+    _import(
         store_path,
         _snapshot([_offering(semester=OTHER_SEMESTER)], semester=OTHER_SEMESTER),
         artifact_sha256=ARTIFACT,
@@ -252,7 +282,7 @@ def test_partial_snapshot_is_rejected(store_path: Path) -> None:
     partial = _snapshot([_offering()], completeness="partial")
 
     with pytest.raises(CourseDataStoreError) as excinfo:
-        import_offering_snapshot(store_path, partial, artifact_sha256=ARTIFACT)
+        _import(store_path, partial, artifact_sha256=ARTIFACT)
 
     assert "complete" in str(excinfo.value)
     assert "approved" in str(excinfo.value)
@@ -262,7 +292,7 @@ def test_rejected_partial_snapshot_writes_nothing(store_path: Path) -> None:
     partial = _snapshot([_offering()], completeness="partial")
 
     with pytest.raises(CourseDataStoreError):
-        import_offering_snapshot(store_path, partial, artifact_sha256=ARTIFACT)
+        _import(store_path, partial, artifact_sha256=ARTIFACT)
 
     assert _raw_rows(store_path) == []
     assert load_course_data_provenance(store_path) == []
@@ -276,7 +306,7 @@ def test_store_does_not_claim_completeness_by_itself(store_path: Path) -> None:
             assert column not in ("complete", "is_complete", "claimed_complete")
 
     # 导入记录只**如实转述**上游的 completeness 值
-    import_offering_snapshot(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
+    _import(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
     assert load_course_data_provenance(store_path)[0].completeness == "complete"
 
 
@@ -288,10 +318,10 @@ def test_store_does_not_claim_completeness_by_itself(store_path: Path) -> None:
 def test_duplicate_import_of_same_artifact_is_idempotent(store_path: Path) -> None:
     snapshot = _snapshot([_offering(course_id="SYN-1"), _offering(course_id="SYN-2")])
 
-    first = import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    first = _import(store_path, snapshot, artifact_sha256=ARTIFACT)
     before = load_course_offerings(store_path, SEMESTER)
 
-    second = import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    second = _import(store_path, snapshot, artifact_sha256=ARTIFACT)
     after = load_course_offerings(store_path, SEMESTER)
 
     assert (first.inserted, first.already_imported) == (2, False)
@@ -303,14 +333,14 @@ def test_duplicate_import_of_same_artifact_is_idempotent(store_path: Path) -> No
 
 
 def test_reimport_with_changed_content_updates_in_place(store_path: Path) -> None:
-    import_offering_snapshot(
+    _import(
         store_path, _snapshot([_offering(capacity=90)]), artifact_sha256=ARTIFACT
     )
 
     changed = _snapshot(
         [_offering(capacity=120, remaining_capacity=3, meetings=[_meeting(2, 3, 4)])]
     )
-    result = import_offering_snapshot(store_path, changed, artifact_sha256=OTHER_ARTIFACT)
+    result = _import(store_path, changed, artifact_sha256=OTHER_ARTIFACT)
 
     assert (result.inserted, result.updated, result.unchanged) == (0, 1, 0)
     assert len(_raw_rows(store_path)) == 1, "identity 相同必须原地更新，不得新增行"
@@ -332,7 +362,7 @@ def test_same_course_different_class_id_are_preserved(store_path: Path) -> None:
         ]
     )
 
-    import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    _import(store_path, snapshot, artifact_sha256=ARTIFACT)
 
     loaded = load_course_offerings(store_path, SEMESTER, course_ids=["SYN-SAME"])
 
@@ -341,12 +371,12 @@ def test_same_course_different_class_id_are_preserved(store_path: Path) -> None:
 
 
 def test_same_identity_in_two_semesters_coexist(store_path: Path) -> None:
-    import_offering_snapshot(
+    _import(
         store_path,
         _snapshot([_offering(course_name="甲学期课程")]),
         artifact_sha256=ARTIFACT,
     )
-    import_offering_snapshot(
+    _import(
         store_path,
         _snapshot(
             [_offering(semester=OTHER_SEMESTER, course_name="乙学期课程")],
@@ -368,8 +398,8 @@ def test_same_identity_in_two_semesters_coexist(store_path: Path) -> None:
 
 
 def test_load_by_semester_returns_only_that_semester(store_path: Path) -> None:
-    import_offering_snapshot(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
-    import_offering_snapshot(
+    _import(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
+    _import(
         store_path,
         _snapshot([_offering(semester=OTHER_SEMESTER)], semester=OTHER_SEMESTER),
         artifact_sha256=ARTIFACT,
@@ -388,7 +418,7 @@ def test_load_with_course_ids_filter(store_path: Path) -> None:
             _offering(course_id="SYN-C", class_id="01"),
         ]
     )
-    import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    _import(store_path, snapshot, artifact_sha256=ARTIFACT)
 
     candidates = load_course_offerings(store_path, SEMESTER, course_ids=["SYN-A", "SYN-C"])
 
@@ -408,7 +438,7 @@ def test_load_without_filter_returns_all_in_deterministic_order(store_path: Path
             _offering(course_id="SYN-A", class_id="01"),
         ]
     )
-    import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    _import(store_path, snapshot, artifact_sha256=ARTIFACT)
 
     loaded = load_course_offerings(store_path, SEMESTER)
 
@@ -420,7 +450,7 @@ def test_load_without_filter_returns_all_in_deterministic_order(store_path: Path
 
 
 def test_load_with_empty_course_ids_returns_empty(store_path: Path) -> None:
-    import_offering_snapshot(
+    _import(
         store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT
     )
 
@@ -470,7 +500,7 @@ def test_load_on_unimported_store_returns_empty(store_path: Path) -> None:
 def test_meetings_round_trip(store_path: Path, meetings: list[Meeting]) -> None:
     snapshot = _snapshot([_offering(meetings=meetings)])
 
-    import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    _import(store_path, snapshot, artifact_sha256=ARTIFACT)
     loaded = load_course_offerings(store_path, SEMESTER)
 
     assert loaded[0].meetings == meetings
@@ -478,7 +508,7 @@ def test_meetings_round_trip(store_path: Path, meetings: list[Meeting]) -> None:
 
 def test_meetings_json_is_canonical_and_stable(store_path: Path) -> None:
     meetings = [_meeting(3, 5, 6, (2, 4, 6), campus="示例校区", classroom="示例教学楼-210")]
-    import_offering_snapshot(
+    _import(
         store_path, _snapshot([_offering(meetings=meetings)]), artifact_sha256=ARTIFACT
     )
 
@@ -507,7 +537,7 @@ def test_nullable_public_fields_round_trip(store_path: Path) -> None:
         ]
     )
 
-    import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    _import(store_path, snapshot, artifact_sha256=ARTIFACT)
     loaded = load_course_offerings(store_path, SEMESTER)[0]
 
     assert loaded.teacher is None
@@ -527,14 +557,14 @@ def test_import_record_keeps_the_first_import_of_an_artifact(store_path: Path) -
     审计记录也**不**被改写（⛔ 不覆盖原始导入事实）。
     """
 
-    first = import_offering_snapshot(
+    first = _import(
         store_path,
         _snapshot([_offering(course_id="SYN-1", source="source-a")]),
         artifact_sha256=ARTIFACT,
     )
     first_record = load_course_data_provenance(store_path)[0]
 
-    second = import_offering_snapshot(
+    second = _import(
         store_path,
         _snapshot(
             [
@@ -563,7 +593,7 @@ def test_mixed_source_snapshot_records_no_single_source(store_path: Path) -> Non
         [_offering(course_id="SYN-1", source="source-a"), _offering(course_id="SYN-2", source="source-b")]
     )
 
-    import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    _import(store_path, snapshot, artifact_sha256=ARTIFACT)
 
     # ⛔ 不猜：本批次 source 不唯一时，artifact 记录里如实留空
     assert load_course_data_provenance(store_path)[0].source is None
@@ -591,17 +621,17 @@ def test_artifact_sha256_is_required_and_validated(store_path: Path) -> None:
         12345,
     ):
         with pytest.raises(CourseDataStoreError):
-            import_offering_snapshot(store_path, snapshot, artifact_sha256=bad)  # type: ignore[arg-type]
+            _import(store_path, snapshot, artifact_sha256=bad)  # type: ignore[arg-type]
 
     assert _raw_rows(store_path) == []
 
 
 def test_import_rejects_non_snapshot_input(store_path: Path) -> None:
     with pytest.raises(CourseDataStoreError):
-        import_offering_snapshot(store_path, "not-a-snapshot", artifact_sha256=ARTIFACT)  # type: ignore[arg-type]
+        _import(store_path, "not-a-snapshot", artifact_sha256=ARTIFACT)  # type: ignore[arg-type]
 
     with pytest.raises(CourseDataStoreError):
-        import_offering_snapshot(store_path, None, artifact_sha256=ARTIFACT)  # type: ignore[arg-type]
+        _import(store_path, None, artifact_sha256=ARTIFACT)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("bad_semester", ["", "   ", None, 2026])
@@ -654,7 +684,7 @@ def test_foreign_sqlite_file_fails_clearly(tmp_path: Path) -> None:
 
 
 def test_tampered_meetings_json_fails_clearly(store_path: Path) -> None:
-    import_offering_snapshot(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
+    _import(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
 
     connection = sqlite3.connect(str(store_path))
     connection.execute("UPDATE course_offering SET meetings_json = ?", ("{not json",))
@@ -668,7 +698,7 @@ def test_tampered_meetings_json_fails_clearly(store_path: Path) -> None:
 
 
 def test_tampered_meetings_payload_fails_clearly(store_path: Path) -> None:
-    import_offering_snapshot(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
+    _import(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
 
     connection = sqlite3.connect(str(store_path))
     connection.execute(
@@ -684,7 +714,7 @@ def test_tampered_meetings_payload_fails_clearly(store_path: Path) -> None:
 def test_non_real_rows_are_rejected_on_load(store_path: Path) -> None:
     """⛔ 真实链路只应出现 real；库里混入 mock 时拒绝加载（例如指到了别的库）。"""
 
-    import_offering_snapshot(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
+    _import(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
 
     connection = sqlite3.connect(str(store_path))
     connection.execute("UPDATE course_offering SET data_source = 'mock'")
@@ -735,7 +765,7 @@ def test_schema_has_no_forbidden_columns_or_tables(store_path: Path) -> None:
 
 
 def test_stored_row_contains_no_unexpected_columns(store_path: Path) -> None:
-    import_offering_snapshot(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
+    _import(store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT)
 
     assert _column_names(store_path, "course_offering") == [
         "semester",
@@ -751,6 +781,8 @@ def test_stored_row_contains_no_unexpected_columns(store_path: Path) -> None:
         "meetings_json",
         "artifact_sha256",
         "imported_at",
+        "scope_kind",
+        "scope_id",
     ]
 
 
@@ -775,17 +807,20 @@ def test_artifact_hash_is_identity_not_acquisition_proof(store_path: Path) -> No
 
     snapshot = _snapshot([_offering()])
 
-    first = import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
-    second = import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)
+    first = _import(store_path, snapshot, artifact_sha256=ARTIFACT)
+    second = _import(store_path, snapshot, artifact_sha256=ARTIFACT)
 
     assert first.artifact_sha256 == second.artifact_sha256 == ARTIFACT
     assert second.already_imported is True
 
     record = load_course_data_provenance(store_path)[0]
-    # ⛔ 库里只有 artifact identity + 导入时间，没有任何"采集时间 / 采集者 / 授权"字段
+    # ⛔ 库里只有 artifact identity + 导入时间 + 声明 scope，
+    #    没有任何"采集时间 / 采集者 / 授权"字段
     assert set(record.__dataclass_fields__) == {
         "artifact_sha256",
         "semester",
+        "scope_kind",
+        "scope_id",
         "source",
         "imported_at",
         "completeness",
@@ -793,3 +828,245 @@ def test_artifact_hash_is_identity_not_acquisition_proof(store_path: Path) -> No
         "reported_total",
         "offering_count",
     }
+
+
+# ---------------------------------------------------------------------------
+# 8. scope：`complete` **只在声明的 scope 内**成立（Review Blocker 修正）
+# ---------------------------------------------------------------------------
+
+
+def test_campus_scoped_complete_snapshot_can_be_imported(store_path: Path) -> None:
+    """campus scope 的 complete 快照可以导入（scope 由调用方显式声明）。"""
+
+    snapshot = _snapshot([_offering(course_id="SYN-C1")])
+
+    result = import_offering_snapshot(
+        store_path, snapshot, artifact_sha256=ARTIFACT, scope=CAMPUS_SCOPE
+    )
+
+    assert (result.inserted, result.already_imported) == (1, False)
+    assert result.scope_kind == SCOPE_KIND_CAMPUS
+    assert result.scope_id == CAMPUS_ID
+    assert len(load_course_offerings(store_path, SEMESTER)) == 1
+
+
+def test_campus_scope_round_trips(store_path: Path) -> None:
+    import_offering_snapshot(
+        store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT, scope=CAMPUS_SCOPE
+    )
+
+    record = load_course_data_provenance(store_path)[0]
+
+    assert record.scope_kind == SCOPE_KIND_CAMPUS
+    assert record.scope_id == CAMPUS_ID
+    assert record.completeness == "complete"
+    # ⛔ 记录里没有任何"全学期完整"的字段
+    assert "global" not in " ".join(record.__dataclass_fields__)
+    assert "semester_complete" not in record.__dataclass_fields__
+
+
+def test_full_semester_scope_round_trips(store_path: Path) -> None:
+    import_offering_snapshot(
+        store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT, scope=FULL_SCOPE
+    )
+
+    record = load_course_data_provenance(store_path)[0]
+
+    assert record.scope_kind == SCOPE_KIND_FULL_SEMESTER
+    assert record.scope_id == SEMESTER
+
+
+def test_scope_is_required(store_path: Path) -> None:
+    """⛔ scope 必须显式传入：省略 → TypeError；显式 None / 字符串 → 明确拒绝。"""
+
+    snapshot = _snapshot([_offering()])
+
+    with pytest.raises(TypeError):
+        import_offering_snapshot(store_path, snapshot, artifact_sha256=ARTIFACT)  # type: ignore[call-arg]
+
+    for bad in (None, "campus/5062202", ("campus", CAMPUS_ID), {"scope_kind": "campus"}):
+        with pytest.raises(CourseDataStoreError):
+            import_offering_snapshot(
+                store_path, snapshot, artifact_sha256=ARTIFACT, scope=bad  # type: ignore[arg-type]
+            )
+
+    assert _raw_rows(store_path) == []
+    assert load_course_data_provenance(store_path) == []
+
+
+def test_invalid_scope_kinds_and_ids_are_rejected(store_path: Path) -> None:
+    for bad_kind in ("case_a", "shard", "campus_shard", "CAMPUS", "full-semester", "", None, 1):
+        with pytest.raises(CourseDataStoreError):
+            SnapshotScope(scope_kind=bad_kind, scope_id="2026-1")  # type: ignore[arg-type]
+
+    for bad_id in ("", "   ", None, 123):
+        with pytest.raises(CourseDataStoreError):
+            SnapshotScope(scope_kind=SCOPE_KIND_CAMPUS, scope_id=bad_id)  # type: ignore[arg-type]
+
+    # ⚠️ Case-A-scoped 的 id 语义尚未确证 ⇒ 明确**不在**白名单内（当前一律拒绝）
+    assert "case_a" not in ALLOWED_SCOPE_KINDS
+
+
+def test_full_semester_scope_id_must_match_the_snapshot_semester(store_path: Path) -> None:
+    snapshot = _snapshot([_offering()])
+
+    with pytest.raises(CourseDataStoreError) as excinfo:
+        import_offering_snapshot(
+            store_path, snapshot, artifact_sha256=ARTIFACT, scope=OTHER_FULL_SCOPE
+        )
+
+    assert "scope_id" in str(excinfo.value)
+    assert _raw_rows(store_path) == []
+
+
+def test_scope_is_never_inferred_from_source_or_filename(store_path: Path) -> None:
+    """⛔ scope 只认**调用方声明**：`source` 里写什么都不得改变它。"""
+
+    campus_looking_source = _snapshot([_offering(source="campus/5062202/shard-bundle.json")])
+    import_offering_snapshot(
+        store_path, campus_looking_source, artifact_sha256=ARTIFACT, scope=FULL_SCOPE
+    )
+
+    record = load_course_data_provenance(store_path)[0]
+    assert (record.scope_kind, record.scope_id) == (SCOPE_KIND_FULL_SEMESTER, SEMESTER)
+    # source 原样保留（它只是来源标注，⛔ 不参与 scope）
+    assert record.source == "campus/5062202/shard-bundle.json"
+
+    full_looking_source = _snapshot(
+        [_offering(course_id="SYN-2", source="capture-set://full/2026-1/semester.sqlite3")]
+    )
+    import_offering_snapshot(
+        store_path, full_looking_source, artifact_sha256=OTHER_ARTIFACT, scope=CAMPUS_SCOPE
+    )
+
+    records = {item.artifact_sha256: item for item in load_course_data_provenance(store_path)}
+    assert (records[OTHER_ARTIFACT].scope_kind, records[OTHER_ARTIFACT].scope_id) == (
+        SCOPE_KIND_CAMPUS,
+        CAMPUS_ID,
+    )
+
+
+def test_same_semester_different_campus_artifacts_are_audited_separately(
+    store_path: Path,
+) -> None:
+    """同 semester 的不同校区 artifact：两条审计记录并存，两批教学班并存。"""
+
+    import_offering_snapshot(
+        store_path,
+        _snapshot([_offering(course_id="SYN-A", class_id="01")]),
+        artifact_sha256=ARTIFACT,
+        scope=CAMPUS_SCOPE,
+    )
+    import_offering_snapshot(
+        store_path,
+        _snapshot([_offering(course_id="SYN-B", class_id="01")]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=OTHER_CAMPUS_SCOPE,
+    )
+
+    records = load_course_data_provenance(store_path, semester=SEMESTER)
+
+    assert len(records) == 2
+    assert {(item.scope_kind, item.scope_id) for item in records} == {
+        (SCOPE_KIND_CAMPUS, CAMPUS_ID),
+        (SCOPE_KIND_CAMPUS, OTHER_CAMPUS_ID),
+    }
+    assert len(load_course_offerings(store_path, SEMESTER)) == 2
+
+
+def test_same_artifact_under_two_scopes_keeps_two_audit_records(store_path: Path) -> None:
+    """同一份 artifact 以不同 scope 声明时：⛔ 不静默合并成一条含糊记录。"""
+
+    snapshot = _snapshot([_offering()])
+
+    first = import_offering_snapshot(
+        store_path, snapshot, artifact_sha256=ARTIFACT, scope=CAMPUS_SCOPE
+    )
+    second = import_offering_snapshot(
+        store_path, snapshot, artifact_sha256=ARTIFACT, scope=FULL_SCOPE
+    )
+
+    assert first.already_imported is False
+    assert second.already_imported is False, "不同 scope 不算已导入"
+
+    records = load_course_data_provenance(store_path)
+    assert len(records) == 2
+    assert {(item.scope_kind, item.scope_id) for item in records} == {
+        (SCOPE_KIND_CAMPUS, CAMPUS_ID),
+        (SCOPE_KIND_FULL_SEMESTER, SEMESTER),
+    }
+
+    # 同一 (artifact, semester, scope) 再导一次才幂等
+    third = import_offering_snapshot(
+        store_path, snapshot, artifact_sha256=ARTIFACT, scope=CAMPUS_SCOPE
+    )
+    assert third.already_imported is True
+    assert len(load_course_data_provenance(store_path)) == 2
+    assert len(_raw_rows(store_path)) == 1, "identity 与 scope 无关：仍然只有一行"
+
+
+def test_row_level_scope_provenance_follows_the_latest_import(store_path: Path) -> None:
+    import_offering_snapshot(
+        store_path, _snapshot([_offering()]), artifact_sha256=ARTIFACT, scope=CAMPUS_SCOPE
+    )
+    row = _raw_rows(store_path)[0]
+    assert (row["scope_kind"], row["scope_id"]) == (SCOPE_KIND_CAMPUS, CAMPUS_ID)
+
+    # 同一 identity 后来被 full_semester 的 artifact 再次覆盖
+    import_offering_snapshot(
+        store_path, _snapshot([_offering()]), artifact_sha256=OTHER_ARTIFACT, scope=FULL_SCOPE
+    )
+
+    row = _raw_rows(store_path)[0]
+    assert (row["scope_kind"], row["scope_id"]) == (SCOPE_KIND_FULL_SEMESTER, SEMESTER)
+    assert row["artifact_sha256"] == OTHER_ARTIFACT
+    # 两条审计记录都还在（⛔ 不丢历史）
+    assert len(load_course_data_provenance(store_path)) == 2
+
+
+def test_legacy_store_without_scope_columns_fails_clearly(tmp_path: Path) -> None:
+    """⛔ 更早 schema 的本地库（没有 scope 列）→ 明确提示重建，⛔ 不静默降级读写。"""
+
+    legacy = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(str(legacy))
+    connection.executescript(
+        """
+        CREATE TABLE course_offering (
+            semester TEXT NOT NULL, course_id TEXT NOT NULL, class_id TEXT NOT NULL,
+            course_name TEXT NOT NULL, teacher TEXT, credit REAL, capacity INTEGER,
+            remaining_capacity INTEGER, source TEXT, data_source TEXT NOT NULL,
+            meetings_json TEXT NOT NULL, artifact_sha256 TEXT NOT NULL,
+            imported_at TEXT NOT NULL,
+            PRIMARY KEY (semester, course_id, class_id)
+        );
+        CREATE TABLE course_data_import (
+            artifact_sha256 TEXT NOT NULL, semester TEXT NOT NULL, source TEXT,
+            imported_at TEXT NOT NULL, completeness TEXT NOT NULL,
+            loaded_count INTEGER NOT NULL, reported_total INTEGER,
+            offering_count INTEGER NOT NULL,
+            PRIMARY KEY (artifact_sha256, semester)
+        );
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(CourseDataStoreError) as read_error:
+        load_course_offerings(legacy, SEMESTER)
+    assert "scope" in str(read_error.value)
+
+    with pytest.raises(CourseDataStoreError) as write_error:
+        import_offering_snapshot(
+            legacy, _snapshot([_offering()]), artifact_sha256=ARTIFACT, scope=CAMPUS_SCOPE
+        )
+    assert "scope" in str(write_error.value)
+
+
+def test_schema_holds_no_global_completeness_column(store_path: Path) -> None:
+    """⛔ 库里不得出现任何"全学期 / 全局完整"的列（scope 只如实记录声明值）。"""
+
+    for table in ("course_offering", "course_data_import"):
+        for column in _column_names(store_path, table):
+            lowered = column.lower()
+            for token in ("global", "semester_complete", "full_complete", "is_full"):
+                assert token not in lowered, f"{table}.{column} 命中禁止字段：{token}"
