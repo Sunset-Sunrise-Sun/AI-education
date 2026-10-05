@@ -1789,3 +1789,77 @@
 - 文档口径：**30 秒连续 7 次成功后第 8 次被风控，因此
   "5-request batch + 5-minute cooldown" 是当前保守运营策略，⛔ 不是学校公开阈值。**
 - 下一步：等待 Architecture Review。
+
+### 2026-10-05 - 本地持久化层（SQLite MVP 课程数据库）
+
+- 触发：并行任务 —— 建立 **Capture Bundle → 现有 `collect_captured_pages_snapshot()`
+  → `OfferingSnapshot` → SQLite → 读回** 的本地链路（比赛 MVP 的本地课程数据库，
+  ⛔ 不是实时爬虫）。另一路（单 approved campus 采集入口）由 Codex 负责，
+  ⛔ **本轮未改 collector、未处理浏览器抓取**。
+- **新增模块**：`backend/app/course_data/store.py`（Course Data **内部**，
+  标准库 `sqlite3`，⛔ 无新依赖、⛔ 零网络）+ 符号并入 `app.course_data.__all__`。
+- **DB schema（两张表）**：
+
+  ```text
+  course_offering      PRIMARY KEY (semester, course_id, class_id)
+                       + course_name / teacher / credit / capacity / remaining_capacity
+                       / source / data_source / meetings_json
+                       + artifact_sha256 / imported_at（行级 provenance）
+  course_data_import   PRIMARY KEY (artifact_sha256, semester)
+                       + source / imported_at / completeness / loaded_count
+                       / reported_total / offering_count（artifact 级审计）
+  ```
+- **API**：`initialize_course_data_store(path)` /
+  `import_offering_snapshot(path, snapshot, *, artifact_sha256)` /
+  `load_course_offerings(path, semester, *, course_ids=None)` /
+  `load_course_data_provenance(path, *, semester=None)` /
+  `compute_artifact_sha256(bytes)`。
+- **identity / upsert**：`(semester, course_id, class_id)`；
+  同一 artifact 重复导入**幂等**（第二次 `inserted=0 / updated=0 / unchanged=N`，
+  ⛔ 不产生新行）；⛔ **不按 `course_id` 覆盖不同教学班**；
+  数据列一致时仍刷新 provenance；数据列变化时**原地更新**（identity 不变）。
+- **provenance**：行级 `artifact_sha256` / `imported_at` / `source` / `data_source`；
+  artifact 级记录（同一 artifact + semester **只记首次导入**，⛔ 不覆盖原始时间）。
+  ⚠️ 口径未变：**`SHA-256 = artifact identity/integrity ≠ acquisition provenance proof`**，
+  库中⛔ 没有任何"采集时间 / 采集者 / 授权状态"字段。
+- **completeness 边界**：⛔ 本层**不判断完整性**；`is_complete == False`
+  **拒绝写入 approved 路径**（fail closed，且**不写任何行**）；
+  库里⛔ 没有"自封完整"的列，导入记录只如实转述上游 `completeness`。
+- **查询**：`course_ids=None` → 全部；`course_ids=[]` → **空集合 ⇒ 空列表**
+  （⛔ 不是"不筛"）；顺序由 SQL 显式 `ORDER BY course_id, class_id` 保证。
+- **meetings**：公共结构化对象 → **稳定 JSON**（键排序 + 紧凑分隔符，可重复比对）；
+  读回用 `Meeting.model_validate` 还原，⛔ 不擅自新增公共 Schema。
+- **数据边界**：只存已标准化的公共 `CourseOffering`；
+  ⛔ 不存 Cookie / token / 登录信息 / 原始完整 response / 教师隐私扩展字段 / 学生信息
+  （schema 级断言：两张表列名不得命中这些 token）；
+  加载时 `data_source != 'real'` 或 `meetings` 被外部改坏 → fail closed；
+  外部 SQLite（缺表）→ 明确报"不是 Course Data 本地库"。
+- ⚠️ **公共模型没有 `selected_count`**：公共 `CourseOffering` 只有
+  `capacity` / `remaining_capacity`，故持久化这两个字段，
+  ⛔ **不新增** `selected_count`（需先走公共 Schema 变更流程）——**待 Review 确认口径**。
+- **新增测试**：`backend/tests/test_course_data_store.py`（**49 项，纯 synthetic**）：
+  complete 导入 round-trip / partial 拒绝且零写入 / 重复导入幂等 /
+  内容变更原地更新 / 同学期不同 `class_id` 各自保留 / 跨学期隔离 /
+  `course_ids` 过滤（含空集合）/ 读回顺序（SQL 级断言）/ meetings 5 形态 round-trip /
+  稳定 JSON / 可空字段 / 混合来源不猜 / 行级与 artifact 级 provenance round-trip /
+  首次导入记录不被改写 / artifact 口径字段集 / hash 形状校验 / 非法 semester 与
+  course_ids / 父子路径与目录 / 垃圾文件 / 外部库 / 被篡改 meetings 与 data_source /
+  schema 列清单与数据边界。
+  ⛔ 所有 course_id / 课程名 / 教学班号 / 教室均为**人工虚构**；⛔ 未导入任何真实数据。
+- **non-vacuity（12 个 mutation，脚本在 repo 外）**：**12 / 12 全部变红**
+  （去掉 partial 拒绝 / identity 丢 `class_id`（27 项红）/ 不校验 `data_source` /
+  去掉 `ORDER BY` / JSON 不排序 / 不写 `teacher` / `already_imported` 恒 False /
+  空 `course_ids` 不短路 / 不校验 hash 形状 / 导入记录 OR REPLACE / hash 不归一化 /
+  不检查外部库）。⚠️ 其中「去掉 `ORDER BY`」由**SQL 级源码断言**抓到
+  （`WHERE semester = ?` 命中主键索引，当前查询计划下行为用例区分不出
+  "有保证"与"恰好一致"），已在测试里写明理由。
+- 测试结果：store **49 passed**；full backend **2 failed / 2253 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例，未修、未 skip、未删）；
+  `compileall` exit 0。
+- **数据来源**：⛔ 未导入任何真实数据、⛔ 未读取任何 Capture Bundle、
+  ⛔ 未跑真实五校区采集。
+- **本轮未做**：⛔ 未改 collector；⛔ 未改 `captured_pages.py` / Capture Bundle format /
+  `sharded_capture.py` / `planning_runtime.py` / PR #39 / `schemas/**` / Planner /
+  Curriculum / frontend；⛔ **未接** `SnapshotCourseDataProvider`（等 Architecture 决策）；
+  ⛔ 未 push / 未开 PR / 未 merge。
+- 下一步：先做 Architecture Review，再决定是否把 `SnapshotCourseDataProvider` 接到 SQLite。

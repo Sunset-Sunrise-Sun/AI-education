@@ -912,12 +912,87 @@ baseline_before != baseline_after → 整体不得标 complete，fail closed
   其中 **16 / 18** 同时被 `backend/tests/test_sysu_collector_guard.py` 的静态守卫抓到
   （只有"取消语义"与"批次计数不重置"是纯行为用例覆盖）。
 
+### 本地持久化层（SQLite，MVP 课程数据库，已实现 + synthetic 验证）
+
+`backend/app/course_data/store.py`（**内部模块**，标准库 `sqlite3`，⛔ 零网络、⛔ 无新依赖）：
+
+```text
+Capture Bundle
+        ↓  （现有入口，本模块⛔不碰）
+OfferingSnapshot（completeness 已由上游判定）
+        ↓  import_offering_snapshot(path, snapshot, artifact_sha256=...)
+本地 SQLite Course Data 库
+        ↓  load_course_offerings(path, semester, course_ids=[...])
+list[CourseOffering]（公共契约对象）
+```
+
+**DB schema（两张表）**
+
+```text
+course_offering（identity = 主键，⛔ 不允许按 course_id 覆盖不同教学班）
+  semester, course_id, class_id,            ← PRIMARY KEY (semester, course_id, class_id)
+  course_name, teacher, credit,
+  capacity, remaining_capacity, source, data_source,
+  meetings_json,                            ← 稳定 JSON（键排序 + 紧凑分隔符）
+  artifact_sha256, imported_at              ← 行级 provenance
+
+course_data_import（artifact 级审计；同一 artifact + semester 只记**首次**导入）
+  artifact_sha256, semester,                ← PRIMARY KEY (artifact_sha256, semester)
+  source, imported_at, completeness,
+  loaded_count, reported_total, offering_count
+```
+
+**能力（内部 API）**
+
+| 函数 | 作用 |
+|---|---|
+| `initialize_course_data_store(path)` | 建立 / 复用本地库（幂等；⛔ 不自动建父目录） |
+| `import_offering_snapshot(path, snapshot, *, artifact_sha256)` | upsert 一份**已判定 complete** 的快照 |
+| `load_course_offerings(path, semester, *, course_ids=None)` | 按学期取全部 / 按 `course_id` 集合取候选教学班 |
+| `load_course_data_provenance(path, *, semester=None)` | 读回 artifact 级 provenance（审计） |
+| `compute_artifact_sha256(data)` | 对 artifact **原始字节**算 SHA-256（十六进制小写） |
+
+- **identity / upsert**：`(semester, course_id, class_id)`；
+  同一 artifact 重复导入**幂等**（第二次 `inserted=0 / updated=0 / unchanged=N`），
+  ⛔ **不同 `class_id` 的同一门课各自成行**；
+  数据列一致时仍刷新 provenance（`artifact_sha256` / `imported_at` 指向**本次**导入）；
+- **查询**：`course_ids=None` → 该学期全部；`course_ids=[]` → **空集合 ⇒ 空列表**（⛔ 不是"不筛"）；
+  返回顺序由 SQL 显式保证（`ORDER BY course_id, class_id`）；
+- **completeness**：⛔ 本层**不判断完整性**，`is_complete == False` **拒绝写入 approved 路径**；
+  库里也⛔ 不写任何"自封完整"的列，导入记录只**如实转述**上游的 `completeness`；
+- **`artifact_sha256` 口径（⛔ 不得改动）**：
+  `SHA-256 = artifact identity / integrity ≠ acquisition provenance proof`；
+  本层只是如实记录调用方给出的这个值，⛔ 不据此声称任何采集时间 / 采集者 / 授权状态；
+- **数据边界**：只存已标准化的公共 `CourseOffering`；
+  ⛔ 不存 Cookie / token / 登录信息 / 原始完整 response / 教师隐私扩展字段 / 学生信息
+  （schema 级断言：两张表的列名不得命中这些 token）；
+  加载时若发现 `data_source != 'real'` 或 `meetings` 被外部改坏 → fail closed；
+- ⚠️ **公共模型没有 `selected_count`**：公共 `CourseOffering` 上只有
+  `capacity` / `remaining_capacity`，因此本层持久化这两个字段，
+  ⛔ **不新增** `selected_count` 列（那需要先走公共 Schema 变更流程）；
+- ⚠️ **未接 Provider**：⛔ 未改 `SnapshotCourseDataProvider` / `CourseDataProvider` 公共边界；
+  "是否把 Provider 接到 SQLite" 是后续独立的 Architecture 决策；
+- 测试：`backend/tests/test_course_data_store.py`（**49 项，纯 synthetic、零网络、零真实数据**）：
+  complete 导入成功 / partial 拒绝且**不写任何行** / 重复导入幂等 /
+  identity 变更原地更新 / 同学期不同 `class_id` 各自保留 / 跨学期隔离 /
+  `course_ids` 过滤（含空集合）/ 读回顺序（SQL 级）/ meetings 5 种形态 round-trip /
+  稳定 JSON / 可空公共字段 / 混合来源不猜 /
+  provenance 字段 round-trip（含行级列）/ 首次导入记录不被改写 / artifact 口径 /
+  `artifact_sha256` 形状校验 / 非法输入 / 路径与 SQLite 文件损坏 / 外部库识别 /
+  被篡改的 `meetings` 与 `data_source` / schema 数据边界断言；
+- non-vacuity：**12 个 mutation 全部变红**（去掉 partial 拒绝 / identity 丢掉 `class_id` /
+  不校验 `data_source` / 去掉 `ORDER BY` / JSON 不排序 / 不写 `teacher` /
+  `already_imported` 恒 False / 空 `course_ids` 不短路 / 不校验 hash 形状 /
+  导入记录改 OR REPLACE / hash 不归一化 / 不检查外部库）——
+  其中"去掉 `ORDER BY`"由 **SQL 级断言**抓到（纯行为用例无法区分"有保证"与"恰好一致"）。
+
 ### 尚未实现（待 Review 通过后）
 
 - **runtime manifest / provenance 格式**与 **exact-artifact SHA-256 gate**
   （属 PR #39；本轮**刻意未设计**，避免在编排能力尚未 Review 前先定格式）；
+- **把 `SnapshotCourseDataProvider` 接到 SQLite**（本轮刻意未做，等 Architecture 决策）；
 - ⛔ 本轮**未跑真实五校区采集**、⛔ **未改 Capture Bundle format**、
-  ⛔ **未改** `backend/app/course_data/sharded_capture.py`。
+  ⛔ **未改** `backend/app/course_data/sharded_capture.py`、⛔ **未改 collector**。
 
 ## 当前接口
 

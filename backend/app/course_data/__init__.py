@@ -17,6 +17,17 @@ OfferingSnapshot（带 completeness 证据链）
 CourseDataProvider.get_course_offerings(semester)
 ```
 
+⚠️ **本地持久化（MVP 课程数据库，SQLite）**：已判定 `complete` 的快照可以落到本地库，
+供后续 Planner / Provider 读取（⛔ 本层**不**判断 completeness，也⛔ **不**改 Provider）：
+
+```text
+OfferingSnapshot（上游已判定 complete）
+        ↓  store.import_offering_snapshot(path, snapshot, artifact_sha256=...)
+本地 SQLite（identity = (semester, course_id, class_id)，重复导入幂等）
+        ↓  store.load_course_offerings(path, semester, course_ids=[...])
+list[CourseOffering]
+```
+
 ⚠️ **2026-1 深分页异常 → 校区 shard 合并路径**（Architecture Review 裁定方案 B）：
 学校接口在 **offset >= 6500** 稳定 `HTTP 600`，因此**按已确认校区维度分片**捕获
 （⛔ 不重编号、⛔ 不重切分、⛔ 不拼伪单流、⛔ 不改 Capture Bundle format）：
@@ -117,12 +128,25 @@ from app.course_data.snapshot import (
     SnapshotCourseDataProvider,
     merge_offering_snapshots,
 )
+from app.course_data.store import (
+    CourseDataImport,
+    CourseDataProvenance,
+    CourseDataStoreError,
+    compute_artifact_sha256,
+    import_offering_snapshot,
+    initialize_course_data_store,
+    load_course_data_provenance,
+    load_course_offerings,
+)
 
 __all__ = [
     "APPROVED_SHARD_IDS",
     "CAPTURE_FORMAT",
     "CapturedPagesFetcher",
+    "CourseDataImport",
     "CourseDataNormalizationError",
+    "CourseDataProvenance",
+    "CourseDataStoreError",
     "OfferingSnapshot",
     "OpeningCoursesPageFetcher",
     "ParsedScheduleSegment",
@@ -135,10 +159,15 @@ __all__ = [
     "collect_captured_pages_snapshot",
     "collect_opening_courses_snapshot",
     "collect_sharded_capture_set",
+    "compute_artifact_sha256",
     "expand_weeks",
     "extract_meetings",
+    "import_offering_snapshot",
     "import_opening_courses_response",
+    "initialize_course_data_store",
     "load_capture_bundle",
+    "load_course_data_provenance",
+    "load_course_offerings",
     "merge_offering_snapshots",
     "parse_sections",
     "parse_teaching_time_place",
