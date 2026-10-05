@@ -1,19 +1,20 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-05（**成员5工作分支：feature/frontend-demo-polish 已完成 Architecture Review 修复，等待复验**：
-> 通用 UI 与 Demo 体验 Polish 保留；DG-07D empty-meeting 中性展示（“当前数据中无排课信息”）已实现；
-> unresolved 展示已覆盖 manual_confirmation / missing_data / schedule_unknown / selection_required 及通用未知 fallback；
+> 最后更新：2026-10-05（**DG-07D Frontend Presentation Safety 已 IMPLEMENTED / REVIEWED 并 merge 到 main**：
+> 通用 UI 与 Demo 体验 Polish 保留；empty-meeting 中性展示“当前数据中无排课信息”已实施；
+> unresolved 展示覆盖 manual_confirmation / missing_data / schedule_unknown / selection_required 及通用未知 fallback；
 > 已删除前端自行推断的容量阈值、Preference 执行语义、risks=[] / changes=[] / feasible 过度结论；
-> ⛔ **Data Gate 仍保持 Reopened**；公共 Schema / Interface / Provider 签名严格未改）
+> **DG-07A / B / C / D 均已 IMPLEMENTED / REVIEWED，Data Gate 已恢复 PASSED / CLOSED**；
+> 公共 Schema / Interface / Provider 签名未被 DG-07D 私自修改）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应、私密脱敏样本、截图与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering.meetings` = `type: array`、`minItems: 0`**（DG-07A；
 > 顶层 `required` 仍含 `meetings`，缺字段 / `null` 非法）；
 > **DG-01 时的 `minItems: 1` 已是历史**；**Data Gate 通过条件 C1–C11 全部完成**
-> ⚠️ **rollout gate**：`meetings = []` 契约合法；DG-07A / DG-07B / DG-07C 已 IMPLEMENTED / REVIEWED，
-> DG-07D 已在本分支实现并完成 Reviewer 修复，**仍待项目 Architecture Reviewer 最终复验与 merge**。
-> 在 DG-07D 正式批准并合入前，生产真实数据链路仍不得接入 empty-meeting `CourseOffering`；
-> `mock_data/` 保持全部非空。
+> ✅ **DG-07 empty-meeting rollout safety gate 已解除**：`meetings = []` 契约合法，
+> Course Data / Planner / Frontend 的安全处理均已实施并 Review。
+> ⚠️ 真实产品 E2E 仍需 complete semester snapshot 与真实 Provider / Integration；
+> partial snapshot 仍不得进入产品链路，`mock_data/` 仍保持永久 Mock 通道原有样本。
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
 > Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
@@ -28,7 +29,7 @@
 > 时间 / 周次 / 地点**空白且无状态文字**，
 > 当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**、
 > **尚未取得 complete semester snapshot**；**G11 仍未 resolved**
-> （学校侧业务原因仍未知；DG-07A / B / C 已实施并 Review，DG-07D 等待本分支最终复验 / merge）；
+> （学校侧业务原因仍未知；DG-07A / B / C / D 已全部实施并 Review）；
 > **production Curriculum / Planner provider 仍未接入**，
 > 因此**没有**任何一条真实数据链路端到端跑通，**也未新增任何 API**。
 >
@@ -38,8 +39,8 @@
 
 ## 当前阶段
 
-**feature/frontend-demo-polish：DG-07D 已实现并完成第一轮 Architecture Review 修复
-→ 下一步：项目 Architecture Reviewer 最终复验**
+**DG-07D 已 IMPLEMENTED / REVIEWED / MERGED
+→ 下一步：进入真实数据与 Integration 联调准备，不再等待 DG-07 实施**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -66,10 +67,10 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                       meetings minItems 1 → 0（required 不变）；接口语义 + 契约级测试已同步
                    →  ✅  DG-07B — Course Data Empty-Meeting Normalization IMPLEMENTED / REVIEWED
                    →  ✅  DG-07C — Planner Unknown-Schedule Safety IMPLEMENTED / REVIEWED
-                   →  ⏳  DG-07D — Frontend Empty-Meeting / PlanResult Presentation
-                      已在 feature/frontend-demo-polish 实现并完成第一轮 Reviewer 修复，等待最终复验 / merge
-                   →  ⚠️  DG-07 overall — IMPLEMENTATION PENDING；Data Gate 仍 Reopened
-                   →  之后：真实 Capture 导入 UI → Phase 2B Integration 接真实 Provider
+                   →  ✅  DG-07D — Frontend Presentation Safety IMPLEMENTED / REVIEWED / MERGED
+                   →  ✅  DG-07 overall — IMPLEMENTED / REVIEWED
+                   →  ✅  Data Gate — PASSED / CLOSED
+                   →  之后：完整真实 snapshot → Phase 2B Integration 接真实 Provider → Case A E2E
 ```
 
 - **Phase 1 / Phase 2A 成果不受影响**；`/api/v1/mock/*` 仍是独立的**永久 Mock 通道**。
