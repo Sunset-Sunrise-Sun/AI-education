@@ -1,6 +1,6 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-06（**Frontend Real E2E Wiring Preparation 已实现，待 Architecture Review**：
+> 最后更新：2026-10-05（**Frontend Real E2E Wiring Preparation 已实现，待 Architecture Review**：
 > 已把 Real Planning 的失败状态**产品化**（503 `real_pipeline_not_configured` 明确显示为
 > "**真实规划运行时尚未完成装配**"，**不是**笼统的"请求失败"，且**不 fallback 到 Mock**）；
 > 422 / 500 / network 分别有独立文案；`PlanApiError` 携带 `kind` / `status` / `code` / `detail`；
@@ -924,12 +924,18 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
 
 | `kind` | 触发条件 | 界面标题 |
 |---|---|---|
-| `not_configured` | **503 且 `detail.error === "real_pipeline_not_configured"`**，或（body 不可解析时）状态码 503 | **真实规划运行时尚未完成装配** |
+| `not_configured` | **503 且 `detail.error === "real_pipeline_not_configured"`**，或 503 但响应体**无法解析 / 无可识别信息** | **真实规划运行时尚未完成装配** |
 | `input` | 422 | **输入来源不满足 Real Planning 要求** |
-| `server` | 5xx（503 之外） | Real Planning 服务端错误 |
+| `server` | 5xx（503 之外）；**或 503 但响应体明确给出其它错误** | Real Planning 服务端错误 |
 | `network` | 请求未能完成（连不上 / 连接被重置） | 无法连接 Real Planning 接口 |
 | `http` | 其它非 2xx | Real Planning 调用失败 |
 | `unexpected` | 2xx 但响应体不是合法 `PlanResult` 对象 | 返回了无法解析的结果 |
+
+- ⚠️ **503 三态收紧**（`classifyPlanError()`，纯函数，有分类矩阵测试）：
+  ① `real_pipeline_not_configured`（**code 权威，优先于状态码**）→ `not_configured`；
+  ② 503 且**无法解析 / 无可识别信息** → `not_configured`（宁可如实说"未装配"）；
+  ③ 503 但 body **明确给出其它错误**（有可识别 code 或 detail）→ **`server`**，
+  ⛔ **不误报成"运行时尚未装配"**，且文案导向服务端排查；
 
 - ⚠️ **不假设后端一定有统一 error schema**：`parsePlanErrorBody()` 能识别已知的
   503 形状（`{detail:{error,message}}`）与 FastAPI 422 形状（`{detail:[{loc,msg,type}]}`），
@@ -952,7 +958,7 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
 **验证**：
 
 ```text
-cd frontend && npm test              →  103 passed / 103（8 个测试文件）
+cd frontend && npm test              →  109 passed / 109（8 个测试文件）
 cd frontend && npm run build         →  成功（含 vue-tsc --noEmit）
 cd frontend && npm run test:scenarios →  既有 14 项全部通过
 ```

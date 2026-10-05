@@ -1825,7 +1825,7 @@
 - 是否修改 backend：**否**。公共接口是否变化：**否**。
 - 下一步：等待 Architecture Review。
 
-### 2026-10-06 - Frontend Real E2E Wiring Preparation（错误产品化 / 成功收口 / 联调信息）
+### 2026-10-05 - Frontend Real E2E Wiring Preparation（错误产品化 / 成功收口 / 联调信息）
 
 - 本次目标：让前端从"已经有 Real client"提升到"Codex runtime 一旦可用即可直接完成第一轮真实联调"，
   ⛔ **不伪造真实数据**、⛔ **不改 backend**、⛔ **不做 runtime / provider wiring**。
@@ -1855,10 +1855,20 @@
   `frontend/src/components/{SubmissionActions,UserInputPanel}.vue`、`frontend/src/styles/base.css`、
   新增 `frontend/src/components/E2EDebugPanel.vue`、新增 `frontend/tests/real-e2e-prep.spec.ts`、
   `docs/status/agent_frontend.md`、本文件。
-- 测试结果：`npm test` → **103 passed / 103**（8 文件）；`npm run build` → 成功；
+- 测试结果：`npm test` → **109 passed / 109**（8 文件）；`npm run build` → 成功；
   `npm run test:scenarios` → 既有 14 项全部通过。
 - 是否修改 backend：**否**。公共接口是否变化：**否**（未改 `schemas/`、`docs/interfaces/`）。
 - **明确状态**：**Frontend 已准备好 Real E2E 联调**；⛔ **不是**"Real E2E 已完成"——
   Codex 的 Real Runtime Wiring 尚未可用，后续真实联调尚未进行。
+- **本轮补充（Review 反馈，两项最小修改）**：
+  1. **503 分类收紧**（新增纯函数 `classifyPlanError()`）：
+     `real_pipeline_not_configured`（code 权威，优先于状态码）→ `not_configured`；
+     503 但**无法解析 / 无可识别信息** → `not_configured`；
+     503 但 body **明确给出其它错误**（有可识别 code 或 detail）→ **`server`**，
+     ⛔ 不误报"运行时尚未装配"，且 `messageFor` / `describePlanError` 在 `server + 503` 时
+     导向服务端排查并**明确否定**"未装配"这一状态；
+  2. **文档日期更正**：本记录与 `docs/status/agent_frontend.md` 头部更新日期
+     由 `2026-10-06` 改为 `2026-10-05`（**只改本轮新增记录**，
+     早前 4 条 `2026-10-06` 记录未改动）。
 - 下一步：等待 Architecture Review；等 Codex runtime 可用后执行第一轮真实联调。
 

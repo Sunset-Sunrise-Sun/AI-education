@@ -20,6 +20,7 @@ import UserInputPanel from '@/components/UserInputPanel.vue'
 import {
   PlanApiError,
   REAL_PIPELINE_NOT_CONFIGURED,
+  classifyPlanError,
   fetchRealPlan,
   parsePlanErrorBody,
 } from '@/api/plan'
@@ -139,13 +140,77 @@ describe('Real API 错误模型', () => {
     expect(apiError.message).toContain('尚未完成装配')
   })
 
-  it('503 但 body 不可解析 → 仍按状态码归为 not_configured', async () => {
+  it('503 但 body 不可解析 → 仍归为 not_configured（宁可如实说未装配）', async () => {
     fetchMock.mockResolvedValue(new Response('<html>502 Bad Gateway</html>', { status: 503 }))
 
     const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
     expect(error.kind).toBe('not_configured')
     expect(error.status).toBe(503)
     expect(error.code).toBe(null)
+    expect(error.detail).toBe(null)
+  })
+
+  it('503 但 body 可解析却无可识别信息 → 仍归为 not_configured', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ unexpected: true }, 503))
+
+    const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
+    expect(error.kind).toBe('not_configured')
+    expect(error.status).toBe(503)
+    expect(error.code).toBe(null)
+  })
+
+  it('503 但明确给出其它错误码 → kind = server，**不误报"未装配"**', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ detail: { error: 'planner_unavailable', message: 'planner 崩溃' } }, 503),
+    )
+
+    const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
+    expect(error.kind).toBe('server')
+    expect(error.status).toBe(503)
+    expect(error.code).toBe('planner_unavailable')
+    // 消息必须说清这不是"未装配"
+    expect(error.message).toContain('服务端错误')
+    expect(error.message).not.toContain('尚未完成装配')
+  })
+
+  it('503 且只给出可识别 detail 文本（无 code）→ 也归为 server', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ detail: { message: '上游超时' } }, 503))
+
+    const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
+    expect(error.kind).toBe('server')
+    expect(error.detail).toBe('上游超时')
+    expect(error.message).not.toContain('尚未完成装配')
+  })
+
+  it('503 + real_pipeline_not_configured 优先于"其它错误"判断', async () => {
+    // 同一个 body 里的 code 就是权威的未装配信号
+    fetchMock.mockResolvedValue(jsonResponse(NOT_CONFIGURED_BODY, 503))
+
+    const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
+    expect(error.kind).toBe('not_configured')
+  })
+
+  it('classifyPlanError：503 三态分类矩阵', () => {
+    // 1) 未装配的权威信号
+    expect(
+      classifyPlanError({ status: 503, code: REAL_PIPELINE_NOT_CONFIGURED, detail: null }),
+    ).toBe('not_configured')
+    // 2) 无可识别信息 → not_configured
+    expect(classifyPlanError({ status: 503, code: null, detail: null })).toBe('not_configured')
+    expect(classifyPlanError({ status: 503, code: '  ', detail: '  ' })).toBe('not_configured')
+    // 3) 明确其它错误 → server
+    expect(classifyPlanError({ status: 503, code: 'planner_unavailable', detail: null })).toBe(
+      'server',
+    )
+    expect(classifyPlanError({ status: 503, code: null, detail: '上游超时' })).toBe('server')
+    // code 权威性优先于状态码：即使状态码不是 503
+    expect(
+      classifyPlanError({ status: 500, code: REAL_PIPELINE_NOT_CONFIGURED, detail: null }),
+    ).toBe('not_configured')
+    // 其它状态码不受影响
+    expect(classifyPlanError({ status: 422, code: null, detail: null })).toBe('input')
+    expect(classifyPlanError({ status: 500, code: null, detail: null })).toBe('server')
+    expect(classifyPlanError({ status: 404, code: null, detail: null })).toBe('http')
   })
 
   it('422 → kind = input，并提取 FastAPI 校验信息', async () => {
@@ -232,6 +297,15 @@ describe('Real API 错误模型', () => {
     expect(describePlanError('server', 500).title).toContain('服务端错误')
     expect(describePlanError('network', null).title).toContain('无法连接')
 
+    // 503 被归为 server 时必须导向服务端排查，且不得出现"尚未完成装配"这一未装配措辞
+    const server503 = describePlanError('server', 503)
+    expect(server503.title).toContain('服务端错误')
+    expect(server503.hint).toContain('服务端故障')
+    expect(server503.hint).not.toContain('尚未完成装配')
+
+    // "未装配"这一措辞只属于 not_configured
+    expect(describePlanError('not_configured', 503).title).toContain('尚未完成装配')
+
     // 三类不得互相混同
     const titles = ['not_configured', 'input', 'server', 'network'].map(
       (kind) => describePlanError(kind, null).title,
@@ -269,6 +343,21 @@ describe('App 级：Real 失败状态展示', () => {
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
     const demoCalls = fetchMock.mock.calls.filter((c) => String(c[0]).includes('/mock/demo'))
     expect(demoCalls).toHaveLength(1)
+  })
+
+  it('503 但明确是其它错误 → 显示服务端错误，不误报"未装配"', async () => {
+    const wrapper = await mountAppWith(() =>
+      jsonResponse({ detail: { error: 'planner_unavailable', message: 'planner 崩溃' } }, 503),
+    )
+
+    await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
+    await flushPromises()
+
+    const title = wrapper.find('[data-testid="real-plan-error-title"]').text()
+    expect(title).toContain('服务端错误')
+    expect(title).not.toContain('尚未完成装配')
+    expect(wrapper.find('[data-testid="real-plan-error-code"]').text()).toBe('planner_unavailable')
+    expect(wrapper.find('[data-testid="debug-error-kind"]').text()).toBe('server')
   })
 
   it('422 → 显示输入 / provenance 类错误，不写成"系统错误"', async () => {

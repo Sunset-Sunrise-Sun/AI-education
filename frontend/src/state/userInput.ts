@@ -85,7 +85,11 @@ export function describePlanError(kind: string, status: number | null): PlanErro
     case 'server':
       return {
         title: 'Real Planning 服务端错误',
-        hint: `后端在处理本次请求时出错${status !== null ? `（HTTP ${status}）` : ''}。这不代表当前输入有问题；请稍后重试或查看后端日志。`,
+        hint:
+          status === 503
+            ? '后端返回 503，但响应体明确给出了**其它**错误原因：' +
+              '这属于服务端故障，**不是**"运行时未装配"这一状态。请查看后端日志或稍后重试。'
+            : `后端在处理本次请求时出错${status !== null ? `（HTTP ${status}）` : ''}。这不代表当前输入有问题；请稍后重试或查看后端日志。`,
       }
     case 'network':
       return {

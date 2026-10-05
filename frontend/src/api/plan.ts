@@ -29,9 +29,10 @@ export interface RealPlanRequest {
  * 失败类型。
  *
  * 语义**互斥且穷尽**，UI 只按 `kind` 分支，不需要再判断状态码：
- * - `not_configured`：**503 且** `detail.error === "real_pipeline_not_configured"`，
- *   或（body 不可解析/形状未知时）状态码为 503 ——
+ * - `not_configured`：**503 且 `detail.error === "real_pipeline_not_configured"`**，
+ *   或 503 但响应体**无法解析 / 无可识别信息** ——
  *   表示**真实规划运行时尚未完成装配**，是"当前正确状态"，不是系统故障；
+ *   ⚠️ 若 503 的响应体**明确给出了其它错误**，则归为 `server`，不得误报成"未装配"；
  * - `input`：422 —— 服务端**输入 / provenance** 校验未通过；
  * - `server`：5xx（503 之外的）—— 服务端错误；
  * - `network`：请求**根本没能完成**（连不上 / 连接被重置等）；
@@ -150,14 +151,64 @@ async function readBodySafely(response: Response): Promise<unknown> {
   }
 }
 
+/**
+ * 把错误响应分类为 `PlanErrorKind`。
+ *
+ * **503 的收紧规则**（本轮要求）：
+ * 1. `real_pipeline_not_configured`（无论状态码）→ `not_configured`；
+ * 2. 503 且**无法解析 / 无可识别信息** → `not_configured`
+ *    （宁可如实说"未装配"，也不要凭空断言是服务端错误）；
+ * 3. 503 但 body **明确给出其它错误** → `server`
+ *    （⛔ 不能把已知的其它故障误报成"运行时尚未装配"）。
+ */
+export function classifyPlanError(input: {
+  status: number
+  code: string | null
+  detail: string | null
+}): PlanErrorKind {
+  if (input.code === REAL_PIPELINE_NOT_CONFIGURED) {
+    return 'not_configured'
+  }
+
+  if (input.status === 503) {
+    const statedReason =
+      (input.code !== null && input.code.trim() !== '') ||
+      (input.detail !== null && input.detail.trim() !== '')
+    return statedReason ? 'server' : 'not_configured'
+  }
+
+  if (input.status === 422) {
+    return 'input'
+  }
+
+  if (input.status >= 500) {
+    return 'server'
+  }
+
+  return 'http'
+}
+
 /** 按状态码 + 已解析出的 code 生成面向用户的消息。 */
-function messageFor(kind: PlanErrorKind, status: number | null, statusText: string): string {
+function messageFor(
+  kind: PlanErrorKind,
+  status: number | null,
+  statusText: string,
+  code: string | null,
+): string {
   switch (kind) {
     case 'not_configured':
       return '真实规划运行时尚未完成装配（真实 Curriculum / Course Data / Planner 尚未接入）。'
     case 'input':
       return '请求未被接受：当前输入（尤其是当前课表的来源）不满足 Real Planning 的要求。'
     case 'server':
+      // 503 被归为服务端错误时，必须说清"这不是未装配"，避免误报
+      if (status === 503) {
+        return (
+          'Real Planning 服务端错误（HTTP 503）' +
+          `${code ? `：${code}` : ''}。` +
+          '后端明确给出了其它错误原因，因此这**不是**"运行时尚未装配"。'
+        )
+      }
       return `Real Planning 服务端错误（HTTP ${status ?? '5xx'}）。`
     case 'network':
       return `无法连接 Real Planning 接口（请求地址：${PLAN_ENDPOINT}）。`
@@ -206,21 +257,9 @@ export async function fetchRealPlan(
     const body = await readBodySafely(response)
     const { code, detail } = parsePlanErrorBody(body)
 
-    let kind: PlanErrorKind
-    if (code === REAL_PIPELINE_NOT_CONFIGURED) {
-      // 明确的"未装配"信号（优先于状态码判断）
-      kind = 'not_configured'
-    } else if (response.status === 503) {
-      kind = 'not_configured'
-    } else if (response.status === 422) {
-      kind = 'input'
-    } else if (response.status >= 500) {
-      kind = 'server'
-    } else {
-      kind = 'http'
-    }
+    const kind = classifyPlanError({ status: response.status, code, detail })
 
-    throw new PlanApiError(kind, messageFor(kind, response.status, response.statusText), {
+    throw new PlanApiError(kind, messageFor(kind, response.status, response.statusText, code), {
       status: response.status,
       code,
       detail,
