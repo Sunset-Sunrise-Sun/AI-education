@@ -121,7 +121,7 @@ onMounted(() => {
             <span class="overview-metric__val num">{{ data.makeup_tasks.length }} <small>门</small></span>
           </div>
           <div class="overview-metric">
-            <span class="overview-metric__label">可用开课教学班</span>
+            <span class="overview-metric__label">教学班记录</span>
             <span class="overview-metric__val num">{{ data.course_offerings.length }} <small>个</small></span>
           </div>
           <div class="overview-metric">
@@ -129,7 +129,7 @@ onMounted(() => {
             <span class="overview-metric__val num">{{ data.preference.max_credit ?? '—' }} <small>学分</small></span>
           </div>
           <div class="overview-metric">
-            <span class="overview-metric__label">最终方案可行性</span>
+            <span class="overview-metric__label">规划结果状态</span>
             <span
               class="tag tag--plan"
               :class="`tag--plan-${data.plan_result.status}`"
@@ -154,7 +154,7 @@ onMounted(() => {
         <SectionCard
           mock
           section-id="section-offerings"
-          title="2. 真实开课教学班供给 (CourseOffering)"
+          title="2. 开课教学班供给 (CourseOffering)"
           subtitle="Course Data 模块从教务系统中抓取并标准化的目标学期开课清单：支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
           :badge-count="data.course_offerings.length"
         >
@@ -179,8 +179,8 @@ onMounted(() => {
           mock
           section-id="section-plan"
           tone="primary"
-          title="4. 最终学业路径与排课方案 (PlanResult)"
-          subtitle="Planner 模块结合冲突检测、约束求解与 Path Repair 输出的最终决策方案：包含调班流向、风险评级与未决事项。"
+          title="4. 规划结果与建议课表 (PlanResult)"
+          subtitle="展示 Planner 输出的 PlanResult：包含建议课表、方案变更、风险项与未决事项；前端不补充业务判断。"
         >
           <PlanResultPanel
             :plan-result="data.plan_result"
