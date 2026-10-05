@@ -1578,3 +1578,30 @@ course_data_import（artifact 级审计；同一 (artifact, semester, scope) 只
   ```
 
 - 公共契约、fail-closed 边界、Raw / Capture 隐私规则继续保持不变。
+
+## Real Artifact Acceptance CLI（2026-10-06；campus-only）
+
+- 内部入口 `tools/validate_course_data_artifact.py`：把本地 Capture Bundle 的
+  **exact-byte SHA-256**、现有 bundle validation、snapshot normalization/completeness、
+  **campus scope 绑定**与可选 SQLite import / provenance read-back 串成确定性流程；
+- ⛔ 不实现第二套 parser / validator / store：只复用
+  `load_capture_bundle()` / `collect_captured_pages_snapshot()` / `SnapshotScope` /
+  `import_offering_snapshot()` / `load_course_data_provenance()` / `load_course_offerings()`；
+- **scope 只能是 campus**：`scope_kind = campus`、`scope_id = <openingSchoolNumber>`；
+  ⛔ `full_semester` **在本 Gate 不实现**（Capture Bundle 不携带可验证 scope，
+  `campus complete != full semester complete`）⇒ 由后续独立的 five-shard /
+  full-semester acceptance Gate 承担；
+- **source 必须精确匹配** `capture://sysu/<semester>/campus/<scope_id>`
+  （semester 与 scope_id 都要一致）；`source` 只是 **audit label**，
+  ⛔ **不构成** acquisition provenance proof；`artifact_sha256` 才是 exact bytes identity/integrity；
+- hash/read、bundle、normalization、scope、source 或 completeness 任一失败 ⇒ 非零退出；
+  incomplete / normalization / scope 失败发生在**任何 SQLite 调用之前**；
+  错误输出只含 status / stage / category / exception type 与安全聚合计数，
+  ⛔ 不打印异常消息或任何 raw token / row 取值；
+- 只有 **complete** snapshot 且显式给出 `--sqlite` 才调用现有 store，并**回读 provenance**
+  逐项核对（`artifact_sha256` / `semester` / `scope_kind` / `scope_id` / `completeness` /
+  `loaded_count` / `reported_total` / offering 计数），以及
+  `inserted + updated + unchanged == offering_count`；
+- ⚠️ **事务边界（必须明确）**：SQLite import commit 与 provenance read-back **不是同一个事务**
+  ⇒ **不得**声称"CLI 非零退出 == SQLite 零变化"；失败前不调用 store 只保证"该次调用未发生"；
+- 当前仅使用 synthetic / zero-network 测试；⛔ 未处理真实 east artifact。

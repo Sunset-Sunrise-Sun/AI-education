@@ -2906,3 +2906,31 @@
 - **边界**：⛔ 未 merge main；⛔ 未 cherry-pick CLI；⛔ 未改 PR #39；⛔ 未改 runtime
   implementation / public Schema / frozen Provider contract；⛔ 未自动登录、
   ⛔ 未读 cookie/token、⛔ 未发真实教务请求、⛔ 未抓 East/South/Shenzhen/Zhuhai。
+
+### 2026-10-06 - Course Data Real Artifact Acceptance CLI（campus-only Gate）
+
+- 新增内部 CLI `tools/validate_course_data_artifact.py`：把本地 Capture Bundle 的
+  exact-byte SHA-256、现有 bundle validation、snapshot normalization/completeness、
+  campus scope 绑定与可选 SQLite import / provenance read-back 串成确定性流程；
+- **scope 收紧（本 Gate）**：单 artifact acceptance **只允许** `scope_kind = campus` +
+  `scope_id = <openingSchoolNumber>`；⛔ `full_semester` 一律 reject（不提供该选项）；
+  ⛔ missing scope / unknown scope kind / blank scope_id 一律 reject；
+- **source 绑定（本 Gate）**：必须精确等于
+  `capture://sysu/<semester>/campus/<scope_id>`（semester / scope_id 双重一致）；
+  `source` 只是 audit label，⛔ 不构成 provenance proof；
+- **SQLite read-back 强化（本 Gate）**：导入后逐项核对 `artifact_sha256` / `semester` /
+  `scope_kind == campus` / `scope_id` / `completeness` / `loaded_count` / `reported_total` /
+  offering 计数，并要求 `inserted + updated + unchanged == offering_count`；
+  ⛔ **不把** `db_offering_count` 当成当前 artifact 的 offering count（summary 文案已明确区分）；
+- ⚠️ **事务 caveat（写入 docs）**：import commit 与 provenance read-back **不是同一事务**
+  ⇒ ⛔ 不得声称"CLI 非零退出 == SQLite 零变化"；
+- fail-closed：read/hash、malformed bundle、normalization、semester mismatch、scope、source、
+  incomplete/empty snapshot 均非零退出；normalization/parser 异常不 skip / continue，
+  CLI ⛔ 不打印异常消息（避免回显原始 schedule token）；失败前不调用 SQLite；
+- 测试（synthetic / zero-network）：valid campus artifact、full_semester reject、
+  arbitrary source reject、source 中 semester/campus 错配 reject、raw-byte hash 正确、
+  错误 digest reject、incomplete reject、empty reject、SQLite import 成功、
+  provenance 精确 read-back、inserted+updated+unchanged 对账、db_offering_count 文案、
+  normalization secret 不泄露、异常文本不泄露；
+- ⛔ 未改 schedule parser / collector / Capture Bundle format / public schemas / runtime /
+  Planner / Curriculum / frontend / PR #39；⛔ 未发网络请求、⛔ 未处理真实 artifact。
