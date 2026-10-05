@@ -164,8 +164,11 @@ def test_collector_has_exactly_one_global_pacing_controller(collector_source: st
     """
 
     assert collector_source.count("function createRequestPacer(") == 1
-    # 定义 1 处 + 两个入口各创建 1 个（每次 run 恰好一个 controller）；只看代码，不看注释
-    assert _collector_code_only(collector_source).count("createRequestPacer(") == 3
+    # 定义 1 处 + 三个入口各创建 1 个（每次 run 恰好一个 controller）；
+    #   `collect()` / `collectSharded()` 是生产入口，
+    #   `diagnoseLayoutBCandidates()` 是**一次性零留存诊断**（多页请求 ⇒ 同样必须受同一 pacing 约束）。
+    # 只看代码，不看注释。
+    assert _collector_code_only(collector_source).count("createRequestPacer(") == 4
 
     pacer = _js_function_slice(
         collector_source, "function createRequestPacer(", "function requireAllowedHost("
@@ -232,7 +235,8 @@ def test_collector_every_paced_request_goes_through_the_controller(
         window = collector_source[index : index + 260]
         assert "pacer" in window, f"{marker} 必须把 pacer 传下去"
 
-    # ⛔ 一次性诊断仍然不传 pacer（它们各自只发 1 次请求、不受批次影响）
+    # ⛔ 2C1B / 2C1C 一次性诊断仍然不传 pacer（它们各自只发 1 次请求、不受批次影响）；
+    # ⚠️ Layout B 诊断是**多页**的，因此必须传 pacer（否则会绕过全局批次冷却）。
     assert "requestPage(semester, DIAGNOSTIC_PAGE_NO, DIAGNOSTIC_PAGE_SIZE)" in collector_source
     assert "requestPage(semester, CORRELATION_PAGE_NO, CORRELATION_PAGE_SIZE)" in collector_source
 
@@ -654,11 +658,12 @@ def test_diagnostic_uses_the_shared_request_path(collector_source: str) -> None:
     # 1 处定义 + 每个取页入口各 1 处调用：
     #   `collectPages()` 分页循环（`collect()` 与每个 shard 都走它）、
     #   `requestReportedTotal()` baseline 探针、
-    #   2C1B / 2C1C 诊断各只调一次。
+    #   2C1B / 2C1C 诊断各只调一次、
+    #   Layout B 一次性诊断（**分页**，因此复用同一取页函数 + 同一 pacer）。
     # ⚠️ 只看**代码**（注释里也提到 `requestPage()`）。
     code = _collector_code_only(collector_source)
     assert code.count("requestPage(") == code.count("await requestPage(") + 1
-    assert code.count("await requestPage(") == 4
+    assert code.count("await requestPage(") == 5
 
     # 唯一的 `fetch(` 仍在 `requestPage` 内部（⛔ 新增入口不得自己发请求）
     assert collector_source.count("fetch(") == 1
@@ -1730,3 +1735,267 @@ def test_sharded_serializers_refuse_incomplete_results(collector_source: str) ->
         collector_source, "function toDiagnosticsJson(", "// 结构诊断（Phase 2B-2C1B）"
     )
     assert "JSON.stringify(result.diagnostics, null, 2)" in to_diagnostics
+
+
+# ---------------------------------------------------------------------------
+# 一次性 Layout B 诊断（**零留存**；Architecture Review 裁定）
+#
+# 目的：在 collector 对 raw response 做 minimize **之前**，用**内存比较**回答
+# "Layout B 的 f3 是否就是同行 `teachingName`"，且**只**输出四个聚合计数。
+# ---------------------------------------------------------------------------
+
+_LAYOUT_B_SECTION_START = "var LAYOUT_B_FIELD_COUNT"
+_LAYOUT_B_SECTION_END = "// 相关性诊断（Phase 2B-2C1C）"
+
+_LAYOUT_B_RETURN_KEYS = (
+    "candidate_count",
+    "comparable_teaching_name_count",
+    "f3_equals_teaching_name_count",
+    "f4_activity_count",
+)
+
+
+def _layout_b_section_slice(collector_source: str) -> str:
+    """截取 Layout B 诊断整段（常量 + 纯函数 + 异步入口）。"""
+
+    start = collector_source.index(_LAYOUT_B_SECTION_START)
+    end = collector_source.index(_LAYOUT_B_SECTION_END)
+    assert start < end, "Layout B 诊断应位于 C1C 段落之前"
+
+    return collector_source[start:end]
+
+
+def _layout_b_diagnostic_slice(collector_source: str) -> str:
+    """只截取 `diagnoseLayoutBCandidates()` 的代码（不含上方 JSDoc）。"""
+
+    return _js_function_slice(
+        collector_source,
+        "async function diagnoseLayoutBCandidates(",
+        _LAYOUT_B_SECTION_END,
+    )
+
+
+def test_layout_b_diagnostic_is_exposed_and_not_auto_called(collector_source: str) -> None:
+    """诊断入口必须显式暴露，且**加载脚本不得自动调用**。"""
+
+    assert "diagnoseLayoutBCandidates: diagnoseLayoutBCandidates" in collector_source
+
+    expose_index = collector_source.rindex("window.XuehangSysuCollector")
+    remainder = collector_source[expose_index + len("window.XuehangSysuCollector") :]
+    assert "diagnoseLayoutBCandidates(" not in remainder, "挂载之后不得自动调用诊断"
+
+
+def test_layout_b_diagnostic_is_not_in_any_production_path(collector_source: str) -> None:
+    """⛔ 生产链路（`collect()` / `collectSharded()` / 分页核心）不得引用 Layout B 诊断。"""
+
+    blocks = {
+        "collectPages": _js_function_slice(
+            collector_source, "async function collectPages(", "async function requestReportedTotal("
+        ),
+        "requestReportedTotal": _js_function_slice(
+            collector_source, "async function requestReportedTotal(", "async function collect("
+        ),
+        "collect": _js_function_slice(
+            collector_source, "async function collect(", "// 五校区 shard 编排"
+        ),
+        "collectSharded": _collect_sharded_slice(collector_source),
+    }
+
+    for name, block in blocks.items():
+        for forbidden in ("diagnoseLayoutBCandidates", "LAYOUT_B_"):
+            assert forbidden not in block, f"{name} 不得引用 Layout B 诊断：{forbidden}"
+
+
+def test_layout_b_diagnostic_returns_only_the_four_aggregate_counts(
+    collector_source: str,
+) -> None:
+    """返回值**只有**四个聚合计数：⛔ 无 rows / 无标识 / 无 f3 / f4 / teachingName 原文。"""
+
+    slice_ = _layout_b_diagnostic_slice(collector_source)
+
+    return_start = slice_.index("return {")
+    return_end = slice_.index("};", return_start)
+    returned = slice_[return_start:return_end]
+
+    keys = {
+        line.strip().split(":")[0]
+        for line in returned.splitlines()
+        if ":" in line and line.strip().startswith(tuple(k for k in _LAYOUT_B_RETURN_KEYS))
+    }
+
+    assert keys == set(_LAYOUT_B_RETURN_KEYS), (
+        f"Layout B 诊断只允许返回四个聚合计数，实际：{sorted(keys)}"
+    )
+
+    # ⛔ 返回值里不得出现任何原始内容 / 标识 / 分页元数据
+    for forbidden in (
+        "rows",
+        "teachingName",
+        "segment",
+        "fields",
+        "courseNum",
+        "classNumber",
+        "courseName",
+        "timePlaceId",
+        "page_no",
+        "page_size",
+        "semester",
+        "reported_total",
+    ):
+        assert forbidden not in returned, f"Layout B 诊断返回值不得包含：{forbidden}"
+
+
+def test_layout_b_diagnostic_never_emits_values_anywhere(collector_source: str) -> None:
+    """⛔ 整段诊断（含错误路径）不得打印 / 落盘 / 序列化任何取值。"""
+
+    slice_ = _layout_b_section_slice(collector_source)
+
+    for forbidden in (
+        "console.",
+        "localStorage",
+        "sessionStorage",
+        "JSON.stringify",
+        "Blob",
+        "createObjectURL",
+        "download",
+        "document.cookie",
+        "fetch(",
+        "credentials",
+    ):
+        assert forbidden not in slice_, f"Layout B 诊断不得出现：{forbidden}"
+
+    # ⛔ 错误信息不回显调用方参数名 / 任何取值
+    assert "参数名不予回显" in slice_
+    assert "不回显任何取值" in slice_
+
+
+def test_layout_b_diagnostic_produces_no_capture_artifacts(collector_source: str) -> None:
+    """⛔ 不产出 bundle、不做最小化 / 脱敏 / 序列化（零留存）。"""
+
+    slice_ = _layout_b_section_slice(collector_source)
+    # ⚠️ JSDoc 里会**说明**"不产出 bundle / 不做最小化"，因此只看非注释代码行。
+    code = _collector_code_only(slice_)
+
+    for forbidden in (
+        "bundle",
+        "minimizeRow",
+        "redactSegmentTeacher",
+        "toJson(",
+        "CAPTURE_FORMAT",
+        "KEPT_ROW_FIELDS",
+        "REQUIRED_ROW_FIELDS",
+    ):
+        assert forbidden not in code, f"Layout B 诊断不得出现：{forbidden}"
+
+
+def test_layout_b_diagnostic_compares_before_minimize(collector_source: str) -> None:
+    """比较必须发生在 **minimize 之前**：直接读 raw row 的属性。"""
+
+    slice_ = _layout_b_diagnostic_slice(collector_source)
+
+    assert "row[SCHEDULE_FIELD]" in slice_, "诊断必须直接读取 raw row 的排课字段"
+    assert "minimizeRow" not in slice_
+    assert slice_.count("await requestPage(") == 1
+    # ⛔ 连续两次请求之间不得自己等待：全部交给全局 pacer
+    assert "await sleep(" not in slice_
+
+
+def test_layout_b_diagnostic_pacing_and_page_bounds(collector_source: str) -> None:
+    """多页请求必须复用同一 pacer，并受已验证页码 / 页大小约束。"""
+
+    slice_ = _layout_b_diagnostic_slice(collector_source)
+
+    assert "createRequestPacer(resolved.delayMs)" in slice_
+    assert "var currentPageNo = FIRST_PAGE_NO + index;" in slice_
+    assert "resolved.pageSize" in slice_
+    # ⛔ 起始页恒为已验证的 1（不接受调用方传入其它起点）
+    assert "resolvePagingOptions(opts)" in slice_
+    # data.total 中途变化 → 整体 fail closed
+    assert "data.total !== expectedTotal" in slice_
+    assert "accumulatedRows >= expectedTotal" in slice_
+
+
+def test_layout_b_diagnostic_option_whitelist_is_strict_and_precedes_requests(
+    collector_source: str,
+) -> None:
+    """只接受三个已批准参数；校验必须发生在**任何取页调用之前**。"""
+
+    assert 'LAYOUT_B_ALLOWED_OPTIONS = ["semester", "openingSchoolNumber", "maxPages"]' in (
+        collector_source
+    )
+
+    slice_ = _layout_b_diagnostic_slice(collector_source)
+
+    assert slice_.index("unexpected.length > 0") < slice_.index("await requestPage(")
+
+    # ⛔ 不得放开页大小 / 起始页 / 间隔（恒用已验证默认口径）
+    for forbidden in ("opts.pageSize", "opts.firstPageNo", "opts.delayMs"):
+        assert forbidden not in slice_, f"Layout B 诊断不得读取：{forbidden}"
+
+
+def test_layout_b_candidate_grammar_is_anchored_and_whitelisted(
+    collector_source: str,
+) -> None:
+    """候选判别完全复用已批准 grammar：整段锚定 + 白名单，**无通配 / 无前辍匹配**。"""
+
+    slice_ = _layout_b_section_slice(collector_source)
+    # ⚠️ 说明性文字本身就在讲"无通配"，因此这组断言只看**非注释代码行**。
+    code = _collector_code_only(slice_)
+
+    assert "var LAYOUT_B_FIELD_COUNT = 4;" in code
+
+    for pattern in (
+        r"/^[0-9]+-[0-9]+周$/",
+        r"/^[0-9]+-[0-9]+(单周|双周)$/",
+        r"/^[0-9]+-[0-9]+周(校外|校内\(户外\))$/",
+        r"/^第[0-9]+-[0-9]+节(校内\(户外\)|校外|线上)?$/",
+    ):
+        assert pattern in code, f"缺少已批准 pattern：{pattern}"
+
+    # ⛔ 无通配、无前缀匹配、无大小写折叠、无字段数量通配
+    assert ".*" not in code
+    assert "startswith" not in code
+    assert "startsWith" not in code
+    assert "toLowerCase" not in code
+    assert "includes(" not in code
+    # location 判别必须复用既有判别器（>= 3 个非空 '-' 分段）
+    assert "countNonEmptyDashSegments(fields[1].trim()) < MIN_LOCATION_SEGMENTS" in code
+
+
+def test_layout_b_missing_teaching_name_is_not_guessed(collector_source: str) -> None:
+    """raw row 没有 `teachingName` → 不计入 comparable，**不用其它字段顶替**。"""
+
+    slice_ = _layout_b_diagnostic_slice(collector_source)
+    code = _collector_code_only(slice_)
+
+    assert 'Object.prototype.hasOwnProperty.call(row, "teachingName")' in code
+    assert "if (hasTeachingName) {" in code
+    assert "fields[2].trim() === row.teachingName" in code
+
+    # ⛔ 不得给 teachingName 做任何兜底 / 等价替换
+    for forbidden in (
+        "row.teachingName ||",
+        "row.teachingName ??",
+        "row.teachingName ?",
+        "row.courseName",
+        "row.teacher",
+        "row.teacherName",
+    ):
+        assert forbidden not in code, f"不得用其它字段顶替 teachingName：{forbidden}"
+
+    # comparable 只在属性存在时推进（顺序：先判定，再计数）
+    assert code.index("if (hasTeachingName) {") < code.index("comparableTeachingNameCount += 1;")
+
+
+def test_layout_b_f4_uses_the_existing_activity_rule(collector_source: str) -> None:
+    """f4 只按**现有** activity 规则判定：非空字符串。"""
+
+    slice_ = _layout_b_section_slice(collector_source)
+
+    assert (
+        'return typeof token === "string" && token.trim() !== "";' in slice_
+    ), "activity 规则必须与 Python `_require_non_empty_token` 同规则"
+    assert "isNonEmptyActivityToken(fields[3])" in collector_source
+    # ⛔ 不得把 activity 规则写成通配 / 白名单之外的模式
+    assert "activityCount" in slice_
+

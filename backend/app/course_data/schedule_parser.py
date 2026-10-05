@@ -227,6 +227,11 @@ SECTIONS_ERROR_UNSUPPORTED_SUFFIX = "unsupported_sections_suffix"
 SECTIONS_ERROR_UNSUPPORTED_SHAPE = "unsupported_sections_shape"
 SECTIONS_ERROR_UNSUPPORTED_RANGE = "unsupported_sections_range"
 
+#: weekday 错误的**安全分类**（Architecture Review 裁定；⛔ 不回显 raw token）。
+WEEKDAY_ERROR_UNSUPPORTED_TYPE = "unsupported_weekday_type"
+WEEKDAY_ERROR_UNSUPPORTED_SHAPE = "unsupported_weekday_shape"
+WEEKDAY_ERROR_UNSUPPORTED_VALUE = "unsupported_weekday_value"
+
 #: 普通周次 token：`N-M周`（`N >= 1`、`M >= N`）。
 _PLAIN_WEEKS_GRAMMAR = r"[0-9]+-[0-9]+周"
 
@@ -353,19 +358,38 @@ class ParsedScheduleSegment:
 def parse_weekday(token: str) -> int:
     """把 segment 自带的星期 token 转成公共 `weekday`（1=周一 … 7=周日）。
 
-    ⛔ 只接受 `星期一` … `星期日`；其它写法（`星期天` / `周一` / `Monday` / 空）一律拒绝。
+    ⛔ 只接受 `星期一` … `星期日`（**整段白名单**）；
+    其它写法（`星期天` / `周一` / `Monday` / 空 / 任意文本）一律拒绝。
+
+    抛错时只给**稳定安全分类**（⛔ **不回显 raw token**）：
+
+    ```text
+    unsupported_weekday_type   非字符串
+    unsupported_weekday_shape  空 / 全空白（形状本身不成立）
+    unsupported_weekday_value  是字符串但不在白名单内
+    ```
+
+    ⛔ 不重构 `CourseDataNormalizationError`（分类写在 message 的稳定 token 里）。
     """
 
     if not isinstance(token, str):
         raise CourseDataNormalizationError(
-            f"星期必须是字符串，实际是 {type(token).__name__}"
+            f"星期必须是字符串（{WEEKDAY_ERROR_UNSUPPORTED_TYPE}），"
+            f"实际类型是 {type(token).__name__}（⛔ 不回显 raw token）"
         )
 
     candidate = token.strip()
+    if candidate == "":
+        raise CourseDataNormalizationError(
+            f"星期 token 为空（{WEEKDAY_ERROR_UNSUPPORTED_SHAPE}）："
+            f"只接受 星期一 / 星期二 / … / 星期日（⛔ 不回显 raw token）"
+        )
+
     weekday = _WEEKDAY_BY_TOKEN.get(candidate)
     if weekday is None:
         raise CourseDataNormalizationError(
-            f"无法识别的星期 token：{token!r}；只接受 星期一 / 星期二 / … / 星期日"
+            f"星期 token 未获批准（{WEEKDAY_ERROR_UNSUPPORTED_VALUE}）："
+            f"只接受 星期一 / 星期二 / … / 星期日（⛔ 不回显 raw token）"
         )
 
     return weekday

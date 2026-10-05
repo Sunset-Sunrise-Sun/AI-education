@@ -656,26 +656,60 @@ def test_three_field_error_message_does_not_echo_teacher() -> None:
     assert "某位教师" not in str(excinfo2.value)
 
 
-def test_known_gap_weekday_error_echoes_token() -> None:
-    """⚠️ **已登记的既有隐私缺口（本轮未修，属既有行为）**。
+def test_weekday_error_no_longer_echoes_token() -> None:
+    """✅ **既有隐私缺口已关闭**（本轮 Architecture Review 批准）。
 
     4 字段结构是 `weeks / weekday / sections / activity`，
     因此当某条**含教师姓名**的文本被误当作 4 字段时，
-    `fields[1]` 会作为 weekday token 被 `parse_weekday()` 回显到错误信息里：
-
-    ```text
-    无法识别的星期 token：'某位教师'；只接受 星期一 / … / 星期日
-    ```
-
-    本测试**只用于固定当前事实**（防止被误以为已修），
-    ⛔ **不代表**该行为可接受。修它需要单独决策（会牵动既有 `parse_weekday` 契约与测试）。
+    `fields[1]` 会作为 weekday token 进入 `parse_weekday()`；
+    现在错误信息**只给安全分类**，⛔ 不再回显该 token。
     """
 
     with pytest.raises(CourseDataNormalizationError) as excinfo:
         parse_teaching_time_place("1-8周/某位教师/实验实践环节/多余一段")
 
-    # 当前**确实**会回显 —— 记录事实
-    assert "某位教师" in str(excinfo.value)
+    message = str(excinfo.value)
+
+    assert "某位教师" not in message, "⛔ weekday 错误不得回显 raw token"
+    assert "unsupported_weekday_value" in message
+
+
+@pytest.mark.parametrize(
+    ("label", "text", "expected_code"),
+    [
+        ("教师姓名被当作 weekday", "1-8周/某位教师/实验实践环节/多余一段", "unsupported_weekday_value"),
+        ("location 被当作 weekday", "1-8周/示例校区-示例教学楼-2108/示例文本/示例环节", "unsupported_weekday_value"),
+        ("星期天（未确认写法）", "1-8周/星期天/第1-2节/示例环节", "unsupported_weekday_value"),
+        ("周一（未确认写法）", "1-8周/周一/第1-2节/示例环节", "unsupported_weekday_value"),
+        ("weekday 为空", "1-8周//第1-2节/示例环节", "unsupported_weekday_shape"),
+    ],
+)
+def test_weekday_errors_are_classified_and_do_not_echo(
+    label: str, text: str, expected_code: str
+) -> None:
+    """⛔ 只给稳定分类，⛔ 不回显任何 raw token。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_teaching_time_place(text)
+
+    message = str(excinfo.value)
+
+    assert expected_code in message, f"{label}: 缺少安全分类"
+    assert "某位教师" not in message
+    assert "示例校区" not in message
+    assert "2108" not in message
+
+
+@pytest.mark.parametrize("value", [None, 5, ["星期一"], {"weekday": 1}])
+def test_weekday_non_string_is_classified(value: object) -> None:
+    """非字符串 → `unsupported_weekday_type`（只给类型名，⛔ 不回显取值）。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_weekday(value)  # type: ignore[arg-type]
+
+    message = str(excinfo.value)
+    assert "unsupported_weekday_type" in message
+    assert type(value).__name__ in message
 
 
 # ---------------------------------------------------------------------------

@@ -469,6 +469,10 @@ segment separator = ","      field separator = "/"
 - ⛔ 字段数只接受 **4 / 5 / 6**，其它（3、7+）fail closed；
 - **星期**：只接受 `星期一` … `星期日`；⛔ **`weekday` 一律来自 segment 自身**——
   样本显示 Raw `weekDay` 的顺序**不能安全假设**与 segment 一致，因此**完全不使用**它；
+  **错误只给安全稳定分类**（⛔ 不回显 raw token，2026-10-05 裁定）：
+  `unsupported_weekday_type` / `unsupported_weekday_shape` / `unsupported_weekday_value`
+  （非字符串 → `type`；去空白后为空 → `shape`；不在白名单 → `value`）；
+  ⛔ **未重构全局异常系统**（分类写在 message 的稳定 token 里）；
 - **节次**：`第N-M节` 或 `第N-M节` + **已批准 suffix**，要求 `N ≥ 1` 且 **`M ≥ N`**
   （允许 `M == N`，如 `第4-4节`）：
 
@@ -538,7 +542,43 @@ weeks | weekday | location | REDACTED | activity
   （⛔ **未新增** empty-meeting 路径）；✅ `schedule_weeks` / `teacher`（占位符）/ `activity` 保留；
 - ⚠️ **语义仍是 `meetings = []` = schedule UNKNOWN**，⛔ **不表示** conflict-free、
   ⛔ 不表示无课、⛔ 不表示异步；
-- ⛔ **Layout B（4 字段）本轮禁止处理**：继续 fail closed（当前先在 weekday 解析处失败）。
+- ⛔ **Layout B（4 字段）仍未批准处理**：parser **继续 fail closed**
+  （当前先在 weekday 解析处失败，且错误已是安全分类）；
+  ✅ 本轮**只**新增"**一次性、零留存 Layout B 诊断**"（见下），⛔ **未改 Layout B parser**、
+  ⛔ **未做 4 字段 teacher 脱敏**、⛔ 未重抓。
+
+**一次性 Layout B 诊断（零留存；Architecture Review 裁定 2026-10-05）**：
+
+- **目的**：只回答一个问题——Layout B 的 `f3` 是否**就是同行 raw row 的 `teachingName`**；
+- **位置**：`tools/sysu_course_offering_collector.js` 的 `diagnoseLayoutBCandidates()`，
+  在 collector 对 raw response 做 `minimizeRow()` **之前**直接读 raw rows（⛔ 不经过脱敏 / 最小化）；
+- **候选结构判定**（全部只看结构，⛔ 不比对课程名 / 教师名 / 学院，⛔ 无模糊匹配）：
+
+  ```text
+  4 fields
+  f1 = 已确认 weeks（plain / 单周 / 双周 / 校外 / 校内(户外)）
+  f2 = 已确认 location（复用现有判别器：>= 3 个非空 '-' 分段 ⇒ 同时排除 weekday）
+  f3 ≠ 已确认 sections
+  ```
+
+- **只输出四个聚合计数**（单位 = 候选 segment；⛔ 无 rows / 无标识 / 无原文）：
+
+  ```text
+  candidate_count
+  comparable_teaching_name_count     raw row **带** teachingName 属性者
+  f3_equals_teaching_name_count      其中 f3 === row.teachingName 者
+  f4_activity_count                  其中 f4 满足现有 activity 非空规则者
+  ```
+
+- ⛔ **raw row 没有 `teachingName` 属性 → `comparable` 不推进**（不猜、不用其它字段顶替）；
+- ⛔ 不产出 bundle、⛔ 不落盘、⛔ 不写日志文件、⛔ 不保存 raw response、⛔ 不修改 raw row；
+- ✅ 复用**同一** hostname guard / **同一** `requestPage()` / **同一**全局 pacing controller
+  （多页请求 ⇒ **必须**受同一批次冷却约束）；✅ 参数严格白名单
+  `semester` / `openingSchoolNumber` / `maxPages`；
+- ⛔ **不参与生产链路**：`collect()` / `collectSharded()` 都不调用它；
+- ⚠️ **真实 east-campus 诊断必须由负责人在其授权登录会话中手动执行**（Builder 不代跑）；
+  ⛔ 在拿到 `candidate = 10 / comparable = 10 / f3_equals = 10 / f4_activity = 10` 之前，
+  **不进入** Layout B parser / 4 字段 teacher 脱敏 / 重抓。
 
 **2 字段（无 teacher）**：
 

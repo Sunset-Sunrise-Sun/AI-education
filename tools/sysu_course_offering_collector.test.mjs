@@ -1470,3 +1470,391 @@ test("五校区：diagnostics 只有结构化计数，没有任何 row / 课程�
     assert.ok(!serialized.includes(forbidden), `⛔ diagnostics 不得含 ${forbidden}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// 一次性 Layout B 诊断（**零留存**）：只输出四个聚合计数
+//
+// 合成数据全部为人工虚构；断言只针对"计数是否正确"与"是否泄露输入取值"。
+// ---------------------------------------------------------------------------
+
+const LAYOUT_B_CAMPUS = "SYN-CAMPUS-LB";
+const LAYOUT_B_TEACHER_OTHER = "示例教师B";
+const LAYOUT_B_RETURN_KEYS = [
+  "candidate_count",
+  "comparable_teaching_name_count",
+  "f3_equals_teaching_name_count",
+  "f4_activity_count",
+];
+
+/** 合成一条 Layout B 形态的 row：4 字段 `weeks / location / f3 / f4`。 */
+function layoutBRow(text, options = {}) {
+  const row = Object.assign(rawRow(text), {
+    classNumber: options.classNumber || "SYN-LB-0001",
+  });
+  if (options.hasTeachingName !== false) {
+    row.teachingName =
+      options.teachingName === undefined ? TEACHER : options.teachingName;
+  }
+  return row;
+}
+
+function loadLayoutBCollector(rows, options = {}) {
+  return loadShardedCollector({
+    campuses: [{ openingSchoolNumber: LAYOUT_B_CAMPUS, rows }],
+    confirmResult: options.confirmResult,
+  });
+}
+
+async function runLayoutBDiagnostic(rows, options = {}) {
+  const harness = loadLayoutBCollector(rows, options);
+  const result = await harness.collector.diagnoseLayoutBCandidates({
+    semester: SEMESTER,
+    openingSchoolNumber: LAYOUT_B_CAMPUS,
+    maxPages: options.maxPages === undefined ? 1 : options.maxPages,
+  });
+  return Object.assign({ result }, harness);
+}
+
+/**
+ * 断言四个计数。
+ *
+ * ⚠️ 结果对象由 VM realm 创建，直接 `deepStrictEqual` 会因跨 realm 原型不同而失败；
+ * 这里先摊平成宿主 realm 的对象（仍然严格比较**键集合**与取值）。
+ */
+function assertLayoutBCounts(result, expected) {
+  assert.deepEqual({ ...result }, expected);
+}
+
+/** 一批混合合成 row：4 个真候选 + 5 个 near-miss。 */
+function layoutBScenario() {
+  return [
+    // 真候选 1：teachingName 与 f3 相同
+    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`, {
+      classNumber: "SYN-LB-0001",
+      teachingName: TEACHER,
+    }),
+    // 真候选 2：teachingName 与 f3 不同
+    layoutBRow(`1-8单周/${LOCATION}/${TEACHER}/${ACTIVITY}`, {
+      classNumber: "SYN-LB-0002",
+      teachingName: LAYOUT_B_TEACHER_OTHER,
+    }),
+    // 真候选 3：raw row **没有** teachingName 属性
+    layoutBRow(`3-4双周/${LOCATION}/${TEACHER}/${ACTIVITY}`, {
+      classNumber: "SYN-LB-0003",
+      hasTeachingName: false,
+    }),
+    // 真候选 4：f4 为空 → 不计入 activity
+    layoutBRow(`1-8周校外/${LOCATION}/${TEACHER}/`, {
+      classNumber: "SYN-LB-0004",
+      teachingName: TEACHER,
+    }),
+    // near-miss：f2 只有 2 个 '-' 分段（不是已确认 location）
+    layoutBRow(`1-8周/${CAMPUS}-2108/${TEACHER}/${ACTIVITY}`, {
+      classNumber: "SYN-LB-0005",
+      teachingName: TEACHER,
+    }),
+    // near-miss：f3 是已确认 sections token
+    layoutBRow(`1-8周/${LOCATION}/第5-6节/${ACTIVITY}`, {
+      classNumber: "SYN-LB-0006",
+      teachingName: TEACHER,
+    }),
+    // near-miss：f1 不是已批准 weeks
+    layoutBRow(`第1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`, {
+      classNumber: "SYN-LB-0007",
+      teachingName: TEACHER,
+    }),
+    // near-miss：5 字段（Layout A 形态）
+    layoutBRow(`1-8周/星期五/第5-6节/REDACTED/${ACTIVITY}`, {
+      classNumber: "SYN-LB-0008",
+      teachingName: TEACHER,
+    }),
+    // near-miss：6 字段（concrete 形态）
+    layoutBRow(`1-8周/星期五/第5-6节/${LOCATION}/${TEACHER}/${ACTIVITY}`, {
+      classNumber: "SYN-LB-0009",
+      teachingName: TEACHER,
+    }),
+  ];
+}
+
+test("Layout B 诊断：加载脚本不自动调用", async () => {
+  const { calls } = loadLayoutBCollector(layoutBScenario());
+
+  assert.equal(calls.length, 0, "⛔ 仅加载不得发出任何请求");
+});
+
+test("Layout B 诊断：4 个真候选 + 5 个 near-miss → 四个计数正确", async () => {
+  const { result } = await runLayoutBDiagnostic(layoutBScenario());
+
+  assertLayoutBCounts(result, {
+    candidate_count: 4,
+    // 候选 3 所在 raw row **没有** teachingName → 不可比较
+    comparable_teaching_name_count: 3,
+    // 候选 1 与候选 4 的 f3 都等于本行 teachingName；候选 2 不等
+    f3_equals_teaching_name_count: 2,
+    // 候选 4 的 f4 为空 → 不计入 activity
+    f4_activity_count: 3,
+  });
+});
+
+test("Layout B 诊断：返回值只有四个聚合计数，且不泄露任何输入取值", async () => {
+  const rows = layoutBScenario();
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.deepEqual(Object.keys(result).sort(), [...LAYOUT_B_RETURN_KEYS].sort());
+
+  const serialized = JSON.stringify(result);
+
+  for (const forbidden of [
+    "teachingName",
+    "candidate_count_",
+    TEACHER,
+    LAYOUT_B_TEACHER_OTHER,
+    ACTIVITY,
+    LOCATION,
+    CAMPUS,
+    CLASSROOM,
+    "SYN-LB",
+    "courseNum",
+    "courseName",
+    "classNumber",
+    '"rows"',
+    '"fields"',
+    '"segments"',
+    "REDACTED",
+    "第5-6节",
+  ]) {
+    assert.ok(!serialized.includes(forbidden), `⛔ 诊断输出不得含 ${forbidden}`);
+  }
+
+  // 返回值里只有数字（⛔ 没有数组 / 对象 / 字符串）
+  for (const [key, value] of Object.entries(result)) {
+    assert.equal(typeof value, "number", `${key} 必须是数字计数`);
+  }
+});
+
+test("Layout B 诊断：不修改 raw row，也不产出任何 bundle", async () => {
+  const rows = layoutBScenario();
+  const before = JSON.stringify(rows);
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(JSON.stringify(rows), before, "⛔ 诊断不得修改 raw row");
+  assert.equal(result.bundle, undefined, "⛔ 诊断不得产出 bundle");
+  assert.equal(result.pages, undefined, "⛔ 诊断不得保留 pages");
+  assert.equal(result.rows, undefined, "⛔ 诊断不得保留 rows");
+});
+
+test("Layout B 诊断：没有 teachingName 时 comparable 不推进（不猜）", async () => {
+  const { result } = await runLayoutBDiagnostic([
+    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`, {
+      hasTeachingName: false,
+    }),
+  ]);
+
+  assertLayoutBCounts(result, {
+    candidate_count: 1,
+    comparable_teaching_name_count: 0,
+    f3_equals_teaching_name_count: 0,
+    f4_activity_count: 1,
+  });
+});
+
+test("Layout B 诊断：teachingName 属性存在但非字符串 → 可比较但不等", async () => {
+  const { result } = await runLayoutBDiagnostic([
+    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`, { teachingName: null }),
+  ]);
+
+  assertLayoutBCounts(result, {
+    candidate_count: 1,
+    comparable_teaching_name_count: 1,
+    f3_equals_teaching_name_count: 0,
+    f4_activity_count: 1,
+  });
+});
+
+test("Layout B 诊断：四种已批准 weeks 形态都计入候选", async () => {
+  const { result } = await runLayoutBDiagnostic([
+    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`),
+    layoutBRow(`1-8单周/${LOCATION}/${TEACHER}/${ACTIVITY}`),
+    layoutBRow(`3-4双周/${LOCATION}/${TEACHER}/${ACTIVITY}`),
+    layoutBRow(`1-8周校外/${LOCATION}/${TEACHER}/${ACTIVITY}`),
+    layoutBRow(`1-8周校内(户外)/${LOCATION}/${TEACHER}/${ACTIVITY}`),
+  ]);
+
+  assert.equal(result.candidate_count, 5);
+  assert.equal(result.f4_activity_count, 5);
+});
+
+test("Layout B 诊断：未批准 weeks（线上 / 前缀 / 通配）一律不计入候选", async () => {
+  const { result } = await runLayoutBDiagnostic([
+    layoutBRow(`1-8周线上/${LOCATION}/${TEACHER}/${ACTIVITY}`),
+    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`, { classNumber: "X" }),
+  ]);
+
+  // 第一条不是已批准 weeks；第二条是 → 只应有 1 个候选
+  assert.equal(result.candidate_count, 1);
+});
+
+test("Layout B 诊断：f4 只按现有 activity 规则（非空字符串）", async () => {
+  const { result } = await runLayoutBDiagnostic([
+    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/   `),
+    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/`, { classNumber: "SYN-LB-EMPTY" }),
+  ]);
+
+  assert.equal(result.candidate_count, 2);
+  assert.equal(result.f4_activity_count, 0, "⛔ 空白 / 空 f4 不算 activity");
+});
+
+test("Layout B 诊断：多页 → 跨页累计，且第二页仍受全局 pacing", async () => {
+  const filler = Array.from({ length: 200 }, (_, index) =>
+    Object.assign(rawRow(`1-8周/星期五/第5-6节/${ACTIVITY}`), {
+      classNumber: `SYN-FILL-${String(index + 1).padStart(4, "0")}`,
+    }),
+  );
+  const rows = [
+    ...filler,
+    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`, {
+      classNumber: "SYN-LB-PAGE2",
+      teachingName: TEACHER,
+    }),
+  ];
+
+  const { result, calls, timers } = await runLayoutBDiagnostic(rows, { maxPages: 2 });
+
+  assert.equal(calls.length, 2, "应当恰好请求 2 页");
+  assert.deepEqual(
+    calls.map((call) => call.pageNo),
+    [1, 2],
+    "⛔ 不得跳页",
+  );
+  assertLayoutBCounts(result, {
+    candidate_count: 1,
+    comparable_teaching_name_count: 1,
+    f3_equals_teaching_name_count: 1,
+    f4_activity_count: 1,
+  });
+
+  assert.ok(timers.length >= 1, "第二个请求必须先等待");
+  for (const ms of timers) {
+    assert.ok(ms >= 30000, `⛔ 诊断不得绕过 pacing 下限：${ms}`);
+  }
+});
+
+test("Layout B 诊断：未批准参数在任何请求之前被拒绝", async () => {
+  const { collector, calls } = loadLayoutBCollector(layoutBScenario());
+
+  for (const bad of [{ pageSize: 50 }, { delayMs: 1000 }, { firstPageNo: 2 }, { scope: "x" }]) {
+    await assert.rejects(
+      () =>
+        collector.diagnoseLayoutBCandidates(
+          Object.assign(
+            { semester: SEMESTER, openingSchoolNumber: LAYOUT_B_CAMPUS, maxPages: 1 },
+            bad,
+          ),
+        ),
+      /Layout B 诊断只接受/,
+    );
+  }
+
+  assert.equal(calls.length, 0, "⛔ 参数校验必须发生在任何取页调用之前");
+});
+
+test("Layout B 诊断：缺少 semester 被拒绝，且不发出请求", async () => {
+  const { collector, calls } = loadLayoutBCollector(layoutBScenario());
+
+  await assert.rejects(
+    () => collector.diagnoseLayoutBCandidates({ openingSchoolNumber: LAYOUT_B_CAMPUS }),
+    /semester/,
+  );
+
+  assert.equal(calls.length, 0);
+});
+
+test("Layout B 诊断：maxPages 超过 smoke 上限时先确认；取消 → 不请求也不返回伪计数", async () => {
+  const cancelled = loadLayoutBCollector(layoutBScenario(), { confirmResult: false });
+
+  await assert.rejects(
+    () =>
+      cancelled.collector.diagnoseLayoutBCandidates({
+        semester: SEMESTER,
+        openingSchoolNumber: LAYOUT_B_CAMPUS,
+        maxPages: 3,
+      }),
+    /取消/,
+  );
+
+  assert.equal(cancelled.calls.length, 0, "⛔ 取消后不得发出任何请求");
+  assert.equal(cancelled.confirms.length, 1);
+
+  const accepted = loadLayoutBCollector(layoutBScenario(), { confirmResult: true });
+  const result = await accepted.collector.diagnoseLayoutBCandidates({
+    semester: SEMESTER,
+    openingSchoolNumber: LAYOUT_B_CAMPUS,
+    maxPages: 3,
+  });
+
+  assert.equal(accepted.confirms.length, 1);
+  assert.equal(result.candidate_count, 4);
+});
+
+test("Layout B 诊断：maxPages 在 smoke 上限内不弹确认框", async () => {
+  const { confirms, result } = await runLayoutBDiagnostic(layoutBScenario(), { maxPages: 2 });
+
+  assert.equal(confirms.length, 0);
+  assert.equal(result.candidate_count, 4);
+});
+
+test("Layout B 诊断：data.total 中途变化 → 整体 fail closed", async () => {
+  const rows = layoutBScenario();
+  const calls = [];
+  let reads = 0;
+
+  const sandbox = {
+    console,
+    Date,
+    JSON,
+    Promise,
+    Error,
+    Number,
+    Array,
+    String,
+    Object,
+    Math,
+    clearTimeout: () => {},
+    setTimeout: (callback) => {
+      queueMicrotask(callback);
+      return 1;
+    },
+    fetch: async (url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push(body.pageNo);
+      reads += 1;
+      // 第 1 页：只回 5 行但 total=9（未取满 → 继续下一页）；
+      // 第 2 页：total 变成 10 → 诊断期间数据集合变化 → 整体 fail closed。
+      return fakeResponse({
+        code: 200,
+        data: { total: reads === 1 ? rows.length : rows.length + 1, rows: rows.slice(0, 5) },
+      });
+    },
+  };
+  sandbox.window = {
+    location: { hostname: "jwxt.sysu.edu.cn" },
+    confirm: () => true,
+    XuehangSysuCollector: undefined,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(SOURCE, sandbox, { filename: "sysu_course_offering_collector.js" });
+
+  await assert.rejects(
+    () =>
+      sandbox.window.XuehangSysuCollector.diagnoseLayoutBCandidates({
+        semester: SEMESTER,
+        openingSchoolNumber: LAYOUT_B_CAMPUS,
+        maxPages: 2,
+      }),
+    /data\.total/,
+  );
+
+  assert.deepEqual(calls, [1, 2], "⛔ 失败发生在第 2 页，且不得重试 / 跳页");
+});

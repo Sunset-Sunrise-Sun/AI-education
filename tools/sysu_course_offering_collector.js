@@ -1442,6 +1442,238 @@
   }
 
   // ---------------------------------------------------------------------
+  // 一次性 Layout B 诊断（**零留存**；Architecture Review 裁定）
+  //
+  // ⛔ 只在内存中比较 **minimize 之前的 raw row**，且只返回**聚合计数**：
+  //    不回显 teachingName / f3 / f4 / 课程号 / 教学班号 / 原文；
+  //    不产出 bundle、不落盘、不写日志文件、不保存 raw response。
+  // ⛔ 不参与生产链路：`collect()` / `collectSharded()` 都不调用它。
+  // ---------------------------------------------------------------------
+
+  /** Layout B 候选的字段数（已确认 4 字段）。 */
+  var LAYOUT_B_FIELD_COUNT = 4;
+
+  /**
+   * Layout B 诊断允许的 options（**严格白名单**）。
+   *
+   * ⛔ 不开放 `pageSize` / `firstPageNo` / `delayMs`：诊断恒用已验证的默认口径
+   * （`pageSize=200`、`firstPageNo=1`、`delayMs>=30000`）。
+   */
+  var LAYOUT_B_ALLOWED_OPTIONS = ["semester", "openingSchoolNumber", "maxPages"];
+
+  /**
+   * 已批准 **weeks** 形状（与 Python `expand_weeks()` 的已批准 grammar **同规则**）。
+   *
+   * ⛔ 整段锚定、⛔ 无 `.*`、⛔ 不做 `startswith` / 去前缀 / 大小写折叠。
+   */
+  var LAYOUT_B_WEEKS_PATTERNS = [
+    /^[0-9]+-[0-9]+周$/,
+    /^[0-9]+-[0-9]+(单周|双周)$/,
+    /^[0-9]+-[0-9]+周(校外|校内\(户外\))$/
+  ];
+
+  /**
+   * 已批准 **sections** 形状（与 Python `parse_sections()` 的已批准 grammar **同规则**）。
+   *
+   * ⚠️ 本诊断只用它**排除**「f3 是 sections」的情形（Layout B 定义要求没有 sections）。
+   */
+  var LAYOUT_B_SECTIONS_PATTERN = /^第[0-9]+-[0-9]+节(校内\(户外\)|校外|线上)?$/;
+
+  /** `f1` 是否是已批准的 weeks token（仅结构判定，**不返回取值**）。 */
+  function isApprovedWeeksToken(token) {
+    for (var index = 0; index < LAYOUT_B_WEEKS_PATTERNS.length; index += 1) {
+      if (LAYOUT_B_WEEKS_PATTERNS[index].test(token)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 判断一个**已脱敏前**的 segment 是否属于 Layout B 候选。
+   *
+   * ```text
+   * 4 fields
+   * f1 = 已确认 weeks
+   * f2 = 已确认 location（复用现有判别器：>= 3 个非空 "-" 分段）
+   *      ⇒ 同时排除 weekday（weekday token 不含 "-"）
+   * f3 ≠ 已确认 sections
+   * ```
+   *
+   * ⛔ 只做**结构**判定：不比对课程名 / 教师名 / 学院，不做模糊匹配；
+   * ⛔ 返回值只有 true / false（**不返回任何字段取值**）。
+   */
+  function isLayoutBCandidate(segment) {
+    var fields = segment.split(FIELD_SEPARATOR);
+
+    if (fields.length !== LAYOUT_B_FIELD_COUNT) {
+      return false;
+    }
+
+    if (!isApprovedWeeksToken(fields[0].trim())) {
+      return false;
+    }
+
+    if (countNonEmptyDashSegments(fields[1].trim()) < MIN_LOCATION_SEGMENTS) {
+      return false;
+    }
+
+    if (LAYOUT_B_SECTIONS_PATTERN.test(fields[2].trim())) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /** activity 的**现有**规则：非空字符串（与 Python `_require_non_empty_token` 同规则）。 */
+  function isNonEmptyActivityToken(token) {
+    return typeof token === "string" && token.trim() !== "";
+  }
+
+  /**
+   * **一次性、零留存** Layout B 诊断：串行拉取若干页，在**minimize 之前**对 raw rows
+   * 做内存比较，最终**只**返回四个聚合计数。
+   *
+   * ```text
+   * candidate_count                 Layout B 候选 segment 数
+   * comparable_teaching_name_count  其中 raw row **带** teachingName 属性的条数
+   * f3_equals_teaching_name_count   其中 f3 === row.teachingName 的条数
+   * f4_activity_count               其中 f4 满足现有 activity 非空规则的条数
+   * ```
+   *
+   * - ⛔ **不输出** teachingName / f3 / f4 / 课程号 / 教学班号 / 原文（只输出上面 4 个计数）；
+   * - ⛔ **不把** teachingName 写入任何 bundle（本函数**不产出 bundle**）；
+   * - ⛔ 不保存 raw response、不写日志文件（rows 只在本次循环内使用，不留引用）；
+   * - ⛔ raw row **没有** `teachingName` 属性 → 只计入 `candidate_count`，
+   *   `comparable_teaching_name_count` **不增加**（**不猜**、不用其它字段代替）；
+   * - ⛔ 不修改 `collect()` / `collectSharded()` 的任何行为；
+   * - 复用既有 hostname guard / **同一**取页函数 / **同一**全局 pacing controller
+   *   （⛔ 不复制认证与请求逻辑，⛔ 不自己 sleep）。
+   */
+  async function diagnoseLayoutBCandidates(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var optionNames = Object.keys(opts);
+    var unexpected = optionNames.filter(function (name) {
+      return LAYOUT_B_ALLOWED_OPTIONS.indexOf(name) === -1;
+    });
+    if (unexpected.length > 0) {
+      fail(
+        "Layout B 诊断只接受 " + LAYOUT_B_ALLOWED_OPTIONS.join(" / ") +
+          "（收到 " + unexpected.length + " 个其它参数）。已停止；参数名不予回显。"
+      );
+    }
+
+    var resolved = resolvePagingOptions(opts);
+
+    var campus = opts.openingSchoolNumber;
+    if (campus !== undefined && (typeof campus !== "string" || campus.trim() === "")) {
+      fail("openingSchoolNumber 必须是非空字符串（或省略）。");
+    }
+
+    if (resolved.maxPages > DEFAULT_MAX_PAGES) {
+      var confirmed = window.confirm(
+        "即将执行**一次性 Layout B 诊断**（只取聚合计数，不产出任何数据、不落盘）。\n" +
+          "最多请求 " + resolved.maxPages + " 页；请求间隔至少 " +
+          resolved.delayMs / 1000 + " 秒（含全局批次冷却）。\n" +
+          "是否继续？"
+      );
+      if (!confirmed) {
+        fail("用户取消了 Layout B 诊断：本次不产生任何计数（不返回伪造的 0）。");
+      }
+    }
+
+    var pacer = createRequestPacer(resolved.delayMs);
+
+    var candidateCount = 0;
+    var comparableTeachingNameCount = 0;
+    var equalTeachingNameCount = 0;
+    var activityCount = 0;
+    var expectedTotal = null;
+    var accumulatedRows = 0;
+
+    for (var index = 0; index < resolved.maxPages; index += 1) {
+      var currentPageNo = FIRST_PAGE_NO + index;
+      var data = await requestPage(
+        resolved.semester,
+        currentPageNo,
+        resolved.pageSize,
+        campus,
+        pacer
+      );
+
+      if (expectedTotal === null) {
+        expectedTotal = data.total;
+      } else if (data.total !== expectedTotal) {
+        fail(
+          "第 " + currentPageNo + " 页的 data.total 与首页不一致：" +
+            "诊断期间数据集合发生变化。已整体停止（不回显任何取值）。"
+        );
+      }
+
+      for (var rowIndex = 0; rowIndex < data.rows.length; rowIndex += 1) {
+        var row = data.rows[rowIndex];
+
+        if (!row || typeof row !== "object" || Array.isArray(row)) {
+          fail(
+            "第 " + currentPageNo + " 页第 " + (rowIndex + 1) +
+              " 条记录不是对象。诊断已停止（不回显任何取值）。"
+          );
+        }
+
+        var text = row[SCHEDULE_FIELD];
+        if (typeof text !== "string" || text === "") {
+          continue;
+        }
+
+        var segments = text.split(SEGMENT_SEPARATOR);
+        if (segments.length > 1 && segments[segments.length - 1].trim() === "") {
+          segments.pop();
+        }
+
+        // ⚠️ 属性**存在性**判定（不是"非空"）：缺失即不可比较 → 不猜。
+        var hasTeachingName = Object.prototype.hasOwnProperty.call(row, "teachingName");
+
+        for (var segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+          var segment = segments[segmentIndex];
+          if (segment.trim() === "" || !isLayoutBCandidate(segment)) {
+            continue;
+          }
+
+          candidateCount += 1;
+
+          var fields = segment.split(FIELD_SEPARATOR);
+
+          if (hasTeachingName) {
+            comparableTeachingNameCount += 1;
+            if (fields[2].trim() === row.teachingName) {
+              equalTeachingNameCount += 1;
+            }
+          }
+
+          if (isNonEmptyActivityToken(fields[3])) {
+            activityCount += 1;
+          }
+        }
+      }
+
+      accumulatedRows += data.rows.length;
+      if (accumulatedRows >= expectedTotal) {
+        break;
+      }
+    }
+
+    return {
+      candidate_count: candidateCount,
+      comparable_teaching_name_count: comparableTeachingNameCount,
+      f3_equals_teaching_name_count: equalTeachingNameCount,
+      f4_activity_count: activityCount
+    };
+  }
+
+  // ---------------------------------------------------------------------
   // 相关性诊断（Phase 2B-2C1C）：missing 组 vs non_empty_string 组的字段聚合
   // ---------------------------------------------------------------------
 
@@ -1948,6 +2180,7 @@
     diagnoseSchedulePresence: diagnoseSchedulePresence,
     summarizeSchedulePresence: summarizeSchedulePresence,
     diagnoseMissingScheduleCorrelation: diagnoseMissingScheduleCorrelation,
+    diagnoseLayoutBCandidates: diagnoseLayoutBCandidates,
     toJson: toJson,
     shardBundle: shardBundle,
     toShardJson: toShardJson,

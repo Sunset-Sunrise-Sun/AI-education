@@ -2202,3 +2202,85 @@
   Planner / Curriculum / frontend。
 - 下一步：等待 Architecture Review 对(a)Layout B 的 segment layout 与
   (b)4 字段 teacher 脱敏修复 / 重抓，以及 (c) weekday 错误信息去 raw 回显 给出裁定。
+
+### 2026-10-05 - weekday 错误安全化（A）+ 一次性零留存 Layout B 诊断（B）
+
+- 触发：Architecture Review 本轮**只**批准两件事 ——
+  **(A)** `parse_weekday()` 错误安全化（⛔ 不重构全局异常系统）；
+  **(B)** 新增**一次性、零留存**的 Layout B 诊断能力（必须在 collector 做 minimize **之前**）。
+  本轮明确**不做**：⛔ 不修改 Layout B parser、⛔ 不做 4 字段 teacher 脱敏、
+  ⛔ 不建 SQLite、⛔ 不 push / 不 PR / 不 merge。
+- **A. `parse_weekday()` 安全化**（`backend/app/course_data/schedule_parser.py`）：
+  - ⛔ 不再回显 raw token；改为**稳定安全分类**：
+    `unsupported_weekday_type`（非字符串，另附类型名）/ `unsupported_weekday_shape`
+    （去空白后为空）/ `unsupported_weekday_value`（不在白名单）；
+  - 白名单本身**未改**（仍只有 `星期一` … `星期日` → 1..7）；
+  - ⛔ 未重构全局异常系统（分类写在 message 的稳定 token 里，与既有
+    `unsupported_sections_*` / `unsupported_week_*` 同风格）。
+- **测试（A）**（`test_course_data_schedule_parser.py`）：
+  原 `test_known_gap_weekday_error_echoes_token`（**锁定 raw 回显**）按裁定替换为
+  `test_weekday_error_no_longer_echoes_token`；新增
+  `test_weekday_errors_are_classified_and_do_not_echo`（5 组：teacher 当 weekday、
+  location 当 weekday、`星期天`、`周一`、空串 —— 逐个断言**分类存在**且**取值不出现在
+  message 中**）与 `test_weekday_non_string_is_classified`（`None` / `5` / list / dict）。
+- **B. 一次性零留存 Layout B 诊断**（`tools/sysu_course_offering_collector.js` 新增
+  `diagnoseLayoutBCandidates()`；⛔ 未改 `collect()` / `collectSharded()` / 任何生产路径）：
+  - 候选条件（**只看结构**，⛔ 不比对课程名 / 教师名 / 学院 / 不做模糊匹配）：
+    `4 fields` + `f1` 已确认 weeks（plain / 单周 / 双周 / 校外 / 校内(户外)）+
+    `f2` 已确认 location（复用 `countNonEmptyDashSegments() >= MIN_LOCATION_SEGMENTS`
+    ⇒ 同时排除 weekday）+ `f3` 不是已确认 sections；
+  - **在 minimize 之前**直接读 raw rows：`row[SCHEDULE_FIELD]` → 切段 → 内存比较
+    `f3 === row.teachingName`（⛔ 不调用 `minimizeRow()`、⛔ 不脱敏、⛔ 不序列化）；
+  - **只返回四个聚合计数**（单位 = 候选 segment）：
+    `candidate_count` / `comparable_teaching_name_count` /
+    `f3_equals_teaching_name_count` / `f4_activity_count`；
+  - `teachingName` 用**属性存在性**判定（`Object.prototype.hasOwnProperty.call`）：
+    **没有该属性 → `comparable` 不推进**（⛔ 不猜、⛔ 不用 `courseName` / `teacher` 顶替）；
+  - ⛔ 不输出 teachingName / f3 / f4 / 课程号 / 教学班号 / 原文；⛔ 不产出 bundle、
+    ⛔ 不落盘、⛔ 不写日志文件（⛔ 无 `console.*` / `JSON.stringify` / `Blob` / `download`）、
+    ⛔ 不修改 raw row（测试断言 raw rows 前后序列化一致）；
+  - ✅ 复用**同一** `requireAllowedHost()` / **同一** `requestPage()` /
+    **同一** `createRequestPacer()`：诊断是**多页**的，⛔ 不得绕开全局批次冷却
+    （测试断言相邻请求等待 `>= 30000ms`）；✅ 参数严格白名单
+    `semester` / `openingSchoolNumber` / `maxPages`（⛔ 不放开 `pageSize` / `firstPageNo` /
+    `delayMs`），且校验发生在**任何取页调用之前**；`maxPages > DEFAULT_MAX_PAGES` 时先确认，
+    **取消 → fail closed（⛔ 不返回伪造的 0 计数）**；
+  - ✅ 诊断内部 `data.total` 中途变化 → 整体 fail closed（⛔ 不重试 / 不跳页）。
+- **测试（B）**（`tools/sysu_course_offering_collector.test.mjs`：92 → **107**）：
+  15 项新增，全部为**人工虚构**合成数据 —— 4 真候选 + 5 近邻（f2 两段 / f3 是 sections /
+  f1 非 weeks / 5 字段 / 6 字段）计数正确；**不泄露输入取值**
+  （`Object.keys` 恰好四个 + `JSON.stringify(result)` 不含教师 / 活动 / 地点 / 班级号等合成值）；
+  无 `teachingName` 时 `comparable = 0`；属性存在但非字符串 → 可比较但不等；
+  四种已批准 weeks 形态计入、`1-8周线上` 不计入；f4 空白 / 空 → 不计 activity；
+  **多页**跨页累计 + 第二页仍受 pacing（`calls === [1, 2]`）；未批准参数在请求前被拒；
+  缺 `semester` 被拒；确认框行为（超 smoke 上限先确认、取消不发请求、默认不弹）；
+  `data.total` 漂移 → 整体 fail closed；仅加载**不自动调用**（`calls.length === 0`）。
+- **静态守卫（新增 11 项；`test_sysu_collector_guard.py` 84 → 95）**：
+  Layout B 诊断暴露但**不自动调用**；⛔ 不在任何生产路径（`collect` / `collectSharded` /
+  `collectPages` / `requestReportedTotal`）；返回值**恰好**四个计数（⛔ 无 rows / 标识 /
+  分页元数据 / f3 / f4 / teachingName）；整段无打印 / 落盘 / 序列化；
+  ⛔ 无 `bundle` / `minimizeRow` / `redactSegmentTeacher` / `CAPTURE_FORMAT`；
+  比较在 minimize 之前（直接读 `row[SCHEDULE_FIELD]`）；复用同一 pacer 与页码边界；
+  参数白名单严格且**先于**请求；候选 grammar **整段锚定 + 白名单**
+  （⛔ 无 `.*` / `startswith` / `toLowerCase` / `includes`）；缺 `teachingName` **不猜**；
+  f4 与 Python `_require_non_empty_token` 同规则。
+  ⚠️ **两处既有守卫计数按其新事实更新**（⛔ 不是放宽）：
+  `await requestPage(` 4 → **5**、`createRequestPacer(` 3 → **4**，并在注释里写明
+  新增的第五个取页入口是**多页诊断**，因此必须传 pacer。
+- **变异扫描（非真空性证明）**：`mutate_layout_b_diagnostic.py`（工作区脚本，⛔ 未入 Git）
+  注入 **7 个 Node 行为变异 + 5 个静态守卫变异**，**12/12 全部变红**，采集器 SHA-256
+  前后一致（`44ca7fdd…fbcf`，⛔ 文件已完整还原）。
+  ⚠️ 自查纠正：第一次 P3 变异锚点 `var pacer = createRequestPacer(resolved.delayMs);`
+  在 `collectSharded` 里也出现 → 变异误改到生产入口，出现**假绿灯**；
+  改用诊断内部独有锚点后变红（已在脚本注释中记录该坑）。
+- **A 的合成测试先行验证**（按要求）：诊断测试全部用人工虚构数据，
+  先证明"只返回计数、不泄露输入值"，再交给负责人跑真实诊断。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未改公共 Schema / `schemas/` /
+  `docs/interfaces/` / `mock_data/`；⛔ 未改 Layout B parser、⛔ 未做 4 字段 teacher 脱敏、
+  ⛔ 未重抓、⛔ 未建 SQLite、⛔ 未改 `captured_pages.py` / Capture Bundle format /
+  `sharded_capture.py` / store / `planning_runtime.py` / PR #39 / Planner / Curriculum /
+  frontend；⛔ 真实材料（artifact / Capture Bundle / raw rows）未进入 Git。
+- **真实请求数：0**（真实 east-campus 诊断由负责人在其授权会话中手动执行）。
+- 下一步：由负责人在授权登录会话中执行一次性 Layout B 诊断；只有当
+  `candidate = 10 / comparable = 10 / f3_equals_teaching_name = 10 / f4_activity = 10`
+  时，才请求下一轮批准（Layout B parser + 4 字段 teacher 脱敏 + 重抓）。
