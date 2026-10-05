@@ -381,11 +381,45 @@ def test_collector_non_concrete_two_field_grammar_matches_python_parser(
 
     assert "NON_CONCRETE_FIRST_FIELD" in collector_source
     # 整段匹配（`^...$`），且周次部分要求 `N-M周`
-    assert r"/^([0-9]+-[0-9]+周)(校外)$/" in collector_source
+    assert r"/^([0-9]+-[0-9]+周)(校外|校内\(户外\))$/" in collector_source
     assert "SCHEDULE_QUALIFIER_OFF_CAMPUS" in collector_source
+    assert "SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR" in collector_source
     # ⛔ 不得无条件接受任意 2 字段
     assert "fieldCount === 2" in collector_source
     assert "NON_CONCRETE_FIRST_FIELD.test(fields[0].trim())" in collector_source
+
+
+def test_collector_three_field_supports_confirmed_qualifier_whitelist(
+    collector_source: str,
+) -> None:
+    """3 字段须支持 `<weeks><已确认 qualifier>` / teacher / activity。
+
+    ⛔ qualifier 是**白名单**（当前 `校外` 与 `校内(户外)`），不得泛化为任意 suffix；
+    ⛔ 不得因为第一个字段带 qualifier 就跳过 teacher 脱敏。
+    """
+
+    # 先把 weeks 与 qualifier 拆开
+    assert "WEEKS_WITH_OPTIONAL_QUALIFIER" in collector_source
+    assert r"/^([0-9]+-[0-9]+周)(.+)?$/" in collector_source
+    assert "KNOWN_QUALIFIER_EXACT" in collector_source
+    assert r"/^(校外|校内\(户外\))$/" in collector_source
+    # 白名单校验先于脱敏
+    assert "KNOWN_QUALIFIER_EXACT.test(qualifier3)" in collector_source
+    # teacher 仍在 fields[1] 被替换
+    assert "fields[1] = REDACTED_TEACHER;" in collector_source
+
+
+def test_collector_rejects_unknown_qualifier_without_echo(
+    collector_source: str,
+) -> None:
+    """⛔ 未确认 qualifier 必须 fail closed，且不回显取值。"""
+
+    # 拒绝分支存在
+    assert "qualifier 尚未被真实证据确认" in collector_source
+    # 错误信息里不得拼进 qualifier 变量本身
+    index = collector_source.index("qualifier 尚未被真实证据确认")
+    window = collector_source[max(0, index - 400) : index + 200]
+    assert "qualifier3" not in window or "+ qualifier3" not in window
 
 
 def test_collector_non_concrete_three_field_redacts_teacher_field(

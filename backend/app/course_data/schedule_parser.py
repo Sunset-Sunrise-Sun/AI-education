@@ -13,7 +13,8 @@ field separator   = "/"
 2 字段（non-concrete：无 weekday / sections / 具体地点 / teacher）：
         <weeks token><qualifier> / activity       例如 12-19周校外 / 实验实践环节
 3 字段（non-concrete：无 weekday / sections / 具体地点）：
-        <weeks token> / teacher / activity        例如 1-17周 / 龙霞 / 实验实践环节
+        <weeks token> / teacher / activity              例如 1-17周 / 龙霞 / 实验实践环节
+        <weeks token><qualifier> / teacher / activity   例如 16-16周校内(户外) / 龙霞 / 实验实践环节
 4 字段（无地点、无教师）：weeks / weekday / sections / activity
 5 字段 A（有地点、无教师）：weeks / weekday / sections / location / activity
 5 字段 B（无地点、有教师）：weeks / weekday / sections / teacher / activity
@@ -69,16 +70,22 @@ field separator   = "/"
 
 ### 3 字段 non-concrete（带 teacher，2026-1 真实证据）
 
-真实证据：`1-17周/龙霞/实验实践环节`，同行 `row.teachingName` 亦为同一教师姓名。
-⇒ 该 3 字段是 **`weeks / teacher / activity`**：
+真实证据：`1-17周/龙霞/实验实践环节` 与 **`16-16周校内(户外)/龙霞/实验实践环节`**，
+同行 `row.teachingName` 均为同一教师姓名。
+⇒ 该 3 字段是 **`weeks[qualifier] / teacher / activity`**：
 ⛔ **不是** location，⛔ **不是**未知 qualifier。
 
+- **两种已确认形态**：plain（`1-17周`，`schedule_qualifier = None`）与
+  qualified（`16-16周校内(户外)`，`schedule_qualifier = "校内(户外)"`）；
+- ⚠️ **必须先拆开**：`16-16周校内(户外)` → `weeks_token = "16-16周"` +
+  `qualifier = "校内(户外)"`，⛔ **只把 `weeks_token` 交给 `expand_weeks()`**；
 - `meeting = None`（没有 weekday / sections）；⛔ 不生成 `Meeting`；
 - `teacher` 保留在内部字段（脱敏由 collector 负责）；
-- `schedule_weeks` 保存展开后的周次；`schedule_qualifier = None`；
-- ⛔ `weeks` 必须是合法 `N-M周`（`N >= 1`、`M >= N`）；
-  ⛔ teacher / activity 必须非空；任一非法 → fail closed；
-- ⛔ **不放开为"任意 3 字段"**：3 字段只有这一个已确认结构。
+- `schedule_weeks` 保存展开后的周次；
+- ⛔ `weeks` 必须是合法 `N-M周`；⛔ teacher / activity 必须非空；
+- ⛔ **qualifier 是白名单**（当前：`校外`、`校内(户外)`）：
+  `16-16周未知文本` / `16-16周线上` / `16-16周医院` 一律拒绝；
+- ⛔ **不放开为"任意 3 字段 / 任意 suffix"**。
 
 
 ## 为什么需要内部 `ParsedScheduleSegment`
@@ -166,15 +173,36 @@ _ALLOWED_FIELD_COUNTS = (
 #: **按新证据**逐个加入，⛔ 不预先泛化。
 SCHEDULE_QUALIFIER_OFF_CAMPUS = "校外"
 
-#: 已确认的 schedule qualifier 集合。
-_KNOWN_SCHEDULE_QUALIFIERS = (SCHEDULE_QUALIFIER_OFF_CAMPUS,)
+#: 真实证据（2026-1）：`16-16周校内(户外)/<教师>/实验实践环节`。
+#: ⛔ 这是**另一个已确认 qualifier**，且**不是**具体校区 → 同样不得当作 `campus`。
+SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR = "校内(户外)"
 
-#: non-concrete 段第 1 个字段的形状：`<合法 weeks token><已确认 qualifier>`。
+#: 已确认的 schedule qualifier 集合（**白名单**）。
+_KNOWN_SCHEDULE_QUALIFIERS = (
+    SCHEDULE_QUALIFIER_OFF_CAMPUS,
+    SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR,
+)
+
+#: 普通周次 token：`N-M周`（`N >= 1`、`M >= N`）。
+_PLAIN_WEEKS_GRAMMAR = r"[0-9]+-[0-9]+周"
+
+#: schedule qualifier 的形状：**非空任意文本**（具体取值由白名单把关）。
 #:
-#: ⚠️ 必须**整段**匹配（`^...$`）：qualifier 之前是完整周次 token，
-#: 因此不会出现 `12-19周XXX` 这类"周次后面接任意字符"的情况。
-_NON_CONCRETE_FIRST_FIELD = re.compile(
-    r"^([0-9]+-[0-9]+周)(" + "|".join(_KNOWN_SCHEDULE_QUALIFIERS) + r")$"
+#: ⚠️ 这里刻意**不把 qualifier 枚举进正则**：regex 只负责"拆出 weeks 与 qualifier"，
+#: "这个 qualifier 是否已被真实证据确认"由白名单判断。
+#: 这样新增一个已确认 qualifier 只需改常量，不必改文法。
+_QUALIFIER_GRAMMAR = r".+"
+
+#: 带 qualifier 的周次字段形状（qualifier 可省略，但若存在则不能为空）。
+_WEEKS_WITH_OPTIONAL_QUALIFIER = re.compile(
+    r"^(" + _PLAIN_WEEKS_GRAMMAR + r")(" + _QUALIFIER_GRAMMAR + r")?$"
+)
+
+#: 已确认 qualifier 的**整段**匹配（用于 2 字段场景）。
+_QUALIFIED_WEEKS_ONLY = re.compile(
+    r"^(" + _PLAIN_WEEKS_GRAMMAR + r")("
+    + "|".join(re.escape(q) for q in _KNOWN_SCHEDULE_QUALIFIERS)
+    + r")$"
 )
 
 #: 星期 token → 公共 `weekday`（1=周一 … 7=周日）。
@@ -436,7 +464,7 @@ def _try_parse_non_concrete_fields(
     ⛔ qualifier 是**白名单**：`12-19周XXX` 一律不匹配 → 整体失败。
     """
 
-    match = _NON_CONCRETE_FIRST_FIELD.match(fields[0].strip())
+    match = _QUALIFIED_WEEKS_ONLY.match(fields[0].strip())
     if match is None:
         return None
 
@@ -465,33 +493,56 @@ def _try_parse_non_concrete_with_teacher_fields(
 ) -> ParsedScheduleSegment:
     """把 **3 字段** 解析为 **non-concrete、带 teacher** 的 segment。
 
+    支持**两种已确认**的第 1 字段形态：
+
     ```text
-    <weeks token> / <non-empty teacher> / <non-empty activity>
-    例如：1-17周 / 龙霞 / 实验实践环节
+    plain     ：<weeks token> / <non-empty teacher> / <non-empty activity>
+                例如 1-17周 / 龙霞 / 实验实践环节
+    qualified ：<weeks token><已确认 qualifier> / <non-empty teacher> / <non-empty activity>
+                例如 16-16周校内(户外) / 龙霞 / 实验实践环节
     ```
 
-    ⚠️ **真实证据（2026-1）**：`1-17周/龙霞/实验实践环节`，
-    同行 `row.teachingName` 亦为同一教师姓名 ⇒ `fields[1]` 是 **teacher**。
-    ⛔ **不是** location（没有 weekday / sections / 具体地点），
+    ⚠️ **真实证据（2026-1）**：两种形态的 `fields[1]` 均经同行 `row.teachingName`
+    交叉确认是 **teacher** ⇒
+    ⛔ **不是** location（没有 weekday / sections / 具体地点）；
     ⛔ 也**不是**未知 qualifier。
 
-    ⛔ **不生成 `Meeting`**（没有 weekday / sections）；
-    ⛔ **不把 teacher 塞进 `Meeting`**；
-    ✅ 周次**必须**随 segment 保留在 `schedule_weeks`；
-    ✅ teacher 保留在内部 `teacher` 字段（脱敏由 collector 负责）。
+    ⚠️ **必须先把 weeks 与 qualifier 拆开**：
+    `16-16周校内(户外)` → `weeks_token = "16-16周"`、`qualifier = "校内(户外)"`；
+    ⛔ **只把 `weeks_token` 交给 `expand_weeks()`**（整串会直接失败）。
+
+    ⛔ **不生成 `Meeting`**；⛔ **不把 teacher 塞进 `Meeting`**；
+    ✅ 周次保留在 `schedule_weeks`；✅ qualifier 保留在 `schedule_qualifier`
+    （⛔ **不当作 `campus`**）；✅ teacher 保留在内部 `teacher` 字段。
     """
 
-    weeks_token = fields[0].strip()
+    first_field = fields[0].strip()
 
-    # 先校验 weeks（按字段顺序），非法即 fail closed。
-    if not is_plain_week_range(weeks_token):
+    match = _WEEKS_WITH_OPTIONAL_QUALIFIER.match(first_field)
+    if match is None:
+        # 连"weeks + 可选 qualifier"的基本形状都不是（例如 `abc周/...`、
+        # `1-17/...`、`第1-17周/...`）。
+        if not is_plain_week_range(first_field):
+            raise CourseDataNormalizationError(
+                f"teachingTimePlaceStr 的第 {segment_index} 段是 3 字段"
+                f"（weeks / teacher / activity），但其第 1 个字段不是合法的"
+                f"`N-M周` 周次 token（也不符合已确认的 qualifier 形态）。"
+                f"本 parser 不猜格式，已整体停止（不回显该字段取值）"
+            )
+        weeks_token, qualifier = first_field, None
+    else:
+        weeks_token = match.group(1)
+        qualifier = match.group(2)
+
+    if qualifier is not None and qualifier not in _KNOWN_SCHEDULE_QUALIFIERS:
+        # ⛔ 白名单而非通配：`16-16周未知文本` 一律拒绝（不回显取值）。
         raise CourseDataNormalizationError(
-            f"teachingTimePlaceStr 的第 {segment_index} 段是 3 字段"
-            f"（weeks / teacher / activity），但其第 1 个字段不是合法的"
-            f"`N-M周` 周次 token。本 parser 不猜格式，已整体停止"
-            f"（不回显该字段取值）"
+            f"teachingTimePlaceStr 的第 {segment_index} 段的 qualifier 尚未被真实证据确认"
+            f"（已确认：{'、'.join(_KNOWN_SCHEDULE_QUALIFIERS)}）。"
+            f"本 parser 不猜格式，已整体停止（不回显该字段取值）"
         )
 
+    # 只展开**周次 token 自身**，绝不把 qualifier 一起送进去。
     weeks = expand_weeks(weeks_token)
 
     teacher = _require_non_empty_token(
@@ -501,13 +552,12 @@ def _try_parse_non_concrete_with_teacher_fields(
         fields[2], field="activity", segment_index=segment_index
     )
 
-    # non-concrete：没有 weekday / sections / 具体地点；
-    # ⛔ 不生成 Meeting；qualifier 不适用（该形态没有 qualifier）。
+    # non-concrete：没有 weekday / sections / 具体地点；⛔ 不生成 Meeting。
     return ParsedScheduleSegment(
         meeting=None,
         teacher=teacher,
         activity=activity,
-        schedule_qualifier=None,
+        schedule_qualifier=qualifier,
         schedule_weeks=weeks,
     )
 

@@ -143,26 +143,38 @@
   var MIN_LOCATION_SEGMENTS = 3;
 
   /**
-   * 目前**唯一**经真实证据确认的 schedule qualifier（校外见习类）。
+   * 目前**经真实证据确认**的 schedule qualifier 白名单。
    *
-   * ⛔ **白名单而非通配**：`12-19周XXX` 一律拒绝。
+   * ⛔ **白名单而非通配**：`12-19周XXX` / `16-16周线上` 等一律拒绝。
    */
   var SCHEDULE_QUALIFIER_OFF_CAMPUS = "校外";
+  var SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR = "校内(户外)";
+  var KNOWN_SCHEDULE_QUALIFIERS = [
+    SCHEDULE_QUALIFIER_OFF_CAMPUS,
+    SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR
+  ];
 
   /**
    * **non-concrete** 2 字段段第 1 个字段的形状：`<weeks token><已确认 qualifier>`。
    *
-   * 与 Python `schedule_parser._NON_CONCRETE_FIRST_FIELD` **同规则**，
+   * 与 Python `schedule_parser._QUALIFIED_WEEKS_ONLY` **同规则**，
    * 且必须**整段**匹配（`^...$`），因此不会出现"周次后面接任意字符"。
    */
-  var NON_CONCRETE_FIRST_FIELD = /^([0-9]+-[0-9]+周)(校外)$/;
+  var NON_CONCRETE_FIRST_FIELD = /^([0-9]+-[0-9]+周)(校外|校内\(户外\))$/;
 
   /**
-   * **non-concrete 带 teacher** 的 3 字段段第 1 个字段：普通周次 token `N-M周`。
+   * **non-concrete 带 teacher** 的 3 字段段第 1 个字段：
+   * `<weeks token>` 或 `<weeks token><已确认 qualifier>`。
    *
-   * 与 Python `normalization.is_plain_week_range()` **同规则**。
+   * ⚠️ 与 Python `_WEEKS_WITH_OPTIONAL_QUALIFIER` 同规则：
+   * 先把 weeks 与 qualifier **拆开**，再各自校验；
+   * ⛔ qualifier 的具体取值由白名单把关（`KNOWN_SCHEDULE_QUALIFIERS`）。
    */
   var PLAIN_WEEK_RANGE = /^([0-9]+)-([0-9]+)周$/;
+  var WEEKS_WITH_OPTIONAL_QUALIFIER = /^([0-9]+-[0-9]+周)(.+)?$/;
+
+  /** 已确认 qualifier 的精确匹配。 */
+  var KNOWN_QUALIFIER_EXACT = /^(校外|校内\(户外\))$/;
 
   // ---------------------------------------------------------------------
   // 基础工具
@@ -267,22 +279,46 @@
     var fieldCount = fields.length;
 
     if (fieldCount === 3) {
-      // non-concrete 带 teacher：`<weeks token>` / teacher / activity
-      // （2026-1 真实证据：`1-17周/龙霞/实验实践环节`，同行 teachingName 亦为教师姓名）。
-      var weeksField = fields[0].trim();
-      var weekMatch = PLAIN_WEEK_RANGE.exec(weeksField);
+      // non-concrete 带 teacher：`<weeks token>[<已确认 qualifier>]` / teacher / activity
+      // （2026-1 真实证据：`1-17周/龙霞/实验实践环节` 与
+      //   `16-16周校内(户外)/龙霞/实验实践环节`，同行 teachingName 亦为教师姓名）。
+      var firstField3 = fields[0].trim();
+      var qualifiedMatch = WEEKS_WITH_OPTIONAL_QUALIFIER.exec(firstField3);
 
-      if (weekMatch === null) {
+      if (qualifiedMatch === null) {
         fail(
           "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
-            "是 3 字段（weeks / teacher / activity），但其第 1 个字段不是合法的 " +
-            "`N-M周` 周次 token。本采集器不猜格式，已整体停止（不回显该字段取值）。"
+            "是 3 字段（weeks / teacher / activity），但其第 1 个字段既不是合法的 " +
+            "`N-M周` 周次 token，也不符合已确认的 qualifier 形态。" +
+            "本采集器不猜格式，已整体停止（不回显该字段取值）。"
         );
       }
 
-      var startWeek = parseInt(weekMatch[1], 10);
-      var endWeek = parseInt(weekMatch[2], 10);
-      if (startWeek < 1 || endWeek < startWeek) {
+      var weeksToken3 = qualifiedMatch[1];
+      var qualifier3 = qualifiedMatch[2];
+
+      // ⛔ qualifier 是**白名单**：`16-16周未知文本` 一律拒绝。
+      if (qualifier3 !== undefined && !KNOWN_QUALIFIER_EXACT.test(qualifier3)) {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "中的 qualifier 尚未被真实证据确认（已确认：" +
+            KNOWN_SCHEDULE_QUALIFIERS.join("/") +
+            "）。本采集器不猜格式，已整体停止（不回显该字段取值）。"
+        );
+      }
+
+      // ⛔ 只按 **weeks token 自身** 校验区间，绝不把 qualifier 一起送进去。
+      var weekMatch3 = PLAIN_WEEK_RANGE.exec(weeksToken3);
+      if (weekMatch3 === null) {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "3 字段段的周次 token 不是合法的 `N-M周`。本采集器不猜格式，已整体停止。"
+        );
+      }
+
+      var startWeek3 = parseInt(weekMatch3[1], 10);
+      var endWeek3 = parseInt(weekMatch3[2], 10);
+      if (startWeek3 < 1 || endWeek3 < startWeek3) {
         fail(
           "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
             "3 字段段的周次区间非法（要求 N >= 1 且 M >= N）。本采集器不猜格式，已整体停止。"
@@ -304,7 +340,9 @@
         );
       }
 
-      // teacher 在 fields[1]：替换为 REDACTED；weeks / activity 原样保留。
+      // teacher 在 fields[1]：替换为 REDACTED；
+      // ⛔ 不能因为第一个字段带 qualifier 就跳过脱敏。
+      // weeks（含 qualifier）与 activity 原样保留。
       fields[1] = REDACTED_TEACHER;
       return fields.join(FIELD_SEPARATOR);
     }

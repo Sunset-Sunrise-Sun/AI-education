@@ -328,6 +328,76 @@ test("混合：concrete + 2 字段 + 3 字段 non-concrete 各自正确处理", 
 });
 
 // ---------------------------------------------------------------------------
+// 3 字段 qualified：`<weeks><qualifier>` / teacher / activity
+// ---------------------------------------------------------------------------
+
+const QUALIFIER_OUTDOOR = "校内(户外)";
+
+test("3 字段 qualified：teacher 脱敏，qualifier / weeks / activity 全保留", async () => {
+  const text = "16-16周校内(户外)/示例教师/实验实践环节";
+
+  const out = await collectSingle(text);
+
+  assert.equal(out, "16-16周校内(户外)/REDACTED/实验实践环节");
+  assert.ok(out.includes("16-16周"), "weeks 必须保留");
+  assert.ok(out.includes(QUALIFIER_OUTDOOR), "qualifier 必须保留");
+  assert.ok(out.endsWith("/实验实践环节"), "activity 必须保留");
+  assert.ok(!out.includes("示例教师"), "⛔ 真实 teacher 不得出现在产物中");
+});
+
+test("⛔ 不能因为第一个字段带 qualifier 就跳过 teacher 脱敏", async () => {
+  const text = "16-16周校内(户外)/示例教师/实验实践环节";
+
+  const out = await collectSingle(text);
+
+  // 中间字段必须是 REDACTED，而不是原样的教师姓名
+  assert.equal(out.split("/")[1], "REDACTED");
+});
+
+for (const [label, text] of [
+  ["未知 qualifier", "16-16周未知文本/示例教师/实验实践环节"],
+  ["尚无证据的 qualifier", "16-16周线上/示例教师/实验实践环节"],
+  ["尚无证据的 qualifier 2", "16-16周医院/示例教师/实验实践环节"],
+  ["qualified teacher 为空", "16-16周校内(户外)//实验实践环节"],
+  ["qualified activity 为空", "16-16周校内(户外)/示例教师/"],
+]) {
+  test(`3 字段 qualified 非法（${label}）：fail closed`, async () => {
+    const { collector } = loadCollector([rawRow(text)]);
+
+    await assert.rejects(
+      () => collector.collect({ semester: SEMESTER }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        // ⛔ 不回显 teacher 取值
+        assert.ok(!error.message.includes("示例教师"), "⛔ 不得回显 teacher 取值");
+        return true;
+      },
+    );
+  });
+}
+
+test("混合：6 字段 concrete + plain 3 字段 + qualified 3 字段", async () => {
+  const text = [
+    `1-8周/星期五/第5-6节/${LOCATION}/${TEACHER}/${ACTIVITY}`,
+    "1-17周/示例教师/实验实践环节",
+    "16-16周校内(户外)/示例教师/实验实践环节",
+  ].join(",");
+
+  const out = await collectSingle(text);
+
+  assert.equal(
+    out,
+    [
+      `1-8周/星期五/第5-6节/${LOCATION}/REDACTED/${ACTIVITY}`,
+      "1-17周/REDACTED/实验实践环节",
+      "16-16周校内(户外)/REDACTED/实验实践环节",
+    ].join(","),
+  );
+  assert.ok(!out.includes(TEACHER), "⛔ 真实 teacher 不得出现在产物中");
+  assert.ok(!out.includes("示例教师"), "⛔ 3 字段的 teacher 也必须被脱敏");
+});
+
+// ---------------------------------------------------------------------------
 // 未知字段数：继续 fail closed
 // ---------------------------------------------------------------------------
 

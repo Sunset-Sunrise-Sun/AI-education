@@ -1317,3 +1317,41 @@
 - **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
   ⛔ 按指示**未重新执行真实 35 页采集**。
 - 下一步：等待 Architecture Review。
+
+### 2026-10-05 - 3 字段支持已确认 qualifier（`16-16周校内(户外)/教师/activity`）
+
+- 触发：**新真实证据** `16-16周校内(户外)/<教师>/实验实践环节`，
+  `<教师>` 已通过该 row 的 `teachingName` 交叉确认。
+- **新增形态**：3 字段 **qualified** non-concrete
+  `<weeks><qualifier> / teacher / activity`；
+  ⛔ **只白名单已确认 qualifier**，⛔ 不泛化为任意 suffix。
+- **qualifier 白名单**（当前两项）：`校外`、`校内(户外)`。
+- **解析要求（关键）**：必须先把 `16-16周校内(户外)` 拆成
+  `weeks_token = "16-16周"` 与 `qualifier = "校内(户外)"`，
+  ⛔ **只把 weeks token 传给 `expand_weeks()`**（整串会直接失败）。
+- **3 字段分支现在分两种**：
+  - `N-M周 / teacher / activity` → plain，`schedule_qualifier = None`；
+  - `N-M周<已确认 qualifier> / teacher / activity` → qualified，
+    `schedule_qualifier = "…"`；
+  - 其它 suffix（`16-16周未知文本` / `16-16周线上` / `16-16周医院`）→ **fail closed**。
+- **结果**：`meeting = None`、`schedule_weeks = [16]`、
+  `schedule_qualifier = "校内(户外)"`、`teacher`、`activity`；
+  ⛔ 不生成 `Meeting`；⛔ 不把 `校内(户外)` 当 `campus`；⛔ 不猜 weekday / sections。
+- **实现**：Python 侧把 qualifier 与 weeks 的拆分改成**通用形状 + 白名单校验**
+  （regex 只负责拆，白名单负责"是否已确认"），新增常量
+  `SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR = "校内(户外)"`；
+  `_NON_CONCRETE_FIRST_FIELD` 更名为 `_QUALIFIED_WEEKS_ONLY`。
+  Collector 同步：`KNOWN_QUALIFIER_EXACT` 白名单 + `WEEKS_WITH_OPTIONAL_QUALIFIER` 拆分，
+  teacher **仍在 `fields[1]` 脱敏**（⛔ 不因第一个字段带 qualifier 而跳过）。
+- **Importer**：⛔ **未新增路径** —— qualified 与 plain 一样 `meeting = None`，
+  继续复用已有 narrow non-concrete path → `meetings = []`。
+- **Planner / DG-07**：⛔ **未修改**；`meetings == []` 仍按现有 **DG-07** 视为 **UNKNOWN**。
+- 测试：parser **116 passed**；importer **73 passed**；collector guard **65 passed**；
+  collector node **38 passed**；Course Data 相关 **509 passed**。
+  新增覆盖：qualified 解析 4 项、未知 qualifier 4 项、collector qualified 脱敏与
+  "不得跳过脱敏"、非法输入 5 项，以及**混合测试（6 字段 concrete + plain 3 字段 +
+  qualified 3 字段）**，断言段数全保留、Meeting 只来自 concrete、
+  两种 non-concrete 的 weeks 正确、**qualifier 只出现在 qualified 那一段**。
+- **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
+  ⛔ 按指示**未重新执行真实 35 页采集**。
+- 下一步：等待 Architecture Review。

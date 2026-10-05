@@ -479,8 +479,10 @@ segment separator = ","      field separator = "/"
 **non-concrete segment（2026-1 真实证据确认）**：
 
 ```text
-2 字段：<weeks token><qualifier> / activity     例如 12-19周校外 / 实验实践环节
-3 字段：<weeks token> / teacher / activity      例如 1-17周 / 龙霞 / 实验实践环节
+2 字段：<weeks token><qualifier> / activity              例如 12-19周校外 / 实验实践环节
+3 字段 plain    ：<weeks token> / teacher / activity      例如 1-17周 / 龙霞 / 实验实践环节
+3 字段 qualified：<weeks token><qualifier> / teacher / activity
+                                                        例如 16-16周校内(户外) / 龙霞 / 实验实践环节
 ```
 
 **2 字段（校外见习类）**：
@@ -502,17 +504,27 @@ segment separator = ","      field separator = "/"
 - `extract_meetings()` **不投影** non-concrete segment，但
   `ParsedScheduleSegment` **仍保留**（⛔ 不是静默丢弃）；
 - ⛔ 因此**字段数只接受 2 / 3 / 4 / 5 / 6**，7+ 仍 fail closed。
+- ⚠️ **qualifier 白名单**（当前两项）：`校外`、`校内(户外)`。新增需真实证据。
 
 **3 字段（non-concrete 带 teacher，2026-1 真实证据）**：
 
-真实证据：`1-17周/龙霞/实验实践环节`，同行 `row.teachingName` 亦为同一教师姓名
-⇒ `fields[1]` 是 **teacher**，⛔ **不是** location，⛔ **不是**未知 qualifier。
+真实证据：`1-17周/龙霞/实验实践环节` 与 **`16-16周校内(户外)/龙霞/实验实践环节`**
+（同行 `row.teachingName` 均为同一教师姓名）⇒ `fields[1]` 是 **teacher**，
+⛔ **不是** location，⛔ **不是**未知 qualifier。
 
+- **两种已确认形态**：
+  - **plain**（`1-17周/教师/环节`）→ `schedule_qualifier = None`；
+  - **qualified**（`16-16周校内(户外)/教师/环节`）→ `schedule_qualifier = "校内(户外)"`；
+- ⚠️ **必须先拆开**：`16-16周校内(户外)` → `weeks_token = "16-16周"` +
+  `qualifier = "校内(户外)"`，⛔ **只把 weeks token 交给 `expand_weeks()`**（整串会失败）；
 - `meeting = None`（没有 weekday / sections / 具体地点）；⛔ 不生成 `Meeting`；
+  ⛔ **不把 `校内(户外)` 当作 `campus`**；
 - `teacher = fields[1]`（保留在内部字段；**脱敏由 collector 负责**）；
-- `schedule_weeks = expand_weeks(fields[0])`；`schedule_qualifier = None`；
-- ⛔ weeks 必须是合法 `N-M周`（`N >= 1`、`M >= N`）；⛔ teacher / activity 必须非空；
-  任一非法 → fail closed；⛔ **不放开为"任意 3 字段"**。
+- `schedule_weeks = expand_weeks(weeks_token)`；
+- ⛔ weeks 必须是合法 `N-M周`；⛔ teacher / activity 必须非空；
+- ⛔ **qualifier 是白名单**（当前 `校外`、`校内(户外)`）：
+  `16-16周未知文本` / `16-16周线上` / `16-16周医院` 一律拒绝；
+- ⛔ **不放开为"任意 3 字段 / 任意 suffix"**。
 
 **importer 的三类状态（严格分开）**：
 
@@ -532,8 +544,11 @@ segment separator = ","      field separator = "/"
 - 新规则与 parser **一致**：
   `2 字段` → **只有**已确认的 non-concrete grammar 才通过（无 teacher，⛔ 不做脱敏），
   其余任意 2 字段结构 fail closed；
-  `3 字段` → non-concrete 带 teacher：`fields[1]`（teacher）替换为 `REDACTED`，
-  weeks 与 activity 原样保留；weeks 非法 / teacher 空 / activity 空 → fail closed；
+  `3 字段` → non-concrete 带 teacher，**两种形态**：
+  plain（`<weeks>`）与 qualified（`<weeks><已确认 qualifier>`）；
+  `fields[1]`（teacher）**一律**替换为 `REDACTED`（⛔ 不因第一个字段带 qualifier 而跳过），
+  weeks（含 qualifier）与 activity 原样保留；
+  weeks 非法 / 未确认 qualifier / teacher 空 / activity 空 → fail closed；
   `4 字段` → 无 teacher，原样保留；`5 字段` → 按**同一严格三态规则**判别
   （无 `-` → teacher 则 `fields[3] = REDACTED`；`>= 3` 个非空 `-` 分段 → location 则原样保留；
   其余二义 → fail closed）；

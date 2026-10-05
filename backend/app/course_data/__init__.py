@@ -56,6 +56,9 @@ CourseDataProvider.get_course_offerings(semester)
   - `1-17周/龙霞/实验实践环节`（3 字段 = `weeks / teacher / activity`）：
     teacher 存入 `ParsedScheduleSegment.teacher`（**脱敏由 collector 负责**），
     `schedule_qualifier = None`；
+  - `16-16周校内(户外)/龙霞/实验实践环节`（3 字段 = `weeks<qualifier> / teacher / activity`）：
+    qualifier 存入 `schedule_qualifier`（⛔ **不当作 `campus`**），teacher 同上；
+    ⚠️ qualifier 是**白名单**（当前 `校外`、`校内(户外)`），新增需真实证据；
   两者的已展开周次都存入 **`ParsedScheduleSegment.schedule_weeks`**
   （⛔ 否则 `meeting is None` 时周次会永久丢失）。
   `extract_meetings()` 不投影它们，但 segment 本身**仍保留**。

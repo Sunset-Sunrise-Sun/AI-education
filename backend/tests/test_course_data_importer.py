@@ -230,6 +230,27 @@ def test_three_field_with_bad_weeks_still_fails_whole_import() -> None:
         _import([_row(teachingTimePlaceStr="abc周/示例教师/实验实践环节")], total=1)
 
 
+def test_three_field_qualified_non_concrete_produces_empty_meetings() -> None:
+    """3 字段 qualified（`16-16周校内(户外)/教师/实验实践环节`）→ `meetings == []`。
+
+    与其它 non-concrete 一样走**已有的** narrow path，⛔ 未新增 importer 路径。
+    """
+
+    snapshot = _import(
+        [_row(teachingTimePlaceStr="16-16周校内(户外)/示例教师/实验实践环节")], total=1
+    )
+
+    assert snapshot.loaded_count == 1
+    assert snapshot.offerings[0].meetings == []
+
+
+def test_three_field_unknown_qualifier_fails_whole_import() -> None:
+    """⛔ 未确认 qualifier → 整体失败。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([_row(teachingTimePlaceStr="16-16周未知文本/示例教师/实验实践环节")], total=1)
+
+
 def test_multiple_segments_are_all_kept() -> None:
     multi = (
         f"1-5周/星期五/第3-4节/示例校区-示例教学楼-2108/{TEACHER_A}/{ACTIVITY},"

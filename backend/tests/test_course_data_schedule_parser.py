@@ -562,6 +562,122 @@ def test_known_gap_weekday_error_echoes_token() -> None:
     assert "某位教师" in str(excinfo.value)
 
 
+# ---------------------------------------------------------------------------
+# 3 字段 qualified：`<weeks><qualifier>` / teacher / activity
+# ---------------------------------------------------------------------------
+
+QUALIFIER_OUTDOOR = "校内(户外)"
+
+
+def test_three_field_qualified_non_concrete_parsed() -> None:
+    """真实证据：`16-16周校内(户外)/<教师>/实验实践环节`。"""
+
+    (segment,) = parse_teaching_time_place("16-16周校内(户外)/示例教师/实验实践环节")
+
+    assert segment.meeting is None
+    assert segment.schedule_weeks == [16]
+    assert segment.schedule_qualifier == QUALIFIER_OUTDOOR
+    assert segment.teacher == "示例教师"
+    assert segment.activity == "实验实践环节"
+
+
+def test_three_field_qualified_weeks_split_from_qualifier() -> None:
+    """⚠️ 必须先拆开：只把 `16-16周` 交给 `expand_weeks()`，⛔ 不整串送进去。
+
+    若整串送进 `expand_weeks()`，`16-16周校内(户外)` 会直接失败 ——
+    本测试通过"成功解析出 `[16]`"反向证明拆分确实发生了。
+    """
+
+    (segment,) = parse_teaching_time_place("16-16周校内(户外)/示例教师/实验实践环节")
+
+    assert segment.schedule_weeks == [16]
+    assert segment.schedule_qualifier == QUALIFIER_OUTDOOR
+
+
+def test_three_field_qualified_does_not_fake_meeting_or_campus() -> None:
+    """⛔ 不生成 `Meeting`；⛔ 不把 `校内(户外)` 当作 campus。"""
+
+    (segment,) = parse_teaching_time_place("16-16周校内(户外)/示例教师/实验实践环节")
+
+    assert segment.meeting is None
+    assert extract_meetings([segment]) == []
+    # qualifier 只是内部字段，不是 campus
+    assert segment.schedule_qualifier == QUALIFIER_OUTDOOR
+
+
+def test_three_field_plain_still_has_no_qualifier() -> None:
+    """既有普通 3 字段仍然 `schedule_qualifier = None`。"""
+
+    (segment,) = parse_teaching_time_place("1-17周/示例教师/实验实践环节")
+
+    assert segment.meeting is None
+    assert segment.schedule_qualifier is None
+    assert segment.teacher == "示例教师"
+    assert segment.schedule_weeks == list(range(1, 18))
+
+
+@pytest.mark.parametrize(
+    "first_field",
+    [
+        "16-16周未知文本",
+        "16-16周线上",
+        "16-16周医院",
+        "16-16周实践基地",
+    ],
+)
+def test_three_field_unknown_qualifier_fails_closed(first_field: str) -> None:
+    """⛔ qualifier 是**白名单**：未确认的 suffix 一律拒绝（不泛化）。"""
+
+    text = f"{first_field}/示例教师/实验实践环节"
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_teaching_time_place(text)
+
+    # 不回显未确认取值
+    assert first_field not in str(excinfo.value)
+
+
+def test_mixed_six_field_concrete_plain_and_qualified_three_field() -> None:
+    """混合：6 字段 concrete + plain 3 字段 + qualified 3 字段。
+
+    要求：`ParsedScheduleSegment` **全部保留**（3 条）；
+    `Meeting` **只来自 concrete**（1 条）；
+    两种 non-concrete 的 `schedule_weeks` 正确；
+    **qualifier 只出现在 qualified 那一段**。
+    """
+
+    text = ",".join(
+        [
+            _segment("1-8周", "星期五", "第5-6节", location=f"{CAMPUS}-{CLASSROOM}"),  # 6 字段 concrete
+            "1-17周/示例教师/实验实践环节",  # plain 3 字段
+            "16-16周校内(户外)/示例教师/实验实践环节",  # qualified 3 字段
+        ]
+    )
+
+    segments = parse_teaching_time_place(text)
+    meetings = extract_meetings(segments)
+
+    assert len(segments) == 3, "⛔ 不得丢弃任何 segment"
+    assert len(meetings) == 1, "Meeting 只来自 concrete"
+    # concrete 的 location 正常解析
+    assert meetings[0].campus == CAMPUS
+    assert meetings[0].classroom == CLASSROOM
+    assert meetings[0].weeks == list(range(1, 9))
+
+    # plain 3 字段：无 qualifier
+    assert segments[1].meeting is None
+    assert segments[1].schedule_qualifier is None
+    assert segments[1].schedule_weeks == list(range(1, 18))
+
+    # qualified 3 字段：有 qualifier
+    assert segments[2].meeting is None
+    assert segments[2].schedule_qualifier == QUALIFIER_OUTDOOR
+    assert segments[2].schedule_weeks == [16]
+
+    # qualifier 只出现在 qualified 那一段
+    assert [s.schedule_qualifier for s in segments] == [None, None, QUALIFIER_OUTDOOR]
+
+
 def test_mixed_concrete_two_field_and_three_field_all_segments_kept() -> None:
     """混合：concrete + 2 字段 non-concrete + 3 字段 non-concrete。
 
