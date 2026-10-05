@@ -44,7 +44,8 @@ CourseDataProvider.get_course_offerings(semester)
 - ⛔ **不做**：`weekDay → weekday`、`openingSchoolName → campus`
   （`weekday` 一律来自 segment 自身；`campus` 只来自 segment 的 location 字段）；
 - ⛔ meeting 级教师关联仍是 **known deferred representation gap**：
-  parser **内部保留** `teacher`（`ParsedScheduleSegment.teacher`），
+  parser **内部保留** `teacher`（`ParsedScheduleSegment.teacher`，**可为 `None`** ——
+  2026-1 真实证据已确认 teacher 并不总在 `teachingTimePlaceStr` 中出现），
   但**不进入公共 `Meeting`**，**不修改任何 Schema**；
 - ⛔ `max_pages` 截断产生的 `partial` snapshot **不得**接入 Integration / Planner 产品链路。
 """

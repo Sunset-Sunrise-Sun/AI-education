@@ -167,11 +167,44 @@
   // ---------------------------------------------------------------------
 
   /**
-   * 对一个 segment 脱敏：只把 teacher 字段替换为 REDACTED。
+   * `token` 是否满足 **location grammar**（纯结构判别）。
    *
-   * 已确认结构：
-   *   5 fields: weeks / weekday / sections / teacher / activity
-   *   6 fields: weeks / weekday / sections / location / teacher / activity
+   * 与 Python `schedule_parser._parse_location()` **完全同一套规则**：
+   * 非空园区 + 至少一个 `-` + 非空教室。
+   *
+   * ⛔ 这是**结构判别**，不比对课程名 / 学院 / 教师名，不做模糊匹配；
+   * "无法明确判定为合法 location" 一律返回 `false`（走旧的 teacher 结构）。
+   */
+  function isLocationToken(token) {
+    if (typeof token !== "string") {
+      return false;
+    }
+
+    var separatorIndex = token.indexOf("-");
+    if (separatorIndex === -1) {
+      return false;
+    }
+
+    var campus = token.slice(0, separatorIndex).trim();
+    var classroom = token.slice(separatorIndex + 1).trim();
+
+    return campus !== "" && classroom !== "";
+  }
+
+  /**
+   * 对一个 segment 脱敏：**只**把真实存在的 teacher 字段替换为 REDACTED。
+   *
+   * 已确认结构（2026-1 真实证据）：
+   *
+   * ```text
+   * 4 fields: weeks / weekday / sections / activity                  → 无 teacher，原样保留
+   * 5 fields: weeks / weekday / sections / location / activity       → 无 teacher，原样保留
+   *           weeks / weekday / sections / teacher  / activity       → fields[3] = REDACTED
+   * 6 fields: weeks / weekday / sections / location / teacher / activity → fields[4] = REDACTED
+   * ```
+   *
+   * ⚠️ 5 字段必须**结构判别**：⛔ 不得再把第 4 字段无条件当成 teacher
+   * （那会把 location 脱敏掉，破坏地点信息）。
    *
    * 其余字段（weeks / weekday / sections / location / activity）**原样保留**。
    *
@@ -179,29 +212,54 @@
    */
   function redactSegmentTeacher(segment, pageNo, humanRowNo) {
     var fields = segment.split(FIELD_SEPARATOR);
+    var fieldCount = fields.length;
 
-    if (fields.length !== 5 && fields.length !== 6) {
+    if (
+      fieldCount !== 4 &&
+      fieldCount !== 5 &&
+      fieldCount !== 6
+    ) {
       fail(
         "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
-          "出现不支持的字段数（" + fields.length + "）。本采集器不猜格式，已整体停止。"
+          "出现不支持的字段数（" + fieldCount + "）。本采集器不猜格式，已整体停止。"
       );
     }
 
-    var teacherIndex = fields.length === 6 ? 4 : 3;
-    var teacher = fields[teacherIndex];
+    if (fieldCount === 4) {
+      // 4 字段：weeks / weekday / sections / activity —— 没有 teacher，不做替换。
+      return segment;
+    }
 
-    // ⛔ 替换前必须确认原 teacher 确实存在：
-    // 空 teacher 若也被写成 REDACTED，等于**静默修复**了原始数据问题，
-    // 会让下游 Python parser 误以为这条记录合法。
-    // 错误信息不回显 teacher 取值。
-    if (typeof teacher !== "string" || teacher.trim() === "") {
+    if (fieldCount === 5) {
+      // 5 字段需判别：location/activity（无 teacher） 或 teacher/activity。
+      if (isLocationToken(fields[3])) {
+        return segment;
+      }
+      // ⛔ 替换前必须确认原 teacher 确实存在：
+      // 空 teacher 若也被写成 REDACTED，等于**静默修复**了原始数据问题，
+      // 会让下游 Python parser 误以为这条记录合法。
+      // 错误信息不回显 teacher 取值。
+      var teacher5 = fields[3];
+      if (typeof teacher5 !== "string" || teacher5.trim() === "") {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "中 teacher 字段为空或不是字符串。本采集器不写入脱敏占位符来掩盖该问题，已整体停止。"
+        );
+      }
+      fields[3] = REDACTED_TEACHER;
+      return fields.join(FIELD_SEPARATOR);
+    }
+
+    // 6 字段：weeks / weekday / sections / location / teacher / activity
+    var teacher6 = fields[4];
+    if (typeof teacher6 !== "string" || teacher6.trim() === "") {
       fail(
         "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
           "中 teacher 字段为空或不是字符串。本采集器不写入脱敏占位符来掩盖该问题，已整体停止。"
       );
     }
 
-    fields[teacherIndex] = REDACTED_TEACHER;
+    fields[4] = REDACTED_TEACHER;
 
     return fields.join(FIELD_SEPARATOR);
   }

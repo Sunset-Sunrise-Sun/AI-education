@@ -1,10 +1,22 @@
-"""`teachingTimePlaceStr` parser 测试（Phase 2B-2B）。
+"""`teachingTimePlaceStr` parser 测试（Phase 2B-2B，2026-1 真实证据扩展）。
 
 ⚠️ **数据最小化**：本文件中的上课时间地点串、教师、校区、教室**全部为人工虚构**，
 按结构等价构造。**不包含**私密脱敏样本原文、真实教师姓名、真实教室或内部 ID。
 
 结构依据（已确认）：`segment separator = ","`、`field separator = "/"`，
-无地点 5 字段 / 有地点 6 字段，**最多一个**末尾逗号（需忽略）。
+**最多一个**末尾逗号（需忽略）。
+
+2026-1 全量采集首轮的真实报错证据确认：**teacher 并不总是在 segment 中出现**。
+因此合法结构有四种：
+
+```text
+4 字段（无地点、无教师）：weeks / weekday / sections / activity
+5 字段 A（有地点、无教师）：weeks / weekday / sections / location / activity
+5 字段 B（无地点、有教师）：weeks / weekday / sections / teacher / activity
+6 字段（有地点、有教师）：weeks / weekday / sections / location / teacher / activity
+```
+
+⛔ 3 字段与 7+ 字段继续 fail closed。
 """
 
 from __future__ import annotations
@@ -30,6 +42,7 @@ TEACHER_B = "示例教师B"
 ACTIVITY = "示例环节"
 CAMPUS = "示例校区"
 CLASSROOM = "示例教学楼-2108"
+LOCATION = f"{CAMPUS}-{CLASSROOM}"
 
 
 def _segment(
@@ -40,12 +53,42 @@ def _segment(
     teacher: str = TEACHER_A,
     activity: str = ACTIVITY,
     location: str | None = None,
+    no_teacher: bool = False,
 ) -> str:
+    """构造一个 segment 文本。
+
+    - `location` 非空 → 插入 location 字段；
+    - `no_teacher=True` → **不插入** teacher（4 字段形态，或配合 location 得到 5 字段 A）。
+    """
+
     fields = [weeks, weekday, sections]
     if location is not None:
         fields.append(location)
-    fields.extend([teacher, activity])
+    if not no_teacher:
+        fields.append(teacher)
+    fields.append(activity)
     return "/".join(fields)
+
+
+def _four_field(weeks: str, weekday: str, sections: str, *, activity: str = ACTIVITY) -> str:
+    """4 字段：weeks / weekday / sections / activity（无地点、无教师）。"""
+
+    return _segment(weeks, weekday, sections, activity=activity, no_teacher=True)
+
+
+def _five_field_with_location(
+    weeks: str,
+    weekday: str,
+    sections: str,
+    *,
+    location: str = LOCATION,
+    activity: str = ACTIVITY,
+) -> str:
+    """5 字段 A：weeks / weekday / sections / location / activity（有地点、无教师）。"""
+
+    return _segment(
+        weeks, weekday, sections, location=location, activity=activity, no_teacher=True
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -230,18 +273,153 @@ def test_empty_or_separator_only_input_is_rejected(text: str) -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "1-8周/星期五/第5-6节",  # 3 字段
-        "1-8周/星期五/第5-6节/示例教师A",  # 4 字段
-        "1-8周/星期五/第5-6节/示例教师A/示例环节/多出来的/再多一个",  # 7 字段
+        "1-8周/星期五/第5-6节",  # 3 字段 → 仍拒绝
+        "1-8周/星期五/第5-6节/示例教师A/示例环节/多出来的/再多一个",  # 7 字段 → 仍拒绝
     ],
 )
 def test_unexpected_field_count_is_rejected(text: str) -> None:
-    """字段数只接受 5 或 6，其它 fail closed。"""
+    """字段数只接受 4 / 5 / 6，其它（3、7+）fail closed。"""
 
     with pytest.raises(CourseDataNormalizationError) as excinfo:
         parse_teaching_time_place(text)
 
     assert "字段数" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# 4 字段：无地点、无教师（2026-1 真实证据新增）
+# ---------------------------------------------------------------------------
+
+
+def test_four_field_segment_has_no_teacher_and_no_location() -> None:
+    """4 字段：weeks / weekday / sections / activity → teacher / campus / classroom 全为 None。"""
+
+    (segment,) = parse_teaching_time_place(_four_field("1-8周", "星期五", "第5-6节"))
+
+    assert segment.teacher is None
+    assert segment.activity == ACTIVITY
+    assert segment.meeting.campus is None
+    assert segment.meeting.classroom is None
+    assert segment.meeting.weekday == 5
+    assert segment.meeting.start_section == 5
+    assert segment.meeting.end_section == 6
+
+
+def test_four_field_segment_missing_activity_is_rejected() -> None:
+    """4 字段的 activity 仍必须非空（⛔ 不自动补，也不静默接受空值）。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        parse_teaching_time_place("1-8周/星期五/第5-6节/   ")
+
+
+# ---------------------------------------------------------------------------
+# 5 字段 A：有地点、无教师（2026-1 真实证据新增）
+# ---------------------------------------------------------------------------
+
+
+def test_five_field_with_location_parses_location_not_teacher() -> None:
+    """5 字段 A：weeks / weekday / sections / location / activity。"""
+
+    (segment,) = parse_teaching_time_place(_five_field_with_location("1-8周", "星期五", "第5-6节"))
+
+    assert segment.meeting.campus == CAMPUS
+    assert segment.meeting.classroom == CLASSROOM
+    assert segment.teacher is None
+    assert segment.activity == ACTIVITY
+
+
+def test_five_field_with_location_does_not_treat_location_as_teacher() -> None:
+    """⚠️ **回归测试（本轮核心缺陷）**：
+
+    旧实现把 5 字段的第 4 字段**无条件当成 teacher**，
+    于是真实数据里的 location 被静默错读成 teacher，
+    导致 `Meeting.campus / classroom` 变成 `None`（静默错误解释）。
+
+    本测试锁定：location 必须被解析成地点，⛔ 绝不能被当成 teacher。
+    """
+
+    (segment,) = parse_teaching_time_place(_five_field_with_location("1-8周", "星期五", "第5-6节"))
+
+    # location 必须落在 meeting 上
+    assert segment.meeting.campus == CAMPUS
+    assert segment.meeting.classroom == CLASSROOM
+    # 且**不得**被当成 teacher
+    assert segment.teacher is None
+    assert segment.teacher != LOCATION
+
+
+# ---------------------------------------------------------------------------
+# 5 字段 B：无地点、有教师（保留旧行为）
+# ---------------------------------------------------------------------------
+
+
+def test_five_field_with_teacher_keeps_legacy_behaviour() -> None:
+    """5 字段 B：第 4 字段**不满足** location grammar → 仍按 teacher 解释。"""
+
+    (segment,) = parse_teaching_time_place(_segment("1-8周", "星期五", "第5-6节"))
+
+    assert segment.teacher == TEACHER_A
+    assert segment.activity == ACTIVITY
+    assert segment.meeting.campus is None
+    assert segment.meeting.classroom is None
+
+
+@pytest.mark.parametrize(
+    "teacher_like",
+    [
+        "示例教师A",  # 无 '-' → 不是 location
+        "-示例教师A",  # 园区为空 → 不是 location
+        "示例教师A-",  # 教室为空 → 不是 location
+        "  -  ",  # 两侧都空 → 不是 location
+    ],
+)
+def test_five_field_non_location_token_stays_teacher(teacher_like: str) -> None:
+    """无法明确判定为合法 location 的 token → 一律走 **旧的 teacher 结构**。"""
+
+    text = "/".join(["1-8周", "星期五", "第5-6节", teacher_like, ACTIVITY])
+
+    (segment,) = parse_teaching_time_place(text)
+
+    assert segment.teacher == teacher_like
+    assert segment.meeting.campus is None
+    assert segment.meeting.classroom is None
+
+
+def test_five_field_token_with_dash_is_a_location_by_grammar() -> None:
+    """⚠️ 如实记录既有 grammar 的边界：只要「非空园区 + '-' + 非空教室」成立就算 location。
+
+    本测试**不新增**任何规则，只是把"含 `-` 即按 location 解释"这一既有语义固定在测试里，
+    避免以后有人误以为它会被当作 teacher。
+    """
+
+    text = "/".join(["1-8周", "星期五", "第5-6节", "示例-教师A", ACTIVITY])
+
+    (segment,) = parse_teaching_time_place(text)
+
+    assert segment.meeting.campus == "示例"
+    assert segment.meeting.classroom == "教师A"
+    assert segment.teacher is None
+
+
+def test_mixed_three_segment_string_from_real_evidence_shape() -> None:
+    """按 2026-1 真实证据的形状：5 字段(location) / 4 字段(无) / 5 字段(location)。"""
+
+    text = ",".join(
+        [
+            _five_field_with_location("1-8周", "星期五", "第5-6节"),
+            _four_field("2-9周", "星期三", "第1-2节"),
+            _five_field_with_location("3-10周", "星期一", "第3-4节"),
+        ]
+    )
+
+    segments = parse_teaching_time_place(text)
+
+    assert len(segments) == 3
+    assert segments[0].meeting.campus == CAMPUS
+    assert segments[1].meeting.campus is None
+    assert segments[1].teacher is None
+    assert segments[2].meeting.campus == CAMPUS
+    assert all(item.teacher is None for item in segments)
 
 
 # ---------------------------------------------------------------------------

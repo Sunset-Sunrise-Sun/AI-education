@@ -428,27 +428,55 @@ Frontend / Mock + tests，且须经 Reviewer 验收）；**本轮未开始任何
 | `schedule_parser.py` | `parse_teaching_time_place(text)`、`ParsedScheduleSegment`、`extract_meetings()`、`parse_weekday()`、`parse_sections()` |
 | `importer.py` | `import_opening_courses_response(payload, *, semester, source, completeness)` |
 
-**parser（依据私密脱敏样本，样本本身不入 Git）**：
+**parser（依据私密脱敏样本 + **2026-1 全量采集首轮真实报错证据**；样本本身不入 Git）**：
 
 ```text
 segment separator = ","      field separator = "/"
-无地点（5 字段）：weeks / weekday / sections / teacher / activity
-有地点（6 字段）：weeks / weekday / sections / location / teacher / activity
+
+4 字段（无地点、无教师）：weeks / weekday / sections / activity
+5 字段 A（有地点、无教师）：weeks / weekday / sections / location / activity
+5 字段 B（无地点、有教师）：weeks / weekday / sections / teacher / activity
+6 字段（有地点、有教师）：weeks / weekday / sections / location / teacher / activity
 ```
+
+⚠️ **2026-1 真实证据确认：teacher 并不总是在 `teachingTimePlaceStr` 中出现**
+（某条真实记录由 3 个 segment 组成：5 字段 A / 4 字段 / 5 字段 A）。
+教师信息可能存在于 row 的其它独立字段中，因此
+⛔ **不得再把第 4 / 5 字段无条件当成 teacher** —— 那会把 location 静默错读成 teacher，
+使 `Meeting.campus / classroom` 变成 `None`（**静默错误解释**）。
+
+**5 字段的判别规则**（唯一允许的判别方式）：只看 `fields[3]`——
+满足 **location grammar**（非空园区 + 至少一个 `-` + 非空教室，与 `_parse_location()` 同规则）
+→ 5 字段 A（`teacher = None`）；否则 → 5 字段 B（`location = None`）。
+⛔ 不根据 `courseName` / 学院 / `teachingName` 猜；⛔ 不引入模糊匹配；
+"无法明确判定为合法 location" 一律走**旧的 teacher 结构**。
 
 - ✅ **最多一个**末尾逗号：单个末尾逗号产生的空 segment **忽略**；
   ⛔ `seg,,` / `seg,,,`（多个末尾逗号）**失败**；
 - ⛔ 中间空 segment（`seg1,,seg2`）**失败**，不静默忽略；
-- ⛔ 字段数只接受 **5 或 6**，其它 fail closed；
+- ⛔ 字段数只接受 **4 / 5 / 6**，其它（3、7+）fail closed；
 - **星期**：只接受 `星期一` … `星期日`；⛔ **`weekday` 一律来自 segment 自身**——
   样本显示 Raw `weekDay` 的顺序**不能安全假设**与 segment 一致，因此**完全不使用**它；
 - **节次**：`第N-M节`，要求 `N ≥ 1` 且 **`M ≥ N`**（允许 `M == N`，如 `第4-4节`）；
 - **地点**：只按**第一个 `-`** 切 → `campus` = 第一段、`classroom` = 其余完整文本；
   ⛔ 不进一步猜 building / room；⛔ **`openingSchoolName` 不是 `campus` 的 fallback**；
-- **teacher / activity**：必须为非空字符串，**保留在内部 `ParsedScheduleSegment`**；
+- **teacher / activity**：`ParsedScheduleSegment.teacher` 类型为 **`str | None`**
+  （真实证据已证明 segment 中 teacher 可以不存在，⛔ **不自动补占位 teacher**）；
+  teacher 存在时仍必须为非空字符串，**保留在内部 `ParsedScheduleSegment`**；
   `extract_meetings()` 只把 `Meeting[]` 交给公共契约；
   ⛔ **meeting 级教师关联仍是 known deferred representation gap**，**未修改任何 Schema**；
+- **⛔ 不自动补 teacher / location**：缺失就是缺失，保持 `None`；
 - **不丢段、不合并、不排序**：输出顺序 == Raw 顺序。
+
+**collector 脱敏同步（`tools/sysu_course_offering_collector.js`）**：
+
+- 新规则与 parser **一致**：
+  `4 字段` → 无 teacher，原样保留；`5 字段` → 按 **同一 location grammar** 判别，
+  是 location 则原样保留、否则把 `fields[3]` 置为 `REDACTED`；
+  `6 字段` → `fields[4]` 置为 `REDACTED`；
+- ⛔ 未知字段数（3、7+）继续 `fail()`；
+- ⛔ 空 teacher 仍**不得**被写成 `REDACTED`（不静默修复原始数据问题）；
+- JS 侧 `isLocationToken()` 与 Python `_parse_location()` **同规则**（按首个 `-` 切分）。
 
 **importer（零网络）**：
 

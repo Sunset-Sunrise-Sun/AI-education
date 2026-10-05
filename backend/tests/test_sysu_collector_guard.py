@@ -175,26 +175,40 @@ def test_collector_locks_first_page_no_to_verified_value(collector_source: str) 
 
 
 def test_collector_rejects_empty_teacher_before_redaction(collector_source: str) -> None:
-    """⛔ 空 teacher 不得被 REDACTED **静默修复**（那会掩盖原始数据问题）。"""
+    """⛔ 空 teacher 不得被 REDACTED **静默修复**（那会掩盖原始数据问题）。
 
-    assert 'typeof teacher !== "string"' in collector_source
-    assert 'teacher.trim() === ""' in collector_source
+    2026-1 真实证据后 teacher 可能出现在两类结构里（5 字段 B / 6 字段），
+    因此**两个分支都必须**先校验非空、再写占位符。
+    """
 
-    # 校验必须早于写入占位符
-    check_index = collector_source.index('teacher.trim() === ""')
-    assign_index = collector_source.index("fields[teacherIndex] = REDACTED_TEACHER;")
-    assert check_index < assign_index, "必须先校验 teacher 非空，再替换为 REDACTED"
+    assert 'typeof teacher5 !== "string"' in collector_source
+    assert 'typeof teacher6 !== "string"' in collector_source
+
+    # 每个分支的校验都必须早于该分支的占位符写入
+    pairs = (
+        ('teacher5.trim() === ""', "fields[3] = REDACTED_TEACHER;"),
+        ('teacher6.trim() === ""', "fields[4] = REDACTED_TEACHER;"),
+    )
+    for check, assign in pairs:
+        assert check in collector_source, f"缺少校验：{check}"
+        assert assign in collector_source, f"缺少赋值：{assign}"
+        assert collector_source.index(check) < collector_source.index(assign), (
+            f"必须先校验 teacher 非空，再替换为 REDACTED：{check}"
+        )
 
 
 def test_collector_teacher_error_message_does_not_echo_value(collector_source: str) -> None:
     """teacher 相关错误信息不得回显 teacher 取值。"""
 
-    check_index = collector_source.index('teacher.trim() === ""')
-    # 该分支内只允许出现结构性文字，不得拼进 teacher 变量
-    window = collector_source[check_index : check_index + 400]
+    for check in ('teacher5.trim() === ""', 'teacher6.trim() === ""'):
+        check_index = collector_source.index(check)
+        # 该分支内只允许出现结构性文字，不得拼进 teacher 变量
+        window = collector_source[check_index : check_index + 400]
 
-    assert "+ teacher" not in window
-    assert "teacher +" not in window
+        assert "+ teacher5" not in window
+        assert "teacher5 +" not in window
+        assert "+ teacher6" not in window
+        assert "teacher6 +" not in window
 
 
 def test_collector_to_json_emits_bare_bundle(collector_source: str) -> None:
@@ -311,11 +325,30 @@ def test_collector_redacts_teacher_in_segments(collector_source: str) -> None:
     assert 'REDACTED_TEACHER = "REDACTED"' in collector_source
     assert "redactSegmentTeacher" in collector_source
     assert "redactTeachingTimePlace" in collector_source
-    # 5 / 6 字段判定与 teacher 下标
-    assert "fields.length !== 5 && fields.length !== 6" in collector_source
-    assert "fields.length === 6 ? 4 : 3" in collector_source
+    # 4 / 5 / 6 字段判定（未知字段数仍 fail closed）
+    assert "fieldCount !== 4" in collector_source
+    assert "fieldCount !== 5" in collector_source
+    assert "fieldCount !== 6" in collector_source
+    # 5 字段必须**结构判别**，⛔ 不得无条件把 fields[3] 当 teacher
+    assert "isLocationToken(fields[3])" in collector_source
+    # teacher 只在明确的两个分支被替换
+    assert "fields[3] = REDACTED_TEACHER;" in collector_source
+    assert "fields[4] = REDACTED_TEACHER;" in collector_source
     # 最多一个 trailing comma
     assert "trailingEmpty > 1" in collector_source
+
+
+def test_collector_location_grammar_matches_python_parser(collector_source: str) -> None:
+    """Collector 的 location 识别必须与 Python `_parse_location()` **同规则**。
+
+    同一套规则：按**首个** `-` 切分 → 非空园区 + 非空教室 才算 location。
+    """
+
+    assert "function isLocationToken(token)" in collector_source
+    assert 'token.indexOf("-")' in collector_source
+    # ⛔ 必须按**第一个** '-' 切分（与 Python `partition("-")` 一致）
+    assert "token.slice(0, separatorIndex)" in collector_source
+    assert "token.slice(separatorIndex + 1)" in collector_source
 
 
 def test_collector_source_is_plain_utf8_without_bom() -> None:

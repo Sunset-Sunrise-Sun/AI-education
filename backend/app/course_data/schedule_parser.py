@@ -1,7 +1,8 @@
 """`teachingTimePlaceStr` → `ParsedScheduleSegment[]`（Course Data 内部 parser）。
 
 依据：负责人提供的**私密脱敏样本**（Sanitized Sample，**不入 Git**，
-`source_id = OFFERING-001`，2026-1）。本模块只实现样本**已经证明**的结构。
+`source_id = OFFERING-001`，2026-1）与 **2026-1 全量采集首轮的真实报错证据**。
+本模块只实现证据**已经证明**的结构。
 
 ## 已确认结构
 
@@ -9,18 +10,35 @@
 segment separator = ","
 field separator   = "/"
 
-无地点（5 字段）：weeks / weekday / sections / teacher / activity
-有地点（6 字段）：weeks / weekday / sections / location / teacher / activity
+4 字段（无地点、无教师）：weeks / weekday / sections / activity
+5 字段 A（有地点、无教师）：weeks / weekday / sections / location / activity
+5 字段 B（无地点、有教师）：weeks / weekday / sections / teacher / activity
+6 字段（有地点、有教师）：weeks / weekday / sections / location / teacher / activity
 ```
+
+⚠️ **teacher 并不总是在 segment 中出现**（2026-1 真实证据已确认）：
+真实记录既可以没有 location，也可以没有 teacher。因此
+⛔ **不得再把第 4 / 5 字段无条件当成 teacher** —— 那会把 location 静默错读成 teacher，
+并导致 `Meeting.campus / classroom` 变成 `None`（**静默错误解释**）。
+
+### 5 字段的判别规则（唯一允许的判别方式）
+
+只看 `fields[3]`：
+
+- 满足 **location grammar**（见 `_parse_location()` 的同一套规则）→ 5 字段 A（有地点、无教师）；
+- 否则 → 5 字段 B（无地点、有教师）。
+
+⛔ 不根据 `courseName` / 学院 / `teachingName` 等字段猜；⛔ 不引入模糊匹配。
+"无法明确判定为合法 location"一律走**旧的 teacher 结构**。
 
 - **最多一个末尾逗号**：`seg,` → 忽略末尾空 segment；
   ⛔ `seg,,` / `seg,,,`（多个末尾逗号）**失败**；
 - **中间**空 segment **不得静默忽略**：`segment1,,segment2` → `CourseDataNormalizationError`；
-- **字段数只接受 5 或 6**，其它一律 fail closed。
+- **字段数只接受 4 / 5 / 6**，其它（3、7+）一律 fail closed。
 
 ## 为什么需要内部 `ParsedScheduleSegment`
 
-真实 segment **确实携带 teacher**，但**当前公共 `Meeting` 没有 `teacher`**
+真实 segment **可能携带 teacher**，但**当前公共 `Meeting` 没有 `teacher`**
 （Data Gate 已登记为 **known deferred representation gap**）。
 
 因此 parser **在内部保留** teacher / activity 这两个真实语义，
@@ -33,6 +51,7 @@ field separator   = "/"
   样本已显示 Raw `weekDay` 的排列顺序**不能安全假设**与 segment 顺序一致，
   更不得与 segment 按位置 zip；
 - ⛔ **不用 `openingSchoolName` 当 `campus`**：地点只来自 segment 中**实际存在的** location 字段；
+- ⛔ **不自动补 teacher / location**：缺失就是缺失，保持 `None`；
 - ⛔ 不排序、不去重、不丢弃任何一段：输出顺序 == Raw segment 顺序。
 
 ## 隐私
@@ -66,11 +85,21 @@ SEGMENT_SEPARATOR = ","
 #: 字段分隔符（已确认）。
 FIELD_SEPARATOR = "/"
 
-#: 无地点 segment 的字段数（已确认）。
-FIELDS_WITHOUT_LOCATION = 5
+#: 无地点、**无教师** segment 的字段数（2026-1 真实证据确认）。
+FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER = 4
 
-#: 有地点 segment 的字段数（已确认）。
-FIELDS_WITH_LOCATION = 6
+#: 5 字段 segment 的字段数：**有地点无教师** 或 **无地点有教师**，需按 location grammar 判别。
+FIELDS_FIVE = 5
+
+#: 有地点、有教师 segment 的字段数（已确认）。
+FIELDS_WITH_LOCATION_AND_TEACHER = 6
+
+#: 允许的字段数集合（其它一律 fail closed）。
+_ALLOWED_FIELD_COUNTS = (
+    FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER,
+    FIELDS_FIVE,
+    FIELDS_WITH_LOCATION_AND_TEACHER,
+)
 
 #: 星期 token → 公共 `weekday`（1=周一 … 7=周日）。
 #: ⛔ 只接受这些标准 token；`星期天` / `周一` / `Monday` 等**未确认**写法一律拒绝。
@@ -95,11 +124,14 @@ class ParsedScheduleSegment:
     - `meeting` —— 可交给公共契约的部分；
     - `teacher` / `activity` —— 真实存在、但**当前公共契约不承载**的内部保真信息。
 
+    ⚠️ `teacher` 可以为 `None`：2026-1 真实证据已证明 **segment 中 teacher 可以不存在**。
+    ⛔ 不得为了让类型好看而自动补一个占位 teacher。
+
     ⚠️ 这不是 Schema、不是 DTO、不是 Integration 公共接口。
     """
 
     meeting: Meeting
-    teacher: str
+    teacher: str | None
     activity: str
 
 
@@ -192,6 +224,31 @@ def _parse_location(token: str, segment_index: int) -> tuple[str, str]:
     return campus, classroom
 
 
+def _is_location_token(token: object) -> bool:
+    """`token` 是否满足 **location grammar**。
+
+    与 `_parse_location()` **完全同一套规则**（非空园区 + 至少一个 `-` + 非空教室），
+    只是以**布尔**形式表达，用于 5 字段的语义判别：
+
+    - ✅ 真 → 5 字段 A：`weeks / weekday / sections / location / activity`
+    - ⛔ 假 → 5 字段 B：`weeks / weekday / sections / teacher / activity`
+
+    ⛔ 这是**纯结构判别**：不比对课程名 / 学院 / 教师名，不做模糊匹配。
+    "无法明确判定为合法 location" 一律返回 `False`（走旧的 teacher 结构）。
+
+    ⚠️ 本函数**不抛异常** —— 判别失败是正常分支，不是错误。
+    """
+
+    if not isinstance(token, str):
+        return False
+
+    campus, separator, classroom = token.partition("-")
+    if not separator:
+        return False
+
+    return bool(campus.strip()) and bool(classroom.strip())
+
+
 def _require_non_empty_token(value: object, *, field: str, segment_index: int) -> str:
     """teacher / activity 必须是非空字符串。
 
@@ -213,7 +270,8 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
     - 输出顺序 == Raw 顺序（**不排序**）；**不丢段**、**不合并**；
     - **最多一个**末尾逗号：`seg,` 可以，`seg,,` / `seg,,,` 抛错；
     - 中间 / 开头的空 segment 抛错；
-    - 字段数只接受 5（无地点）或 6（有地点）。
+    - 字段数只接受 4（无地点无教师）/ 5（按 location grammar 判别）/
+      6（有地点有教师）。
     """
 
     if not isinstance(text, str):
@@ -262,18 +320,30 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
         fields = raw_segment.split(FIELD_SEPARATOR)
         field_count = len(fields)
 
-        if field_count not in (FIELDS_WITHOUT_LOCATION, FIELDS_WITH_LOCATION):
+        if field_count not in _ALLOWED_FIELD_COUNTS:
             raise CourseDataNormalizationError(
-                f"teachingTimePlaceStr 的第 {offset} 段字段数为 {field_count}，"
-                f"只接受 {FIELDS_WITHOUT_LOCATION}（无地点）或 "
-                f"{FIELDS_WITH_LOCATION}（有地点）"
+                f"teachingTimePlaceStr 的第 {offset} 段字段数为 {field_count}，只接受 "
+                f"{FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER}（无地点无教师）/ "
+                f"{FIELDS_FIVE}（有地点无教师 或 无地点有教师）/ "
+                f"{FIELDS_WITH_LOCATION_AND_TEACHER}（有地点有教师）"
             )
 
         weeks = expand_weeks(fields[0])
         weekday = parse_weekday(fields[1])
         start_section, end_section = parse_sections(fields[2])
 
-        if field_count == FIELDS_WITH_LOCATION:
+        campus: str | None
+        classroom: str | None
+        teacher: str | None
+
+        if field_count == FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER:
+            # 4 字段：weeks / weekday / sections / activity
+            campus, classroom, teacher = None, None, None
+            activity = _require_non_empty_token(
+                fields[3], field="activity", segment_index=offset
+            )
+        elif field_count == FIELDS_WITH_LOCATION_AND_TEACHER:
+            # 6 字段：weeks / weekday / sections / location / teacher / activity
             campus, classroom = _parse_location(fields[3], offset)
             teacher = _require_non_empty_token(
                 fields[4], field="teacher", segment_index=offset
@@ -281,7 +351,15 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
             activity = _require_non_empty_token(
                 fields[5], field="activity", segment_index=offset
             )
+        elif _is_location_token(fields[3]):
+            # 5 字段 A：weeks / weekday / sections / location / activity
+            campus, classroom = _parse_location(fields[3], offset)
+            teacher = None
+            activity = _require_non_empty_token(
+                fields[4], field="activity", segment_index=offset
+            )
         else:
+            # 5 字段 B：weeks / weekday / sections / teacher / activity
             campus, classroom = None, None
             teacher = _require_non_empty_token(
                 fields[3], field="teacher", segment_index=offset

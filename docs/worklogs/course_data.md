@@ -1104,3 +1104,65 @@
 - 下一步：等待 Reviewer；之后等待 **DG-07C** 任务书。
   ⚠️ **不 merge，不自行开始 DG-07C / DG-07D**。
 
+### 2026-10-05 - 扩展 teachingTimePlaceStr 合法结构（teacher 可缺失），保持 fail closed
+
+- 触发：**2026-1 全量真实采集首轮失败**，浏览器报错
+  「第 1 页第 25 条记录的 teachingTimePlaceStr 出现不支持的字段数（4）」。
+  认证与接口请求**均已成功**，blocker 是 **collector / parser 的结构覆盖不足**。
+- **新的真实证据**（负责人提供）：某条真实 2026-1 记录的 `teachingTimePlaceStr`
+  由 3 个 segment 构成，结构为
+  `5 字段 A（location/activity）` / `4 字段（activity）` / `5 字段 A（location/activity）`。
+  ⇒ 真实系统证明：**teacher 并不总是在 `teachingTimePlaceStr` 中出现**
+  （教师信息可能在 row 的其它独立字段中）。
+- **旧实现的两个问题**：
+  - **问题 A**：4 字段直接 fail（真实数据被拒）；
+  - **问题 B（更严重）**：真实 5 字段 `weeks/weekday/sections/location/activity`
+    被旧 parser 把 **location 当成 teacher**，导致 `Meeting.campus / classroom = None`
+    —— **静默错误解释**。
+- **本轮支持的四种结构**（其余继续 fail closed）：
+  ```text
+  4 字段：weeks / weekday / sections / activity                     （无地点无教师）
+  5 字段 A：weeks / weekday / sections / location / activity         （有地点无教师）
+  5 字段 B：weeks / weekday / sections / teacher / activity          （无地点有教师）
+  6 字段：weeks / weekday / sections / location / teacher / activity （有地点有教师）
+  ```
+- **5 字段判别规则**：只看 `fields[3]`，满足 **location grammar**
+  （非空园区 + 至少一个 `-` + 非空教室，与 `_parse_location()` **同规则**）→ 5 字段 A，
+  否则 → 5 字段 B。⛔ 不按 courseName / 学院 / teachingName 猜；⛔ 无模糊匹配；
+  ⛔ 不自动补 teacher / location。
+  ⚠️ 如实记录既有 grammar 边界：只要「非空园区 + `-` + 非空教室」成立即算 location
+  （例如 `示例-教师A` 会被解释为 campus=`示例`、classroom=`教师A`）——
+  **本轮不扩大也不收窄该 grammar**，只是把它固定在测试里。
+- **Python parser**（`backend/app/course_data/schedule_parser.py`）：
+  `ParsedScheduleSegment.teacher` 由 `str` 改为 **`str | None`**；
+  新增常量 `FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER = 4` / `FIELDS_FIVE = 5` /
+  `FIELDS_WITH_LOCATION_AND_TEACHER = 6`；新增纯结构判别 `_is_location_token()`（不抛异常）。
+  ⛔ **未修改**公共 `Meeting` / `CourseOffering` / `schemas` / Provider contracts。
+- **Collector**（`tools/sysu_course_offering_collector.js`）：同步同一规则；
+  新增 `isLocationToken()`（与 Python 同规则，按**首个** `-` 切分）；
+  4 字段 → 原样保留；5 字段 → 是 location 则原样保留、否则 `fields[3] = REDACTED`；
+  6 字段 → `fields[4] = REDACTED`；⛔ 3 / 7+ 继续 `fail()`；
+  ⛔ 空 teacher 仍不得被写成 `REDACTED`。
+- 修改文件：`backend/app/course_data/schedule_parser.py`、
+  `tools/sysu_course_offering_collector.js`、
+  `backend/tests/test_course_data_schedule_parser.py`（新增 4/5/6 字段与回归用例）、
+  `backend/tests/test_sysu_collector_guard.py`（3 个源码级 guard 同步新规则 +
+  1 个新增 grammar 一致性 guard）、
+  新增 `tools/sysu_course_offering_collector.test.mjs`（**可执行**脱敏行为测试）、
+  `docs/status/course_data.md`、本文件。
+- 测试：
+  - `test_course_data_schedule_parser.py` → **71 passed**
+    （含新增：4 字段无 teacher/location、5 字段 A 解析 location、
+    **5 字段 location 不得被当成 teacher 的回归测试**、5 字段 B 保留旧行为、
+    非 location token 仍走 teacher、混合三 segment 真实形状、3/7+ 继续拒绝）；
+  - `tools/sysu_course_offering_collector.test.mjs` → **10 passed**
+    （Node 内建 `node:test` + `vm`，假 `fetch`，零网络）；
+  - 非空测试验证：把 5 字段判别回退为"无条件当 teacher"后，
+    parser **失败 4 项**（`campus=None` 复现），还原后全部通过。
+- **数据来源**：本轮**未发起任何真实请求**，全部使用**人工虚构**数据；
+  ⛔ **未生成 / 未提交任何真实 Capture Bundle**。
+- 是否修改 runtime / provenance：**否**（⛔ 未动 `planning_runtime.py`、⛔ 未加 `APP_*` env）。
+- **明确边界**：本轮**只修结构覆盖**，⛔ **不声称** trusted provenance solved；
+  ⛔ **不在修完后自动继续全量采集** —— 等 Architecture Review 通过后由负责人重新执行。
+- 下一步：等待 Architecture Review。
+
