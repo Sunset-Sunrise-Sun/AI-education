@@ -2284,3 +2284,80 @@
 - 下一步：由负责人在授权登录会话中执行一次性 Layout B 诊断；只有当
   `candidate = 10 / comparable = 10 / f3_equals_teaching_name = 10 / f4_activity = 10`
   时，才请求下一轮批准（Layout B parser + 4 字段 teacher 脱敏 + 重抓）。
+
+### 2026-10-05 - Layout B 诊断第 2 轮：**只扩展一次性零留存诊断**（新增三个计数）
+
+- **真实运行结果（负责人执行，east-campus 授权会话）**：
+
+  ```text
+  candidate_count                = 10
+  comparable_teaching_name_count = 10
+  f3_equals_teaching_name_count  = 0
+  f4_activity_count              = 10
+  ```
+
+  ⇒ **`f3 = teacher` 假设被正式否决**（若成立应为 10/10）。
+- **Architecture Review 裁定**：⛔ **禁止**实现 Layout B parser / 4 字段 teacher 脱敏；
+  ✅ **只**扩展一次性零留存诊断，新增三个聚合计数：
+  `f4_equals_teaching_name_count`、`f3_in_confirmed_activity_set_count`、
+  `f4_in_confirmed_activity_set_count`；`confirmed_activity_set` **只能**来自"已有明确 layout 中
+  已经确定为 activity 的固定槽位"；⛔ 不得再用"非空字符串 = activity"作为**字段角色证据**
+  （可保留为**语法**检查）。
+- **实现**（`tools/sysu_course_offering_collector.js`；⛔ 仍不碰生产链路）：
+  - 新增 `confirmedActivitySlotIndex(segment)`：**字段角色只由 layout 结构确定**，
+    与 production parser 的已确认 grammar 同规则 ——
+    2 字段（`weeks(plain|+已确认 qualifier) / activity` → 槽位 1）、
+    3 字段（`… / teacher / activity` → 槽位 2）、
+    4 字段 concrete（`weeks / weekday / sections / activity` → 槽位 3）、
+    5 字段 layout A（`… / location / REDACTED / activity`）与 5 字段 concrete
+    （`… / sections / location-or-teacher / activity`）→ 槽位 4、6 字段 → 槽位 5；
+  - 严格镜像 parser 的 grammar：weekday **七 token 白名单**（⛔ 无 `星期天`）、
+    sections 白名单 + **数值规则**（`N >= 1`、`M >= N`）、weeks **数值规则**
+    （`N >= 1`、`M >= N`、单/双周过滤后不得为空）、
+    **non-concrete 2/3 字段的 f1 不含 parity**（Python 那两条路径只认 `N-M周`）、
+    layout A 的 `REDACTED` **精确相等**（⛔ 无前缀 / 包含 / 折叠）、
+    5 字段 f4 **二义 → 不算已确认**、6 字段用**通用** location grammar；
+  - 集合**只在内存中构造**（`Set`）；候选 f3 / f4 先计入两个**极小的内存多重集**（`Map`），
+    **全部页扫完后**才与集合求交 —— 保证**顺序无关**（否则 provider 出现在候选之后会被漏判，
+    可能得出错误的字段角色结论）；三个结构 ⛔ 不返回 / ⛔ 不落盘 / ⛔ 不进 bundle / ⛔ 不写日志；
+  - 扫完集合仍为空 → **fail closed**（⛔ 不返回会被误读为"不是 activity"的 0）；
+  - ⛔ 无姓名启发式、⛔ 无 CJK 长度猜测、⛔ 不按 token 长度判断角色；
+  - 返回值恰好**七个**计数（新增 `f4_equals_teaching_name_count`）；
+    `f4_activity_count` 明确降级为**语法**检查（⛔ 不再作为角色证据）。
+- **合成测试**（`sysu_course_offering_collector.test.mjs`：107 → **113**）：
+  主场景七计数；**目标形态**（`f3 = activity`、`f4 = teacher` ⇒ `f3_in_set = 1`、
+  `f4_equals = 1`）；**七种已确认 layout 的槽位都进入集合**（2 / 3 / 4 / 5-location /
+  5-teacher / 5-layoutA / 6 字段逐个覆盖）；**候选自身不污染集合**（非循环）；
+  **顺序无关**（候选在第 1 页、provider 在第 2 页仍命中）；
+  **未确认 layout 一律不入集合**（parity 2 字段、`0-3周`、`5-3周`、`3-3双周`（layout A）、
+  `星期天`、未批准 sections suffix、`REDACTED` 前缀变体、二义 5 字段，共 9 例）；
+  **集合为空 → fail closed**；不泄露断言扩展到"集合取值也不得出现在输出中"
+  （`Object.keys` 恰好七个 + 序列化里不得含任何 activity token / 教师 / 地点 / 标识）。
+- **静态守卫**（`test_sysu_collector_guard.py`：95 → **100**）：返回值恰好七个计数且
+  ⛔ 不含集合 / 多重集 / rows / 标识；集合**只来自已确认槽位**（七 token weekday 白名单、
+  non-concrete 不含 parity、weeks / sections 数值规则、`REDACTED` 精确相等、二义排除、
+  通用 location）；集合与多重集**只在内存**（⛔ 不挂全局 / ⛔ 不出现在返回值）；
+  成员判定**只有一个实现且发生在分页循环之后**（⛔ 不得就地判定）；
+  集合为空必须 fail closed；⛔ 无姓名启发式 / ⛔ 无 CJK 长度猜测 / `teachingName` 只出现 3 次。
+- **变异扫描**（`mutate_layout_b_diagnostic.py`：**24 个变异 24/24 全部变红**，
+  采集器 SHA-256 前后一致 `b46a35a1…cca1`，⛔ 文件已完整还原）：
+  新增 Node 变异 N8–N15（成员判定恒真 / 破坏顺序无关 / 去掉 weeks 数值规则 /
+  去掉 parity 非空规则 / `REDACTED` 前缀匹配 / 二义不排除 / 4 字段不校验 weekday /
+  空集合不 fail closed）与守卫变异 P6–P9（返回值塞集合 / 集合挂全局 /
+  注入 token 长度启发式 / 去掉 sections 数值规则）。
+  ⚠️ 自查纠正：N11（去掉 parity 非空规则）第一次**假绿灯** —— 因为排除用例只覆盖了
+  2 字段 parity（那条路径在形状白名单处就被挡住），已补上"layout A + `3-3双周`"用例后变红。
+- **测试结果**：collector node **113 passed**；守卫 **100 passed**；
+  parser+normalization+importer+pagination+guard 合并 **590 passed**
+  （`-W error::SyntaxWarning`）；full backend **2 failed / 2409 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例）；`node --check` exit 0；`compileall app` exit 0。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未改 Layout B parser、⛔ 未做 4 字段 teacher 脱敏、
+  ⛔ 未重抓正式 artifact、⛔ 未建 SQLite、⛔ 未改公共 Schema / mock_data /
+  `captured_pages.py` / Capture Bundle format / `sharded_capture.py` / store /
+  `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend；
+  ⛔ 真实材料（artifact / raw rows / 任何 activity token）未进入 Git。
+- **真实请求数：0**（第二次真实诊断仍由负责人在其授权会话中手动执行）。
+- 下一步：负责人再跑一次同一诊断（同一命令），回报七个计数；
+  只有在 `f3_equals_teacher = 0/10`、`f4_equals_teacher = 10/10`、
+  `f3_known_activity = 10/10`、`f4_known_activity = 0/10` 全部成立时才请求正式裁定
+  "Layout B = weeks | location | activity | teacher" 与后续 4 字段 f4 脱敏 / parser / 重抓。

@@ -1472,18 +1472,51 @@ test("五校区：diagnostics 只有结构化计数，没有任何 row / 课程�
 });
 
 // ---------------------------------------------------------------------------
-// 一次性 Layout B 诊断（**零留存**）：只输出四个聚合计数
+// 一次性 Layout B 诊断（**零留存**）：只输出七个聚合计数
 //
 // 合成数据全部为人工虚构；断言只针对"计数是否正确"与"是否泄露输入取值"。
+//
+// ⚠️ 已确认 activity 集合的**来源**是"已确认 layout 的 activity 固定槽位"：
+//    2 / 3 字段 non-concrete、4 字段 concrete、5 字段 concrete（location-or-teacher）、
+//    5 字段 layout A、6 字段 concrete。语义角色**只**由 layout 结构确定，
+//    ⛔ 不用"非空字符串 = activity"当角色证据（它只是语法检查）。
 // ---------------------------------------------------------------------------
 
 const LAYOUT_B_CAMPUS = "SYN-CAMPUS-LB";
 const LAYOUT_B_TEACHER_OTHER = "示例教师B";
+const LAYOUT_B_PROVIDER_TEACHER = "示例教师C";
 const LAYOUT_B_RETURN_KEYS = [
   "candidate_count",
   "comparable_teaching_name_count",
   "f3_equals_teaching_name_count",
+  "f4_equals_teaching_name_count",
   "f4_activity_count",
+  "f3_in_confirmed_activity_set_count",
+  "f4_in_confirmed_activity_set_count",
+];
+
+/** 七个已确认 layout 的 provider activity 取值（人工虚构、互不相同）。 */
+const PROVIDER_ACTIVITY = [
+  "示例环节甲",
+  "示例环节乙",
+  "示例环节丙",
+  "示例环节丁",
+  "示例环节戊",
+  "示例环节己",
+  "示例环节庚",
+];
+
+/** 九个**未确认** layout 的槽位取值（人工虚构；⛔ 必须不得进入已确认集合）。 */
+const EXCLUDED_ACTIVITY = [
+  "示例排除一",
+  "示例排除二",
+  "示例排除三",
+  "示例排除四",
+  "示例排除五",
+  "示例排除六",
+  "示例排除七",
+  "示例排除八",
+  "示例排除九",
 ];
 
 /** 合成一条 Layout B 形态的 row：4 字段 `weeks / location / f3 / f4`。 */
@@ -1496,6 +1529,41 @@ function layoutBRow(text, options = {}) {
       options.teachingName === undefined ? TEACHER : options.teachingName;
   }
   return row;
+}
+
+/**
+ * 合成一条**已确认 layout** 的 provider row（其 activity 固定槽位的取值会进入集合）。
+ * 行内只有这一段，且 `teachingName` 缺失（provider 不需要参与候选比较）。
+ */
+function providerRow(segment, classNumber) {
+  return Object.assign(rawRow(segment), { classNumber: classNumber });
+}
+
+/** 七个已确认 layout 的 provider（每个 activity 槽位放一个**不同**的虚构 token）。 */
+function confirmedProviderRows() {
+  return [
+    providerRow(`1-17周/${PROVIDER_ACTIVITY[0]}`, "SYN-PRV-2F"),
+    providerRow(`1-17周/${LAYOUT_B_PROVIDER_TEACHER}/${PROVIDER_ACTIVITY[1]}`, "SYN-PRV-3F"),
+    providerRow(`1-8周/星期五/第5-6节/${PROVIDER_ACTIVITY[2]}`, "SYN-PRV-4F"),
+    providerRow(
+      `1-8周/星期五/第5-6节/${LOCATION}/${PROVIDER_ACTIVITY[3]}`,
+      "SYN-PRV-5F-LOC",
+    ),
+    providerRow(
+      `1-8周/星期五/第5-6节/${LAYOUT_B_PROVIDER_TEACHER}/${PROVIDER_ACTIVITY[4]}`,
+      "SYN-PRV-5F-TCH",
+    ),
+    providerRow(`1-8周/星期五/${LOCATION}/REDACTED/${PROVIDER_ACTIVITY[5]}`, "SYN-PRV-5F-A"),
+    providerRow(
+      `1-8周/星期五/第5-6节/${LOCATION}/${LAYOUT_B_PROVIDER_TEACHER}/${PROVIDER_ACTIVITY[6]}`,
+      "SYN-PRV-6F",
+    ),
+  ];
+}
+
+/** 只有 2 字段 non-concrete 一个 provider（最小非空集合）。 */
+function minimalProviderRow() {
+  return providerRow(`1-17周/${ACTIVITY}`, "SYN-PRV-MIN");
 }
 
 function loadLayoutBCollector(rows, options = {}) {
@@ -1516,7 +1584,7 @@ async function runLayoutBDiagnostic(rows, options = {}) {
 }
 
 /**
- * 断言四个计数。
+ * 断言七个计数。
  *
  * ⚠️ 结果对象由 VM realm 创建，直接 `deepStrictEqual` 会因跨 realm 原型不同而失败；
  * 这里先摊平成宿主 realm 的对象（仍然严格比较**键集合**与取值）。
@@ -1525,7 +1593,11 @@ function assertLayoutBCounts(result, expected) {
   assert.deepEqual({ ...result }, expected);
 }
 
-/** 一批混合合成 row：4 个真候选 + 5 个 near-miss。 */
+/**
+ * 一批混合合成 row：4 个真候选 + 5 个 near-miss + 2 个已确认 provider。
+ *
+ * 集合 = { ACTIVITY }（来自 5 字段 layout A 与 6 字段 concrete 的 activity 槽位）。
+ */
 function layoutBScenario() {
   return [
     // 真候选 1：teachingName 与 f3 相同
@@ -1543,7 +1615,7 @@ function layoutBScenario() {
       classNumber: "SYN-LB-0003",
       hasTeachingName: false,
     }),
-    // 真候选 4：f4 为空 → 不计入 activity
+    // 真候选 4：f4 为空 → 不计入 activity 语法检查
     layoutBRow(`1-8周校外/${LOCATION}/${TEACHER}/`, {
       classNumber: "SYN-LB-0004",
       teachingName: TEACHER,
@@ -1573,6 +1645,7 @@ function layoutBScenario() {
       classNumber: "SYN-LB-0009",
       teachingName: TEACHER,
     }),
+    ...confirmedProviderRows(),
   ];
 }
 
@@ -1582,7 +1655,7 @@ test("Layout B 诊断：加载脚本不自动调用", async () => {
   assert.equal(calls.length, 0, "⛔ 仅加载不得发出任何请求");
 });
 
-test("Layout B 诊断：4 个真候选 + 5 个 near-miss → 四个计数正确", async () => {
+test("Layout B 诊断：4 个真候选 + 5 个 near-miss + provider → 七个计数正确", async () => {
   const { result } = await runLayoutBDiagnostic(layoutBScenario());
 
   assertLayoutBCounts(result, {
@@ -1591,12 +1664,18 @@ test("Layout B 诊断：4 个真候选 + 5 个 near-miss → 四个计数正确"
     comparable_teaching_name_count: 3,
     // 候选 1 与候选 4 的 f3 都等于本行 teachingName；候选 2 不等
     f3_equals_teaching_name_count: 2,
-    // 候选 4 的 f4 为空 → 不计入 activity
+    // f4 是 activity（或空），**没有**任何候选的 f4 等于 teachingName
+    f4_equals_teaching_name_count: 0,
+    // 候选 4 的 f4 为空 → 不计入语法检查
     f4_activity_count: 3,
+    // 候选的 f3 是 teacher，不在已确认 activity 集合里
+    f3_in_confirmed_activity_set_count: 0,
+    // 候选 1 / 2 / 3 的 f4 == ACTIVITY ∈ 集合
+    f4_in_confirmed_activity_set_count: 3,
   });
 });
 
-test("Layout B 诊断：返回值只有四个聚合计数，且不泄露任何输入取值", async () => {
+test("Layout B 诊断：返回值只有七个聚合计数，且不泄露任何输入取值", async () => {
   const rows = layoutBScenario();
   const { result } = await runLayoutBDiagnostic(rows);
 
@@ -1606,20 +1685,25 @@ test("Layout B 诊断：返回值只有四个聚合计数，且不泄露任何�
 
   for (const forbidden of [
     "teachingName",
-    "candidate_count_",
     TEACHER,
     LAYOUT_B_TEACHER_OTHER,
+    LAYOUT_B_PROVIDER_TEACHER,
     ACTIVITY,
+    ...PROVIDER_ACTIVITY,
     LOCATION,
     CAMPUS,
     CLASSROOM,
     "SYN-LB",
+    "SYN-PRV",
     "courseNum",
     "courseName",
     "classNumber",
     '"rows"',
     '"fields"',
     '"segments"',
+    '"tokens"',
+    '"set"',
+    '"map"',
     "REDACTED",
     "第5-6节",
   ]) {
@@ -1630,6 +1714,27 @@ test("Layout B 诊断：返回值只有四个聚合计数，且不泄露任何�
   for (const [key, value] of Object.entries(result)) {
     assert.equal(typeof value, "number", `${key} 必须是数字计数`);
   }
+});
+
+test("Layout B 诊断：命中目标形态（f3 = activity、f4 = teacher）", async () => {
+  // 期望的真实结论形态：f3 ∈ 已确认 activity 集合、f4 == teachingName
+  const { result } = await runLayoutBDiagnostic([
+    layoutBRow(`1-8周/${LOCATION}/${ACTIVITY}/${TEACHER}`, {
+      classNumber: "SYN-LB-TARGET",
+      teachingName: TEACHER,
+    }),
+    minimalProviderRow(),
+  ]);
+
+  assertLayoutBCounts(result, {
+    candidate_count: 1,
+    comparable_teaching_name_count: 1,
+    f3_equals_teaching_name_count: 0,
+    f4_equals_teaching_name_count: 1,
+    f4_activity_count: 1,
+    f3_in_confirmed_activity_set_count: 1,
+    f4_in_confirmed_activity_set_count: 0,
+  });
 });
 
 test("Layout B 诊断：不修改 raw row，也不产出任何 bundle", async () => {
@@ -1644,31 +1749,39 @@ test("Layout B 诊断：不修改 raw row，也不产出任何 bundle", async ()
   assert.equal(result.rows, undefined, "⛔ 诊断不得保留 rows");
 });
 
-test("Layout B 诊断：没有 teachingName 时 comparable 不推进（不猜）", async () => {
+test("Layout B 诊断：没有 teachingName 时可比计数不推进（不猜）", async () => {
   const { result } = await runLayoutBDiagnostic([
     layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`, {
       hasTeachingName: false,
     }),
+    minimalProviderRow(),
   ]);
 
   assertLayoutBCounts(result, {
     candidate_count: 1,
     comparable_teaching_name_count: 0,
     f3_equals_teaching_name_count: 0,
+    f4_equals_teaching_name_count: 0,
     f4_activity_count: 1,
+    f3_in_confirmed_activity_set_count: 0,
+    f4_in_confirmed_activity_set_count: 1,
   });
 });
 
 test("Layout B 诊断：teachingName 属性存在但非字符串 → 可比较但不等", async () => {
   const { result } = await runLayoutBDiagnostic([
-    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`, { teachingName: null }),
+    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${TEACHER}`, { teachingName: null }),
+    minimalProviderRow(),
   ]);
 
   assertLayoutBCounts(result, {
     candidate_count: 1,
     comparable_teaching_name_count: 1,
     f3_equals_teaching_name_count: 0,
+    f4_equals_teaching_name_count: 0,
     f4_activity_count: 1,
+    f3_in_confirmed_activity_set_count: 0,
+    f4_in_confirmed_activity_set_count: 0,
   });
 });
 
@@ -1679,30 +1792,165 @@ test("Layout B 诊断：四种已批准 weeks 形态都计入候选", async () =
     layoutBRow(`3-4双周/${LOCATION}/${TEACHER}/${ACTIVITY}`),
     layoutBRow(`1-8周校外/${LOCATION}/${TEACHER}/${ACTIVITY}`),
     layoutBRow(`1-8周校内(户外)/${LOCATION}/${TEACHER}/${ACTIVITY}`),
+    minimalProviderRow(),
   ]);
 
   assert.equal(result.candidate_count, 5);
   assert.equal(result.f4_activity_count, 5);
 });
 
-test("Layout B 诊断：未批准 weeks（线上 / 前缀 / 通配）一律不计入候选", async () => {
+test("Layout B 诊断：未批准 weeks（线上 / 前缀）不计入候选", async () => {
   const { result } = await runLayoutBDiagnostic([
     layoutBRow(`1-8周线上/${LOCATION}/${TEACHER}/${ACTIVITY}`),
     layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`, { classNumber: "X" }),
+    minimalProviderRow(),
   ]);
 
   // 第一条不是已批准 weeks；第二条是 → 只应有 1 个候选
   assert.equal(result.candidate_count, 1);
 });
 
-test("Layout B 诊断：f4 只按现有 activity 规则（非空字符串）", async () => {
+test("Layout B 诊断：f4 非空规则只作语法检查（⛔ 非角色证据）", async () => {
   const { result } = await runLayoutBDiagnostic([
     layoutBRow(`1-8周/${LOCATION}/${TEACHER}/   `),
     layoutBRow(`1-8周/${LOCATION}/${TEACHER}/`, { classNumber: "SYN-LB-EMPTY" }),
+    minimalProviderRow(),
   ]);
 
   assert.equal(result.candidate_count, 2);
   assert.equal(result.f4_activity_count, 0, "⛔ 空白 / 空 f4 不算 activity");
+  assert.equal(result.f4_in_confirmed_activity_set_count, 0);
+});
+
+test("Layout B 诊断：七种已确认 layout 的 activity 槽位都进入集合", async () => {
+  const rows = [
+    ...confirmedProviderRows(),
+    // 每个 provider 的 activity token 各作为一个候选的 f3
+    ...PROVIDER_ACTIVITY.map((token, index) =>
+      layoutBRow(`1-8周/${LOCATION}/${token}/${ACTIVITY}`, {
+        classNumber: `SYN-LB-F3-${index}`,
+        hasTeachingName: false,
+      }),
+    ),
+    // 再各作为一个候选的 f4
+    ...PROVIDER_ACTIVITY.map((token, index) =>
+      layoutBRow(`2-9周/${LOCATION}/${TEACHER}/${token}`, {
+        classNumber: `SYN-LB-F4-${index}`,
+        hasTeachingName: false,
+      }),
+    ),
+  ];
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(result.candidate_count, 14);
+  assert.equal(
+    result.f3_in_confirmed_activity_set_count,
+    PROVIDER_ACTIVITY.length,
+    "七种已确认 layout 的 activity 槽位都必须进入集合",
+  );
+  assert.equal(result.f4_in_confirmed_activity_set_count, PROVIDER_ACTIVITY.length);
+});
+
+test("Layout B 诊断：候选自身**不会**污染已确认集合（非循环）", async () => {
+  // 该 token 只出现在"未被确认的 4 字段 layout"里 → 集合里不应有它
+  const { result } = await runLayoutBDiagnostic([
+    layoutBRow(`1-8周/${LOCATION}/${PROVIDER_ACTIVITY[0]}/${PROVIDER_ACTIVITY[1]}`, {
+      classNumber: "SYN-LB-CIRCULAR",
+      hasTeachingName: false,
+    }),
+    minimalProviderRow(),
+  ]);
+
+  assert.equal(result.candidate_count, 1);
+  assert.equal(result.f3_in_confirmed_activity_set_count, 0, "⛔ 候选自身不得进入集合");
+  assert.equal(result.f4_in_confirmed_activity_set_count, 0, "⛔ 候选自身不得进入集合");
+});
+
+test("Layout B 诊断：顺序无关（候选在前、provider 在后仍能命中）", async () => {
+  const filler = Array.from({ length: 200 }, (_, index) =>
+    Object.assign(rawRow(`1-8周/星期五/第5-6节/${ACTIVITY}`), {
+      classNumber: `SYN-FILL-${String(index + 1).padStart(4, "0")}`,
+    }),
+  );
+
+  // 第 1 页：候选（provider 还没出现）；第 2 页：provider
+  const rows = [
+    layoutBRow(`1-8周/${LOCATION}/${PROVIDER_ACTIVITY[0]}/${ACTIVITY}`, {
+      classNumber: "SYN-LB-FIRST-PAGE",
+      hasTeachingName: false,
+    }),
+    ...filler.slice(0, 199),
+    providerRow(`1-17周/${PROVIDER_ACTIVITY[0]}`, "SYN-PRV-LATE"),
+  ];
+
+  const { result, calls } = await runLayoutBDiagnostic(rows, { maxPages: 2 });
+
+  assert.equal(calls.length, 2);
+  assert.equal(
+    result.f3_in_confirmed_activity_set_count,
+    1,
+    "⛔ 不得因为 provider 出现在候选**之后**就漏判",
+  );
+});
+
+test("Layout B 诊断：未确认 layout 的槽位**不**进入集合", async () => {
+  const excluded = [
+    // 2 字段 parity（Python non-concrete 只认 plain / 已确认 qualifier）
+    `3-3双周/${EXCLUDED_ACTIVITY[0]}`,
+    // weeks 数值非法
+    `0-3周/${EXCLUDED_ACTIVITY[1]}`,
+    `5-3周/${EXCLUDED_ACTIVITY[2]}`,
+    // 2 字段 parity（区间合法但形状未确认）
+    `1-8单周/${EXCLUDED_ACTIVITY[3]}`,
+    // weekday 不在白名单
+    `1-8周/星期天/第5-6节/${EXCLUDED_ACTIVITY[4]}`,
+    // sections suffix 未批准
+    `1-8周/星期五/第5-6节校/${EXCLUDED_ACTIVITY[5]}`,
+    // 5 字段 layout A 的 REDACTED 被"前缀通配"
+    `1-8周/星期五/${LOCATION}/REDACTEDX/${EXCLUDED_ACTIVITY[6]}`,
+    // 5 字段 f4 二义（两段 '-')
+    `1-8周/星期五/第5-6节/示例园区-2108/${EXCLUDED_ACTIVITY[7]}`,
+    // layout A 的 weeks 是"过滤后为空"的 parity 区间（Python `expand_weeks` 拒绝）
+    `3-3双周/星期五/${LOCATION}/REDACTED/${EXCLUDED_ACTIVITY[8]}`,
+  ];
+
+  const rows = [
+    minimalProviderRow(),
+    ...excluded.map((segment, index) =>
+      Object.assign(rawRow(segment), { classNumber: `SYN-EXC-${index}` }),
+    ),
+    ...EXCLUDED_ACTIVITY.map((token, index) =>
+      layoutBRow(`1-8周/${LOCATION}/${token}/${ACTIVITY}`, {
+        classNumber: `SYN-LB-EXC-${index}`,
+        hasTeachingName: false,
+      }),
+    ),
+  ];
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(result.candidate_count, EXCLUDED_ACTIVITY.length);
+  assert.equal(
+    result.f3_in_confirmed_activity_set_count,
+    0,
+    "⛔ 未确认 layout 的槽位取值不得进入集合",
+  );
+});
+
+test("Layout B 诊断：集合为空 → fail closed（不返回会被误读的计数）", async () => {
+  // 只有候选、没有任何已确认 layout → 成员判定会退化为恒假
+  const rows = [
+    layoutBRow(`1-8周/${LOCATION}/${TEACHER}/${ACTIVITY}`, {
+      classNumber: "SYN-LB-NOSET",
+      teachingName: TEACHER,
+    }),
+  ];
+
+  await assert.rejects(
+    () => runLayoutBDiagnostic(rows),
+    /已确认 layout 的 activity 固定槽位取值/,
+  );
 });
 
 test("Layout B 诊断：多页 → 跨页累计，且第二页仍受全局 pacing", async () => {
@@ -1730,8 +1978,12 @@ test("Layout B 诊断：多页 → 跨页累计，且第二页仍受全局 pacin
   assertLayoutBCounts(result, {
     candidate_count: 1,
     comparable_teaching_name_count: 1,
+    // 本候选的 f3 == TEACHER == 本行 teachingName
     f3_equals_teaching_name_count: 1,
+    f4_equals_teaching_name_count: 0,
     f4_activity_count: 1,
+    f3_in_confirmed_activity_set_count: 0,
+    f4_in_confirmed_activity_set_count: 1,
   });
 
   assert.ok(timers.length >= 1, "第二个请求必须先等待");

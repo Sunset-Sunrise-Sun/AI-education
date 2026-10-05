@@ -1741,7 +1741,10 @@ def test_sharded_serializers_refuse_incomplete_results(collector_source: str) ->
 # 一次性 Layout B 诊断（**零留存**；Architecture Review 裁定）
 #
 # 目的：在 collector 对 raw response 做 minimize **之前**，用**内存比较**回答
-# "Layout B 的 f3 是否就是同行 `teachingName`"，且**只**输出四个聚合计数。
+# "Layout B 的 f3 / f4 各自是什么角色"，且**只**输出七个聚合计数。
+#
+# 已确认 activity 集合**只**来自已确认 layout 的 activity 固定槽位
+# （`confirmedActivitySlotIndex()`）；⛔ 不用"非空字符串 = activity"当角色证据。
 # ---------------------------------------------------------------------------
 
 _LAYOUT_B_SECTION_START = "var LAYOUT_B_FIELD_COUNT"
@@ -1751,7 +1754,10 @@ _LAYOUT_B_RETURN_KEYS = (
     "candidate_count",
     "comparable_teaching_name_count",
     "f3_equals_teaching_name_count",
+    "f4_equals_teaching_name_count",
     "f4_activity_count",
+    "f3_in_confirmed_activity_set_count",
+    "f4_in_confirmed_activity_set_count",
 )
 
 
@@ -1806,10 +1812,10 @@ def test_layout_b_diagnostic_is_not_in_any_production_path(collector_source: str
             assert forbidden not in block, f"{name} 不得引用 Layout B 诊断：{forbidden}"
 
 
-def test_layout_b_diagnostic_returns_only_the_four_aggregate_counts(
+def test_layout_b_diagnostic_returns_only_the_seven_aggregate_counts(
     collector_source: str,
 ) -> None:
-    """返回值**只有**四个聚合计数：⛔ 无 rows / 无标识 / 无 f3 / f4 / teachingName 原文。"""
+    """返回值**只有**七个聚合计数：⛔ 无 rows / 无标识 / 无 f3 / f4 / activity token。"""
 
     slice_ = _layout_b_diagnostic_slice(collector_source)
 
@@ -1824,15 +1830,21 @@ def test_layout_b_diagnostic_returns_only_the_four_aggregate_counts(
     }
 
     assert keys == set(_LAYOUT_B_RETURN_KEYS), (
-        f"Layout B 诊断只允许返回四个聚合计数，实际：{sorted(keys)}"
+        f"Layout B 诊断只允许返回七个聚合计数，实际：{sorted(keys)}"
     )
 
-    # ⛔ 返回值里不得出现任何原始内容 / 标识 / 分页元数据
+    # ⛔ 返回值里不得出现任何原始内容 / 标识 / 分页元数据 / 集合本身
     for forbidden in (
         "rows",
         "teachingName",
         "segment",
         "fields",
+        "token",
+        "new Set(",
+        "new Map(",
+        "confirmedActivityTokens",
+        "candidateThirdTokens",
+        "candidateFourthTokens",
         "courseNum",
         "classNumber",
         "courseName",
@@ -1970,7 +1982,8 @@ def test_layout_b_missing_teaching_name_is_not_guessed(collector_source: str) ->
 
     assert 'Object.prototype.hasOwnProperty.call(row, "teachingName")' in code
     assert "if (hasTeachingName) {" in code
-    assert "fields[2].trim() === row.teachingName" in code
+    assert "thirdField === row.teachingName" in code
+    assert "fourthField === row.teachingName" in code
 
     # ⛔ 不得给 teachingName 做任何兜底 / 等价替换
     for forbidden in (
@@ -1988,7 +2001,7 @@ def test_layout_b_missing_teaching_name_is_not_guessed(collector_source: str) ->
 
 
 def test_layout_b_f4_uses_the_existing_activity_rule(collector_source: str) -> None:
-    """f4 只按**现有** activity 规则判定：非空字符串。"""
+    """f4 只按**现有** activity 规则判定：非空字符串（⛔ 仅语法检查，非角色证据）。"""
 
     slice_ = _layout_b_section_slice(collector_source)
 
@@ -1998,4 +2011,141 @@ def test_layout_b_f4_uses_the_existing_activity_rule(collector_source: str) -> N
     assert "isNonEmptyActivityToken(fields[3])" in collector_source
     # ⛔ 不得把 activity 规则写成通配 / 白名单之外的模式
     assert "activityCount" in slice_
+
+
+def test_layout_b_activity_set_comes_only_from_confirmed_layout_slots(
+    collector_source: str,
+) -> None:
+    """activity 集合的来源**只能**是已确认 layout 的 activity 固定槽位。"""
+
+    slice_ = _layout_b_section_slice(collector_source)
+    code = _collector_code_only(slice_)
+
+    # 判别器只定义一次，且诊断内只调用一次
+    assert code.count("function confirmedActivitySlotIndex(") == 1
+    assert code.count("= confirmedActivitySlotIndex(") == 1
+    assert "var activitySlot = confirmedActivitySlotIndex(segment);" in code
+
+    # weekday 白名单恰好七个（⛔ 无 `星期天` 等未确认写法、⛔ 无通配）
+    assert code.count('"星期') == 7
+    assert "CONFIRMED_WEEKDAY_TOKENS.indexOf(token) !== -1" in code
+
+    # non-concrete（2 / 3 字段）的 f1 **不含** parity
+    start = code.index("CONFIRMED_NON_CONCRETE_WEEKS_PATTERNS = [")
+    end = code.index("];", start)
+    non_concrete_patterns = code[start:end]
+    assert "单周" not in non_concrete_patterns
+    assert "双周" not in non_concrete_patterns
+    assert r"/^[0-9]+-[0-9]+周$/" in non_concrete_patterns
+    assert r"/^[0-9]+-[0-9]+周(校外|校内\(户外\))$/" in non_concrete_patterns
+
+    # weeks 的数值规则（与 `expand_weeks()` 同规则：N >= 1、M >= N、parity 非空）
+    assert "if (start < 1 || end < start) {" in code
+    assert "for (var week = start; week <= end; week += 1) {" in code
+    assert 'parity === "单周" ? week % 2 === 1 : week % 2 === 0' in code
+
+    # sections 的数值规则
+    assert "return start >= 1 && end >= start;" in code
+
+    # layout A 的 REDACTED 必须**精确**相等（⛔ 无前缀 / 包含 / 折叠）
+    assert "fields[3] === REDACTED_TEACHER" in code
+    assert "REDACTED_TEACHER.indexOf" not in code
+    assert "REDACTED_TEACHER.toLowerCase" not in code
+
+    # 5 字段二义 → 不算已确认
+    assert 'if (classification === "ambiguous") {' in code
+
+    # 6 字段用**通用** location grammar（与 Python `_is_location_token` 同规则）
+    assert "isGeneralLocationToken(fields[3])" in code
+
+    # 七个固定槽位下标都在（1 / 2 / 3 / 4 / 5）且存在"未确认"分支
+    for slot in ("return 1;", "return 2;", "return 3;", "return 4;", "return 5;"):
+        assert slot in code, f"缺少 activity 槽位：{slot}"
+    assert "return -1;" in code
+
+
+def test_layout_b_activity_set_is_memory_only(collector_source: str) -> None:
+    """集合与多重集**只在内存**：⛔ 不返回、⛔ 不落盘、⛔ 不进 bundle、⛔ 不写日志。"""
+
+    slice_ = _layout_b_diagnostic_slice(collector_source)
+    code = _collector_code_only(slice_)
+
+    assert "var confirmedActivityTokens = new Set();" in code
+    assert "var candidateThirdTokens = new Map();" in code
+    assert "var candidateFourthTokens = new Map();" in code
+
+    # 只声明一次，之后只做 add / has（⛔ 不重新赋值、⛔ 不挂到全局）
+    assert code.count("confirmedActivityTokens =") == 1
+    assert code.count("candidateThirdTokens =") == 1
+    assert code.count("candidateFourthTokens =") == 1
+    assert "window.XuehangSysuCollector" not in code
+    assert "globalThis" not in code
+
+    # ⛔ 集合本身不得出现在返回值里（返回值只有计数）
+    return_start = code.index("return {")
+    returned = code[return_start:]
+    for forbidden in ("confirmedActivityTokens", "candidateThirdTokens", "candidateFourthTokens"):
+        assert forbidden not in returned, f"返回值不得包含：{forbidden}"
+
+
+def test_layout_b_membership_is_order_independent(collector_source: str) -> None:
+    """候选 f3 / f4 先入内存多重集，**扫完所有页之后**才与集合求交。"""
+
+    slice_ = _layout_b_diagnostic_slice(collector_source)
+    code = _collector_code_only(slice_)
+
+    assert "addTokenOccurrence(candidateThirdTokens, thirdField);" in code
+    assert "addTokenOccurrence(candidateFourthTokens, fourthField);" in code
+
+    # 成员判定只有一处实现（在纯函数里），⛔ 不得在分页循环内"就地"判定
+    section_code = _collector_code_only(_layout_b_section_slice(collector_source))
+    assert "function countMultisetTokensInSet(" in section_code
+    assert section_code.count("tokenSet.has(token)") == 1
+    assert code.count("countMultisetTokensInSet(") == 2
+    assert code.count("confirmedActivityTokens\n    );") == 2
+
+    page_loop = code.index("for (var index = 0; index < resolved.maxPages; index += 1) {")
+    intersection = code.index("var thirdInSetCount = countMultisetTokensInSet(")
+    assert page_loop < intersection, "求交必须发生在全部页扫完之后"
+    assert code.index("addTokenOccurrence(candidateThirdTokens, thirdField);") < intersection
+
+
+def test_layout_b_empty_activity_set_fails_closed(collector_source: str) -> None:
+    """集合为空 → **fail closed**（⛔ 不返回会被误读为"不是 activity"的 0）。"""
+
+    code = _collector_code_only(_layout_b_diagnostic_slice(collector_source))
+
+    assert "if (confirmedActivityTokens.size === 0) {" in code
+    assert code.index("confirmedActivityTokens.size === 0") < code.index("return {")
+    assert "成员判定会退化为恒假" in collector_source
+    assert "不回显任何取值" in collector_source
+
+
+def test_layout_b_has_no_name_heuristics_or_cjk_length_guessing(
+    collector_source: str,
+) -> None:
+    """⛔ 无姓名启发式、⛔ 无 CJK 长度猜测、⛔ 不读课程名 / 教师名。"""
+
+    code = _collector_code_only(_layout_b_section_slice(collector_source))
+
+    # teachingName 只允许出现在三处：存在性判定 + f3 / f4 两次精确相等比较
+    assert code.count("teachingName") == 3
+
+    for forbidden in (
+        "charCodeAt",
+        "codePointAt",
+        "normalize(",
+        "\\u4e00",
+        "\\u9fff",
+        "courseName",
+        "teacherName",
+        "surname",
+        "百家姓",
+    ):
+        assert forbidden not in code, f"⛔ 诊断不得使用启发式 / 猜测：{forbidden}"
+
+    # ⛔ 不得按 token 长度判断角色（数组 / rows 的 length 不受影响）
+    assert not re.search(r"token\.length", code)
+    assert not re.search(r"\.trim\(\)\.length", code)
+    assert not re.search(r"(thirdField|fourthField|segment)\.length", code)
 

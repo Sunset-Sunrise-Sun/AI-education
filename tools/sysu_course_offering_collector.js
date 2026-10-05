@@ -1530,22 +1530,288 @@
     return typeof token === "string" && token.trim() !== "";
   }
 
+  // ---------------------------------------------------------------------
+  // 已确认 layout 的 **activity 固定槽位**（Architecture Review 裁定 2026-10-05）
+  //
+  // ⛔ 字段**角色**只由 layout 结构确定（字段数 + 各槽位是否命中已批准 grammar）；
+  // ⛔ **不**用"非空字符串 = activity"当角色证据；
+  // ⛔ 不比对课程名 / 教师名 / 学院，⛔ 无姓名启发式，⛔ 无 CJK 长度猜测。
+  // ---------------------------------------------------------------------
+
+  /** 已确认 weekday 白名单（与 Python `_WEEKDAY_BY_TOKEN` **同集合**；⛔ 无通配）。 */
+  var CONFIRMED_WEEKDAY_TOKENS = [
+    "星期一",
+    "星期二",
+    "星期三",
+    "星期四",
+    "星期五",
+    "星期六",
+    "星期日"
+  ];
+
+  /** 已确认 **non-concrete** 2 / 3 字段的 f1 形状（⛔ **不含** parity：Python 那两条路径只认 `N-M周`）。 */
+  var CONFIRMED_NON_CONCRETE_WEEKS_PATTERNS = [
+    /^[0-9]+-[0-9]+周$/,
+    /^[0-9]+-[0-9]+周(校外|校内\(户外\))$/
+  ];
+
+  /** 已确认 weeks 的三种形状（含 parity；用于 layout A 的 f1）。 */
+  var CONFIRMED_PLAIN_WEEKS_PATTERN = /^([0-9]+)-([0-9]+)周$/;
+  var CONFIRMED_PARITY_WEEKS_PATTERN = /^([0-9]+)-([0-9]+)(单周|双周)$/;
+  var CONFIRMED_QUALIFIED_WEEKS_PATTERN = /^([0-9]+)-([0-9]+)周(校外|校内\(户外\))$/;
+
+  /** 已确认 sections：`第N-M节` + 已批准 suffix（与 Python `_SECTION_PATTERN` 同规则）。 */
+  var CONFIRMED_SECTIONS_PATTERN = /^第([0-9]+)-([0-9]+)节(校内\(户外\)|校外|线上)?$/;
+
+  function isConfirmedWeekdayToken(token) {
+    return CONFIRMED_WEEKDAY_TOKENS.indexOf(token) !== -1;
+  }
+
   /**
-   * **一次性、零留存** Layout B 诊断：串行拉取若干页，在**minimize 之前**对 raw rows
-   * 做内存比较，最终**只**返回四个聚合计数。
+   * 已确认 weeks token？与 Python `expand_weeks()` 的**接受集合**同规则：
    *
    * ```text
-   * candidate_count                 Layout B 候选 segment 数
-   * comparable_teaching_name_count  其中 raw row **带** teachingName 属性的条数
-   * f3_equals_teaching_name_count   其中 f3 === row.teachingName 的条数
-   * f4_activity_count               其中 f4 满足现有 activity 非空规则的条数
+   * N-M周 / N-M单周 / N-M双周 / N-M周校外 / N-M周校内(户外)
+   * 且 N >= 1、M >= N；单/双周在区间内必须至少有一个对应 parity 的周
    * ```
    *
-   * - ⛔ **不输出** teachingName / f3 / f4 / 课程号 / 教学班号 / 原文（只输出上面 4 个计数）；
+   * ⛔ 整段锚定；⛔ 无 `.*` / `startswith` / 无条件 strip。
+   */
+  function isConfirmedWeeksToken(token) {
+    var match = CONFIRMED_PLAIN_WEEKS_PATTERN.exec(token);
+    var parity = null;
+
+    if (match === null) {
+      match = CONFIRMED_PARITY_WEEKS_PATTERN.exec(token);
+      if (match !== null) {
+        parity = match[3];
+      }
+    }
+    if (match === null) {
+      match = CONFIRMED_QUALIFIED_WEEKS_PATTERN.exec(token);
+    }
+    if (match === null) {
+      return false;
+    }
+
+    var start = Number(match[1]);
+    var end = Number(match[2]);
+    if (start < 1 || end < start) {
+      return false;
+    }
+
+    if (parity !== null) {
+      for (var week = start; week <= end; week += 1) {
+        if (parity === "单周" ? week % 2 === 1 : week % 2 === 0) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  /** `f1` 是否是已确认 non-concrete（2 / 3 字段）的 weeks token（形状 + 数值，⛔ 不含 parity）。 */
+  function isConfirmedNonConcreteWeeksToken(token) {
+    for (var index = 0; index < CONFIRMED_NON_CONCRETE_WEEKS_PATTERNS.length; index += 1) {
+      if (!CONFIRMED_NON_CONCRETE_WEEKS_PATTERNS[index].test(token)) {
+        continue;
+      }
+      return isConfirmedWeeksToken(token);
+    }
+    return false;
+  }
+
+  /** 已确认 sections token（形状 + `N >= 1`、`M >= N`）？ */
+  function isConfirmedSectionsToken(token) {
+    var match = CONFIRMED_SECTIONS_PATTERN.exec(token);
+    if (match === null) {
+      return false;
+    }
+    var start = Number(match[1]);
+    var end = Number(match[2]);
+    return start >= 1 && end >= start;
+  }
+
+  /** 通用 location grammar（与 Python `_is_location_token` 同规则：非空园区 + `-` + 非空教室）。 */
+  function isGeneralLocationToken(token) {
+    if (typeof token !== "string") {
+      return false;
+    }
+    var separatorIndex = token.indexOf("-");
+    if (separatorIndex === -1) {
+      return false;
+    }
+    return (
+      token.slice(0, separatorIndex).trim() !== "" &&
+      token.slice(separatorIndex + 1).trim() !== ""
+    );
+  }
+
+  /**
+   * 返回**已确认 layout** 的 activity **固定槽位下标**；不是已确认 layout → `-1`。
+   *
+   * 已确认 layout（与 production parser 的已确认 grammar **同规则**）：
+   *
+   * ```text
+   * 2 字段：weeks(plain|+已确认 qualifier) / activity                       → 槽位 1
+   * 3 字段：weeks(plain|+已确认 qualifier) / teacher / activity             → 槽位 2
+   * 4 字段：weeks / weekday / sections / activity                           → 槽位 3
+   * 5 字段 layout A：weeks / weekday / location / REDACTED / activity       → 槽位 4
+   * 5 字段 concrete：weeks / weekday / sections / location-or-teacher / activity → 槽位 4
+   * 6 字段：weeks / weekday / sections / location / teacher / activity      → 槽位 5
+   * ```
+   *
+   * ⛔ 5 字段 f4 若**二义**（既非明确 location 也非明确 teacher）→ 不算已确认（返回 `-1`）；
+   * ⛔ layout A 的 f4 必须**精确等于** `REDACTED`（⛔ 无前缀 / 包含 / 通配 / 空白容忍）；
+   * ⛔ 返回的只是**下标**（⛔ 不返回任何取值）。
+   */
+  function confirmedActivitySlotIndex(segment) {
+    var fields = segment.split(FIELD_SEPARATOR);
+    var fieldCount = fields.length;
+    var third;
+    var classification;
+
+    if (fieldCount === 2) {
+      if (!isConfirmedNonConcreteWeeksToken(fields[0].trim())) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[1])) {
+        return -1;
+      }
+      return 1;
+    }
+
+    if (fieldCount === 3) {
+      if (!isConfirmedNonConcreteWeeksToken(fields[0].trim())) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[1])) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[2])) {
+        return -1;
+      }
+      return 2;
+    }
+
+    if (fieldCount === 4) {
+      if (!isConfirmedWeekdayToken(fields[1].trim())) {
+        return -1;
+      }
+      if (!isConfirmedSectionsToken(fields[2].trim())) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[3])) {
+        return -1;
+      }
+      return 3;
+    }
+
+    if (fieldCount === 5) {
+      // layout A（已批准；必须**先**判定：它的第 3 个字段是 location，不是 sections）
+      if (
+        isConfirmedWeeksToken(fields[0].trim()) &&
+        isConfirmedWeekdayToken(fields[1].trim()) &&
+        countNonEmptyDashSegments(fields[2].trim()) >= MIN_LOCATION_SEGMENTS &&
+        fields[3] === REDACTED_TEACHER &&
+        isNonEmptyActivityToken(fields[4])
+      ) {
+        return 4;
+      }
+
+      // concrete 5 字段：weeks / weekday / sections / location-or-teacher / activity
+      if (!isConfirmedWeekdayToken(fields[1].trim())) {
+        return -1;
+      }
+      if (!isConfirmedSectionsToken(fields[2].trim())) {
+        return -1;
+      }
+      third = fields[3].trim();
+      classification = classifyFiveFieldToken(third);
+      if (classification === "ambiguous") {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[4])) {
+        return -1;
+      }
+      return 4;
+    }
+
+    if (fieldCount === 6) {
+      if (!isConfirmedWeekdayToken(fields[1].trim())) {
+        return -1;
+      }
+      if (!isConfirmedSectionsToken(fields[2].trim())) {
+        return -1;
+      }
+      if (!isGeneralLocationToken(fields[3])) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[4])) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[5])) {
+        return -1;
+      }
+      return 5;
+    }
+
+    return -1;
+  }
+
+  /** 多重集自增（token → 出现次数）；⛔ 只在内存中使用，⛔ 不返回、⛔ 不落盘。 */
+  function addTokenOccurrence(multiset, token) {
+    var current = multiset.get(token);
+    multiset.set(token, current === undefined ? 1 : current + 1);
+  }
+
+  /** 多重集中命中集合的出现次数合计。 */
+  function countMultisetTokensInSet(multiset, tokenSet) {
+    var total = 0;
+    multiset.forEach(function (occurrences, token) {
+      if (tokenSet.has(token)) {
+        total += occurrences;
+      }
+    });
+    return total;
+  }
+
+  /**
+   * **一次性、零留存** Layout B 诊断：串行拉取若干页，在**minimize 之前**对 raw rows
+   * 做内存比较，最终**只**返回**七个聚合计数**。
+   *
+   * ```text
+   * candidate_count                     Layout B 候选 segment 数
+   * comparable_teaching_name_count      其中 raw row **带** teachingName 属性者
+   * f3_equals_teaching_name_count       其中 f3 === row.teachingName 者
+   * f4_equals_teaching_name_count       其中 f4 === row.teachingName 者
+   * f4_activity_count                   其中 f4 满足现有 activity 非空规则者（⛔ 仅语法检查）
+   * f3_in_confirmed_activity_set_count  其中 f3 ∈ 已确认 activity 集合者
+   * f4_in_confirmed_activity_set_count  其中 f4 ∈ 已确认 activity 集合者
+   * ```
+   *
+   * **已确认 activity 集合**只来自**已确认 layout 的 activity 固定槽位**
+   * （见 `confirmedActivitySlotIndex()`），**只在内存中构造**，⛔ 不返回、⛔ 不落盘、
+   * ⛔ 不写 bundle、⛔ 不写日志；集合里**没有任何取值被输出**。
+   *
+   * ⚠️ **顺序无关**：候选的 f3 / f4 先计入两个**极小的内存多重集**，等**全部页**扫完后
+   * 才与集合求交 ⇒ 候选出现在"提供该 activity token 的那一行**之前**"也不会被误判成
+   * 不在集合中（否则会得出错误的字段角色结论）。两个多重集同样 ⛔ 不返回、⛔ 不落盘。
+   *
+   * ⛔ "非空字符串 = activity" **只作为语法检查**保留（`f4_activity_count`），
+   * **本轮不作为字段角色证据**（角色只由 layout 结构确定）。
+   *
+   * - ⛔ **不输出** teachingName / f3 / f4 / activity token / 课程号 / 教学班号 / 原文；
    * - ⛔ **不把** teachingName 写入任何 bundle（本函数**不产出 bundle**）；
    * - ⛔ 不保存 raw response、不写日志文件（rows 只在本次循环内使用，不留引用）；
    * - ⛔ raw row **没有** `teachingName` 属性 → 只计入 `candidate_count`，
-   *   `comparable_teaching_name_count` **不增加**（**不猜**、不用其它字段代替）；
+   *   `comparable_teaching_name_count` / `f3_equals_*` / `f4_equals_*` **不增加**
+   *   （**不猜**、不用其它字段代替）；
+   * - ⛔ 无姓名启发式、⛔ 无 CJK 长度猜测、⛔ 不比对课程名 / 教师名 / 学院；
+   * - ⚠️ 扫完仍然**没有任何**已确认 activity 槽位 → **fail closed**（成员判定会退化为
+   *   恒假，返回 0 会被误读为"不是 activity"）；
    * - ⛔ 不修改 `collect()` / `collectSharded()` 的任何行为；
    * - 复用既有 hostname guard / **同一**取页函数 / **同一**全局 pacing controller
    *   （⛔ 不复制认证与请求逻辑，⛔ 不自己 sleep）。
@@ -1589,10 +1855,18 @@
 
     var candidateCount = 0;
     var comparableTeachingNameCount = 0;
-    var equalTeachingNameCount = 0;
+    var equalThirdCount = 0;
+    var equalFourthCount = 0;
     var activityCount = 0;
     var expectedTotal = null;
     var accumulatedRows = 0;
+
+    // ---- 只在内存中的三个结构（⛔ 不返回 / ⛔ 不落盘 / ⛔ 不写 bundle / ⛔ 不写日志） ----
+    // 1) 已确认 activity 集合：只来自已确认 layout 的 activity 固定槽位；
+    // 2) / 3) 候选 f3、f4 的**内存多重集**：只为"顺序无关"求交，扫完即弃。
+    var confirmedActivityTokens = new Set();
+    var candidateThirdTokens = new Map();
+    var candidateFourthTokens = new Map();
 
     for (var index = 0; index < resolved.maxPages; index += 1) {
       var currentPageNo = FIRST_PAGE_NO + index;
@@ -1638,24 +1912,48 @@
 
         for (var segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
           var segment = segments[segmentIndex];
-          if (segment.trim() === "" || !isLayoutBCandidate(segment)) {
+          if (segment.trim() === "") {
+            continue;
+          }
+
+          // ① 已确认 layout 的 **activity 固定槽位** → 只在内存中累积集合。
+          //    ⛔ 不输出任何 token；⛔ 不落盘；⛔ 不写 bundle。
+          var activitySlot = confirmedActivitySlotIndex(segment);
+          if (activitySlot !== -1) {
+            confirmedActivityTokens.add(
+              segment.split(FIELD_SEPARATOR)[activitySlot].trim()
+            );
+          }
+
+          // ② Layout B 候选
+          if (!isLayoutBCandidate(segment)) {
             continue;
           }
 
           candidateCount += 1;
 
           var fields = segment.split(FIELD_SEPARATOR);
+          var thirdField = fields[2].trim();
+          var fourthField = fields[3].trim();
 
           if (hasTeachingName) {
             comparableTeachingNameCount += 1;
-            if (fields[2].trim() === row.teachingName) {
-              equalTeachingNameCount += 1;
+            if (thirdField === row.teachingName) {
+              equalThirdCount += 1;
+            }
+            if (fourthField === row.teachingName) {
+              equalFourthCount += 1;
             }
           }
 
+          // ⚠️ 仅**语法**检查（⛔ 不作为字段角色证据）
           if (isNonEmptyActivityToken(fields[3])) {
             activityCount += 1;
           }
+
+          // ⚠️ 只记入**内存多重集**：等全部页扫完后才与集合求交（顺序无关）。
+          addTokenOccurrence(candidateThirdTokens, thirdField);
+          addTokenOccurrence(candidateFourthTokens, fourthField);
         }
       }
 
@@ -1665,11 +1963,32 @@
       }
     }
 
+    // ⚠️ 集合为空 ⇒ 成员判定恒假（返回 0 会被误读为"不是 activity"）→ fail closed。
+    if (confirmedActivityTokens.size === 0) {
+      fail(
+        "本次扫描没有得到任何来自已确认 layout 的 activity 固定槽位取值：" +
+          "成员判定会退化为恒假。已整体停止（不回显任何取值），" +
+          "并**不返回**可能被误读的计数。"
+      );
+    }
+
+    var thirdInSetCount = countMultisetTokensInSet(
+      candidateThirdTokens,
+      confirmedActivityTokens
+    );
+    var fourthInSetCount = countMultisetTokensInSet(
+      candidateFourthTokens,
+      confirmedActivityTokens
+    );
+
     return {
       candidate_count: candidateCount,
       comparable_teaching_name_count: comparableTeachingNameCount,
-      f3_equals_teaching_name_count: equalTeachingNameCount,
-      f4_activity_count: activityCount
+      f3_equals_teaching_name_count: equalThirdCount,
+      f4_equals_teaching_name_count: equalFourthCount,
+      f4_activity_count: activityCount,
+      f3_in_confirmed_activity_set_count: thirdInSetCount,
+      f4_in_confirmed_activity_set_count: fourthInSetCount
     };
   }
 

@@ -544,12 +544,15 @@ weeks | weekday | location | REDACTED | activity
   ⛔ 不表示无课、⛔ 不表示异步；
 - ⛔ **Layout B（4 字段）仍未批准处理**：parser **继续 fail closed**
   （当前先在 weekday 解析处失败，且错误已是安全分类）；
-  ✅ 本轮**只**新增"**一次性、零留存 Layout B 诊断**"（见下），⛔ **未改 Layout B parser**、
+  ✅ 本轮**只**扩展"**一次性、零留存 Layout B 诊断**"（见下），⛔ **未改 Layout B parser**、
   ⛔ **未做 4 字段 teacher 脱敏**、⛔ 未重抓。
 
 **一次性 Layout B 诊断（零留存；Architecture Review 裁定 2026-10-05）**：
 
-- **目的**：只回答一个问题——Layout B 的 `f3` 是否**就是同行 raw row 的 `teachingName`**；
+- **目的**：只回答字段**角色**问题——Layout B 的 `f3` / `f4` 各自是 activity 还是 teacher；
+- ⚠️ **第一次真实运行已否决 `f3 = teacher` 假设**：`candidate = 10` / `comparable = 10` /
+  `f3_equals_teaching_name = 0` / `f4_activity = 10`
+  ⇒ 因此本轮**只扩展诊断**（新增三个计数），⛔ parser / 脱敏 / 重抓全部不动；
 - **位置**：`tools/sysu_course_offering_collector.js` 的 `diagnoseLayoutBCandidates()`，
   在 collector 对 raw response 做 `minimizeRow()` **之前**直接读 raw rows（⛔ 不经过脱敏 / 最小化）；
 - **候选结构判定**（全部只看结构，⛔ 不比对课程名 / 教师名 / 学院，⛔ 无模糊匹配）：
@@ -561,24 +564,50 @@ weeks | weekday | location | REDACTED | activity
   f3 ≠ 已确认 sections
   ```
 
-- **只输出四个聚合计数**（单位 = 候选 segment；⛔ 无 rows / 无标识 / 无原文）：
+- **已确认 activity 集合**（成员判定的唯一依据）：
+
+  ```text
+  2 字段：weeks(plain|+已确认 qualifier) / activity                     → 槽位 1
+  3 字段：weeks(plain|+已确认 qualifier) / teacher / activity           → 槽位 2
+  4 字段：weeks / weekday / sections / activity                        → 槽位 3
+  5 字段 layout A：weeks / weekday / location / REDACTED / activity    → 槽位 4
+  5 字段 concrete：weeks / weekday / sections / location-or-teacher / activity → 槽位 4
+  6 字段：weeks / weekday / sections / location / teacher / activity   → 槽位 5
+  ```
+
+  - ✅ 集合取值**只在内存中构造**（⛔ 不返回 / ⛔ 不落盘 / ⛔ 不进 bundle / ⛔ 不写日志）；
+  - ⛔ **不使用**"非空字符串 = activity"作为**字段角色**证据（它只保留为**语法**检查）；
+  - ⛔ 无姓名启发式、⛔ 无 CJK 长度猜测、⛔ 不按 token 长度判断；
+  - ⛔ 未确认 layout（含 Layout B 自身、未批准 suffix / 非法 weeks 数值 / 二义 5 字段 /
+    `REDACTED` 前缀变体 / parity 过滤后为空）**一律不进入集合**；
+  - ⚠️ 成员判定**顺序无关**：候选 f3 / f4 先计入两个**极小的内存多重集**，全部页扫完后才求交
+    （否则"provider 出现在候选之后"会被误判为不在集合中）；
+  - ⚠️ 扫完仍**没有任何**已确认 activity 槽位 → **fail closed**（⛔ 不返回会被误读的 0）。
+
+- **只输出七个聚合计数**（单位 = 候选 segment；⛔ 无 rows / 无标识 / 无原文 / 无 token）：
 
   ```text
   candidate_count
-  comparable_teaching_name_count     raw row **带** teachingName 属性者
-  f3_equals_teaching_name_count      其中 f3 === row.teachingName 者
-  f4_activity_count                  其中 f4 满足现有 activity 非空规则者
+  comparable_teaching_name_count       raw row **带** teachingName 属性者
+  f3_equals_teaching_name_count        其中 f3 === row.teachingName 者
+  f4_equals_teaching_name_count        其中 f4 === row.teachingName 者
+  f4_activity_count                    其中 f4 非空（**仅语法检查**）
+  f3_in_confirmed_activity_set_count   其中 f3 ∈ 已确认 activity 集合者
+  f4_in_confirmed_activity_set_count   其中 f4 ∈ 已确认 activity 集合者
   ```
 
-- ⛔ **raw row 没有 `teachingName` 属性 → `comparable` 不推进**（不猜、不用其它字段顶替）；
+- ⛔ **raw row 没有 `teachingName` 属性 → `comparable` / 两个 `*_equals_*` 都不推进**
+  （不猜、不用其它字段顶替）；
 - ⛔ 不产出 bundle、⛔ 不落盘、⛔ 不写日志文件、⛔ 不保存 raw response、⛔ 不修改 raw row；
 - ✅ 复用**同一** hostname guard / **同一** `requestPage()` / **同一**全局 pacing controller
   （多页请求 ⇒ **必须**受同一批次冷却约束）；✅ 参数严格白名单
   `semester` / `openingSchoolNumber` / `maxPages`；
 - ⛔ **不参与生产链路**：`collect()` / `collectSharded()` 都不调用它；
 - ⚠️ **真实 east-campus 诊断必须由负责人在其授权登录会话中手动执行**（Builder 不代跑）；
-  ⛔ 在拿到 `candidate = 10 / comparable = 10 / f3_equals = 10 / f4_activity = 10` 之前，
-  **不进入** Layout B parser / 4 字段 teacher 脱敏 / 重抓。
+- ⚠️ **判定门槛**（本轮）：`f3_equals_teacher = 0/10`、`f4_equals_teacher = 10/10`、
+  `f3_known_activity = 10/10`、`f4_known_activity = 0/10` 全部成立后，
+  才进入"Layout B = weeks | location | activity | teacher"的正式裁定与
+  4 字段 f4 脱敏 / parser / East 重抓。
 
 **2 字段（无 teacher）**：
 
