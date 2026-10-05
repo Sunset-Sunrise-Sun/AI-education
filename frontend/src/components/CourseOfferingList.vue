@@ -188,15 +188,7 @@ const totalOfferingsCount = computed(() => props.offerings.length)
                 </td>
                 <td class="num cell-capacity">
                   <div class="capacity-box">
-                    <span
-                      class="capacity-remain"
-                      :class="{
-                        'capacity-remain--low':
-                          offering.remaining_capacity !== null &&
-                          offering.remaining_capacity !== undefined &&
-                          offering.remaining_capacity <= 5,
-                      }"
-                    >
+                    <span class="capacity-remain">
                       {{ displayOrDash(offering.remaining_capacity) }}
                     </span>
                     <span class="capacity-total">/ {{ displayOrDash(offering.capacity) }}</span>
