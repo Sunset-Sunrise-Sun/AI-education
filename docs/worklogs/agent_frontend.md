@@ -1856,14 +1856,15 @@
   `frontend/src/components/{SubmissionActions,UserInputPanel}.vue`、`frontend/src/styles/base.css`、
   新增 `frontend/src/components/E2EDebugPanel.vue`、新增 `frontend/tests/real-e2e-prep.spec.ts`、
   `docs/status/agent_frontend.md`、本文件。
-- 测试结果：`npm test` → **111 passed / 111**（8 文件）；`npm run build` → 成功；
+- 测试结果：`npm test` → **113 passed / 113**（8 文件）；`npm run build` → 成功；
   `npm run test:scenarios` → 既有 14 项全部通过。
 - 是否修改 backend：**否**。公共接口是否变化：**否**（未改 `schemas/`、`docs/interfaces/`）。
 - **明确状态**：**Frontend 已准备好 Real E2E 联调**；⛔ **不是**"Real E2E 已完成"——
   Codex 的 Real Runtime Wiring 尚未可用，后续真实联调尚未进行。
 - **本轮补充（Review 反馈，两项最小修改）**：
   1. **503 分类收紧**（新增纯函数 `classifyPlanError()`）：
-     `real_pipeline_not_configured`（code 权威，优先于状态码）→ `not_configured`；
+     **只有 HTTP 503 且** `real_pipeline_not_configured` → `not_configured`；
+     该 code 出现在**其它状态码**上不具备"未装配"含义（500 + 该 code → `server`、404 + 该 code → `http`）；
      503 但**无法解析 / 无可识别信息** → `not_configured`；
      503 但 body **明确给出其它错误**（有可识别 code 或 detail）→ **`server`**，
      ⛔ 不误报"运行时尚未装配"，且 `messageFor` / `describePlanError` 在 `server + 503` 时
@@ -1881,5 +1882,9 @@
     **provenance-invalid**（`loc: body.current_schedule`），断言同一个通用标题、
     各自保留后端 detail，且 semester 类 422 的提示**不含**课表来源归因；
   - 非空测试验证：把标题回退为按课表来源归因后，相关用例**失败 3 项**，还原后 29 项全通过。
+- **本轮补充（Review 反馈第三轮，该 code 的适用范围收窄）**：
+  `real_pipeline_not_configured` **只在 HTTP 503 时**分类为 `not_configured`；
+  该 code 出现在其它状态码上按状态码分类（500 + 该 code → `server`、404 + 该 code → `http`）；
+  新增这两类测试与分类矩阵断言；非空验证：回退为"该 code 无论状态码都算未装配"后**失败 4 项**。
 - 下一步：等待 Architecture Review；等 Codex runtime 可用后执行第一轮真实联调。
 

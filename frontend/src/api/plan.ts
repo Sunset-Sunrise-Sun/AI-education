@@ -29,9 +29,11 @@ export interface RealPlanRequest {
  * 失败类型。
  *
  * 语义**互斥且穷尽**，UI 只按 `kind` 分支，不需要再判断状态码：
- * - `not_configured`：**503 且 `detail.error === "real_pipeline_not_configured"`**，
+ * - `not_configured`：**只有 HTTP 503 且 `detail.error === "real_pipeline_not_configured"`**，
  *   或 503 但响应体**无法解析 / 无可识别信息** ——
  *   表示**真实规划运行时尚未完成装配**，是"当前正确状态"，不是系统故障；
+ *   ⚠️ 该 code 出现在**其它状态码**上时不具备"未装配"含义
+ *   （500 + 该 code → `server`；404 + 该 code → `http`）；
  *   ⚠️ 若 503 的响应体**明确给出了其它错误**，则归为 `server`，不得误报成"未装配"；
  * - `input`：422 —— 服务端**输入 / provenance** 校验未通过；
  * - `server`：5xx（503 之外的）—— 服务端错误；
@@ -155,7 +157,9 @@ async function readBodySafely(response: Response): Promise<unknown> {
  * 把错误响应分类为 `PlanErrorKind`。
  *
  * **503 的收紧规则**（本轮要求）：
- * 1. `real_pipeline_not_configured`（无论状态码）→ `not_configured`；
+ * 1. **只有 HTTP 503 且** `code === real_pipeline_not_configured` → `not_configured`；
+ *    ⚠️ 该 code 出现在**其它状态码**上时不具备"未装配"含义：
+ *    500 + 该 code → `server`、404 + 该 code → `http`；
  * 2. 503 且**无法解析 / 无可识别信息** → `not_configured`
  *    （宁可如实说"未装配"，也不要凭空断言是服务端错误）；
  * 3. 503 但 body **明确给出其它错误** → `server`
@@ -166,11 +170,10 @@ export function classifyPlanError(input: {
   code: string | null
   detail: string | null
 }): PlanErrorKind {
-  if (input.code === REAL_PIPELINE_NOT_CONFIGURED) {
-    return 'not_configured'
-  }
-
   if (input.status === 503) {
+    if (input.code === REAL_PIPELINE_NOT_CONFIGURED) {
+      return 'not_configured'
+    }
     const statedReason =
       (input.code !== null && input.code.trim() !== '') ||
       (input.detail !== null && input.detail.trim() !== '')

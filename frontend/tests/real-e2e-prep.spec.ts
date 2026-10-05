@@ -193,16 +193,48 @@ describe('Real API 错误模型', () => {
     expect(error.message).not.toContain('尚未完成装配')
   })
 
-  it('503 + real_pipeline_not_configured 优先于"其它错误"判断', async () => {
-    // 同一个 body 里的 code 就是权威的未装配信号
-    fetchMock.mockResolvedValue(jsonResponse(NOT_CONFIGURED_BODY, 503))
-
-    const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
-    expect(error.kind).toBe('not_configured')
+  it('该 code 只有配合 HTTP 503 才算"未装配"；其它状态码按状态码分类', () => {
+    // 1) 未装配：503 + code
+    expect(
+      classifyPlanError({ status: 503, code: REAL_PIPELINE_NOT_CONFIGURED, detail: null }),
+    ).toBe('not_configured')
+    // 2) code 出现在 500 上 → server（不能因为看到这个 code 就报"未装配"）
+    expect(
+      classifyPlanError({ status: 500, code: REAL_PIPELINE_NOT_CONFIGURED, detail: null }),
+    ).toBe('server')
+    // 3) code 出现在 404 上 → http
+    expect(
+      classifyPlanError({ status: 404, code: REAL_PIPELINE_NOT_CONFIGURED, detail: null }),
+    ).toBe('http')
+    // 4) 其它状态码本身不受影响
+    expect(classifyPlanError({ status: 422, code: REAL_PIPELINE_NOT_CONFIGURED, detail: null })).toBe(
+      'input',
+    )
   })
 
-  it('classifyPlanError：503 三态分类矩阵', () => {
-    // 1) 未装配的权威信号
+  it('500 + real_pipeline_not_configured → kind = server，不报"未装配"', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(NOT_CONFIGURED_BODY, 500, 'Internal Server Error'))
+
+    const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
+    expect(error.kind).toBe('server')
+    expect(error.status).toBe(500)
+    expect(error.code).toBe(REAL_PIPELINE_NOT_CONFIGURED)
+    expect(error.message).toContain('服务端错误')
+    expect(error.message).not.toContain('尚未完成装配')
+  })
+
+  it('404 + real_pipeline_not_configured → kind = http，不报"未装配"', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(NOT_CONFIGURED_BODY, 404, 'Not Found'))
+
+    const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
+    expect(error.kind).toBe('http')
+    expect(error.status).toBe(404)
+    expect(error.code).toBe(REAL_PIPELINE_NOT_CONFIGURED)
+    expect(error.message).not.toContain('尚未完成装配')
+  })
+
+  it('classifyPlanError：503 三态分类矩阵（code 只在 503 上才算未装配）', () => {
+    // 1) 未装配的信号：必须同时是 503 + 该 code
     expect(
       classifyPlanError({ status: 503, code: REAL_PIPELINE_NOT_CONFIGURED, detail: null }),
     ).toBe('not_configured')
@@ -214,10 +246,13 @@ describe('Real API 错误模型', () => {
       'server',
     )
     expect(classifyPlanError({ status: 503, code: null, detail: '上游超时' })).toBe('server')
-    // code 权威性优先于状态码：即使状态码不是 503
+    // 4) 该 code 出现在其它状态码上**不具备**未装配含义 → 按状态码分类
     expect(
       classifyPlanError({ status: 500, code: REAL_PIPELINE_NOT_CONFIGURED, detail: null }),
-    ).toBe('not_configured')
+    ).toBe('server')
+    expect(
+      classifyPlanError({ status: 404, code: REAL_PIPELINE_NOT_CONFIGURED, detail: null }),
+    ).toBe('http')
     // 其它状态码不受影响
     expect(classifyPlanError({ status: 422, code: null, detail: null })).toBe('input')
     expect(classifyPlanError({ status: 500, code: null, detail: null })).toBe('server')

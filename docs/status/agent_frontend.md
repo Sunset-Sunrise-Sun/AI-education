@@ -924,7 +924,7 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
 
 | `kind` | 触发条件 | 界面标题 |
 |---|---|---|
-| `not_configured` | **503 且 `detail.error === "real_pipeline_not_configured"`**，或 503 但响应体**无法解析 / 无可识别信息** | **真实规划运行时尚未完成装配** |
+| `not_configured` | **HTTP 503 且 `detail.error === "real_pipeline_not_configured"`**，或 503 但响应体**无法解析 / 无可识别信息** | **真实规划运行时尚未完成装配** |
 | `input` | 422 | **Real Planning 输入未通过校验** |
 | `server` | 5xx（503 之外）；**或 503 但响应体明确给出其它错误** | Real Planning 服务端错误 |
 | `network` | 请求未能完成（连不上 / 连接被重置） | 无法连接 Real Planning 接口 |
@@ -932,7 +932,8 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
 | `unexpected` | 2xx 但响应体不是合法 `PlanResult` 对象 | 返回了无法解析的结果 |
 
 - ⚠️ **503 三态收紧**（`classifyPlanError()`，纯函数，有分类矩阵测试）：
-  ① `real_pipeline_not_configured`（**code 权威，优先于状态码**）→ `not_configured`；
+  ① **只有 HTTP 503 且** `real_pipeline_not_configured` → `not_configured`
+  （该 code 出现在其它状态码上**不具备**"未装配"含义：500 + 该 code → `server`、404 + 该 code → `http`）；
   ② 503 且**无法解析 / 无可识别信息** → `not_configured`（宁可如实说"未装配"）；
   ③ 503 但 body **明确给出其它错误**（有可识别 code 或 detail）→ **`server`**，
   ⛔ **不误报成"运行时尚未装配"**，且文案导向服务端排查；
@@ -960,7 +961,7 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
 **验证**：
 
 ```text
-cd frontend && npm test              →  111 passed / 111（8 个测试文件）
+cd frontend && npm test              →  113 passed / 113（8 个测试文件）
 cd frontend && npm run build         →  成功（含 vue-tsc --noEmit）
 cd frontend && npm run test:scenarios →  既有 14 项全部通过
 ```
