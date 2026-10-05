@@ -893,7 +893,9 @@
   // ---------------------------------------------------------------------
   // 五校区 shard 编排（Architecture Review 已批准）
   //
-  //   baseline_before → 五校区**串行** collect → baseline_after → 外层 diagnostics
+  //   baseline_before → 五个完整 shard → baseline_after
+  //     → baseline 稳定性（snapshot window unstable？）
+  //     → shard 覆盖性（shard coverage mismatch？）
   //
   // ⛔ 不改 Capture Bundle format：每个 shard 产出仍是**同一格式**的裸 bundle；
   // ⛔ diagnostics **不进入**任何裸 bundle；
@@ -922,24 +924,31 @@
    * 五校区 shard 采集编排。
    *
    * ```text
-   * baseline_before（{yearTerm} 单次探针，只读 total）
+   * ① baseline_before（{yearTerm} 单次探针，只读 total）
    *        ↓
-   * 五个 shard 依次串行采集（每个 shard 从 pageNo=1 开始、pageSize=200、
+   * ② 五个 shard 依次串行采集（每个 shard 从 pageNo=1 开始、pageSize=200、
    *   expectedTotal 取**本 shard 第一页**真实 total、accumulatedRows == expectedTotal
    *   时以 reached_total 停止；保留既有 delay / guard / fail-closed）
    *        ↓
-   * baseline_after（同 baseline_before）
+   * ③ baseline_after（五个 shard 全部完整成功后**无条件**请求；同 baseline_before）
+   *        ↓
+   * ④ baseline 稳定性：baseline_before == baseline_after？
+   *        ↓（稳定才继续）
+   * ⑤ shard 覆盖性：Σ shard expectedTotal == baseline_before？
    * ```
    *
    * 整体失败（`fail()` 抛出，⛔ **不产出任何 bundle**）的情形：
    *
-   * 1. `baseline_before !== baseline_after`（采集窗口内数据集合发生变化）；
-   * 2. 任一 shard 未取满（`stoppedReason !== "reached_total"`）；
-   * 3. 五个 shard 的 `expectedTotal` 之和 !== baseline（分片未覆盖全体）。
+   * 1. 任一 shard 未取满（`stoppedReason !== "reached_total"`）→ **立即**停止，
+   *    ⛔ 不再请求 baseline_after，也⛔ 不再请求后面的校区（fail fast）；
+   * 2. `baseline_before !== baseline_after` → **snapshot window unstable**；
+   * 3. Σ shard `expectedTotal` != baseline_before → **shard coverage mismatch**
+   *    （与 Python 侧已 Review 的编排同一口径；这里只是**提前**失败，
+   *    完整性判定的**权威仍在 Python**）。
    *
-   * ⚠️ 第 2 / 3 条与 Python 侧已 Review 的 sharded 编排**同一口径**：
-   * 这里只是**提前**失败，避免把明知不可用的结果交给 Python 完整性链；
-   * 完整性判定的**权威仍在 Python**（本采集器仍不判断 complete / partial）。
+   * ⛔ **判定顺序是硬要求**：五个 shard 都完整成功后，必须**无条件**先取
+   * baseline_after 并判稳定性；**只有** baseline 稳定之后才允许判覆盖性。
+   * 否则会拿一个未确认的 snapshot window 去解释覆盖差异。
    *
    * ⛔ 严格白名单：只接受 `semester` / `maxPages` / `delayMs`。
    * ⛔ 不接受调用方传入 `pageSize` / `firstPageNo` / 自定义 shard 列表。
@@ -1082,29 +1091,33 @@
       });
     }
 
-    // ---- ③ 分片覆盖性（与 Python 侧同一口径，提前失败） -------------------
+    // ---- baseline_after（③ 五个 shard **全部完整成功后无条件请求**） --------
+    // ⛔ 顺序是 Review 裁定的：先 baseline 稳定性，再 shard 覆盖性。
+    //    覆盖性**不得**抢在 baseline_after 之前判定（那会拿一个未确认的
+    //    snapshot window 去解释覆盖差异）。
+    await sleep(resolved.delayMs);
+    baselineAfter = await requestReportedTotal(resolved.semester);
+    requests += 1;
+
+    // ④ baseline 稳定性：不等价 → snapshot window unstable，整体失败。
+    if (baselineBefore !== baselineAfter) {
+      failWithDiagnostics(
+        "baseline_before(" + baselineBefore + ") != baseline_after(" + baselineAfter +
+          ")：snapshot window unstable —— 该学期数据集合在采集窗口内发生变化" +
+          "（历史 6892 → 现 6880 属已知漂移）。已整体停止，不产出任何 bundle。",
+        makeDiagnostics()
+      );
+    }
+
+    // ⑤ shard 覆盖性：**只有** baseline 稳定后才判定。
     var coveredTotal = 0;
     for (var coverIndex = 0; coverIndex < shardDiagnostics.length; coverIndex += 1) {
       coveredTotal += shardDiagnostics[coverIndex].expectedTotal;
     }
     if (coveredTotal !== baselineBefore) {
       failWithDiagnostics(
-        "五个 shard 的 total 之和(" + coveredTotal + ") != baseline(" + baselineBefore +
-          ")；分片未覆盖全体或与基线不一致。已整体停止，不产出任何 bundle。",
-        makeDiagnostics()
-      );
-    }
-
-    // ---- baseline_after（与 baseline_before 同一窗口内对拍） -------------
-    await sleep(resolved.delayMs);
-    baselineAfter = await requestReportedTotal(resolved.semester);
-    requests += 1;
-
-    // ① baseline sandwich：不等价 → 整体失败，⛔ 不产出任何 bundle。
-    if (baselineBefore !== baselineAfter) {
-      failWithDiagnostics(
-        "baseline_before(" + baselineBefore + ") != baseline_after(" + baselineAfter +
-          ")；该学期数据集合在采集窗口内发生变化（历史 6892 → 现 6880 属已知漂移）。" +
+        "五个 shard 的 total 之和(" + coveredTotal + ") != baseline_before(" + baselineBefore +
+          ")：shard coverage mismatch —— 分片未覆盖全体或与基线不一致。" +
           "已整体停止，不产出任何 bundle。",
         makeDiagnostics()
       );

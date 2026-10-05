@@ -795,16 +795,26 @@ baseline_before != baseline_after → 整体不得标 complete，fail closed
 （⛔ 加载脚本仍**不自动发请求**，必须由用户在控制台显式调用）：
 
 ```text
-baseline_before（1 次请求：param 只有 { yearTerm }，只读 data.total）
+① baseline_before（1 次请求：param 只有 { yearTerm }，只读 data.total）
         ↓
-五个 shard **串行**采集（顺序 = 已批准顺序；每个 shard 从 pageNo=1 起、
-  pageSize=200、expectedTotal 取**本 shard 第一页**真实 total、
-  accumulatedRows == expectedTotal 时以 reached_total 停止）
+② 五个 shard **串行**采集（顺序 = 已批准顺序；每个 shard 从 pageNo=1 起、
+   pageSize=200、expectedTotal 取**本 shard 第一页**真实 total、
+   accumulatedRows == expectedTotal 时以 reached_total 停止）
+        ↓（任一 shard 未取满 → **立即** fail-fast，⛔ 不请求 baseline_after）
+③ baseline_after（五个 shard **全部完整成功后无条件请求**；同 baseline_before）
         ↓
-baseline_after（同 baseline_before）
-        ↓
+④ baseline 稳定性：baseline_before == baseline_after？
+        ↓（不等 → `snapshot window unstable`，整体失败）
+⑤ shard 覆盖性：Σ shard expectedTotal == baseline_before？
+        ↓（不等 → `shard coverage mismatch`，整体失败）
 外层 diagnostics 对象
 ```
+
+⚠️ **判定顺序是硬要求**（Architecture Review Blocker 修正）：
+五个 shard 全部完整成功后必须**无条件**先取 `baseline_after` 并判**稳定性**，
+**只有** baseline 稳定之后才允许判**覆盖性** ——
+否则会拿一个未确认的 snapshot window 去解释覆盖差异。
+（此前实现把覆盖性判在 `baseline_after` 之前，已修正。）
 
 - shard 请求：`param: { yearTerm, openingSchoolNumber }`；
   baseline 请求：`param: { yearTerm }`（⛔ 不带 `openingSchoolNumber` 键）；
@@ -822,10 +832,11 @@ baseline_after（同 baseline_before）
   ⛔ `pageSize`（固定 200）/ `firstPageNo`（固定 1）/ 自定义 shard 列表**都不接受覆盖**，
   且拒绝时**不回显**调用方给出的参数名；
 - **整体失败（抛出，⛔ 不产出任何 bundle）**：
-  1. `baseline_before !== baseline_after`（采集窗口内数据集合变化）；
-  2. 任一 shard 未取满（`stoppedReason !== "reached_total"`）→ **立即**停止，
-     不再继续请求后面的校区（fail fast，减少对学校接口的压力）；
-  3. Σ shard `expectedTotal` != baseline（分片未覆盖全体；与 Python 侧同一口径，只是提前）。
+  1. 任一 shard 未取满（`stoppedReason !== "reached_total"`）→ **立即**停止，
+     ⛔ 不再请求后面的校区、⛔ 也不请求 `baseline_after`（fail fast，减少对学校接口的压力）；
+  2. `baseline_before !== baseline_after` → **`snapshot window unstable`**；
+  3. Σ shard `expectedTotal` != `baseline_before` → **`shard coverage mismatch`**
+     （**只在 2 通过之后**才判；与 Python 侧编排同一口径）。
   失败时错误对象带 `.diagnostics`（已采集到的结构化计数），便于控制台排查；
 - **输出**：`result.shards[i].bundle` = **5 个独立裸 Capture Bundle**
   （顶层仍只有 `format` / `semester` / `first_page_no` / `page_size` / `pages`，
@@ -844,16 +855,21 @@ baseline_after（同 baseline_before）
 - **复用同一份分页实现**：五个 shard 与 baseline 都走同一个取页核心
   （`pageNo` 从 1 起、`pageSize`、total 中途变化即失败、串行 sleep、最小 1000ms 间隔、
   hostname guard、same-origin、不重试、不并发）；
-- 测试：`tools/sysu_course_offering_collector.test.mjs`（**70 个 `node:test` 用例**，
-  其中 25 个覆盖五校区：正常链路 / 请求顺序与形态 / 多页 shard / 半页 `expected_pages` /
-  baseline 漂移两个方向 / 未取满 fail fast / 覆盖性 / 取消 / 白名单 / 限速 /
+- 测试：`tools/sysu_course_offering_collector.test.mjs`（**73 个 `node:test` 用例**，
+  其中 28 个覆盖五校区：正常链路 / 请求顺序与形态 / 多页 shard / 半页 `expected_pages` /
+  baseline 漂移两个方向 / 未取满 fail fast / 覆盖性 / **判定顺序三例**
+  （`before=6880, Σ=6881, after=6881` → unstable 且确认 `baseline_after` 确实被请求；
+  `before=6880, Σ=6879, after=6880` → coverage mismatch；
+  只有 shard 失败才允许跳过 `baseline_after`）/ 取消 / 白名单 / 限速 /
   shard 内解析失败（单一前缀 + 附 diagnostics）/ 裸 bundle 与 diagnostics 分离 / 隐私）。
   ⛔ 全程零网络（假 `fetch` + 假 `setTimeout` 记录请求的延迟），
   ⛔ 所有 row 均为人工虚构；真实分片数字不进测试常量；
-- non-vacuity：10 个 mutation 逐一改坏一条行为（sandwich / 未取满 / 覆盖性 / 白名单 /
+- non-vacuity：**11** 个 mutation 逐一改坏一条行为（sandwich / 未取满 / 覆盖性 / 白名单 /
   `expected_pages` 变判据 / baseline 请求形态 / shard 名回显 / diagnostics 夹带 row /
-  取消语义 / 最小间隔）→ 每一个都**至少一个 Node 用例变红**；
-  其中 3 个同时被 `backend/tests/test_sysu_collector_guard.py` 的静态守卫抓到。
+  取消语义 / 最小间隔 / **回退成旧判定顺序**）→ 每一个都**至少一个 Node 用例变红**
+  （旧顺序 mutation 另使静态守卫
+  `test_sharded_requests_baseline_after_before_any_coverage_judgement` 变红）；
+  其中 4 个同时被 `backend/tests/test_sysu_collector_guard.py` 的静态守卫抓到。
 
 ### 尚未实现（待 Review 通过后）
 

@@ -877,7 +877,7 @@ test("shard 未取满：立即整体停止，⛔ 不再继续打其它校区", a
   assert.equal(error.diagnostics.baseline_after, null, "失败前不应再发 baseline_after");
 });
 
-test("Σ shard total != baseline：整体失败（不再发 baseline_after）", async () => {
+test("Σ shard total != baseline：baseline 稳定后报 coverage mismatch（after 必须已请求）", async () => {
   const { collector, calls } = loadShardedCollector({
     baselineTotals: [TOTAL_ROWS - 1, TOTAL_ROWS - 1],
   });
@@ -886,10 +886,120 @@ test("Σ shard total != baseline：整体失败（不再发 baseline_after）", 
     collector.collectSharded({ semester: SEMESTER, delayMs: 1000 }),
   );
 
-  assert.ok(error.message.includes("分片未覆盖全体或与基线不一致"), `实际：${error.message}`);
-  assert.equal(calls.length, 6, "baseline + 五个校区后即失败，不再发 baseline_after");
+  assert.ok(error.message.includes("shard coverage mismatch"), `实际：${error.message}`);
+  assert.ok(!error.message.includes("snapshot window unstable"), "⛔ baseline 稳定，不该报不稳定");
+
+  // ⛔ 五个 shard 全部完整成功后，baseline_after **无条件**被请求
+  assert.equal(calls.length, 7, "baseline + 五个 shard + baseline_after");
+  assert.equal(calls[6].campus, undefined);
+  assert.equal(error.diagnostics.baseline_after, TOTAL_ROWS - 1);
   assert.equal(error.diagnostics.shard_count, 5);
-  assert.equal(error.diagnostics.baseline_after, null);
+  assert.equal(error.diagnostics.shard_total_sum, TOTAL_ROWS);
+});
+
+// ---------------------------------------------------------------------------
+// 3b. 判定顺序（Review Blocker）：先 baseline 稳定性，再 shard 覆盖性
+// ---------------------------------------------------------------------------
+
+/**
+ * 按 Review 指定的场景总数造出五个校区的行数。
+ *
+ * ⚠️ 这里只把它当作**场景计数**（6880 / 6881 / 6879）喂给假 fetch；
+ * 真实各校区人工 total（1071/405/…）⛔ 不进测试，也⛔ 不进任何 production 判定。
+ */
+function campusesForTotal(total) {
+  const each = Math.floor(total / SHARDS.length);
+  const sizes = SHARDS.map(() => each);
+  sizes[0] += total - each * SHARDS.length;
+
+  return SHARDS.map((shard, index) => ({
+    openingSchoolNumber: shard.openingSchoolNumber,
+    rows: shardRows(`SYN${index + 1}`, sizes[index]),
+  }));
+}
+
+/** 五个校区都能在 maxPages 内取满（每校区 <= 1377 行 ⇒ <= 7 页）。 */
+const REVIEW_SCENARIO_MAX_PAGES = 7;
+
+test("顺序：before=6880, Σ shard=6881, after=6881 → snapshot window unstable", async () => {
+  const { collector, calls } = loadShardedCollector({
+    campuses: campusesForTotal(6881),
+    baselineTotals: [6880, 6881],
+  });
+
+  const error = await captureRejection(() =>
+    collector.collectSharded({
+      semester: SEMESTER,
+      maxPages: REVIEW_SCENARIO_MAX_PAGES,
+      delayMs: 1000,
+    }),
+  );
+
+  assert.ok(error.message.includes("snapshot window unstable"), `实际：${error.message}`);
+  // ⛔ 覆盖性不得抢在 baseline 稳定性之前判定
+  assert.ok(
+    !error.message.includes("shard coverage mismatch"),
+    "⛔ baseline 未稳定时不得报覆盖性",
+  );
+
+  // baseline_after **确实被请求**（且是最后一个请求）
+  const baselineCalls = calls.filter((call) => call.campus === undefined);
+  assert.equal(baselineCalls.length, 2, "baseline_before 与 baseline_after 都必须发出");
+  assert.equal(calls[calls.length - 1].campus, undefined);
+
+  // 五个 shard 都完整成功之后才发 baseline_after
+  assert.equal(error.diagnostics.shard_count, 5);
+  assert.equal(error.diagnostics.baseline_before, 6880);
+  assert.equal(error.diagnostics.baseline_after, 6881);
+  assert.equal(error.diagnostics.shard_total_sum, 6881);
+  error.diagnostics.shards.forEach((record) => {
+    assert.equal(record.stoppedReason, "reached_total");
+    assert.equal(record.accumulatedRows, record.expectedTotal);
+  });
+});
+
+test("顺序：before=6880, Σ shard=6879, after=6880 → shard coverage mismatch", async () => {
+  const { collector, calls } = loadShardedCollector({
+    campuses: campusesForTotal(6879),
+    baselineTotals: [6880, 6880],
+  });
+
+  const error = await captureRejection(() =>
+    collector.collectSharded({
+      semester: SEMESTER,
+      maxPages: REVIEW_SCENARIO_MAX_PAGES,
+      delayMs: 1000,
+    }),
+  );
+
+  assert.ok(error.message.includes("shard coverage mismatch"), `实际：${error.message}`);
+  assert.ok(
+    !error.message.includes("snapshot window unstable"),
+    "⛔ baseline 稳定，不得报不稳定",
+  );
+
+  assert.equal(error.diagnostics.baseline_before, 6880);
+  assert.equal(error.diagnostics.baseline_after, 6880);
+  assert.equal(error.diagnostics.shard_total_sum, 6879);
+  assert.equal(calls.filter((call) => call.campus === undefined).length, 2);
+});
+
+test("顺序：只要求 shard 失败才可跳过 baseline_after（否则必须请求）", async () => {
+  // shard 未取满 → 允许 fail-fast：⛔ 不得发出 baseline_after
+  const { collector, calls } = loadShardedCollector({
+    campuses: defaultCampuses([205, 1, 4, 2, 3]),
+    baselineTotals: [215, 215],
+  });
+
+  await captureRejection(() =>
+    collector.collectSharded({ semester: SEMESTER, maxPages: 1, delayMs: 1000 }),
+  );
+
+  assert.deepEqual(
+    calls.map((call) => call.campus),
+    [undefined, "5063559"],
+    "⛔ shard 失败时不得继续请求其它校区，也不得请求 baseline_after",
+  );
 });
 
 test("取消确认：不发出任何请求，也不产出 bundle / diagnostics", async () => {

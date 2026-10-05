@@ -1593,3 +1593,57 @@
   `backend/app/course_data/sharded_capture.py`；⛔ 未改 `planning_runtime.py`；
   ⛔ 未改 PR #39；⛔ 未设计 runtime manifest / provenance 格式；⛔ 未碰 SHA-256 gate。
 - 下一步：等待 Architecture Review。
+
+### 2026-10-05 - 修正（Review Blocker）：五校区判定顺序 —— 先 baseline 稳定性，再 shard 覆盖性
+
+- 触发：Architecture Review **基本通过，仅 1 个 Blocker** —— 原实现把
+  **Σ shard total 覆盖性**判在 `baseline_after` **之前**，等于拿一个**未确认的
+  snapshot window** 去解释覆盖差异。
+- **裁定后的顺序（硬要求，已照此实现）**：
+
+  ```text
+  ① baseline_before
+  ② 五个 shard 串行采集
+       └ 任一 shard 未取满 → 立即 fail-fast（⛔ 不请求 baseline_after）
+  ③ baseline_after（五个 shard **全部完整成功后无条件请求**）
+  ④ baseline 稳定性：baseline_before == baseline_after？
+       └ 不等 → snapshot window unstable（整体失败）
+  ⑤ shard 覆盖性：Σ shard expectedTotal == baseline_before？
+       └ 不等 → shard coverage mismatch（整体失败）
+  ```
+- **改动**：把覆盖性判定块整体**移到** baseline 稳定性判定之后；
+  `baseline_after` 在五个 shard 全部完整成功后**无条件**请求（此前覆盖性失败会提前返回，
+  导致第 6 个请求被省掉）。两条失败信息改为**可区分的**、带 Review 术语的文案：
+  - `...：snapshot window unstable —— ...`
+  - `...：shard coverage mismatch —— ...`
+  ⛔ 未改任何判定**口径**（仍然是 `==` 比较），⛔ 未改 Capture Bundle format，
+  ⛔ 未改 Python、⛔ 未改 runtime。shard 级 fail-fast **保留**（Review 明确允许）。
+- **新增 Node 用例 3 项**（`collector node` 70 → **73**）：
+  1. `before=6880, Σ shard=6881, after=6881` → 报 **snapshot window unstable**，
+     且断言 ① 不报 coverage mismatch、② `baseline_after` **确实被请求**（baseline 类请求恰 2 次、
+     且是最后一次）、③ 五个 shard 都 `reached_total`；
+  2. `before=6880, Σ shard=6879, after=6880` → 报 **shard coverage mismatch**，
+     且断言不报 unstable、`baseline_after` 已被请求、`shard_total_sum == 6879`；
+  3. 只有 shard 本身失败时才允许跳过 `baseline_after`（显式锁住这条例外）。
+  ⚠️ 这三个用例里的 6880/6881/6879 是 **Review 指定的场景计数**，只作为假 `fetch` 的输入；
+  真实的各校区人工 total（1071/405/…）⛔ 仍不进测试、⛔ 不进任何 production 判定。
+- **既有用例修正**：原「Σ shard total != baseline：整体失败（**不再发 baseline_after**）」
+  的断言已随裁定反转 —— 现在**必须**发 `baseline_after`，并改名为
+  「baseline 稳定后报 coverage mismatch（after 必须已请求）」。
+- **新增静态守卫 1 项**（`collector guard` 78 → **79**）：
+  `test_sharded_requests_baseline_after_before_any_coverage_judgement` ——
+  锁死 `baseline_after` 请求 < 稳定性判定 < 覆盖性判定的**源码顺序**，
+  并锁死两条文案互不夹带。
+- **non-vacuity（新增 mutation J11）**：把判定顺序**回退成旧顺序**（覆盖性抢跑）后，
+  **3 个 Node 用例 + 1 个静态守卫同时变红**；还原后 73 项全通过。
+- 测试结果：collector node **73 passed**；collector guard **79 passed**；
+  Python sharded 编排 **31 passed**（未改）；
+  full backend **2 failed / 2199 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例，未修、未 skip、未删）；
+  `node --check` exit 0；`compileall` exit 0。
+- **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
+  ⛔ **未跑真实五校区全量采集**。
+- **本轮未做**：⛔ 未改 Capture Bundle format；⛔ 未改 Python（含
+  `backend/app/course_data/sharded_capture.py`）；⛔ 未改 runtime / `planning_runtime.py`；
+  ⛔ 未碰 PR #39；⛔ 未 push / 未开 PR / 未 merge。
+- 下一步：等待 Architecture Review 复验。

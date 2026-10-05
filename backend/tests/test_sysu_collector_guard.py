@@ -1381,13 +1381,49 @@ def test_sharded_fails_closed_on_an_incomplete_shard(collector_source: str) -> N
     assert check_index < body.index("baselineAfter = await requestReportedTotal(")
 
 
+def test_sharded_requests_baseline_after_before_any_coverage_judgement(
+    collector_source: str,
+) -> None:
+    """⛔ **判定顺序硬要求**（Review Blocker）：
+
+    五个 shard 全部完整成功后，必须**无条件**先取 `baseline_after` 并判
+    **baseline 稳定性**（`snapshot window unstable`）；**只有**稳定之后
+    才允许判 **shard 覆盖性**（`shard coverage mismatch`）。
+
+    ⛔ 覆盖性不得抢在 baseline_after 之前判定。
+    """
+
+    body = _collect_sharded_slice(collector_source)
+
+    after_index = body.index("baselineAfter = await requestReportedTotal(")
+    stability_index = body.index("if (baselineBefore !== baselineAfter) {")
+    coverage_index = body.index("if (coveredTotal !== baselineBefore) {")
+
+    assert after_index < stability_index < coverage_index, (
+        "顺序必须是 baseline_after → baseline 稳定性 → shard 覆盖性"
+    )
+
+    stability_block = body[stability_index:coverage_index]
+
+    assert "snapshot window unstable" in stability_block
+    assert "shard coverage mismatch" in body[coverage_index:]
+
+    # ⛔ 两个判定必须可区分：不得互相夹带对方的文案
+    assert "shard coverage mismatch" not in stability_block
+    assert "snapshot window unstable" not in body[coverage_index:]
+
+    # 覆盖性判定只消费 baseline_before（不是 baseline_after）
+    assert "coveredTotal !== baselineBefore" in body[coverage_index:]
+
+
 def test_sharded_fails_closed_on_coverage_mismatch(collector_source: str) -> None:
-    """Σ shard total != baseline → 整体失败（与 Python 侧同一口径，只是提前）。"""
+    """Σ shard total != baseline_before → 整体失败（稳定之后才判，口径与 Python 侧一致）。"""
 
     body = _collect_sharded_slice(collector_source)
 
     assert "if (coveredTotal !== baselineBefore) {" in body
-    assert "分片未覆盖全体或与基线不一致" in body
+    assert "shard coverage mismatch" in body
+    assert "已整体停止，不产出任何 bundle" in body[body.index("shard coverage mismatch") :]
 
 
 def test_sharded_reuses_the_single_paging_core(collector_source: str) -> None:
