@@ -17,22 +17,22 @@ export const MAKEUP_STATUS_LABEL: Record<MakeupStatus, string> = {
 
 /** 与补修状态标签配套的说明，帮助观众理解该结论的来源责任主体。 */
 export const MAKEUP_STATUS_HINT: Record<MakeupStatus, string> = {
-  required: 'Curriculum 模块判定为专业培养方案缺失课程，需安排补修',
-  possibly_equivalent: '新旧方案课程内容高度相近，是否可认定需教务人工复核',
-  manual_confirmation: '存在学分或大纲差异，需教务人工判定，系统不自行裁决',
-  satisfied: '已修读课程直接满足要求，无需额外补修',
+  required: 'Curriculum 当前输出为“需要补修”；具体依据见认定说明与 source_evidence',
+  possibly_equivalent: 'Curriculum 当前输出为“可能等价”；需要进一步确认，具体依据见认定说明',
+  manual_confirmation: 'Curriculum 当前要求人工确认；具体原因见认定说明',
+  satisfied: 'Curriculum 当前输出为“已满足”；具体依据见认定说明',
 }
 
 export const PLAN_STATUS_LABEL: Record<PlanStatus, string> = {
-  feasible: '完全可行',
-  partially_feasible: '部分可行',
-  infeasible: '不可行',
+  feasible: '可行',
+  partially_feasible: '部分可确认',
+  infeasible: '当前范围内不可行',
 }
 
 export const PLAN_STATUS_DESCRIPTION: Record<PlanStatus, string> = {
-  feasible: '所有补修要求与约束条件均已得到满足，方案可直接执行。',
-  partially_feasible: '核心排课可行，但包含待人工确认项、数据缺口或潜在风险。',
-  infeasible: '在现有硬约束和课表冲突条件下无法生成可行方案。',
+  feasible: '当前建议方案成立所依赖的确定性条件已完成认证，且不存在影响该方案成立的未决事项；不代表学校已经完成正式选课或审批。',
+  partially_feasible: '当前仍存在排课信息未知、人工选择、输入不足或尚未完成认证的事项，现有证据尚不能证明完整目标无解。',
+  infeasible: '在当前明确目标、当前输入域和已确认硬约束范围内，Planner 已证明不存在可行组合；不代表学校全部真实供给或未来学期均无解。',
 }
 
 export const RISK_LEVEL_LABEL: Record<RiskLevel, string> = {
@@ -54,6 +54,7 @@ export const UNRESOLVED_TYPE_LABEL: Record<string, string> = {
   manual_confirmation: '待人工确认',
   missing_data: '缺少数据',
   schedule_unknown: '排课信息未知',
+  selection_required: '需要明确选择',
 }
 
 /**
@@ -79,6 +80,8 @@ export function unresolvedTypeTagClass(type: string): string {
       return 'tag--unresolved-data'
     case 'schedule_unknown':
       return 'tag--unresolved-schedule'
+    case 'selection_required':
+      return 'tag--unresolved-selection'
     default:
       return 'tag--unresolved-other'
   }
@@ -153,6 +156,6 @@ export function formatMeetingLine(meeting: Meeting): string {
     formatWeekday(meeting.weekday),
     formatSections(meeting.start_section, meeting.end_section),
     formatWeeks(meeting.weeks),
-    place || '地点待公布',
+    place || '当前数据中无地点信息',
   ].join(' · ')
 }
