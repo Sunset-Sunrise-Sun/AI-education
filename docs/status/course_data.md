@@ -510,7 +510,35 @@ segment separator = ","      field separator = "/"
 3 字段 plain    ：<weeks token> / teacher / activity      例如 1-17周 / 龙霞 / 实验实践环节
 3 字段 qualified：<weeks token><qualifier> / teacher / activity
                                                         例如 16-16周校内(户外) / 龙霞 / 实验实践环节
+5 字段 layout A ：weeks / weekday / location / REDACTED / activity（Architecture Review 裁定）
+                ⚠️ 第 3 个字段是 **location** 而不是 sections ⇒ **没有 concrete sections**
 ```
+
+**5 字段 non-concrete layout A**（Architecture Review 裁定；east artifact **39/39**）：
+
+```text
+weeks | weekday | location | REDACTED | activity
+```
+
+- **精确准入（五条全部满足才走这条路，否则落回原有路径继续 fail closed）**：
+
+  ```text
+  f1：现有 weeks parser（expand_weeks）成功
+  f2：现有 weekday parser（parse_weekday）成功
+  f3：现有 location 判别器（_classify_five_field_token）判定为 location（>= 3 个非空 '-' 分段）
+  f4：**精确等于** collector 的 `REDACTED` 占位符（⛔ 无 startswith / 包含 / 通配 / 空白容忍）
+  f5：现有 activity 规则（非空）通过
+  ```
+
+- ⛔ **不泛化**为"任意 5 字段不含 sections"；⛔ 不猜 teacher / location 语义；
+  ⛔ **不重排字段**；⛔ 不新增公共 Schema；
+- ⛔ **不生成 `Meeting`**（`meeting = None`）：该 layout **没有** concrete sections，
+  公共 `Meeting` 需要的 `start_section` / `end_section` 无从取得；
+- ✅ 复用**现有** `build_course_offering_from_non_concrete_schedule()` → `meetings = []`
+  （⛔ **未新增** empty-meeting 路径）；✅ `schedule_weeks` / `teacher`（占位符）/ `activity` 保留；
+- ⚠️ **语义仍是 `meetings = []` = schedule UNKNOWN**，⛔ **不表示** conflict-free、
+  ⛔ 不表示无课、⛔ 不表示异步；
+- ⛔ **Layout B（4 字段）本轮禁止处理**：继续 fail closed（当前先在 weekday 解析处失败）。
 
 **2 字段（无 teacher）**：
 

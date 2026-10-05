@@ -223,6 +223,57 @@ def test_two_and_three_field_non_concrete_coexist_in_one_snapshot() -> None:
     assert snapshot.offerings[1].meetings == []
 
 
+def test_five_field_non_concrete_layout_a_produces_empty_meetings() -> None:
+    """**5 字段 non-concrete layout A**（`weeks | weekday | location | REDACTED | activity`）
+    → `meetings == []`（schedule UNKNOWN），⛔ 未新增 importer 逻辑。
+
+    走**已有的** narrow non-concrete path（`extract_meetings()` 为空 ⇒
+    `build_course_offering_from_non_concrete_schedule()`）。
+    ⛔ `meetings == []` **不表示** conflict-free。
+    """
+
+    snapshot = _import(
+        [
+            _row(
+                teachingTimePlaceStr=(
+                    "1-5周/星期五/示例校区-示例教学楼-2108/REDACTED/实验实践环节"
+                )
+            )
+        ],
+        total=1,
+    )
+
+    offering = snapshot.offerings[0]
+
+    assert snapshot.loaded_count == 1
+    assert offering.meetings == [], "⛔ 不得因为该 layout 丢 row，也不得伪造 Meeting"
+    assert offering.data_source is DataSource.REAL
+    # ⛔ capacity / credit 等公共字段仍然正常产出
+    assert offering.capacity == 90
+    assert offering.credit == 3.0
+
+
+def test_five_field_non_concrete_layout_a_coexists_with_concrete_row() -> None:
+    """layout A 与 concrete row 同在一个 snapshot：两条都保留、只有 concrete 有 Meeting。"""
+
+    snapshot = _import(
+        [
+            _row(
+                classNumber="6200100120260101",
+                teachingTimePlaceStr=(
+                    "1-5周/星期五/示例校区-示例教学楼-2108/REDACTED/实验实践环节"
+                ),
+            ),
+            _row(classNumber="6200100120260102", teachingTimePlaceStr=SCHEDULE_NO_LOCATION),
+        ],
+        total=2,
+    )
+
+    assert snapshot.loaded_count == 2
+    assert snapshot.offerings[0].meetings == []
+    assert len(snapshot.offerings[1].meetings) == 1
+
+
 def test_three_field_with_bad_weeks_still_fails_whole_import() -> None:
     """3 字段 weeks 非法 → 整体失败（⛔ 不静默接受）。"""
 

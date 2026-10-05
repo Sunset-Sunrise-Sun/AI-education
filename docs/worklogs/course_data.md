@@ -2153,3 +2153,52 @@
   store / `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend。
 - 下一步：等待 Architecture Review 对 49 个 `unsupported_sections_shape`
   （segment layout）单独裁定。
+
+### 2026-10-05 - 5 字段 non-concrete **layout A**（精确准入）+ 真实 artifact 到 Layout B 停止
+
+- 触发：Architecture Review 正式批准 ——
+  `Layout A: weeks | weekday | location | REDACTED | activity` 为 **5 字段 non-concrete**；
+  **Layout B 本轮禁止处理**，继续 fail closed。
+- **实现**（`backend/app/course_data/schedule_parser.py`，新增私有 helper
+  `_try_parse_five_field_non_concrete_layout_a()`）：
+  - **五条精确准入**（全部满足才接受，任一不满足 → 返回 `None` 落回原有 concrete 路径）：
+    `f1` 现有 weeks parser 成功 / `f2` 现有 weekday parser 成功 /
+    `f3` 现有 **location 判别器**（`_classify_five_field_token`，>= 3 个非空 `-` 分段）判定 location /
+    `f4` **精确等于** collector 的 `REDACTED` 占位符 / `f5` 现有 activity 非空规则通过；
+  - 判定位置在 `parse_sections(fields[2])` **之前**（该 layout 的第 3 字段是 location，不是 sections）；
+  - 成功时 `meeting = None`，✅ 保留 `schedule_weeks`（走**现有** weeks parser）/ `teacher`（占位符）/
+    `activity`，`schedule_qualifier = None`；⛔ 不生成 `Meeting`；
+  - ⛔ 未新增 public Schema、⛔ 未新增 empty-meeting 路径：
+    仍复用**现有** `build_course_offering_from_non_concrete_schedule()` → `meetings = []`；
+  - 新增 parser 侧常量 `_REDACTED_TEACHER_PLACEHOLDER = "REDACTED"`
+    （单一真源仍是 collector 的 `REDACTED_TEACHER`；⛔ 不放宽为包含 / 前缀 / 通配 / 空白容忍）。
+- **synthetic 测试新增 20 项**（parser 159 → **183**，importer 76 → **78**）：
+  layout A 成功（`meeting=None`、weeks 保留、teacher=占位符、activity 保留、`extract_meetings` 为空）/
+  已批准 5 种 weeks 形态（plain / 单周 / 双周 / 校外 / 校内(户外)）在 layout A 下均可用 /
+  混排不丢段 / **16 个近邻形态逐个 fail closed**
+  （f1 非 weeks、f1 缺周字、f2 非 weekday、f2 空、f3 两段、f3 无连字符、
+  f4 真实教师、f4 占位符前缀、f4 小写、f4 带空白、f4 空、f5 空、f5 全空白、
+  字段重排、6 字段近似、Layout B）/ `Meeting` 字段集合不变 /
+  已确认 concrete 5 字段（f3 是 sections）**不受影响** /
+  importer 端到端 `meetings == []`（含与 concrete row 共存）。
+  ⚠️ 自查纠正：两个**测试期望**写错并已修正（`f3 = 第5-6节` 其实是**合法 concrete** 形态，
+  不属于近邻；Layout B 的失败点在 **weekday** 而不是 sections）。
+- **真实 artifact 再验收**（`daafdb18…a31b` 实测一致；⛔ 未建 SQLite；⛔ 未 skip）：
+  - `load_capture_bundle` ✅（6 页 / total 1071 / rows 合计 1071）；
+  - ✅ **Layout A 39 条全部通过**（此前 blocker 清除）；
+  - ❌ **随后在 Layout B 安全 fail closed**（与预期一致，已立即停止）：
+    - 失败点：4 字段近邻的 `f2` 被当作 weekday 解析 → 现有 `parse_weekday` 拒绝；
+    - 异常类型：`app.course_data.errors.CourseDataNormalizationError`；
+    - ⚠️ **该错误信息回显了 raw location token**（真实校区 / 院系 / 教室文本）——
+      属"不回显 raw 取值"的同类问题，但**不在本轮授权范围**（本轮仅授权 layout A + 不处理 B），
+      故⛔ **未擅自修改**；本轮回报中已对该取值做 redact，⛔ 未写入任何文件；
+  - ⛔ 未建 SQLite、⛔ 未 skip、⛔ 未把 B 降级为 `meetings=[]`。
+- 测试结果：parser+normalization+importer+pagination 合并 **479 passed**；
+  full backend **2 failed / 2384 passed / 2 skipped**（两个为**既有** Windows Curriculum 用例）；
+  `compileall` exit 0。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未建 SQLite；⛔ 未改公共 Schema；
+  ⛔ 未改 collector（4 字段 teacher 脱敏仍未修，等下一轮裁定）/ ⛔ 未改 `captured_pages.py` /
+  Capture Bundle format / `sharded_capture.py` / store / `planning_runtime.py` / PR #39 /
+  Planner / Curriculum / frontend。
+- 下一步：等待 Architecture Review 对(a)Layout B 的 segment layout 与
+  (b)4 字段 teacher 脱敏修复 / 重抓，以及 (c) weekday 错误信息去 raw 回显 给出裁定。

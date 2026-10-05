@@ -1329,3 +1329,140 @@ def test_sections_suffix_accepts_only_the_exact_whitelist_literals() -> None:
     ):
         with pytest.raises(CourseDataNormalizationError):
             parse_sections(token)
+
+
+# ---------------------------------------------------------------------------
+# 5 字段 non-concrete **layout A**（Architecture Review 裁定；east artifact 39/39）
+#   weeks | weekday | location | REDACTED | activity
+# ---------------------------------------------------------------------------
+
+#: collector 的 teacher 脱敏占位符（已知常量）。
+REDACTED = "REDACTED"
+
+
+def _layout_a(
+    *,
+    weeks: str = "1-5周",
+    weekday: str = "星期五",
+    location: str = LOCATION,
+    teacher: str = REDACTED,
+    activity: str = ACTIVITY,
+) -> str:
+    return "/".join([weeks, weekday, location, teacher, activity])
+
+
+def test_layout_a_is_parsed_as_non_concrete_without_meeting() -> None:
+    """✅ 五条准入全满足 → non-concrete：`meeting = None`，周次保留。"""
+
+    (segment,) = parse_teaching_time_place(_layout_a())
+
+    assert segment.meeting is None, "⛔ 该 layout 没有 concrete sections，不得生成 Meeting"
+    assert segment.schedule_weeks == [1, 2, 3, 4, 5]
+    assert segment.teacher == REDACTED
+    assert segment.activity == ACTIVITY
+    assert segment.schedule_qualifier is None
+    assert extract_meetings([segment]) == []
+
+
+@pytest.mark.parametrize(
+    ("weeks", "expected_weeks"),
+    [
+        ("1-5周", [1, 2, 3, 4, 5]),
+        ("1-17单周", [1, 3, 5, 7, 9, 11, 13, 15, 17]),
+        ("3-4双周", [4]),
+        ("1-5周校外", [1, 2, 3, 4, 5]),
+        ("1-5周校内(户外)", [1, 2, 3, 4, 5]),
+    ],
+)
+def test_layout_a_accepts_the_approved_weeks_grammar(
+    weeks: str, expected_weeks: list[int]
+) -> None:
+    """✅ f1 走**现有** weeks parser：已批准的全部 weeks 形态都可用。"""
+
+    (segment,) = parse_teaching_time_place(_layout_a(weeks=weeks))
+
+    assert segment.meeting is None
+    assert segment.schedule_weeks == expected_weeks
+
+
+def test_layout_a_keeps_segment_not_dropped_in_mixed_text() -> None:
+    """⛔ layout A **不是**静默丢段：与其他 segment 混排时仍全部保留。"""
+
+    text = ",".join([_layout_a(), _four_field("1-8周", "星期三", "第1-2节")])
+
+    segments = parse_teaching_time_place(text)
+
+    assert len(segments) == 2
+    assert segments[0].meeting is None
+    assert segments[1].meeting is not None
+    assert len(extract_meetings(segments)) == 1
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [
+        ("f1 非 weeks", "/".join(["abc", "星期五", LOCATION, REDACTED, ACTIVITY])),
+        ("f1 缺周字", "/".join(["1-5", "星期五", LOCATION, REDACTED, ACTIVITY])),
+        ("f2 非 weekday", "/".join(["1-5周", "星期八", LOCATION, REDACTED, ACTIVITY])),
+        ("f2 空", "/".join(["1-5周", "", LOCATION, REDACTED, ACTIVITY])),
+        ("f3 两段 token（非明确 location）", "/".join(["1-5周", "星期五", "示例-教室", REDACTED, ACTIVITY])),
+        ("f3 无连字符", "/".join(["1-5周", "星期五", "示例地点", REDACTED, ACTIVITY])),
+        ("f4 真实教师（非占位符）", "/".join(["1-5周", "星期五", LOCATION, TEACHER_A, ACTIVITY])),
+        ("f4 占位符前缀", "/".join(["1-5周", "星期五", LOCATION, "REDACTEDX", ACTIVITY])),
+        ("f4 小写占位符", "/".join(["1-5周", "星期五", LOCATION, "redacted", ACTIVITY])),
+        ("f4 带空白占位符", "/".join(["1-5周", "星期五", LOCATION, " REDACTED ", ACTIVITY])),
+        ("f4 空", "/".join(["1-5周", "星期五", LOCATION, "", ACTIVITY])),
+        ("f5 空", "/".join(["1-5周", "星期五", LOCATION, REDACTED, ""])),
+        ("f5 全空白", "/".join(["1-5周", "星期五", LOCATION, REDACTED, "   "])),
+        ("字段重排（location 在 f4）", "/".join(["1-5周", "星期五", REDACTED, LOCATION, ACTIVITY])),
+        ("6 字段近似形态", _layout_a() + "/多一列"),
+    ],
+)
+def test_layout_a_near_misses_still_fail_closed(label: str, text: str) -> None:
+    """⛔ 五条准入任一不满足 → **继续 fail closed**（⛔ 不泛化为任意 5 字段无 sections）。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        parse_teaching_time_place(text)
+
+
+def test_layout_b_four_field_is_still_refused() -> None:
+    """⛔ Layout B（4 字段）本轮**禁止处理**：继续 fail closed。
+
+    ⚠️ 它**不会**落到 `unsupported_sections_shape`：4 字段的 concrete 路径先解析
+    f2 为 weekday，而 Layout B 的 f2 是 location 形态 ⇒ 先在 weekday 处失败。
+    本轮**只**要求"仍然 fail closed"，⛔ 不要求（也⛔ 不允许）调整 Layout B 的处理。
+    """
+
+    text = "/".join(["1-5周", LOCATION, "示例文本", ACTIVITY])
+
+    with pytest.raises(CourseDataNormalizationError):
+        parse_teaching_time_place(text)
+
+
+def test_layout_a_does_not_change_the_public_meeting() -> None:
+    """⛔ 未新增公共字段：`Meeting` 字段集合不变，layout A 不产生 `Meeting`。"""
+
+    (segment,) = parse_teaching_time_place(_layout_a())
+
+    assert segment.meeting is None
+    assert set(Meeting.model_fields) == {
+        "weekday",
+        "start_section",
+        "end_section",
+        "weeks",
+        "campus",
+        "classroom",
+    }
+
+
+def test_layout_a_does_not_touch_confirmed_five_field_concrete_paths() -> None:
+    """✅ 已确认的 concrete 5 字段（f3 是 sections）**不受影响**：仍生成 Meeting。"""
+
+    with_location = "/".join(["1-8周", "星期五", "第5-6节", LOCATION, ACTIVITY])
+    with_teacher = "/".join(["1-8周", "星期五", "第5-6节", TEACHER_A, ACTIVITY])
+
+    for text in (with_location, with_teacher):
+        (segment,) = parse_teaching_time_place(text)
+        assert segment.meeting is not None
+        assert segment.meeting.start_section == 5
+        assert len(extract_meetings([segment])) == 1

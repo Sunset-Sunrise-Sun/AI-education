@@ -280,6 +280,36 @@ _SECTION_PATTERN = re.compile(
 #: 用来把"未知 suffix"与"形状本身不认识"分开，同时⛔ 不回显任何 token 内容。
 _SECTION_PREFIX_PATTERN = re.compile(r"^第[0-9]+-[0-9]+节")
 
+#: collector 的 teacher 脱敏占位符（**已知常量**，⛔ 不是取自任何 row 的值）。
+#:
+#: ⚠️ 单一真源在浏览器侧采集器
+#: （`tools/sysu_course_offering_collector.js` 的 `REDACTED_TEACHER = "REDACTED"`）；
+#: parser 侧必须**精确**识别它，才能判定下面的 5 字段 non-concrete layout。
+#: ⛔ 不得放宽为"包含 / 以它开头 / 正则通配"。
+_REDACTED_TEACHER_PLACEHOLDER = "REDACTED"
+
+#: 已批准的 **5 字段 non-concrete layout A**（Architecture Review 裁定；east artifact 39/39）：
+#:
+#: ```text
+#: weeks | weekday | location | REDACTED | activity
+#: ```
+#:
+#: 与已确认的 concrete 5 字段（`weeks/weekday/sections/location-or-teacher/activity`）
+#: **不同**：它的第 3 个字段是 **location** 而不是 sections，
+#: 因此**没有 concrete sections** ⇒ ⛔ 不能形成公共 `Meeting`。
+#: 精确准入（**五条全部**满足才走这条路，否则落回原有路径继续 fail closed）：
+#:
+#: ```text
+#: f1：现有 weeks parser（expand_weeks）成功
+#: f2：现有 weekday parser（parse_weekday）成功
+#: f3：现有 location 判别器（_classify_five_field_token）判定为 location
+#: f4：**精确等于** collector 的 REDACTED 占位符
+#: f5：现有 activity 规则（非空）通过
+#: ```
+#:
+#: ⛔ 不得泛化为"任意 5 字段无 sections"；⛔ 不猜 teacher / location 语义。
+_LAYOUT_A_NON_CONCRETE_FIELD_COUNT = 5
+
 
 @dataclass(frozen=True)
 class ParsedScheduleSegment:
@@ -664,6 +694,72 @@ def _try_parse_non_concrete_with_teacher_fields(
     )
 
 
+def _try_parse_five_field_non_concrete_layout_a(
+    fields: Sequence[str], segment_index: int
+) -> ParsedScheduleSegment | None:
+    """尝试把 **已批准的 5 字段 non-concrete layout A** 解析成 segment。
+
+    ```text
+    weeks | weekday | location | REDACTED | activity
+    ```
+
+    ⚠️ **精确准入**：五条**全部**满足才返回 segment，否则返回 `None`
+    （调用方落回原有 concrete 路径，继续 fail closed）：
+
+    ```text
+    f1：现有 weeks parser（expand_weeks）成功
+    f2：现有 weekday parser（parse_weekday）成功
+    f3：现有 location 判别器（_classify_five_field_token）判定为 location
+    f4：**精确等于** collector 的 `REDACTED` 占位符（⛔ 不用 startswith / 包含 / 通配）
+    f5：现有 activity 规则（非空）通过
+    ```
+
+    ⛔ **不泛化**为"任意 5 字段不含 sections"；⛔ 不猜 teacher / location 语义；
+    ⛔ 不重排字段；⛔ **不生成 `Meeting`**（该 layout **没有** concrete sections，
+    公共 `Meeting` 需要的 `start_section` / `end_section` 无从取得）。
+
+    ✅ `schedule_weeks` 保留展开后的周次；✅ `teacher` 保留（真实链路里就是脱敏占位符）；
+    ✅ `activity` 保留；⛔ `schedule_qualifier` 保持 `None`（本 layout 没有 qualifier）。
+    """
+
+    if len(fields) != _LAYOUT_A_NON_CONCRETE_FIELD_COUNT:
+        return None
+
+    # f1：weeks
+    try:
+        weeks = expand_weeks(fields[0].strip())
+    except CourseDataNormalizationError:
+        return None
+
+    # f2：weekday
+    try:
+        parse_weekday(fields[1].strip())
+    except CourseDataNormalizationError:
+        return None
+
+    # f3：location（**严格**三态判别器：>= 3 个非空 '-' 分段才算 location）
+    if _classify_five_field_token(fields[2].strip()) != _FIVE_FIELD_LOCATION:
+        return None
+
+    # f4：**精确**等于 collector 的 REDACTED 占位符
+    #     （⛔ 不用 startswith / 包含 / 正则通配；⛔ 不做 surrounding-whitespace 容忍）
+    if fields[3] != _REDACTED_TEACHER_PLACEHOLDER:
+        return None
+
+    # f5：activity 非空（现有规则）
+    activity = fields[4]
+    if not isinstance(activity, str) or activity.strip() == "":
+        return None
+
+    return ParsedScheduleSegment(
+        meeting=None,
+        teacher=fields[3],
+        activity=activity,
+        schedule_qualifier=None,
+        schedule_weeks=weeks,
+    )
+
+
 def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
     """解析整条 `teachingTimePlaceStr`，按 Raw 顺序返回**全部** segment。
 
@@ -755,6 +851,17 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
                 _try_parse_non_concrete_with_teacher_fields(fields, offset)
             )
             continue
+
+        # 5 字段 non-concrete **layout A**（Architecture Review 裁定）：
+        #   weeks | weekday | location | REDACTED | activity
+        # ⛔ 必须在下方的 `parse_sections(fields[2])` **之前**判定：
+        #    该 layout 的第 3 个字段是 location 而不是 sections。
+        # ⛔ 五条准入条件不全满足时返回 None → 落回原有 concrete 路径继续 fail closed。
+        if field_count == FIELDS_FIVE:
+            layout_a = _try_parse_five_field_non_concrete_layout_a(fields, offset)
+            if layout_a is not None:
+                parsed.append(layout_a)
+                continue
 
         weeks = expand_weeks(fields[0])
         weekday = parse_weekday(fields[1])
