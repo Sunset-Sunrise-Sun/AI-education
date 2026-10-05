@@ -361,14 +361,25 @@ def _source(record: CompletedCourse) -> str:
 
 
 def _candidate_records(
-    target: CurriculumCourse, completed: tuple[CompletedCourse, ...]
+    target: CurriculumCourse,
+    completed: tuple[CompletedCourse, ...],
+    consumed: frozenset[tuple[str, str]] = frozenset(),
 ) -> tuple[tuple[CompletedCourse, ...], tuple[CompletedCourse, ...]]:
+    """Split candidates into exact-identity facts and fuzzy name candidates.
+
+    ``consumed`` holds the source references of completed records that a
+    deterministic exact/identity match has already used for another target
+    requirement. Such a record carries a confirmed identity, so it must not be
+    offered again as a *fuzzy* name candidate elsewhere. Records whose identity is
+    still unresolved are never consumed and keep their name-candidate behaviour.
+    """
     identity = tuple(record for record in completed if (
         record.course_id_status is CourseIdStatus.CONFIRMED and record.course_id == target.course_id
     ))
     named = tuple(record for record in completed if (
         record.passed and _name(record.course_name) == _name(target.course_name)
         and record not in identity
+        and (record.source_id, record.source_record) not in consumed
     ))
     return identity, named
 
@@ -547,6 +558,11 @@ def build_curriculum_diff(
         missing[decision.target_course_id].append(decision)
 
     automatic: dict[str, tuple[tuple[CompletedCourse, ...], str | None]] = {}
+    # Source references of completed records that a deterministic exact/identity
+    # match has already used. They are removed from the later fuzzy name-candidate
+    # pool so one confirmed record cannot also be reported as a possible
+    # equivalent of a different requirement.
+    consumed_refs: set[tuple[str, str]] = set()
     if rules is not None and (rules.allow_exact_match or rules.allow_confirmed_absence):
         for target in new.courses:
             identity, named = _candidate_records(target, completed)
@@ -557,13 +573,14 @@ def build_curriculum_diff(
                     and not granted[target.course_id] and not missing[target.course_id]):
                 for record in exact:
                     ref_uses[(record.source_id, record.source_record)].add(target.course_id)
+                    consumed_refs.add((record.source_id, record.source_record))
 
     has_unknown_passed_identity = any(
         record.passed and record.course_id_status is CourseIdStatus.PENDING for record in completed
     )
     matches: list[CourseMatch] = []
     for target in new.courses:
-        identity, named = _candidate_records(target, completed)
+        identity, named = _candidate_records(target, completed, frozenset(consumed_refs))
         candidates = identity + named
         evidence = [f"{new.source_id}#{target.source_record}"]
         evidence.extend(_source(record) for record in candidates)

@@ -21,6 +21,7 @@
 - **组历史额度只由历史事实覆盖**：mixed 组的 `historical_minimum_credit` **只能**由 bucket 为 `historical` 的组成员覆盖；**future 成员一律不参与**，无论 satisfied / required / selected / manual_confirmation / possibly_equivalent。判定入口为 `group_plan_covers_requirement(diff, group_id)`，不只体现在 `GroupGap.remaining_credit`。
 - **组决策依据精确传播**：`confirmed_group_scope_decisions[].evidence` 只附加到该组内**本身属于历史范围**的已输出任务（按 `target.group_id` + entry bucket）；同一组的 future 任务、其他组、其他课程或无组课程都不会带上该依据。
 - **组缺口 reason 区分是否已有 split**：mixed 组无 split → "历史学分要求无法从来源分割，需人工确认"；已有 split 但历史学分仍不足 → "历史额度已经确认，但仍存在未满足学分"。
+- **已消耗的确定性匹配不再进入名称候选池**：一个 completed record 一旦被确定性的 exact/identity match 消耗，就从**后续的模糊名称候选池**中移除（`_candidate_records(..., consumed)`，按 `(source_id, source_record)` 稳定标识）。**未解析身份的 record 永不被消耗**，仍可作名称候选；`ConfirmedRecognition` 走自己的路径、不触发消耗；identity 匹配本身不受影响。该规则**不是**「一条记录永远只能匹配一个目标」的通用约束，只处理「确定性确认匹配 → 退出后续模糊池」。真实 Case A：`PE201/PE202/PE305/PE302` 不再由 D4 `PE102` 产生误报。
 - 判定时点必须由输入显式给出并带来源依据，**不使用系统当前日期**，也不从 deadline、先修或其他字段推断；`evidence` 会进入任务 `source_evidence`，保持可追溯。
 - 公共输出仍为 `MakeupTask[]`，公共契约未修改；`MakeupScope`、`ConfirmedScopeDecision`、`ConfirmedGroupScopeDecision` 均属 Curriculum 内部对象，Provider 签名、Integration 与 Planner 均不感知。
 - 自动测试使用合成数据；真实 D4 本地读取及独立逐字段核对已通过。真实文件和逐行输出不入库。
@@ -28,7 +29,7 @@
 - **positional 模式的结构守卫**：行宽必须覆盖全部映射列；数据行物理列不得超过声明的 `column_count`（学校改版整体移列时失败而非错列读取）；`identity` 锚点必须在指定（已映射）列命中；横向合并覆盖映射列时失败。`course_name_lines` 显式声明双语名称单元格保留前 N 行。
 - **行选择 fail closed（不得成为绕过结构校验的旁路）**：先由 `row_kind` 判别器（仅支持 numeric）判定是否为课程行，再判结构 —— 判别器不命中 → 明确非课程行 skip；判别器命中但 selector 列物理缺失 → 结构损坏，fail closed；判别器命中且全部 selector 命中 → 进入完整结构校验；判别器不命中但**其余 identifying selectors 全部命中**（course_id 有值且 credit 为数字）→ 视为**判别器本身损坏**，**fail closed**（不得 skip）；只有判别器不命中且其余 selectors 未全部命中才是真实分区行可 skip。单元格"存在但为空"与"物理缺失"在 positional 下语义相同。selector 只能读标识性列（`course_id` / `credit` / `recommended_term_text` / `sequence`），映射到可选列的 selector 直接拒绝。真实 Case A selector = `sequence` numeric + `course_id` nonempty + `credit` numeric。
 - **真实 Case A 两份培养方案现已可导入**：`遥感方案.docx` 84 条课程条目、`网安方案.docx` 104 条，均 0 issue，可转成 `CurriculumVersion`。声明式 profile 见 `backend/app/curriculum/plan_profiles.py`（不含真实文件、路径或隐私字段）。真实文档仍在受控本地，未入库。
-- 最新后端回归：**1995 passed、2 failed、2 skipped**（UTF-8 模式）。两类失败均为既有环境性差异，与本次改动无关，详见下方说明。
+- 最新后端回归：**2008 passed、2 failed、2 skipped**（UTF-8 模式）。两类失败均为既有环境性差异，与本次改动无关，详见下方说明。
 - 人工 Office 文件到 Provider 的计算链路已验证。真实 D2/D3、真实规则和真实端到端结果尚未验收，官方 Word 格式仍须按实物核对映射。
 
 ## 判定时点与已知环境差异

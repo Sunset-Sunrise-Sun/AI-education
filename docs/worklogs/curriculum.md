@@ -160,3 +160,15 @@
 - 测试：positional 测试 52 → **56** 项（新增：sequence 单元格无值但 course_id/credit 完好 → reject；sequence 非 numeric 但 course_id/credit 完好 → reject（`row discriminator is damaged`）；判别器不命中且其余 selectors 未全命中 → 仍安全 skip；真实 section 形 `False/True/False` → 安全 skip）。全量后端（`PYTHONUTF8=1`）：**1995 passed、2 failed、2 skipped**。
 - 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
 - 下一步：等待 Architecture Review 终审；**不 merge、不 push main**。
+
+### 2026-10-05 - consumed match candidates：已消耗的确定性匹配退出名称候选池
+- 根因：`_candidate_records()` 只按「course_id 相同」区分 identity 与 named，named 池**不看该记录是否已被确定性的 exact/identity match 用过**。因此 D4 `PE102 体育` 在 identity 匹配目标 `PE102` 之后，仍因名称「体育」被再次投入 `PE201/PE202/PE305/PE302` 的候选，产生 4 条错误 `possibly_equivalent`。真实数据流：`build_curriculum_diff` 先跑一个 `automatic` pass（`allow_exact_match` 下计算 exact），随后主循环再对每个 target 调 `_candidate_records()` 组装 `candidates = identity + named`——两趟之间没有"已消耗"信息传递。
+- 修复设计：新增内部 `consumed_refs: set[tuple[str, str]]`，在 `automatic` pass 中**当某个 exact 结果确实被采用为自动认证**时（`allow_exact_match` 且目标 course_id 唯一、requirement 非 UNKNOWN、无 explicit recognition、无 missing requirement——与既有 `ref_uses` 登记条件完全一致）加入该记录的 `(source_id, source_record)`。`_candidate_records(target, completed, consumed)` 在构造 **named** 池时排除 `consumed` 中的记录。**identity 池不参与过滤**，因此 identity 匹配语义不变。
+- 标识选择：用 `(source_id, source_record)` 这一稳定内部引用，而非 `course_id`。原因：unresolved record 可能没有 course_id；同一 course_id 理论上可能对应不同 completed entry；按引用可避免误伤其它独立记录。
+- 刻意**没有**扩成「一条 completed record 永远只能匹配一个 target」的通用规则：只有确定性确认匹配才产生消耗；`ConfirmedRecognition` 目标不进入该消耗分支（走独立路径），未解析身份的记录永不消耗，纯名称候选也不消耗。
+- 真实 Case A re-validation（`as_of_term = 2025-2`，evidence 类型 = case-owner confirmation，**非学校官方政策**）：**`possibly_equivalent` 由 4 → 0**；`satisfied` 保持 **12**；`manual_confirmation` 92。`PE101/PE102` 仍为 `satisfied`（各自 identity 消耗自己的记录），`PE201/PE202/PE305/PE302` 候选列表**均为空**、状态 `manual_confirmation`，不再由 D4 `PE102` 产生误报。目标课程条目 104、旧方案 84、D4 24 条不变；投影仍被 **7 条 unresolved 区间学期 + 未声明选修组** 阻断（属业务 unresolved，本轮未触碰）。
+- 修改文件：`backend/app/curriculum/matching.py`；新增 `backend/tests/test_curriculum_consumed_candidates.py`；更新 `docs/status/curriculum.md`、本文件。未触碰 Provider / Schema / Planner / Course Data / Frontend / group / prerequisite / priority / scope。
+- 测试：新增 **13** 项，并已实测**去掉修复后其中 4 项会失败**（证明测试确实覆盖该缺陷）。全量后端（`PYTHONUTF8=1`）：**2008 passed、2 failed、2 skipped**。
+- 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
+- 使用数据：真实 D4 与两份培养方案仅在本地受控目录只读使用，未提交、未复制进仓库。
+- 下一步：等待 Architecture Review；**不 merge main**。
