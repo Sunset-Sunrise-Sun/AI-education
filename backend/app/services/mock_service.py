@@ -14,7 +14,7 @@
 1. **先按 `/schemas/*.schema.json` 校验原始 JSON**——公共 JSON Schema 是唯一真源。
    这一步不能省：Pydantic 会做类型转换（`weekday: "1"` → `1`、`credit: true` → `1`），
    只做 `model_validate` 会放行"看起来能用、但违反公共 Schema"的数据，
-   而启动自检的全部意义就是不让这种数据上线。
+    Mock endpoint 调用时必须拒绝这类数据，不能把它们转换后继续返回。
 2. **再用 Pydantic 模型解析**，得到带类型、带枚举的后端对象。
 
 真实数据接入必须等用户完成教务页面技术侦察并确认授权范围。
@@ -60,7 +60,7 @@ MOCK_DATA_DIR: Final[Path] = _REPO_ROOT / "mock_data"
 #: 公共 Schema 目录。**唯一真源**，本文件只读不写。
 SCHEMAS_DIR: Final[Path] = _REPO_ROOT / "schemas"
 
-#: 本次底座读取的 Mock 文件清单，供 README 与自检使用。
+#: 本次底座读取的 Mock 文件清单，供 Mock endpoint 调用期校验使用。
 MOCK_DATA_FILES: Final[dict[str, str]] = {
     "makeup_tasks": "makeup_tasks.json",
     "course_offerings": "course_offerings.json",
@@ -237,9 +237,10 @@ def load_plan_result() -> PlanResult:
 
 
 def all_mock_data() -> dict[str, object]:
-    """一次性读取全部 Mock 数据，供 `/demo` 聚合接口与启动自检使用。
+    """一次性读取并严格校验全部 Mock 数据，供 `/demo` 聚合接口使用。
 
-    启动自检走的就是这条路径，因此"数据不合公共 Schema"会在启动阶段就暴露。
+    数据不合公共 Schema 时直接抛出 ``MockDataError``，由 Mock API 转为明确的 500；
+    不返回部分结果，也不 fallback 到其它数据源。
     返回的字典直接可被 JSON 序列化：调用方负责把结果交给 FastAPI。
     """
 

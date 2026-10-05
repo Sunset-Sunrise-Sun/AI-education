@@ -485,12 +485,12 @@ def test_integration_has_no_mock_fallback() -> None:
         )
 
 
-def test_no_integration_endpoint_is_exposed(client: TestClient) -> None:
-    """本轮**不新增任何 API**：真实 Provider 尚未接入，暴露 API 只会得到无法工作的壳。"""
+def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) -> None:
+    """真实规划入口已开放；未装配时由 API 明确返回 503。"""
 
     paths = set(client.get("/openapi.json").json()["paths"])
 
-    for forbidden in ("/plan", "/integration", "/api/v1/plan", "/api/v1/integration"):
+    for forbidden in ("/plan", "/integration", "/api/v1/integration"):
         assert forbidden not in paths, f"不应暴露 {forbidden}"
 
     assert paths == {
@@ -501,4 +501,5 @@ def test_no_integration_endpoint_is_exposed(client: TestClient) -> None:
         "/api/v1/mock/preference",
         "/api/v1/mock/plan-result",
         "/api/v1/mock/demo",
+        "/api/v1/plan",
     }
