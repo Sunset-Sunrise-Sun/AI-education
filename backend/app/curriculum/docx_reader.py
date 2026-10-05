@@ -31,11 +31,29 @@ _MAX_XML_BYTES = 16 * 1024 * 1024
 _MAX_TOTAL_BYTES = 64 * 1024 * 1024
 _MAX_ARCHIVE_MEMBERS = 2048
 _MAX_COLUMNS = 512
-_FIELDS = frozenset({"course_id", "course_name", "credit", "recommended_term_text", "requirement"})
-_PROFILE_FIELDS = frozenset({
-    "table_index", "header_row", "columns", "expected_headers", "first_data_row", "last_data_row",
-    "requirement", "course_type", "group_id", "requirement_values",
+_FIELDS = frozenset({
+    "course_id", "course_name", "credit", "recommended_term_text", "requirement", "sequence",
 })
+_MODE_HEADER = "header"
+_MODE_POSITIONAL = "positional"
+_HEADER_FIELDS = frozenset({
+    "mode", "table_index", "header_row", "columns", "expected_headers", "first_data_row",
+    "last_data_row", "requirement", "course_type", "group_id", "requirement_values",
+})
+_POSITIONAL_FIELDS = frozenset({
+    "mode", "table_index", "data_start_row", "columns", "row_filter", "row_kind", "exclude",
+    "column_count", "identity", "last_data_row", "requirement", "course_type", "group_id",
+    "requirement_values", "course_name_lines",
+})
+_POSITIONAL_ONLY_FIELDS = frozenset({
+    "data_start_row", "row_filter", "row_kind", "exclude", "column_count", "identity",
+    "course_name_lines",
+})
+_HEADER_ONLY_FIELDS = frozenset({"header_row", "expected_headers"})
+_ROW_CONDITIONS = frozenset({"numeric", "nonempty", "equals"})
+# Only these fields can prove "this is a course row": every real course row has
+# them, while a section/module label row never has all of them.
+_SELECTOR_SOURCE_FIELDS = frozenset({"course_id", "credit", "recommended_term_text", "sequence"})
 _CREDIT = re.compile(r"\+?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)\Z")
 _UNKNOWN_IDS = frozenset({"待确认", "未知", "未确认", "未提供", "pending", "unknown", "?"})
 _REVISION_TAGS = frozenset({
@@ -156,8 +174,25 @@ class DocxImportResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _RowCondition:
+    """One deterministic row-selection test inside a positional table."""
+
+    column: int
+    condition: str
+    values: tuple[str, ...] = ()
+
+    def matches(self, text: str | None) -> bool:
+        if self.condition == "nonempty":
+            return bool(text is not None and text.strip())
+        if self.condition == "numeric":
+            return bool(text is not None and _CREDIT.fullmatch(text.strip()))
+        return text in self.values
+
+
+@dataclass(frozen=True, slots=True)
 class _TableProfile:
     table_index: int
+    mode: str
     header_row: int
     columns: tuple[tuple[str, int], ...]
     expected_headers: tuple[tuple[str, str], ...]
@@ -168,50 +203,196 @@ class _TableProfile:
     course_type: str | None
     group_id: str | None
     requirement_values: tuple[tuple[str, RequirementKind], ...]
+    row_filter: tuple[_RowCondition, ...] = ()
+    row_kind: tuple[int, str] | None = None
+    exclude: tuple[_RowCondition, ...] = ()
+    column_count: int | None = None
+    identity: tuple[int, tuple[str, ...]] | None = None
+    course_name_lines: int = 0
+
+
+def _positive_int(value: object, label: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        _fail(f"{label}: expected a positive integer")
+    return value
+
+
+def _row_conditions(value: object) -> tuple[_RowCondition, ...]:
+    """Parse deterministic row selection rules; never infer them from content."""
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence) or not value:
+        _fail("row_filter: expected a nonempty sequence of conditions")
+    conditions = []
+    for entry in value:
+        if not isinstance(entry, Mapping) or set(entry) - {"column", "condition", "values"}:
+            _fail("row_filter: invalid condition field")
+        if "column" not in entry or "condition" not in entry:
+            _fail("row_filter: missing required condition field")
+        column = _positive_int(entry["column"], "row_filter column")
+        condition = entry["condition"]
+        if not isinstance(condition, str) or condition not in _ROW_CONDITIONS:
+            _fail("row_filter: unsupported condition")
+        raw_values = entry.get("values", ())
+        if condition == "equals":
+            if isinstance(raw_values, (str, bytes, bytearray)) or not isinstance(raw_values, Sequence) or not raw_values:
+                _fail("row_filter: equals requires declared values")
+            values = tuple(_text(item, "row_filter values") for item in raw_values)
+            if len(set(values)) != len(values):
+                _fail("row_filter: duplicate declared value")
+        elif "values" in entry:
+            _fail("row_filter: values are only valid for equals")
+        else:
+            values = ()
+        conditions.append(_RowCondition(column, condition, values))
+    return tuple(conditions)
+
+
+def _identity(value: object) -> tuple[int, tuple[str, ...]]:
+    """Parse the structural anchor that keeps a positional profile from drifting."""
+    if not isinstance(value, Mapping) or set(value) != {"column", "values"}:
+        _fail("identity: expected column and values")
+    column = _positive_int(value["column"], "identity column")
+    raw_values = value["values"]
+    if isinstance(raw_values, (str, bytes, bytearray)) or not isinstance(raw_values, Sequence) or not raw_values:
+        _fail("identity: expected declared values")
+    values = tuple(_text(item, "identity values") for item in raw_values)
+    if len(set(values)) != len(values):
+        _fail("identity: duplicate declared value")
+    return column, values
+
+
+def _shared_profile_fields(spec: Mapping, columns: Mapping) -> tuple:
+    """Validate and return the fields both modes share."""
+    if not isinstance(columns, Mapping) or not {"course_id", "course_name", "credit"} <= set(columns):
+        _fail("document profile: core course columns are required")
+    if set(columns) - _FIELDS:
+        _fail("document profile: unsupported column field")
+    positions = tuple(_positive_int(value, "column_index") for value in columns.values())
+    if len(set(positions)) != len(positions) or max(positions) > _MAX_COLUMNS:
+        _fail("document profile: invalid or duplicate column index")
+    mapping = spec.get("requirement_values", {})
+    if not isinstance(mapping, Mapping) or (mapping and "requirement" not in columns):
+        _fail("document profile: invalid requirement mapping")
+    values = tuple((_text(key, "requirement_values"), _requirement(value)) for key, value in mapping.items())
+    return (tuple(columns.items()), values, _requirement(spec.get("requirement", RequirementKind.UNKNOWN)),
+            "requirement" in spec, _optional_text(spec.get("course_type"), "course_type"),
+            _optional_text(spec.get("group_id"), "group_id"), positions)
+
+
+def _positional_profile(spec: Mapping) -> _TableProfile:
+    """Build a positional profile: columns come from declared positions only."""
+    if "data_start_row" not in spec:
+        _fail("document profile: missing required field")
+    columns, values, requirement, fixed, course_type, group_id, positions = _shared_profile_fields(
+        spec, spec["columns"],
+    )
+    start = _positive_int(spec["data_start_row"], "data_start_row")
+    last = spec.get("last_data_row")
+    if last is not None:
+        last = _positive_int(last, "last_data_row")
+        if last < start:
+            _fail("document profile: invalid data row range")
+    conditions = _row_conditions(spec["row_filter"]) if "row_filter" in spec else ()
+    excluded = _row_conditions(spec["exclude"]) if "exclude" in spec else ()
+    field_by_position = {position: key for key, position in columns}
+    for condition in (*conditions, *excluded):
+        if condition.column not in positions:
+            # A row rule may only read a column the profile already declares.
+            _fail("row_filter: column is not declared in columns")
+    # A selector must be able to tell a course row from a section row on its own;
+    # a rule over an optional column (course_type / group_id / requirement) could
+    # silently skip every row, so it is rejected outright.
+    for condition in conditions:
+        if field_by_position[condition.column] not in _SELECTOR_SOURCE_FIELDS:
+            _fail("row_filter: selector must read an identifying course column")
+    # ``row_kind`` names the one declared discriminator that decides whether a
+    # row is a course row at all. It is required whenever selectors are declared,
+    # so the profile always states how rows are told apart.
+    row_kind = None
+    if "row_kind" in spec:
+        kind = spec["row_kind"]
+        if not isinstance(kind, Mapping) or set(kind) != {"column", "condition"}:
+            _fail("row_kind: expected column and condition")
+        kind_column = _positive_int(kind["column"], "row_kind column")
+        if kind_column not in positions:
+            _fail("row_kind: column is not declared in columns")
+        kind_condition = kind["condition"]
+        if not isinstance(kind_condition, str) or kind_condition not in _ROW_CONDITIONS:
+            _fail("row_kind: unsupported condition")
+        if kind_condition != "numeric":
+            # Only a "numeric" marker is guaranteed present on every course row
+            # and absent on section labels; weaker kinds cannot discriminate.
+            _fail("row_kind: only a numeric discriminator is supported")
+        row_kind = (kind_column, kind_condition)
+    elif conditions:
+        _fail("document profile: row_filter requires an explicit row_kind")
+    if row_kind is not None and row_kind[0] not in {condition.column for condition in conditions}:
+        _fail("row_kind: discriminator column must also be a declared selector")
+    declared_width = spec.get("column_count")
+    if declared_width is not None:
+        declared_width = _positive_int(declared_width, "column_count")
+        if declared_width < max(positions):
+            _fail("document profile: column_count is narrower than the mapped columns")
+    else:
+        declared_width = max(positions)
+    anchor = _identity(spec["identity"]) if "identity" in spec else (positions[0], ())
+    if anchor[0] not in positions:
+        _fail("identity: column is not declared in columns")
+    name_lines = spec.get("course_name_lines", 0)
+    if isinstance(name_lines, bool) or not isinstance(name_lines, int) or name_lines < 0:
+        _fail("course_name_lines: expected a nonnegative integer")
+    return _TableProfile(
+        _positive_int(spec["table_index"], "table_index"), _MODE_POSITIONAL, 0, columns, (), start,
+        last, requirement, fixed, course_type, group_id, values, conditions, row_kind, excluded,
+        declared_width, anchor, name_lines,
+    )
+
+
+def _header_profile(spec: Mapping) -> _TableProfile:
+    """Build a header profile: unchanged header-based behaviour."""
+    if {"header_row", "expected_headers"} - set(spec):
+        _fail("document profile: missing required field")
+    header = _positive_int(spec["header_row"], "header_row")
+    columns, values, requirement, fixed, course_type, group_id, _positions = _shared_profile_fields(
+        spec, spec["columns"],
+    )
+    expected = spec["expected_headers"]
+    if not isinstance(expected, Mapping) or set(expected) != set(dict(columns)):
+        _fail("document profile: headers must cover exactly the mapped fields")
+    for value in expected.values():
+        _text(value, "expected_headers")
+    first = _positive_int(spec.get("first_data_row", header + 1), "first_data_row")
+    last = spec.get("last_data_row")
+    if last is not None:
+        last = _positive_int(last, "last_data_row")
+    if first <= header or (last is not None and last < first):
+        _fail("document profile: invalid data row range")
+    return _TableProfile(
+        _positive_int(spec["table_index"], "table_index"), _MODE_HEADER, header, columns,
+        tuple(expected.items()), first, last, requirement, fixed, course_type, group_id, values,
+    )
 
 
 def _profiles(tables: object) -> tuple[_TableProfile, ...]:
+    """Validate profiles per declared mode; the two modes never mix fields."""
     if isinstance(tables, (str, bytes, bytearray)) or not isinstance(tables, Sequence) or not tables:
         _fail("document profile: expected table mappings")
     if len(tables) > 128:
         _fail("document profile: table mapping limit exceeded")
     result = []
     for spec in tables:
-        if not isinstance(spec, Mapping) or set(spec) - _PROFILE_FIELDS:
+        if not isinstance(spec, Mapping):
             _fail("document profile: invalid fields")
-        if {"table_index", "header_row", "columns", "expected_headers"} - set(spec):
-            _fail("document profile: missing required field")
-        table_index = _integer(spec["table_index"], "table_index")
-        header = _integer(spec["header_row"], "header_row")
-        columns = spec["columns"]
-        expected = spec["expected_headers"]
-        if not isinstance(columns, Mapping) or not {"course_id", "course_name", "credit"} <= set(columns):
-            _fail("document profile: core course columns are required")
-        if set(columns) - _FIELDS:
-            _fail("document profile: unsupported column field")
-        if not isinstance(expected, Mapping) or set(expected) != set(columns):
-            _fail("document profile: headers must cover exactly the mapped fields")
-        positions = tuple(_integer(value, "column_index") for value in columns.values())
-        if len(set(positions)) != len(positions) or max(positions) > _MAX_COLUMNS:
-            _fail("document profile: invalid or duplicate column index")
-        for value in expected.values():
-            _text(value, "expected_headers")
-        first = _integer(spec.get("first_data_row", header + 1), "first_data_row")
-        last = spec.get("last_data_row")
-        if last is not None:
-            last = _integer(last, "last_data_row")
-        if first <= header or (last is not None and last < first):
-            _fail("document profile: invalid data row range")
-        mapping = spec.get("requirement_values", {})
-        if not isinstance(mapping, Mapping) or (mapping and "requirement" not in columns):
-            _fail("document profile: invalid requirement mapping")
-        values = tuple((_text(key, "requirement_values"), _requirement(value)) for key, value in mapping.items())
-        result.append(_TableProfile(
-            table_index, header, tuple(columns.items()), tuple(expected.items()), first, last,
-            _requirement(spec.get("requirement", RequirementKind.UNKNOWN)), "requirement" in spec,
-            _optional_text(spec.get("course_type"), "course_type"),
-            _optional_text(spec.get("group_id"), "group_id"), values,
-        ))
+        mode = spec.get("mode", _MODE_HEADER)
+        if mode == _MODE_HEADER:
+            if set(spec) - _HEADER_FIELDS:
+                _fail("document profile: invalid fields")
+            result.append(_header_profile(spec))
+        elif mode == _MODE_POSITIONAL:
+            if set(spec) - _POSITIONAL_FIELDS:
+                _fail("document profile: invalid fields")
+            result.append(_positional_profile(spec))
+        else:
+            _fail("document profile: unsupported mode")
     return tuple(result)
 
 
@@ -443,6 +624,40 @@ def _descendant_items(node: ET.Element, kind: str, inherited: tuple[str, ...] = 
     return result
 
 
+def _horizontal_span_columns(row: ET.Element) -> frozenset[int]:
+    """Physical columns covered by a horizontally merged cell in this row.
+
+    Only multi-column spans are reported: a vertical merge repeats a value down
+    one column and does not make a position ambiguous, but a ``gridSpan`` does.
+    """
+    covered = set()
+    start = 1
+    before = row.find(f"{_tag('trPr')}/{_tag('gridBefore')}")
+    if before is not None:
+        value = before.get(_tag("val"), "")
+        if value.isascii() and value.isdigit() and int(value) <= _MAX_COLUMNS:
+            start += int(value)
+    for cell in row.findall(_tag("tc")):
+        spans = cell.findall(f"{_tag('tcPr')}/{_tag('gridSpan')}")
+        span = 1
+        if spans:
+            value = spans[0].get(_tag("val"), "")
+            if value.isascii() and value.isdigit() and 1 <= int(value) <= _MAX_COLUMNS:
+                span = int(value)
+        if span > 1:
+            covered.update(range(start, start + span))
+        start += span
+    return frozenset(covered)
+
+
+def _field_for_column(profile: _TableProfile, column: int) -> str | None:
+    """Return the logical field mapped to a physical column, if any."""
+    for key, position in profile.columns:
+        if position == column:
+            return key
+    return None
+
+
 def _import(root: ET.Element, profiles: tuple[_TableProfile, ...], source_id: str,
             visibility: _StyleVisibility) -> DocxImportResult:
     tables = _descendant_items(root.find(_tag("body")), "tbl")
@@ -459,19 +674,50 @@ def _import(root: ET.Element, profiles: tuple[_TableProfile, ...], source_id: st
         if any(node.tag in {_tag(name) for name in _REVISION_TAGS} for property_node in properties for node in property_node.iter()):
             table_codes = tuple(sorted(set(table_codes) | {"unreviewed_revision"}))
         rows = _descendant_items(source_table, "tr", table_codes)
-        if profile.header_row > len(rows):
-            _fail("document: selected header row is missing")
-        header_row, inherited_header_codes = rows[profile.header_row - 1]
-        header, header_issues = _layout(header_row)
-        if header_issues or inherited_header_codes or _style_codes(header_row, visibility, table_style_hidden, table_style_uncertain):
-            _fail("document: selected header layout requires review")
         columns = dict(profile.columns)
-        for key, expected in profile.expected_headers:
-            if columns[key] not in header or _cell_text(header[columns[key]]) != expected:
-                _fail(f"table {profile.table_index} row {profile.header_row}: header mismatch")
-        last = profile.last_data_row if profile.last_data_row is not None else len(rows)
-        if profile.first_data_row > len(rows) + 1 or last > len(rows):
-            _fail("document: selected data row range is outside the table")
+        positional = profile.mode == _MODE_POSITIONAL
+        if positional:
+            # A positional profile declares no header. Its identity instead comes
+            # from the declared structure itself, which must match exactly.
+            if profile.first_data_row > len(rows) + 1:
+                _fail("document: selected data row range is outside the table")
+            if profile.identity is not None and profile.identity[1]:
+                anchor_column, anchor_values = profile.identity
+                anchor_found = False
+                for row_element, _inherited in rows[profile.first_data_row - 1:]:
+                    cells, _codes = _layout(row_element)
+                    text = _cell_text(cells[anchor_column]).strip() if anchor_column in cells else None
+                    if text in anchor_values:
+                        anchor_found = True
+                        break
+                if not anchor_found:
+                    _fail(f"table {profile.table_index}: document structure does not match the profile")
+            last = profile.last_data_row if profile.last_data_row is not None else len(rows)
+            if last > len(rows):
+                _fail("document: selected data row range is outside the table")
+            # The declared physical column count is the layout guard: a school
+            # revision that changes the table width must fail instead of
+            # silently shifting every mapped column.
+            if profile.column_count is not None:
+                for row_element, _inherited in rows[profile.first_data_row - 1:last]:
+                    cells, _codes = _layout(row_element)
+                    if cells and max(cells) > profile.column_count:
+                        _fail(
+                            f"table {profile.table_index}: document structure does not match the profile"
+                        )
+        else:
+            if profile.header_row > len(rows):
+                _fail("document: selected header row is missing")
+            header_row, inherited_header_codes = rows[profile.header_row - 1]
+            header, header_issues = _layout(header_row)
+            if header_issues or inherited_header_codes or _style_codes(header_row, visibility, table_style_hidden, table_style_uncertain):
+                _fail("document: selected header layout requires review")
+            for key, expected in profile.expected_headers:
+                if columns[key] not in header or _cell_text(header[columns[key]]) != expected:
+                    _fail(f"table {profile.table_index} row {profile.header_row}: header mismatch")
+            last = profile.last_data_row if profile.last_data_row is not None else len(rows)
+            if profile.first_data_row > len(rows) + 1 or last > len(rows):
+                _fail("document: selected data row range is outside the table")
         for index in range(profile.first_data_row, last + 1):
             source_position = (profile.table_index, index)
             if source_position in selected:
@@ -479,12 +725,101 @@ def _import(root: ET.Element, profiles: tuple[_TableProfile, ...], source_id: st
             selected.add(source_position)
             source_row, inherited_codes = rows[index - 1]
             cells, codes = _layout(source_row)
-            codes = tuple(sorted(set(codes) | set(inherited_codes) | set(_style_codes(source_row, visibility, table_style_hidden, table_style_uncertain))))
-            values = {key: _cell_text(cells[column]) if column in cells else None for key, column in profile.columns}
+            values = {}
+            for key, column in profile.columns:
+                if column not in cells:
+                    values[key] = None
+                    continue
+                text = _cell_text(cells[column])
+                # Positional row selection must not distinguish "cell physically
+                # absent" from "cell present but blank": both mean no value was
+                # read, so a damaged discriminator cannot hide behind an empty
+                # cell. Header mode keeps its original raw text unchanged.
+                values[key] = None if positional and not text.strip() else text
             visible_text = any(
                 (node.text or "").strip() for node in source_row.iter()
                 if node.tag in {_tag("t"), _tag("delText")}
             )
+            if positional and profile.exclude:
+                # Explicit exclusions beat row interpretation.
+                if any(
+                    condition.matches(values.get(_field_for_column(profile, condition.column)))
+                    for condition in profile.exclude
+                ):
+                    continue
+            if positional and profile.row_filter:
+                # Row selection must not become a way to bypass the structural
+                # guards. The declared ``row_kind`` discriminator decides the row
+                # identity FIRST, then everything else follows:
+                #
+                # - the discriminator and every selector hold -> course row: run
+                #   the full structural guards;
+                # - the discriminator holds but a selector cell is physically
+                #   absent, or a selector fails -> the row claims to be a course
+                #   row and is damaged: fail closed;
+                # - the discriminator misses, but every OTHER identifying
+                #   selector still holds (course_id present, credit numeric) ->
+                #   the discriminator itself is damaged on a row that is
+                #   otherwise a course row: fail closed;
+                # - the discriminator misses and the remaining selectors do not
+                #   all hold -> a real section/module/summary row: skip.
+                kind_key = _field_for_column(profile, profile.row_kind[0])
+                kind_value = values.get(kind_key)
+                if kind_value is not None and _RowCondition(
+                    profile.row_kind[0], profile.row_kind[1]
+                ).matches(kind_value):
+                    selector_values = [
+                        values.get(_field_for_column(profile, condition.column))
+                        for condition in profile.row_filter
+                    ]
+                    if any(value is None for value in selector_values):
+                        _fail(
+                            f"table {profile.table_index} row {index}: row is narrower than the mapped columns"
+                        )
+                    if not all(
+                        condition.matches(value)
+                        for condition, value in zip(profile.row_filter, selector_values)
+                    ):
+                        _fail(
+                            f"table {profile.table_index} row {index}: row is incomplete for the declared selectors"
+                        )
+                else:
+                    others = [
+                        (condition, values.get(_field_for_column(profile, condition.column)))
+                        for condition in profile.row_filter
+                        if condition.column != profile.row_kind[0]
+                    ]
+                    # Only a *physically present* set of remaining selectors that
+                    # all hold proves the discriminator is damaged rather than
+                    # the row being a section label.
+                    if others and all(
+                        value is not None and condition.matches(value)
+                        for condition, value in others
+                    ):
+                        _fail(
+                            f"table {profile.table_index} row {index}: row discriminator is damaged"
+                        )
+                    continue
+            if positional:
+                # "Read by position" is not "read without checks": every mapped
+                # column must exist in this row's physical layout, and no
+                # horizontal merge may reach into a mapped column, because that
+                # would make the declared position ambiguous.
+                missing = [column for column in columns.values() if column not in cells]
+                if missing:
+                    _fail(
+                        f"table {profile.table_index} row {index}: row is narrower than the mapped columns"
+                    )
+                if _horizontal_span_columns(source_row) & set(columns.values()):
+                    _fail(
+                        f"table {profile.table_index} row {index}: merged cells overlap mapped columns"
+                    )
+            codes = tuple(sorted(set(codes) | set(inherited_codes) | set(_style_codes(source_row, visibility, table_style_hidden, table_style_uncertain))))
+            if positional:
+                # A vertical merge repeats a section label down one column and
+                # does not affect the declared positions; the check above already
+                # rejects any *horizontal* span that reaches a mapped column.
+                codes = tuple(code for code in codes if code != "merged_cells")
             if not codes and not visible_text:
                 continue
             issue_start = len(issues)
@@ -499,6 +834,12 @@ def _import(root: ET.Element, profiles: tuple[_TableProfile, ...], source_id: st
                 course_id = None
                 issue("unresolved_course_id", "course_id")
             course_name = values["course_name"]
+            if positional and profile.course_name_lines:
+                # Sources that print a bilingual name in one cell ("中文\nEnglish")
+                # need an explicit declaration of how many leading lines to keep.
+                # This is a declared source-format rule, not content guessing.
+                lines = [line for line in (course_name or "").split("\n") if line.strip()]
+                course_name = "\n".join(lines[:profile.course_name_lines]) or None
             if course_name is None or not course_name.strip():
                 course_name = None
                 issue("missing_course_name", "course_name")
@@ -539,12 +880,27 @@ def _import(root: ET.Element, profiles: tuple[_TableProfile, ...], source_id: st
 def load_curriculum_docx(path: str | Path, *, source_id: str, tables: Sequence[Mapping[str, object]]) -> DocxImportResult:
     """Read selected top-level tables using explicit one-based mappings.
 
-Every mapped field requires its exact expected header. Each mapping needs
-course_id, course_name and credit columns. Explicit row ranges may describe
-different source sections. Overlaps are rejected. Blank rows may be skipped;
-all other selected rows remain in the draft, including summaries and ambiguities.
-No XML relationship, macro, image, field or embedded object is executed.
-"""
+    Two explicit modes exist and never mix their fields:
+
+    ``header`` (default, unchanged)
+        Requires ``header_row`` plus ``expected_headers`` covering exactly the
+        mapped ``columns``. Every mapped field is verified against the literal
+        header text of that row; a mismatch fails closed.
+
+    ``positional``
+        For sources that carry no column-label row at all. Requires
+        ``data_start_row`` and ``columns`` (canonical field -> physical column),
+        and accepts only declared structural guards (``column_count``,
+        ``identity``) and declared deterministic ``row_filter`` rules. Column
+        positions are never inferred, no header is required, and the declared
+        table width / identity must match the document or the import fails.
+
+    In both modes every mapping needs course_id, course_name and credit columns.
+    Explicit row ranges may describe different source sections; overlaps are
+    rejected. Blank rows may be skipped; all other selected rows remain in the
+    draft, including summaries and ambiguities. No XML relationship, macro,
+    image, field or embedded object is executed.
+    """
     _text(source_id, "source_id")
     profiles = _profiles(tables)
     root, styles = _read_document(path)

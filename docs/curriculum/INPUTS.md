@@ -41,6 +41,73 @@ Word 解析使用明确映射，不自动解释标题、分区、先修或学校
 
 核心列 `course_id`、`course_name`、`credit` 必须明确映射，`expected_headers` 必须逐列匹配。`requirement` 可为 `required`、`elective`、`unknown`。分类来自已确认分区时用固定值；来自独立列时，在 `columns` 映射 `requirement` 并提供精确的 `requirement_values`。不要根据名称推断必修或选修。
 
+### 两种显式模式：header 与 positional
+
+真实培养方案有两种版式，分别对应两种**互不混用**的 profile 模式。`mode` 缺省为 `header`。
+
+**`header` 模式**（原有行为，未放宽）：必须有 `header_row` 与 `expected_headers`，且 `expected_headers` 的键集合与 `columns` 完全一致；每个映射列的表头文字必须**逐字匹配**该行单元格，不匹配即失败。
+
+**`positional` 模式**：用于**完全没有列标题行**的培养方案（如真实 Case A 的两份文档：第 1、2 行为空，数据自第 3 行起，列义纯位置式）。只接受下列字段：
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `mode` | 是 | 固定 `"positional"` |
+| `table_index` | 是 | 目标表序号（1 起） |
+| `data_start_row` | 是 | 数据起始行（1 起）。**不会**自动寻找"第一条像课程的行" |
+| `columns` | 是 | 逻辑字段 → 物理列号，**绝不推断** |
+| `row_filter` | 否 | 数据行**必须全部满足**的声明式 selector（见下方判定顺序） |
+| `row_kind` | 声明 `row_filter` 时必填 | **行身份判别器**：`{column, condition}`，且该列必须同时是 `row_filter` 中的 selector |
+| `exclude` | 否 | 命中任一即丢弃该行的声明式条件（先于行身份判定） |
+| `column_count` | 否 | 声明的表宽守卫（缺省取最大映射列号） |
+| `identity` | 否 | 结构锚点：`{column, values}`，列必须已在 `columns` 中声明 |
+| `course_name_lines` | 否 | 名称单元格为双语"中文\nEnglish"时，保留前 N 行（0=保留全部） |
+| `last_data_row` / `requirement` / `course_type` / `group_id` / `requirement_values` | 否 | 与 header 模式同义 |
+
+`header` 模式的 profile **不允许**出现 `data_start_row` / `row_filter` / `exclude` / `column_count` / `identity` / `course_name_lines`；`positional` 模式**不允许**出现 `header_row` / `expected_headers`。因此 `expected_headers: ""` 之类的写法不能被当作 positional 的旁路。
+
+**结构性守卫（drift 防护）**：
+
+- **行宽**：数据行的物理列必须覆盖全部映射列，否则失败（绝不静默返回空）。
+- **表宽**：数据行的物理列不得超过 `column_count`，否则失败——学校改版把整块列右移时必须报错而不是错列读取。
+- **身份锚点**：`identity` 声明某一（已映射）列必须出现指定值之一（取自首个数据行）。列被整体移动后锚点失配，导入失败。
+- **横向合并**：若某数据行存在 `gridSpan > 1` 的合并单元格且覆盖任一映射列，该行位置语义不唯一，导入失败。（纵向合并只是把分区标签下延，不影响位置，允许。）
+- **行选择（fail closed，不得成为绕过结构校验的旁路）**：先由 `row_kind` 判别器决定"这一行是不是课程行"，再判结构：
+
+  ```text
+  判别器命中，且全部 selector 命中                    → 课程行 → 进入完整 structural guard
+  判别器命中，但任一 selector 无值或 selector 不命中   → 疑似课程行但结构损坏 → fail closed
+  判别器不命中，但其余 identifying selectors 全部命中  → 判别器本身损坏（course_id 有值且
+                                                       credit 为数字）→ fail closed
+  判别器不命中，其余 selectors 未全部命中              → 真实分区/模块/小计行 → skip
+  ```
+
+  即：只要 `course_id` 有值且 `credit` 为数字，这一行就按课程行处理；判别器读不到值（单元格缺失**或**为空）只说明判别器损坏，必须阻断而不能 skip。单元格"存在但为空"与"物理缺失"在 positional 模式下语义相同。真实 section 行形如 `判别器 False / course_id True / credit False`，仍然安全跳过。
+
+  `row_kind` 只支持 `numeric` 判别（真实课程行必有数字序号，分区标签行没有）。selector 只能读取**标识性列**（`course_id` / `credit` / `recommended_term_text` / `sequence`）；若某个 selector 映射到 `requirement` 这类可选列，会因为可能整表无行命中而被直接拒绝。真实 Case A 的 selector 为 **`sequence` numeric + `course_id` nonempty + `credit` numeric**。
+
+- **行选择**：`row_filter` / `exclude` 只使用声明式条件（`nonempty` / `numeric` / `equals` + 显式取值），没有任何内容猜测。分区标题、模块行、小计行由这些规则显式排除。
+
+没有任何自动回退：未知 `.docx`、无 profile、或 header 模式读无表头文档，一律 reject；不存在 `try header except positional`。
+
+```json
+{
+  "mode": "positional",
+  "table_index": 2,
+  "data_start_row": 3,
+  "column_count": 9,
+  "columns": {"sequence": 3, "course_id": 4, "course_name": 5, "credit": 6, "recommended_term_text": 9},
+  "course_name_lines": 1,
+  "row_kind": {"column": 3, "condition": "numeric"},
+  "row_filter": [{"column": 3, "condition": "numeric"}, {"column": 4, "condition": "nonempty"}, {"column": 6, "condition": "numeric"}],
+  "exclude": [{"column": 5, "condition": "equals", "values": ["小计", "合计"]}],
+  "identity": {"column": 4, "values": ["FL101"]},
+  "requirement": "required",
+  "course_type": "公必"
+}
+```
+
+真实 Case A 两份方案的声明式 profile 见 `backend/app/curriculum/plan_profiles.py`（只含表序号、列位置、锚点课程号与结构守卫，**不含**任何真实文件、路径、姓名、学号或成绩）。真实 `.docx` 本身仍留在受控本地目录，不入库。
+
 ```bash
 python -m app.curriculum --docx /private/plan.docx --profile /private/profile.json
 ```
