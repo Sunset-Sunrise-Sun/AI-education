@@ -91,7 +91,11 @@ from app.course_data.schedule_parser import (
     parse_teaching_time_place,
     parse_weekday,
 )
-from app.course_data.snapshot import OfferingSnapshot, SnapshotCourseDataProvider
+from app.course_data.snapshot import (
+    OfferingSnapshot,
+    SnapshotCourseDataProvider,
+    merge_offering_snapshots,
+)
 
 __all__ = [
     "CAPTURE_FORMAT",
@@ -108,6 +112,7 @@ __all__ = [
     "extract_meetings",
     "import_opening_courses_response",
     "load_capture_bundle",
+    "merge_offering_snapshots",
     "parse_sections",
     "parse_teaching_time_place",
     "parse_weekday",

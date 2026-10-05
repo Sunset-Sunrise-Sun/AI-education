@@ -1390,3 +1390,46 @@
 - **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
   ⛔ 按指示**未重新执行真实 35 页采集**。
 - 下一步：等待 Architecture Review。
+
+### 2026-10-05 - 五校区分片合并（方案 B）：merge_offering_snapshots()
+
+- 触发：**2026-1 真实采集发现稳定深分页异常** ——
+  学校接口在 **offset >= 6500** 返回 `HTTP 600 {"code":50015000,"message":"系统异常"}`；
+  已由真实证据确认（`pageSize=100/pageNo=66`、`pageSize=50/pageNo=131/132` 均 600）。
+- **正式确认的分片维度**（负责人 UI 取证）：`param.openingSchoolNumber`，五个完整校区
+  （东 5063559 / 北 5062202 / 南 5062201 / 深圳 333291143 / 珠海 5062203）；
+  `baseline_before == baseline_after == 6880 == Σ shard total`。
+  ⚠️ 人工 total **只作验收参考**，⛔ 不进 production completeness 逻辑。
+- **Architecture Review 裁决：方案 B** ——
+  五个独立 shard bundle + 内部合并；⛔ **不重编号 / 不重切分 / 不生成伪连续全局 pages**
+  （方案 A 已明确否决）；⛔ **不改 Capture Bundle format**。
+- **先做的前置检查（任务 11）**：结论为现有 bundle/page model
+  **无法**合法承载多个 shard ——
+  ① `page_no` 必须全局唯一且严格连续；
+  ② `pages` 是扁平数组，无 shard 维度；
+  ③ `CapturedPagesFetcher` 用扁平的 `page_no → response` dict；
+  ④ 分页核心要求每页 `data.total` 互相相等，而各 shard total 天然不同。
+  ⇒ 先回报、后实施（未私改 format）。
+- **本轮实现**（仅 Course Data 内部）：
+  - 新增 `merge_offering_snapshots(snapshots, *, baseline_total)`（`snapshot.py`）；
+  - 并入 `course_data.__all__`；
+  - 八个必要条件全部 fail closed（见 `docs/status/course_data.md`）；
+  - identity = `(semester, courseNum, classNumber)`，⛔ 不按 `course_id` 单独去重；
+  - 跨 shard 重复 → fail closed，只报告**最小 identity + 两个 shard 名**，⛔ 不静默去重；
+  - 合并成功时 `loaded_count == baseline_total == reported_total` → `complete` 不变量自然成立，
+    可直接交给**现有** `SnapshotCourseDataProvider`。
+- **新增测试**（`backend/tests/test_course_data_snapshot_merge.py`，**23 项，纯 synthetic、零网络**）：
+  五 shard 全成功 / 行序与不丢行 / 单 shard；baseline 漂移（Σ>baseline 与 Σ<baseline）；
+  任一 shard partial（含"四个 complete + 一个 partial"）；shard 计数不自洽 /
+  total 中途变化；semester 不一致；跨 shard 重复（含"只报 identity、不回显课程名"、
+  "同课不同班不算重复"）；merged unique < / > baseline；输入与 baseline 参数校验；
+  合并结果可被现有 Provider 持有。
+- **非空测试验证**：把跨 shard 重复检查关闭（静默去重）后**失败 1 项**，还原后 23 项全通过。
+- 测试结果：merge **23 passed**；Course Data 相关 **546 passed**；
+  full backend **2 failed / 2154 passed / 2 skipped**（两个为既有 Windows Curriculum 用例）；
+  `compileall` exit 0；`node --check` exit 0；collector node **45 passed**。
+- **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
+  ⛔ **未跑真实五校区采集**。
+- **本轮未做**：⛔ 未改 `planning_runtime.py`、⛔ 未改 PR #39、⛔ 未改 Capture Bundle format、
+  ⛔ JS 侧 orchestration **尚未实现**（待 Review 通过）。
+- 下一步：等待 Architecture Review。

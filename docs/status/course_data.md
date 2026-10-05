@@ -657,6 +657,95 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 `CourseDataProvider`（**不继承、不修改** Protocol）；学期匹配返回列表，否则返回 `[]`；
 **零网络、无 Mock fallback**。
 
+## 2026-1 深分页异常与五校区分片合并（Architecture Review 裁定方案 B）
+
+### 真实证据：offset >= 6500 稳定异常
+
+| 请求 | 结果 |
+|---|---|
+| `pageSize=100, pageNo=65`（offset 6400） | HTTP 200 |
+| `pageSize=100, pageNo=66`（offset 6500） | **HTTP 600** |
+| `pageSize=50, pageNo=130`（offset 6450） | HTTP 200 |
+| `pageSize=50, pageNo=131`（offset 6500） | **HTTP 600** |
+| `pageSize=50, pageNo=132`（offset 6550） | **HTTP 600** |
+
+`HTTP 600` body：`{"code":50015000,"message":"系统异常"}`。
+⇒ 学校侧在 **offset >= 6500** 的**稳定**深分页异常。
+
+### 正式确认的校区 shard（UI 取证）
+
+接口支持 `param: { yearTerm, openingSchoolNumber }`。五个完整校区：
+
+| 校区 | `openingSchoolNumber` |
+|---|---|
+| 东校园 | `5063559` |
+| 北校园 | `5062202` |
+| 南校园 | `5062201` |
+| 深圳校区 | `333291143` |
+| 珠海校区 | `5062203` |
+
+⚠️ 各校区**人工记录的 total**（1071 / 405 / 2898 / 1171 / 1335）**只作验收参考**，
+⛔ **不得写进 production completeness 逻辑**；真实判定一律以**本次响应**为准。
+
+### 方案 B：每 shard 一个 bundle + 内部合并
+
+```text
+五个独立 shard bundle（各自 pages 就是真实抓到的页，⛔ 不重编号、不重切分）
+        ↓  各自走【现有】collect_captured_pages_snapshot()
+   五个 OfferingSnapshot（各自必须 is_complete）
+        ↓  merge_offering_snapshots([...], baseline_total=<baseline>)
+   合并后的 complete OfferingSnapshot
+```
+
+- ✅ **零 Capture Bundle format 改动**；
+- ✅ **零伪造分页来源**（方案 A 的"重切分为单一全局流"已被**明确否决**）；
+- ✅ 合并结果可直接交给**现有** `SnapshotCourseDataProvider`（不改 Provider）。
+
+### 为什么不能只用一个 bundle（结构事实）
+
+1. `_parse_capture_bundle()` 要求 **page_no 全局唯一且严格连续**
+   （`page_no == first_page_no + index`）；
+2. `pages` 是**扁平数组**，只有一个全局 `first_page_no` / `page_size`，**没有 shard 维度**；
+3. `CapturedPagesFetcher` 把 `page_no → response` 建成**扁平 dict**，重复 page_no 会覆盖。
+4. 分页核心要求**每页 `data.total` 互相相等**，而各 shard 的 total 天然不同。
+
+⇒ 五个 shard 的原始 pages **无法**合法共存于一个 bundle。
+
+### `merge_offering_snapshots()` 的八个必要条件（缺一即 fail closed）
+
+```text
+1. 至少一个 shard
+2. 所有 shard semester 一致
+3. 每个 shard is_complete == True
+4. 每个 shard loaded_count == reported_total
+5. sum_shard_reported_total == baseline_total
+6. total_loaded_rows == sum_shard_reported_total
+7. duplicate_identity_count == 0
+8. unique_identity_count == baseline_total
+```
+
+- **identity** = `(semester, courseNum, classNumber)`
+  = 公共 `(semester, course_id, class_id)`；⛔ **不得只按 `course_id` 去重**；
+- ⛔ **任一 shard partial → 整体失败**，不允许"其余校区先算成功"；
+- ⛔ **跨 shard 重复 → fail closed**，⛔ **不静默去重后声称 complete**；
+  错误信息只报告**最小 identity + 两个 shard 名**（⛔ 不回显课程名等无关内容）；
+- 合并成功时 `loaded_count == baseline_total == reported_total`，`complete` 不变量自然成立。
+
+### baseline sandwich（编排层职责）
+
+```text
+baseline_before（不带 openingSchoolNumber）→ 采五个 shard → baseline_after
+baseline_before != baseline_after → 整体不得标 complete，fail closed
+```
+
+⚠️ 该校 `total` **会漂移**（历史 6892 → 现 6880），因此三次读取必须落在**同一采集窗口**内。
+
+### 尚未实现（待 Review 通过后）
+
+- **JS 侧分片 orchestration**（五 shard 串行、各自独立分页、baseline sandwich、
+  diagnostics 外层）；
+- ⛔ 本轮**未改** collector、⛔ **未跑真实五校区采集**。
+
 ## 当前接口
 
 - 输出：`CourseOffering[]`（符合 `schemas/course_offering.schema.json`）；
