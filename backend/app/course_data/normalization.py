@@ -213,33 +213,45 @@ def _require_count(value: object, key: str) -> int:
 
 
 def _parse_credit(value: object) -> float:
-    """`score` 是**字符串数字**（已确认真实格式），转换成 `number`。
+    r"""`score` 是**字符串数字**（已确认真实格式），转换成 `number`。
 
-    ✅ 只接受**已经确认**的形态：字符串数字，例如 `"3"` / `"3.0"` / `" 3 "`
-    （去掉首尾空白后仍是数字）。
+    ✅ 只接受**已经确认**的形状（Architecture Review 裁定；2026-1 east artifact
+    已确认存在 98 个 `.N` 形式的 `score`）：
 
-    ⛔ **数值型 `score`（`3` / `3.0`）目前没有真实来源证据**，因此**当前拒绝**。
-    `docs/data/SYSU_COURSE_OFFERING_RECON.md` 只确认了"`score` 是字符串数字"；
-    如果后续**脱敏真实样本**显示 `score` 也可能是 JSON number，再据实放宽。
+    ```text
+    [0-9]+            例如 "3"   → 3.0
+    [0-9]+\.[0-9]+    例如 "3.0" → 3.0 / "0.5" → 0.5
+    \.[0-9]+          例如 ".5"  → 0.5 / ".0"  → 0.0
+    ```
 
-    继续拒绝：布尔、负数、空字符串、非数字文本（例如 `"3学分"`）。
+    ⛔ **不用宽松的 `float()` 替代语法校验**：`float()` 还会接受符号位、指数写法、
+    `nan` / `inf` 等未确认形态，且规则不在本文件里显式可见。
+    ⛔ 继续拒绝：符号位（`-.5` / `+.5`）、`3.`、`.`、`..5`、`1.2.3`、全角数字、
+    带单位文本（`"3学分"`）、布尔 / 数值型 / 其它类型。
+    ⛔ **数值型 `score`（`3` / `3.0`）仍无真实来源证据，继续拒绝**；
+    若后续脱敏真实样本显示它也可能是 JSON number，再据实放宽。
+
+    抛错时只给**安全稳定分类**（`unsupported_credit_type` / `unsupported_credit_format`），
+    ⛔ **不回显 raw score**。
     """
 
     if not isinstance(value, str):
         raise CourseDataNormalizationError(
-            f"score 必须是**字符串**形式的数字（已确认真实格式），"
-            f"实际类型是 {type(value).__name__}（⛔ 不回显 raw 取值）；"
-            f"数值型 score 尚无真实来源证据，本轮拒绝"
+            f"score 必须是**字符串**形式的数字（{CREDIT_ERROR_UNSUPPORTED_TYPE}），"
+            f"实际类型是 {type(value).__name__}（⛔ 不回显 raw score）；"
+            f"数值型 score 尚无真实来源证据，本轮仍拒绝"
         )
 
     candidate = value.strip()
-    if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", candidate):
+    if _CREDIT_PATTERN.match(candidate) is None:
         raise CourseDataNormalizationError(
-            f"score 不是合法的字符串数字（⛔ 不回显 raw 取值；"
+            f"score 形状未确认（{CREDIT_ERROR_UNSUPPORTED_FORMAT}）：只接受 "
+            f"`[0-9]+` / `[0-9]+.[0-9]+` / `.[0-9]+`（⛔ 不回显 raw score；"
             f"已确认真实格式为字符串数字）"
         )
 
-    # 正则已排除符号位，因此结果必然 ≥0。
+    # 正则已排除符号位 / 全角 / 单位文本，因此这里可以安全地转成 float：
+    # 结果必然 ≥ 0，且不会出现 `nan` / `inf`。
     return float(candidate)
 
 
@@ -330,6 +342,23 @@ _REQUIRED_RAW_FIELDS = (
 
 #: 排课字段名（Raw 侧）。**只有**它"属性不存在"时才允许走 empty path（DG-07B）。
 _SCHEDULE_RAW_FIELD = "teachingTimePlaceStr"
+
+#: 已确认的 `score` 形状（**语法校验**；Architecture Review 裁定，
+#: 2026-1 east artifact 已确认存在 98 个 `.N` 形式）：
+#:
+#: ```text
+#: [0-9]+            例如 "3"   → 3.0
+#: [0-9]+\.[0-9]+    例如 "3.0" → 3.0 / "0.5" → 0.5
+#: \.[0-9]+          例如 ".5"  → 0.5 / ".0"  → 0.0
+#: ```
+#:
+#: ⛔ **不用宽松的 `float()` 代替语法校验**（会额外接受符号位 / 指数 / `nan` / `inf`）；
+#: ⛔ 继续拒绝符号位、`3.`、`.`、`..5`、`1.2.3`、全角数字、带单位文本、数值型 / 布尔。
+_CREDIT_PATTERN = re.compile(r"^(?:[0-9]+|[0-9]+\.[0-9]+|\.[0-9]+)$")
+
+#: credit 错误的**安全稳定分类**（⛔ 不回显 raw score）。
+CREDIT_ERROR_UNSUPPORTED_TYPE = "unsupported_credit_type"
+CREDIT_ERROR_UNSUPPORTED_FORMAT = "unsupported_credit_format"
 
 
 def _build_common_offering_fields(raw: Mapping[str, object], *, source: str) -> dict[str, object]:

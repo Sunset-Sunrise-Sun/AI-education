@@ -299,6 +299,92 @@ def test_invalid_score_is_rejected(score: object) -> None:
         _build(_raw(score=score))
 
 
+@pytest.mark.parametrize(
+    ("score", "expected"),
+    [
+        ("3", 3.0),
+        ("10", 10.0),
+        ("3.0", 3.0),
+        ("0.5", 0.5),
+        ("3.5", 3.5),
+        (".5", 0.5),  # 真实 artifact 已确认存在 98 个 `.N` 形式
+        (".0", 0.0),
+        (".25", 0.25),
+        (" 3 ", 3.0),  # 首尾空白仍允许（既有行为）
+    ],
+)
+def test_approved_credit_shapes_are_accepted(score: str, expected: float) -> None:
+    """已批准形状：`[0-9]+` / `[0-9]+.[0-9]+` / `.[0-9]+`（Architecture Review 裁定）。"""
+
+    offering = _build(_raw(score=score))
+
+    assert offering.credit == expected
+    assert isinstance(offering.credit, float)
+
+
+@pytest.mark.parametrize(
+    "score",
+    [
+        ".",  # 只有小数点
+        "3.",  # 小数点后无数字
+        "-.5",  # 符号位
+        "+.5",
+        "-3",
+        "..5",
+        "1.2.3",
+        "1,5",
+        "３",  # 全角数字
+        "．５",  # 全角数字 + 全角小数点
+        "3学分",  # 带单位文本
+        "3 5",
+        "1e3",  # 指数写法（未确认）
+        "nan",
+        "inf",
+        "abc",
+        "",
+        "   ",
+    ],
+)
+def test_unsupported_credit_formats_are_rejected(score: str) -> None:
+    """⛔ 未确认形状一律 fail closed，分类为 `unsupported_credit_format`。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        _build(_raw(score=score))
+
+    message = str(excinfo.value)
+    assert "unsupported_credit_format" in message
+    assert "score" in message
+
+
+@pytest.mark.parametrize("score", [3, 3.0, True, False, None, [3], {"a": 1}])
+def test_unsupported_credit_types_are_rejected(score: object) -> None:
+    """⛔ 非字符串（含数值型 / 布尔）分类为 `unsupported_credit_type`，且不回显取值。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        _build(_raw(score=score))
+
+    message = str(excinfo.value)
+    assert "unsupported_credit_type" in message
+    assert type(score).__name__ in message
+
+
+def test_credit_error_never_echoes_raw_score() -> None:
+    """⛔ credit 错误不得回显 raw score 取值（只给安全分类）。
+
+    ⚠️ 断言只用**有区分度的**取值（含 CJK / 字母）：像 `"."` 这种字符本身就会出现在
+    文法说明（`[0-9]+.[0-9]+`）里，用它做子串断言会假阳性，因此不在此列。
+    """
+
+    for raw_score in ("3学分", "机密学分文本", "abc", "1.2.3", "３学分", "3 5"):
+        with pytest.raises(CourseDataNormalizationError) as excinfo:
+            _build(_raw(score=raw_score))
+
+        message = str(excinfo.value)
+        assert raw_score not in message, f"回显了 raw score：{raw_score!r}"
+        assert "机密" not in message
+        assert "unsupported_credit_format" in message
+
+
 @pytest.mark.parametrize("score", [3, 3.0])
 def test_numeric_score_is_rejected_without_evidence(score: object) -> None:
     """⛔ **数值型 `score` 尚无真实来源证据，因此当前拒绝**。
@@ -306,12 +392,15 @@ def test_numeric_score_is_rejected_without_evidence(score: object) -> None:
     `docs/data/SYSU_COURSE_OFFERING_RECON.md` 只确认了"`score` 是**字符串数字**"。
     接受 `3` / `3.0` 会让实现能力超过真实证据，所以本轮一律拒绝；
     若后续脱敏真实样本显示 `score` 也可能是 JSON number，再据实放宽。
+    ⚠️ 完整类型矩阵（含 `bool` / `None` / 容器）由
+    `test_unsupported_credit_types_are_rejected` 覆盖。
     """
 
     with pytest.raises(CourseDataNormalizationError) as excinfo:
         _build(_raw(score=score))
 
     assert "字符串" in str(excinfo.value)
+    assert "unsupported_credit_type" in str(excinfo.value)
 
 
 @pytest.mark.parametrize("value", [-1, "90", 90.0, True, None])

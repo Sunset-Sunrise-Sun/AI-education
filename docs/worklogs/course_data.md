@@ -2047,3 +2047,58 @@
   store / `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend。
 - 下一步：等待 Architecture Review 对(a)`score` 的 `.N` 形态与
   (b)是否给该错误加安全分类码给出裁定。
+
+### 2026-10-05 - `score` 窄扩展（`.N` 形式）+ credit 安全分类（真实 artifact 再验收）
+
+- 触发：Architecture Review 裁定 —— 真实 artifact 已确认 **98 个 `.N` 形式** `score` 字符串，
+  批准窄扩展。
+- **`_parse_credit()` 批准形状**（语法校验，⛔ 不用宽松 `float()` 替代）：
+
+  ```text
+  [0-9]+            例如 "3"   → 3.0
+  [0-9]+\.[0-9]+    例如 "3.0" → 3.0 / "0.5" → 0.5
+  \.[0-9]+          例如 ".5"  → 0.5 / ".0"  → 0.0
+  ```
+
+  继续拒绝：`"."` / `"3."` / `"-.5"` / `"+.5"` / `"..5"` / `"1.2.3"` / 全角数字 /
+  带单位文本 / `int` / `float` / `bool`；⛔ **数值型 `score` 仍拒绝**（无真实来源证据）。
+- **credit 错误安全稳定分类**：`unsupported_credit_type` / `unsupported_credit_format`，
+  ⛔ **不回显 raw score**；⛔ 未重构全局异常系统。
+- ⚠️ 自查修正：`_parse_credit` 的**非 raw docstring** 里写了 `\.` 触发
+  `SyntaxWarning: invalid escape sequence` → 已改为 raw docstring（`r"""`），
+  并确认 `-W error::SyntaxWarning` 下全量测试无告警。
+- **测试**（`test_course_data_normalization.py` 106 → **141**）：
+  9 个已批准形状（含 `.5` / `.0` / `.25` / `" 3 "`）/ 18 个非法形状（含全角数字、`1e3`、
+  `nan`、`inf`、`3 5`）/ 7 种非法类型（含 `bool` / 容器）→ 分类码断言 /
+  **不回显 raw score**（6 个有区分度取值，含伪造"机密学分文本"）；既有数值型拒绝用例保留。
+  ⚠️ 断言只用**有区分度**的取值：`"."` 本身会出现在文法说明 `[0-9]+.[0-9]+` 里，
+  用它做子串断言会假阳性（已记录该理由）。
+- **真实 artifact 再验收**（`daafdb18…a31b` 实测一致；⛔ 未建 SQLite；⛔ 未 skip）：
+  - `load_capture_bundle` ✅（6 页 / total 1071 / rows 合计 1071）；
+  - `collect_captured_pages_snapshot`：**第 3 个 blocker（`score`）已清除**，
+    但第 **4** 个 fail closed 出现：
+    **`expand_weeks` 拒绝 `N-M单周` 形态**（既有窄白名单只接受精确 `1-17单周`）。
+  - ⚠️ **该错误信息回显了 raw weeks token**（既有实现，属"不回显 raw 取值"的同类问题），
+    且**无机器可读分类码** → 均**未擅自修改**，作为待裁定项上报。
+  - **只读聚合扫描 `weeks`（field[0]）形态**（3475 个 token，⛔ 只输出分类计数 + 匿名模板）：
+
+    ```text
+    expand_weeks_accepted : 3382   （全部是 plain `N-M周`）
+    expand_weeks_rejected :   93
+      1) `N-M周` + `校外`      : 54
+      2) `N-M双周`（无「周」字）: 15
+      3) `N-M单周`（无「周」字）: 13
+      4) `N-M周` + `校内(户外)` : 11
+    匿名模板: `N-NC` × 82（= 54+15+13）、`N-NC(C)` × 11
+    accounting_ok : True
+    ```
+
+  - ⚠️ 49 个 `unsupported_sections_shape` **仍未处理**（按要求），仍是潜在 fail-closed 项。
+- 测试结果：normalization **141 passed**；normalization+parser+importer+pagination 合并
+  **433 passed**；full backend **2 failed / 2336 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例）；`compileall` exit 0。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未建 SQLite；⛔ 未改公共 Schema；
+  ⛔ 未改 collector / `captured_pages.py` / Capture Bundle format / `sharded_capture.py` /
+  store / `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend。
+- 下一步：等待 Architecture Review 对(a)`weeks` 的四个未确认形态与
+  (b)weeks 错误的安全分类 / 去 raw 回显给出裁定。
