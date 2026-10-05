@@ -469,6 +469,122 @@ def test_unexpected_field_count_is_rejected(text: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 2 字段 plain：`<weeks token>` / activity（无 teacher、无 qualifier）
+# ---------------------------------------------------------------------------
+
+
+def test_two_field_plain_non_concrete_parsed() -> None:
+    """真实证据：`1-17周/实验实践环节`（该 segment 内没有 teacher 字段）。"""
+
+    (segment,) = parse_teaching_time_place("1-17周/实验实践环节")
+
+    assert segment.meeting is None
+    assert segment.schedule_weeks == list(range(1, 18))
+    assert segment.schedule_qualifier is None
+    assert segment.teacher is None
+    assert segment.activity == "实验实践环节"
+
+
+def test_two_field_plain_does_not_inject_row_level_teaching_name() -> None:
+    """⛔ **不得**把 row 级 `teachingName` 注入 segment.teacher。
+
+    `teachingName` 是 **row 级**信息；本 segment 内**没有** teacher 字段，
+    两者没有对应关系。注入等于凭空造事实 —— 因此 `teacher` 必须保持 `None`。
+    """
+
+    (segment,) = parse_teaching_time_place("1-17周/实验实践环节")
+
+    # 该形态的 teacher 必须为 None（本函数根本没有 row 级输入）
+    assert segment.teacher is None
+    assert segment.schedule_qualifier is None
+
+
+def test_two_field_plain_weeks_expanded_from_token() -> None:
+    (segment,) = parse_teaching_time_place("3-5周/实验实践环节")
+
+    assert segment.schedule_weeks == [3, 4, 5]
+    assert segment.teacher is None
+
+
+def test_two_field_qualified_still_parses() -> None:
+    """既有 qualified 2 字段（`12-19周校外/…`）保持不变。"""
+
+    (segment,) = parse_teaching_time_place("12-19周校外/实验实践环节")
+
+    assert segment.meeting is None
+    assert segment.schedule_weeks == list(range(12, 20))
+    assert segment.schedule_qualifier == "校外"
+    assert segment.teacher is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "abc周/实验实践环节",  # weeks token 非法
+        "1-17周/",  # activity 为空
+        "1-17周/   ",  # activity 全空白
+        "1-17周未知词/实验实践环节",  # 未知 qualifier
+        "第1-17周/实验实践环节",  # 带"第"字前缀无证据
+        "随便写的东西/实验实践环节",  # 既非 weeks 也非 qualifier
+    ],
+)
+def test_two_field_invalid_inputs_fail_closed(text: str) -> None:
+    """2 字段只接受两种已确认形态；其余 fail closed。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        parse_teaching_time_place(text)
+
+
+def test_mixed_all_five_confirmed_forms_keep_every_segment() -> None:
+    """混合全部五种形态：concrete + plain 2 字段 + qualified 2 字段
+    + plain 3 字段 + qualified 3 字段。
+
+    要求：所有 segment 保留（5 条）；**只有 concrete 生成 Meeting**（1 条）。
+    """
+
+    text = ",".join(
+        [
+            _segment("1-8周", "星期五", "第5-6节"),  # concrete（4 字段）
+            "1-17周/实验实践环节",  # plain 2 字段
+            "12-19周校外/实验实践环节",  # qualified 2 字段
+            "1-17周/示例教师/实验实践环节",  # plain 3 字段
+            "16-16周校内(户外)/示例教师/实验实践环节",  # qualified 3 字段
+        ]
+    )
+
+    segments = parse_teaching_time_place(text)
+    meetings = extract_meetings(segments)
+
+    assert len(segments) == 5, "⛔ 不得丢弃任何 segment"
+    assert len(meetings) == 1, "只有 concrete 生成 Meeting"
+    assert meetings[0].weeks == list(range(1, 9))
+
+    # plain 2 字段：无 qualifier、无 teacher
+    assert segments[1].meeting is None
+    assert segments[1].schedule_qualifier is None
+    assert segments[1].teacher is None
+    assert segments[1].schedule_weeks == list(range(1, 18))
+
+    # qualified 2 字段：有 qualifier、无 teacher
+    assert segments[2].meeting is None
+    assert segments[2].schedule_qualifier == "校外"
+    assert segments[2].teacher is None
+    assert segments[2].schedule_weeks == list(range(12, 20))
+
+    # plain 3 字段：有 teacher、无 qualifier
+    assert segments[3].meeting is None
+    assert segments[3].schedule_qualifier is None
+    assert segments[3].teacher == "示例教师"
+    assert segments[3].schedule_weeks == list(range(1, 18))
+
+    # qualified 3 字段：有 qualifier、有 teacher
+    assert segments[4].meeting is None
+    assert segments[4].schedule_qualifier == QUALIFIER_OUTDOOR
+    assert segments[4].teacher == "示例教师"
+    assert segments[4].schedule_weeks == [16]
+
+
+# ---------------------------------------------------------------------------
 # 3 字段：non-concrete 带 teacher（`weeks` / `teacher` / `activity`）
 # ---------------------------------------------------------------------------
 

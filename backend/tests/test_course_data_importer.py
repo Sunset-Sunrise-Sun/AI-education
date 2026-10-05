@@ -251,6 +251,48 @@ def test_three_field_unknown_qualifier_fails_whole_import() -> None:
         _import([_row(teachingTimePlaceStr="16-16周未知文本/示例教师/实验实践环节")], total=1)
 
 
+def test_two_field_plain_non_concrete_produces_empty_meetings() -> None:
+    """2 字段 plain（`1-17周/实验实践环节`）→ `meetings == []`。
+
+    与其它 non-concrete 一样走**已有的** narrow path，⛔ 未新增 importer 路径。
+    """
+
+    snapshot = _import([_row(teachingTimePlaceStr="1-17周/实验实践环节")], total=1)
+
+    assert snapshot.loaded_count == 1
+    assert snapshot.offerings[0].meetings == []
+
+
+def test_two_field_plain_with_bad_weeks_fails_whole_import() -> None:
+    """2 字段 plain weeks 非法 → 整体失败。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([_row(teachingTimePlaceStr="abc周/实验实践环节")], total=1)
+
+
+def test_all_five_confirmed_shapes_coexist_in_one_snapshot() -> None:
+    """五种已确认形态可共存于一个快照，全部保留、均不丢 row。"""
+
+    snapshot = _import(
+        [
+            _row(classNumber="6200100120260101"),  # concrete（5 字段）
+            _row(classNumber="6200100120260102", teachingTimePlaceStr="1-17周/实验实践环节"),
+            _row(classNumber="6200100120260103", teachingTimePlaceStr="12-19周校外/实验实践环节"),
+            _row(classNumber="6200100120260104", teachingTimePlaceStr="1-17周/示例教师/实验实践环节"),
+            _row(
+                classNumber="6200100120260105",
+                teachingTimePlaceStr="16-16周校内(户外)/示例教师/实验实践环节",
+            ),
+        ],
+        total=5,
+    )
+
+    assert snapshot.loaded_count == 5
+    assert len(snapshot.offerings[0].meetings) >= 1
+    for offering in snapshot.offerings[1:]:
+        assert offering.meetings == []
+
+
 def test_multiple_segments_are_all_kept() -> None:
     multi = (
         f"1-5周/星期五/第3-4节/示例校区-示例教学楼-2108/{TEACHER_A}/{ACTIVITY},"

@@ -348,16 +348,31 @@
     }
 
     if (fieldCount === 2) {
-      // non-concrete 段：`<weeks token><已确认 qualifier>` / activity。
-      if (NON_CONCRETE_FIRST_FIELD.test(fields[0].trim())) {
+      // non-concrete（无 teacher）两种已确认形态：
+      //   plain     ：`<weeks token>` / activity            例如 1-17周/实验实践环节
+      //   qualified ：`<weeks token><已确认 qualifier>` / activity
+      //                                                    例如 12-19周校外/实验实践环节
+      if (
+        PLAIN_WEEK_RANGE.test(fields[0].trim()) ||
+        NON_CONCRETE_FIRST_FIELD.test(fields[0].trim())
+      ) {
+        // ⛔ activity 必须非空（与 Python parser 一致，不把空 activity 当合法）。
+        if (fields[1].trim() === "") {
+          fail(
+            "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+              "中 activity 字段为空。已整体停止。"
+          );
+        }
         // 没有 weekday / sections / 具体地点 / teacher → ⛔ 不做任何脱敏。
+        // ⛔ 也不得把 row 级 teachingName 注入本 segment。
         return segment;
       }
       // ⛔ 2 字段**只接受已验证 grammar**；其余一律 fail closed（不回显取值）。
       fail(
         "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
-          "是 2 字段，但不符合已确认的 non-concrete grammar" +
-          "（`<weeks token>` + 已确认 qualifier " + SCHEDULE_QUALIFIER_OFF_CAMPUS +
+          "是 2 字段，但既不是已确认的 plain 形态（`<weeks token>` / activity），" +
+          "也不是已确认的 qualified 形态（`<weeks token>` + 已确认 qualifier " +
+          KNOWN_SCHEDULE_QUALIFIERS.join("/") +
           " / activity）。本采集器不猜格式，已整体停止（不回显该字段取值）。"
       );
     }

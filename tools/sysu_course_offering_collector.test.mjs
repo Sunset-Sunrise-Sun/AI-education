@@ -236,8 +236,8 @@ for (const [label, text] of [
       (error) => {
         assert.ok(error instanceof Error);
         assert.ok(
-          error.message.includes("non-concrete"),
-          `错误信息应说明 non-concrete grammar，实际：${error.message}`,
+          error.message.includes("plain") && error.message.includes("qualified"),
+          `错误信息应说明已确认的 plain / qualified 形态，实际：${error.message}`,
         );
         // ⛔ 不回显该字段取值
         assert.ok(!error.message.includes("未知词"), "⛔ 不得回显取值");
@@ -321,6 +321,58 @@ test("混合：concrete + 2 字段 + 3 字段 non-concrete 各自正确处理", 
       `1-8周/星期五/第5-6节/REDACTED/${ACTIVITY}`,
       "12-19周校外/实验实践环节",
       "1-17周/REDACTED/实验实践环节",
+    ].join(","),
+  );
+  assert.ok(!out.includes(TEACHER), "⛔ 真实 teacher 不得出现在产物中");
+  assert.ok(!out.includes("示例教师"), "⛔ 3 字段的 teacher 也必须被脱敏");
+});
+
+// ---------------------------------------------------------------------------
+// 2 字段 plain：`<weeks token>` / activity（无 teacher、无 qualifier）
+// ---------------------------------------------------------------------------
+
+test("2 字段 plain：原样通过，且不插入 REDACTED", async () => {
+  const text = "1-17周/实验实践环节";
+
+  const out = await collectSingle(text);
+
+  assert.equal(out, text, "plain non-concrete 必须原样保留");
+  assert.ok(!out.includes("REDACTED"), "⛔ 没有 teacher 时不得插入 REDACTED");
+});
+
+for (const [label, text] of [
+  ["weeks token 非法", "abc周/实验实践环节"],
+  ["未知 qualifier", "1-17周未知词/实验实践环节"],
+  ["activity 为空", "1-17周/"],
+  ["activity 全空白", "1-17周/   "],
+  ["既非 weeks 也非 qualifier", "随便写的东西/实验实践环节"],
+]) {
+  test(`2 字段非法（${label}）：fail closed`, async () => {
+    const { collector } = loadCollector([rawRow(text)]);
+
+    await assert.rejects(() => collector.collect({ semester: SEMESTER }), Error);
+  });
+}
+
+test("混合全部五种形态：各自正确，且没有多余脱敏", async () => {
+  const text = [
+    `1-8周/星期五/第5-6节/${TEACHER}/${ACTIVITY}`,
+    "1-17周/实验实践环节",
+    "12-19周校外/实验实践环节",
+    "1-17周/示例教师/实验实践环节",
+    "16-16周校内(户外)/示例教师/实验实践环节",
+  ].join(",");
+
+  const out = await collectSingle(text);
+
+  assert.equal(
+    out,
+    [
+      `1-8周/星期五/第5-6节/REDACTED/${ACTIVITY}`,
+      "1-17周/实验实践环节",
+      "12-19周校外/实验实践环节",
+      "1-17周/REDACTED/实验实践环节",
+      "16-16周校内(户外)/REDACTED/实验实践环节",
     ].join(","),
   );
   assert.ok(!out.includes(TEACHER), "⛔ 真实 teacher 不得出现在产物中");

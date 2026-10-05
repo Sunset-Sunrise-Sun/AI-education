@@ -11,7 +11,8 @@ segment separator = ","
 field separator   = "/"
 
 2 字段（non-concrete：无 weekday / sections / 具体地点 / teacher）：
-        <weeks token><qualifier> / activity       例如 12-19周校外 / 实验实践环节
+        <weeks token> / activity                        例如 1-17周 / 实验实践环节
+        <weeks token><qualifier> / activity             例如 12-19周校外 / 实验实践环节
 3 字段（non-concrete：无 weekday / sections / 具体地点）：
         <weeks token> / teacher / activity              例如 1-17周 / 龙霞 / 实验实践环节
         <weeks token><qualifier> / teacher / activity   例如 16-16周校内(户外) / 龙霞 / 实验实践环节
@@ -67,6 +68,23 @@ field separator   = "/"
   ⛔ `seg,,` / `seg,,,`（多个末尾逗号）**失败**；
 - **中间**空 segment **不得静默忽略**：`segment1,,segment2` → `CourseDataNormalizationError`；
 - **字段数只接受 2 / 3 / 4 / 5 / 6**，其它（7+）一律 fail closed。
+
+### 2 字段 non-concrete（**无 teacher**，2026-1 真实证据）
+
+两种已确认形态，**都没有** teacher 字段：
+
+```text
+plain     ：<weeks token> / activity              例如 1-17周 / 实验实践环节
+qualified ：<weeks token><已确认 qualifier> / activity  例如 12-19周校外 / 实验实践环节
+```
+
+⛔ **不得把 row 级 `teachingName` 注入 `segment.teacher`**：
+`teachingName` 是 **row 级**信息，与"该 segment 内是否有 teacher"没有对应关系；
+注入等于凭空造事实。因此这两种形态的 `teacher` **一律为 `None`**。
+
+- `meeting = None`；`schedule_weeks` 保存展开后的周次；
+  plain 的 `schedule_qualifier = None`，qualified 的为对应白名单取值；
+- ⛔ 2 字段只接受上面两种形态；其它 suffix（`1-17周未知词`）→ fail closed。
 
 ### 3 字段 non-concrete（带 teacher，2026-1 真实证据）
 
@@ -444,10 +462,18 @@ def _try_parse_non_concrete_fields(
 ) -> ParsedScheduleSegment | None:
     """尝试把 **2 字段** 解析为 **non-concrete** segment。
 
+    支持**两种已确认**形态：
+
     ```text
-    <valid weeks token><qualifier> / <non-empty activity>
-    例如：12-19周校外 / 实验实践环节
+    plain     ：<weeks token> / <non-empty activity>
+                例如 1-17周 / 实验实践环节
+    qualified ：<weeks token><已确认 qualifier> / <non-empty activity>
+                例如 12-19周校外 / 实验实践环节
     ```
+
+    ✅ 两种都**没有** teacher 字段：
+    ⛔ **不得把 row 级 `teachingName` 注入 segment.teacher**
+    （row 级教师与该 segment 无对应关系，注入等于凭空造事实）。
 
     成功返回 `ParsedScheduleSegment(meeting=None, teacher=None, ...)`；
     ⛔ 不符合 grammar 时返回 `None`，由调用方**整体失败**。
@@ -464,11 +490,19 @@ def _try_parse_non_concrete_fields(
     ⛔ qualifier 是**白名单**：`12-19周XXX` 一律不匹配 → 整体失败。
     """
 
-    match = _QUALIFIED_WEEKS_ONLY.match(fields[0].strip())
-    if match is None:
-        return None
+    first_field = fields[0].strip()
+    weeks_token: str
+    qualifier: str | None
 
-    weeks_token, qualifier = match.group(1), match.group(2)
+    if is_plain_week_range(first_field):
+        # plain：`1-17周 / activity` —— 没有 qualifier。
+        weeks_token, qualifier = first_field, None
+    else:
+        match = _QUALIFIED_WEEKS_ONLY.match(first_field)
+        if match is None:
+            return None
+        # qualified：`12-19周校外 / activity` —— qualifier 已在白名单内。
+        weeks_token, qualifier = match.group(1), match.group(2)
 
     # 只展开**周次 token 自身**，绝不把 qualifier 一起送进去。
     weeks = expand_weeks(weeks_token)
@@ -637,10 +671,11 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
             if non_concrete is None:
                 raise CourseDataNormalizationError(
                     f"teachingTimePlaceStr 的第 {offset} 段是 2 字段，"
-                    f"但不符合已确认的 non-concrete grammar"
-                    f"（`<weeks token>` + 已确认 qualifier {'/'.join(_KNOWN_SCHEDULE_QUALIFIERS)}"
-                    f" / activity）。本 parser 不猜格式，已整体停止"
-                    f"（不回显该字段取值）"
+                    f"但既不是已确认的 plain 形态（`<weeks token>` / activity），"
+                    f"也不是已确认的 qualified 形态"
+                    f"（`<weeks token>` + 已确认 qualifier "
+                    f"{'/'.join(_KNOWN_SCHEDULE_QUALIFIERS)} / activity）。"
+                    f"本 parser 不猜格式，已整体停止（不回显该字段取值）"
                 )
             parsed.append(non_concrete)
             continue

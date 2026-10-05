@@ -1355,3 +1355,38 @@
 - **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
   ⛔ 按指示**未重新执行真实 35 页采集**。
 - 下一步：等待 Architecture Review。
+
+### 2026-10-05 - 新增 2 字段 plain non-concrete（`1-17周/实验实践环节`）
+
+- 触发：**新真实证据** `1-17周/实验实践环节`：该 segment 内**没有** teacher 字段
+  （虽然 row 级 `teachingName` 存在）。
+- **架构决定**：新增 2 字段 **plain** non-concrete `<weeks token> / activity`；
+  ⛔ **不得把 row 级 `teachingName` 注入 `segment.teacher`** ——
+  `teachingName` 是 **row 级**信息，与该 segment 内是否有 teacher **没有对应关系**，
+  注入等于**凭空造事实**。⇒ 2 字段两种形态的 `teacher` **一律为 `None`**。
+- **2 字段现在区分两种已确认形态**：
+  - **plain**：`1-17周/实验实践环节` → `schedule_qualifier = None`；
+  - **qualified**：`12-19周校外/实验实践环节` → `schedule_qualifier = "校外"`（保持不变）；
+  - 其它 suffix（`1-17周未知词`）→ **fail closed**。
+- **解析结果**（plain）：`meeting = None`、`schedule_weeks = [1..17]`、
+  `schedule_qualifier = None`、`teacher = None`、`activity = fields[1]`。
+- **实现**：`_try_parse_non_concrete_fields()` 改为先判 plain（`is_plain_week_range`），
+  否则再走 qualified 白名单（`_QUALIFIED_WEEKS_ONLY`）；⛔ 不放开为"任意 2 字段"。
+- **Collector**：2 字段分支接受 plain 或 qualified 两种**已确认**形态 → **原样保留、
+  不插入 `REDACTED`**（没有 teacher）；⛔ 也不注入 row 级 `teachingName`。
+  ⚠️ 顺带补齐一处**与 parser 的不一致**：原先 collector 会放过
+  `1-17周/`（activity 为空）而 parser 拒绝；现已在 collector 补上 activity 非空校验，
+  两边一致 **fail closed**。
+- **Importer**：⛔ **未新增路径** —— plain 与 qualified 2 字段都 `meeting = None`，
+  继续复用已有 narrow non-concrete path → `meetings = []`。
+- **Planner / DG-07**：⛔ **未修改**。
+- 测试：parser **127 passed**；importer **76 passed**；collector guard **65 passed**；
+  collector node **45 passed**；Course Data 相关 **523 passed**。
+  新增覆盖：plain 2 字段解析（含"不得注入 teachingName"专项断言）、
+  weeks 展开、qualified 保持不变、非法输入 6 项（weeks 非法 / activity 空与全空白 /
+  未知 qualifier / 带"第"字 / 随机文本）、collector 原样保留与 5 项非法 fail closed，
+  以及**五形态混合测试**（concrete + plain 2 字段 + qualified 2 字段 + plain 3 字段 +
+  qualified 3 字段）：断言段数全保留（5）、**只有 concrete 生成 Meeting**（1）。
+- **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
+  ⛔ 按指示**未重新执行真实 35 页采集**。
+- 下一步：等待 Architecture Review。

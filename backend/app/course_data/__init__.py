@@ -51,8 +51,11 @@ CourseDataProvider.get_course_offerings(semester)
 - ⚠️ **non-concrete schedule segment**（2026-1 真实证据）：
   两种形态都没有 weekday / sections / 具体地点，因此 `meeting = None`
   （⛔ 不生成公共 `Meeting`）：
-  - `12-19周校外/实验实践环节`（2 字段）：qualifier 存入
-    `ParsedScheduleSegment.schedule_qualifier`（⛔ **不伪装成 `campus`**）；
+  - `12-19周校外/实验实践环节`（2 字段 qualified）与
+    `1-17周/实验实践环节`（2 字段 plain）：**都没有** teacher 字段，
+    qualifier 分别存入 `schedule_qualifier`（plain 为 `None`）；
+    ⛔ **不得把 row 级 `teachingName` 注入 `segment.teacher`**
+    （row 级信息与 segment 内是否有 teacher 无对应关系）；
   - `1-17周/龙霞/实验实践环节`（3 字段 = `weeks / teacher / activity`）：
     teacher 存入 `ParsedScheduleSegment.teacher`（**脱敏由 collector 负责**），
     `schedule_qualifier = None`；
