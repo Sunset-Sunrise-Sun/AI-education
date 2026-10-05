@@ -1571,6 +1571,249 @@ code.mono {
   color: #15803d;
 }
 
+/* ---------- 用户输入区（Frontend User Input Gate, Phase 1） ---------- */
+/* 只负责输入布局与可读性，不表达任何业务结论。 */
+
+.uig {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.uig-section {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-subtle);
+}
+
+.uig-section__title {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.uig-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.uig-form__note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.uig-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.uig-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.uig-field--wide {
+  grid-column: 1 / -1;
+}
+
+.uig-field__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.uig-field__hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.uig-field__error {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--error-text);
+}
+
+.uig-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.uig-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.uig-inline .input-text {
+  flex: 1 1 auto;
+}
+
+.uig-textarea {
+  resize: vertical;
+  font-family: inherit;
+}
+
+.uig-chip-remove {
+  margin-left: 6px;
+  padding: 0 2px;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+.uig-chip-remove:hover {
+  color: var(--error-text);
+}
+
+.uig-avoid-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.uig-avoid-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.uig-avoid-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.uig-avoid-cell .input-text {
+  width: 88px;
+}
+
+.uig-schedule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.uig-schedule-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1.4fr) auto minmax(0, 1.6fr);
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.uig-schedule-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.uig-schedule-id {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.uig-schedule-meta {
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+
+.uig-empty {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--panel);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.uig-pending {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--warn-text);
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-sm);
+}
+
+.uig-submit {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  background: var(--panel-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.uig-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+}
+
+.uig-mode__hint {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-muted);
+}
+
+.uig-submit__action {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 460px;
+}
+
+.uig-submit__action .button {
+  align-self: flex-start;
+}
+
+.uig-submit__action .button:disabled {
+  background: var(--border-strong);
+  cursor: not-allowed;
+}
+
+.uig-error {
+  margin: 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--error-text);
+  background: var(--error-bg);
+  border: 1px solid var(--error-border);
+  border-radius: var(--radius-sm);
+}
+
 /* ---------- 响应式窄屏与移动端适配 ---------- */
 
 @media (max-width: 860px) {
@@ -1596,6 +1839,25 @@ code.mono {
 
   .pipeline-arrow {
     display: none;
+  }
+
+  /* 用户输入区：窄屏改为单列 */
+  .uig-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .uig-schedule-row {
+    grid-template-columns: auto minmax(0, 1fr);
+    row-gap: 4px;
+  }
+
+  .uig-submit {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .uig-submit__action {
+    max-width: none;
   }
 }
 

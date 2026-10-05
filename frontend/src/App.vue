@@ -1,16 +1,61 @@
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import CourseOfferingList from './components/CourseOfferingList.vue'
 import MakeupTaskList from './components/MakeupTaskList.vue'
 import PlanResultPanel from './components/PlanResultPanel.vue'
 import PreferencePanel from './components/PreferencePanel.vue'
 import SectionCard from './components/SectionCard.vue'
 import TopStatusBar from './components/TopStatusBar.vue'
+import UserInputPanel from './components/UserInputPanel.vue'
 import { useDemoData } from './composables/useDemoData'
-import { DEMO_ENDPOINT } from './config'
+import { DEMO_ENDPOINT, PLAN_API_ENABLED, initialDataMode } from './config'
+import { buildRealPlanRequest, createDefaultUserInputForm } from './state/userInput'
+import type { UserInputForm } from './state/userInput'
+import { fetchRealPlan } from './api/plan'
+import type { PlanResult } from './types/contracts'
 import { PLAN_STATUS_LABEL } from './utils/labels'
 
 const { state, data, dataSource, errorMessage, load } = useDemoData()
+
+/**
+ * 用户输入（Frontend User Input Gate, Phase 1）。
+ *
+ * 这里保存的唯一真源只是**用户录入的输入**，与 Mock Demo 数据无关：
+ * 即使 Mock 通道加载失败，输入区仍然可用。
+ */
+const userInput = ref<UserInputForm>(createDefaultUserInputForm())
+const dataMode = ref(initialDataMode())
+
+/**
+ * Real Planning 结果。
+ *
+ * 只有**成功调用** `POST /api/v1/plan` 后才会被赋值；
+ * 失败时保持 `null` 并如实显示错误 —— 既不复用 Mock 数据，也不生成任何替代结果。
+ */
+const realPlanResult = ref<PlanResult | null>(null)
+const planErrorMessage = ref('')
+const planSubmitting = ref(false)
+
+async function submitRealPlan(): Promise<void> {
+  if (planSubmitting.value) {
+    return
+  }
+
+  planSubmitting.value = true
+  planErrorMessage.value = ''
+
+  try {
+    realPlanResult.value = await fetchRealPlan(buildRealPlanRequest(userInput.value))
+    dataMode.value = 'real'
+  } catch (error) {
+    realPlanResult.value = null
+    dataMode.value = 'mock'
+    planErrorMessage.value =
+      error instanceof Error ? error.message : '发生了未知错误，请查看浏览器控制台。'
+  } finally {
+    planSubmitting.value = false
+  }
+}
 
 /**
  * 课程号 -> 课程名映射表。
@@ -78,6 +123,30 @@ onMounted(() => {
     </div>
 
     <main class="page__main">
+      <!--
+        阶段 0：用户输入区（Frontend User Input Gate, Phase 1）
+
+        ⚠️ 与 Mock Demo 数据完全解耦：即使 Mock 通道加载失败，用户输入区仍然可用。
+        输入区自身**不产生任何业务结论**，也不调用 Mock 接口。
+      -->
+      <SectionCard
+        section-id="section-user-input"
+        title="0. 用户输入（目标学期、转专业上下文、当前课表与偏好）"
+        subtitle="收集生成规划所需的用户输入：目标学期、学生转专业上下文、当前课表与个性化偏好，以及成绩单文件选择。本区块只组织输入，不做冲突检测、不生成补修任务。"
+      >
+        <UserInputPanel
+          :form="userInput"
+          :offerings="data?.course_offerings ?? []"
+          :plan-api-enabled="PLAN_API_ENABLED"
+          :submitting="planSubmitting"
+          :mode="dataMode"
+          :data-source-label="dataSource"
+          :plan-error-message="planErrorMessage"
+          @update:form="userInput = $event"
+          @submit-real="submitRealPlan"
+        />
+      </SectionCard>
+
       <!-- 状态一：加载中 -->
       <SectionCard
         v-if="state === 'loading'"
@@ -117,8 +186,8 @@ onMounted(() => {
         <!-- 概览状态卡片 -->
         <div class="overview-bar">
           <div class="overview-metric">
-            <span class="overview-metric__label">识别补修任务</span>
-            <span class="overview-metric__val num">{{ data.makeup_tasks.length }} <small>门</small></span>
+            <span class="overview-metric__label">历史培养要求评估项</span>
+            <span class="overview-metric__val num">{{ data.makeup_tasks.length }} <small>条</small></span>
           </div>
           <div class="overview-metric">
             <span class="overview-metric__label">教学班记录</span>
@@ -139,12 +208,12 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- 1. 补修任务 -->
+        <!-- 1. 历史培养要求评估（MakeupTask 的中性表述） -->
         <SectionCard
           mock
           section-id="section-makeup"
-          title="1. 补修任务清单 (MakeupTask)"
-          subtitle="Curriculum 模块根据新旧培养方案与已修成绩单差分所得：转入新专业后需要补修的课程与学分。"
+          title="1. 历史培养要求评估（MakeupTask）"
+          subtitle="Curriculum 模块依据目标培养方案要求与学生已修记录逐条评估后的结果，含“已满足 / 待课程认定 / 已确认需补修”等不同状态。逐条状态以每行的判定列与认定说明为准，前端不作汇总改写。"
           :badge-count="data.makeup_tasks.length"
         >
           <MakeupTaskList :tasks="data.makeup_tasks" />

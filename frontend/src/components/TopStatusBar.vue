@@ -50,8 +50,11 @@ function scrollToSection(id: string) {
     <!-- 快捷导航 -->
     <nav class="topbar__nav" aria-label="模块快速跳转">
       <span class="nav-label">快速导航：</span>
+      <button type="button" class="nav-btn" @click="scrollToSection('section-user-input')">
+        0. 用户输入
+      </button>
       <button type="button" class="nav-btn" @click="scrollToSection('section-makeup')">
-        1. 补修任务
+        1. 培养要求评估
       </button>
       <button type="button" class="nav-btn" @click="scrollToSection('section-offerings')">
         2. 开课教学班
