@@ -1631,3 +1631,23 @@
 - 需要人工确认：无
 - 对其他模块影响：无破坏性影响，纯前端与产品层改进
 - 下一步：等待项目负责人与 Reviewer 审查；等待 Planner DG-07C 求解器落地与架构审查后再决定是否需要最终文案联动。
+
+### 2026-10-05 - DG-07D Architecture Review 修复
+- 本次目标：按项目 Architecture Reviewer 第一轮正式审查意见，删除前端自行补充的业务语义，并与已合并 DG-07C Planner 语义对齐；保留现有 UI / Demo polish。
+- 已修复：
+  - PreferencePanel 只展示 Preference 输入，不再声称 Planner 会“优先过滤”或“允许调度”；
+  - PlanResult 状态文案同步 DG-07C：feasible / partially_feasible / infeasible 均限定认证范围，明确 UNKNOWN != INFEASIBLE；
+  - selected_classes 改为“建议课表教学班 / 建议纳入”，不再表示学校已完成选课；
+  - changes=[] 只表示本次 PlanResult 未返回变更记录，不推断“无需换班”；
+  - risks=[] 只表示本次 PlanResult 未返回风险项，不推断“无风险”；
+  - 删除 remaining_capacity <= 5 的前端自造容量阈值和对应告警样式；
+  - unresolved 正式支持 selection_required，并保留 unknown type fallback；
+  - meetings=[] 继续中性展示“当前数据中无排课信息”；地点缺失改为“当前数据中无地点信息”；
+  - MakeupTask 状态提示改为契约中性描述，具体原因继续来自 reason / source_evidence；
+  - Mock 页面移除“真实开课教学班供给”“最终决策方案”等过强表述。
+- 测试守卫：扩展 `frontend/verify_all_scenarios.mjs`，加入 selection_required、feasible 不过度承诺、Preference 不越权、risks=[] / changes=[] 中性语义、容量无阈值、地点中性描述与静态禁词防回潮等反向断言。
+- 修改范围：仅 Frontend / Agent-Frontend 状态与工作日志；未修改 backend、Planner、Course Data、Curriculum、Integration、Schema、Provider 签名或 mock_data。
+- 治理状态：DG-07A / B / C 已 IMPLEMENTED / REVIEWED；DG-07D 已在本分支实现并完成第一轮 Review 修复，等待项目 Architecture Reviewer 最终复验；DG-07 overall 仍 IMPLEMENTATION PENDING；Data Gate 仍 Reopened；G11 仍 not resolved。
+- 数据：仍为 Mock 展示通道；真实 empty-meeting 产品链路 rollout gate 尚未解除。
+- 下一步：项目 Architecture Reviewer 对远端真实分支做最终复验；通过后再进入 PR / merge 流程。
+
