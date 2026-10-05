@@ -625,14 +625,26 @@ classNumber  → class_id
 yearTerm     → semester
 score        → credit            （字符串数字 → number）
 teachingName → teacher           （可选；教师姓名不入库）
-limitNumber  → capacity
-limitNumber - selectedNumber → remaining_capacity   ⚠️ 派生值
+limitNumber  → capacity                          （来源原始字段，⛔ 不改写）
+limitNumber / selectedNumber → remaining_capacity ⚠️ 派生值（三分支规则）
 data_source  → "real"            （强制）
 source       → 必须由调用方显式传入
 ```
 
-> ⚠️ **`remaining_capacity` 是派生值**：学校接口**没有直接提供**剩余容量，
-> 它是 `limitNumber - selectedNumber` 相减得到的。**不得**描述成接口直接给的字段。
+> ⚠️ **`remaining_capacity` 是派生值**：学校接口**没有直接提供**剩余容量。
+> 真实 2026-1 east artifact 已证明来源里**确实存在** `selectedNumber > limitNumber`
+> （超员状态），因此**不得**再因这一关系拒绝整条教学班；
+> 但该状态下减法**无法**可靠产出符合公共契约的非负剩余容量。裁定后的规则：
+>
+> ```text
+> selectedNumber <  limitNumber → remaining_capacity = limitNumber - selectedNumber
+> selectedNumber == limitNumber → remaining_capacity = 0
+> selectedNumber >  limitNumber → remaining_capacity = None（unknown）
+> ```
+>
+> - ⛔ **不 clamp 到 0**、⛔ **不修改 `capacity`**（保持来源原值）、⛔ **不新增 `selected_count`**、
+>   ⛔ **不修改公共 Schema**、⛔ **不猜学校为何超额**；
+> - `None` = "该派生值不可用"，⛔ 不表示"已满"，⛔ 也不表示"无剩余"。
 
 **证据边界（实现能力不得超过真实证据）**：
 
@@ -641,9 +653,15 @@ source       → 必须由调用方显式传入
   ⛔ **数值型 `score`（`3` / `3.0`）尚无真实来源证据，当前一律拒绝**；
   bool / 负数 / 空串 / 非数字文本继续拒绝。若后续脱敏样本显示它也可是 JSON number，再据实放宽。
 - **`selectedNumber` 的处理口径**：当前 2B-2A 的 **narrow normalizer 基于已观察到的 D5 字段**
-  把它作为必要字段（缺失即失败），因为 `remaining_capacity` 需要它。
+  把它作为必要字段（缺失即失败），因为 `remaining_capacity` 需要它（三分支规则见上）。
   这**不等于**"SYSU 所有记录必然都有 `selectedNumber`" —— 该字段是否**总是**存在目前**没有**证据；
   若后续真实脱敏样本出现缺失，**再据实调整内部实现**。
+- ⚠️ **`selectedNumber > limitNumber` 不再是错误**（架构裁定）：该状态**在来源中真实存在**，
+  按上面的三分支规则降级 `remaining_capacity = None`，⛔ 不拒绝整条教学班。
+- ⛔ **错误信息不回显 raw row 取值**：`normalization.py` 的错误只给**字段名 + 类型**，
+  ⛔ 不得回显 `classNumber` / `courseName` / `score` / 教师姓名等 raw 值
+  （此前 `_require_text` / `_require_count` / `_parse_credit` / `_optional_teacher`
+  都会带出 `{value!r}`，已在本轮一并移除）。
 
 **明确未映射**（本模块不读取、不映射）：
 

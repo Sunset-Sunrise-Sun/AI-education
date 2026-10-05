@@ -16,11 +16,23 @@
 | `yearTerm` | → | `semester` | |
 | `score` | → | `credit` | **字符串数字** → `number` |
 | `teachingName` | → | `teacher` | 可选；教师姓名**不入库**（只在本函数内透传） |
-| `limitNumber` | → | `capacity` | |
-| `limitNumber - selectedNumber` | → | `remaining_capacity` | ⚠️ **派生值** |
+| `limitNumber` | → | `capacity` | 来源原始字段，⛔ 不改写 |
+| `limitNumber` / `selectedNumber` | → | `remaining_capacity` | ⚠️ **派生值**，见下方三分支规则 |
 
-⚠️ **`remaining_capacity` 是派生值**：学校接口**并未直接提供**剩余容量，
-它由 `limitNumber - selectedNumber` 相减得到。**不得**把它描述成"接口直接给的字段"。
+⚠️ **`remaining_capacity` 是派生值**：学校接口**并未直接提供**剩余容量。
+真实 2026-1 east artifact 已证明来源里确实存在 `selectedNumber > limitNumber`
+（超员状态），因此**不得**再因为这一关系拒绝整条教学班；
+但此时做减法也**无法**可靠产出符合公共契约的非负剩余容量。规则：
+
+```text
+selectedNumber <  limitNumber → remaining_capacity = limitNumber - selectedNumber
+selectedNumber == limitNumber → remaining_capacity = 0
+selectedNumber >  limitNumber → remaining_capacity = None（unknown）
+```
+
+- ⛔ **不 clamp 到 0**、⛔ **不修改 `capacity`**（它保持来源原值）、⛔ **不新增 `selected_count`**、
+  ⛔ **不修改公共 Schema**、⛔ **不猜学校为何超额**；
+- `None` 表示"**该派生值不可用**"，⛔ 不代表"已满"、⛔ 也不代表"无剩余"。
 
 ## 本轮明确**不映射**的字段
 
@@ -182,7 +194,8 @@ def _require(raw: Mapping[str, object], key: str) -> object:
 def _require_text(value: object, key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise CourseDataNormalizationError(
-            f"{key} 必须是非空字符串，实际是 {type(value).__name__}：{value!r}"
+            f"{key} 必须是非空字符串，实际类型是 {type(value).__name__}"
+            f"（⛔ 不回显 raw 取值）"
         )
     return value
 
@@ -192,10 +205,10 @@ def _require_count(value: object, key: str) -> int:
 
     if isinstance(value, bool) or not isinstance(value, int):
         raise CourseDataNormalizationError(
-            f"{key} 必须是整数，实际是 {type(value).__name__}：{value!r}"
+            f"{key} 必须是整数，实际类型是 {type(value).__name__}（⛔ 不回显 raw 取值）"
         )
     if value < 0:
-        raise CourseDataNormalizationError(f"{key} 不能为负：{value!r}")
+        raise CourseDataNormalizationError(f"{key} 不能为负（⛔ 不回显 raw 取值）")
     return value
 
 
@@ -215,14 +228,15 @@ def _parse_credit(value: object) -> float:
     if not isinstance(value, str):
         raise CourseDataNormalizationError(
             f"score 必须是**字符串**形式的数字（已确认真实格式），"
-            f"实际是 {type(value).__name__}：{value!r}；"
+            f"实际类型是 {type(value).__name__}（⛔ 不回显 raw 取值）；"
             f"数值型 score 尚无真实来源证据，本轮拒绝"
         )
 
     candidate = value.strip()
     if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", candidate):
         raise CourseDataNormalizationError(
-            f"score 不是合法的字符串数字：{value!r}（已确认真实格式为字符串数字）"
+            f"score 不是合法的字符串数字（⛔ 不回显 raw 取值；"
+            f"已确认真实格式为字符串数字）"
         )
 
     # 正则已排除符号位，因此结果必然 ≥0。
@@ -243,7 +257,8 @@ def _optional_teacher(raw: Mapping[str, object]) -> str | None:
         return None
     if not isinstance(value, str):
         raise CourseDataNormalizationError(
-            f"teachingName 类型不符合已确认语义：{type(value).__name__}（{value!r}）"
+            f"teachingName 类型不符合已确认语义：{type(value).__name__}"
+            f"（⛔ 不回显 raw 取值；教师姓名不入库）"
         )
     return value
 
@@ -296,7 +311,8 @@ def _require_source(source: str) -> str:
 #:
 #: ⚠️ **`selectedNumber` 的处理口径**：当前 2B-2A 的 **narrow normalizer**
 #: **基于已观察到的 D5 字段**把它作为必要字段（缺失即失败），因为
-#: `remaining_capacity = limitNumber - selectedNumber` 需要它。
+#: `remaining_capacity` 需要它（三分支规则见模块 docstring：
+#: `<` 相减、`==` 取 0、`>` 取 `None`）。
 #:
 #: 这**不等于**"SYSU 所有记录必然都有 `selectedNumber`" ——
 #: 该字段是否**总是**存在，目前**没有**证据。
@@ -323,6 +339,20 @@ def _build_common_offering_fields(raw: Mapping[str, object], *, source: str) -> 
     避免两处复制 `courseNum` / `courseName` / `classNumber` / `yearTerm` / `score` /
     `limitNumber` / `selectedNumber` 的转换逻辑。
 
+    `remaining_capacity` 是**派生值**，按三分支规则（Architecture Review 裁定，
+    真实 2026-1 east artifact 已证明来源里存在 `selectedNumber > limitNumber`）：
+
+    ```text
+    selected <  capacity → capacity - selected（正常差值）
+    selected == capacity → 0
+    selected >  capacity → None（unknown）
+    ```
+
+    - ⛔ **不 clamp 到 0**、⛔ **不改写 `capacity`**（保持来源 `limitNumber` 原值）、
+      ⛔ **不新增 `selected_count`**、⛔ **不修改公共 Schema**、⛔ **不猜学校为何超额**；
+    - `None` = "该派生值不可用"，⛔ 不表示"已满"，⛔ 也不表示"无剩余"；
+    - ⛔ `selected > capacity` **不再**拒绝整条教学班（此前会 fail closed）。
+
     这是 Course Data **内部** private helper：不进 `docs/interfaces/`、不进 Provider / API、
     不是新的公共 Schema。
     """
@@ -343,14 +373,17 @@ def _build_common_offering_fields(raw: Mapping[str, object], *, source: str) -> 
     capacity = _require_count(_require(raw, "limitNumber"), "limitNumber")
     selected = _require_count(_require(raw, "selectedNumber"), "selectedNumber")
 
-    if selected > capacity:
-        raise CourseDataNormalizationError(
-            f"selectedNumber({selected}) 不能大于 limitNumber({capacity})："
-            f"{class_id}"
-        )
+    # ⚠️ 派生值：学校接口没有直接提供剩余容量。
+    remaining_capacity: int | None
 
-    # ⚠️ 派生值：学校接口没有直接提供剩余容量，它是相减得到的。
-    remaining_capacity = capacity - selected
+    if selected < capacity:
+        remaining_capacity = capacity - selected
+    elif selected == capacity:
+        remaining_capacity = 0
+    else:
+        # selected > capacity：减法无法可靠生成**非负**的剩余容量，
+        # 因此降级为 unknown（None），⛔ 不 clamp 到 0、⛔ 不拒绝整条教学班。
+        remaining_capacity = None
 
     return {
         "course_id": course_id,

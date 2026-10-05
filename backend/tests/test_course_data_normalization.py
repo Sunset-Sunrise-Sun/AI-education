@@ -138,14 +138,76 @@ def test_remaining_capacity_is_derived_from_limit_and_selected() -> None:
 
 @pytest.mark.parametrize(
     ("limit_number", "selected_number", "expected"),
-    [(90, 75, 15), (60, 60, 0), (150, 40, 110)],
+    [
+        (90, 75, 15),  # selected <  limit → 正常差值
+        (60, 60, 0),  # selected == limit → 0
+        (150, 40, 110),
+        (10, 11, None),  # selected >  limit → unknown（真实来源存在该状态）
+        (10, 49, None),
+    ],
 )
 def test_remaining_capacity_follows_inputs(
-    limit_number: int, selected_number: int, expected: int
+    limit_number: int, selected_number: int, expected: int | None
 ) -> None:
+    """`remaining_capacity` 三分支规则（Architecture Review 裁定）。"""
+
     offering = _build(_raw(limitNumber=limit_number, selectedNumber=selected_number))
 
     assert offering.remaining_capacity == expected
+
+
+def test_selected_greater_than_limit_is_not_rejected() -> None:
+    """⛔ `selectedNumber > limitNumber` **不再**拒绝整条教学班。
+
+    真实 2026-1 east artifact 已证明来源里确实存在该状态；
+    `capacity` 保持来源原值，`remaining_capacity` 降级为 `None`。
+    """
+
+    offering = _build(_raw(limitNumber=10, selectedNumber=49))
+
+    assert offering.capacity == 10
+    assert offering.remaining_capacity is None
+
+
+def test_selected_greater_than_limit_does_not_clamp_or_rewrite_capacity() -> None:
+    """⛔ 不 clamp 到 0、⛔ 不改写 `capacity`（保持来源 `limitNumber`）。"""
+
+    for limit_number, selected_number in ((0, 1), (10, 11), (45, 49), (1, 999)):
+        offering = _build(
+            _raw(limitNumber=limit_number, selectedNumber=selected_number)
+        )
+
+        assert offering.capacity == limit_number, "capacity 必须是来源原值"
+        assert offering.remaining_capacity is None, "⛔ 不得 clamp 到 0"
+        assert not hasattr(offering, "selected_count"), "⛔ 不得新增 selected_count"
+
+
+def test_normalization_errors_do_not_echo_raw_row_values() -> None:
+    """⛔ production 错误不得回显 raw row 取值（含 `classNumber` / 教师姓名）。"""
+
+    secret_class_id = "机密教学班号-0001"
+    secret_course_name = "机密课程名"
+
+    cases = [
+        _raw(classNumber=""),  # classNumber 空
+        _raw(classNumber=12345),  # 类型不符（会带出 raw 取值）
+        _raw(courseName=secret_course_name, classNumber=[]),
+        _raw(score="3学分"),  # 非法字符串数字（会带出 raw 取值）
+        _raw(score=3),
+        _raw(limitNumber="90"),  # 类型不符
+        _raw(limitNumber=-1),
+        _raw(selectedNumber=-5),
+        _raw(teachingName=12345),
+    ]
+
+    for raw in cases:
+        with pytest.raises(CourseDataNormalizationError) as excinfo:
+            _build(raw)
+
+        message = str(excinfo.value)
+
+        for leaked in (secret_class_id, secret_course_name, "机密", "3学分", "12345", "-1", "-5"):
+            assert leaked not in message, f"错误信息回显了 raw 取值：{leaked!r}"
 
 
 def test_data_source_is_forced_to_real() -> None:
@@ -256,13 +318,6 @@ def test_numeric_score_is_rejected_without_evidence(score: object) -> None:
 def test_invalid_limit_number_is_rejected(value: object) -> None:
     with pytest.raises(CourseDataNormalizationError):
         _build(_raw(limitNumber=value))
-
-
-def test_selected_greater_than_limit_is_rejected() -> None:
-    with pytest.raises(CourseDataNormalizationError) as excinfo:
-        _build(_raw(limitNumber=10, selectedNumber=11))
-
-    assert "selectedNumber" in str(excinfo.value)
 
 
 def test_empty_meetings_is_rejected() -> None:

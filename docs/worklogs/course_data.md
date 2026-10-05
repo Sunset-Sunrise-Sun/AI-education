@@ -1987,3 +1987,63 @@
   `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend / store。
 - 下一步：等待 Architecture Review 对(a)新 blocker `selectedNumber > limitNumber` 与
   (b)该错误路径的 `class_id` 回显给出裁定。
+
+### 2026-10-05 - `remaining_capacity` 三分支规则 + 错误信息去 raw 取值（真实 artifact 再验收）
+
+- 触发：Architecture Review 裁定 —— 真实数据已证明 `selectedNumber > limitNumber`
+  **是来源中实际存在的状态**，因此**不得**再因这一关系拒绝整条 `CourseOffering`。
+- **`_build_common_offering_fields()` 变更**（唯一实现，两条路径共用）：
+
+  ```text
+  selectedNumber <  limitNumber → remaining_capacity = limitNumber - selectedNumber
+  selectedNumber == limitNumber → remaining_capacity = 0
+  selectedNumber >  limitNumber → remaining_capacity = None（unknown）
+  ```
+
+  ⛔ 不 clamp 到 0、⛔ 不改写 `capacity`（保持来源 `limitNumber` 原值）、
+  ⛔ 不新增 `selected_count`、⛔ 不改公共 Schema、⛔ 不猜学校为何超额；
+  `None` = 派生值不可用（⛔ 不表示"已满"、⛔ 不表示"无剩余"）。
+- **normalization 文档说明同步**（模块 docstring 字段表 + `_REQUIRED_RAW_FIELDS` 注释 +
+  `docs/status/course_data.md` 对应小节）。
+- **错误信息去 raw 取值**：`_require_text` / `_require_count` / `_parse_credit` /
+  `_optional_teacher` 原先都会带出 `{value!r}`（可能含 `classNumber`、课程名、
+  `score` 原文、教师姓名）→ 现改为**只给字段名 + 实际类型**，
+  「新的/修改后的 production error 不得回显 `class_id` 或 raw row 值」已满足；
+  连带删除了 `selectedNumber(...) 不能大于 limitNumber(...)：{class_id}` 这条会回显
+  `class_id` 的错误（该分支已不存在）。
+- **测试**（`test_course_data_normalization.py`）：
+  - `selected < limit` → 正常差值（含 90/75→15、150/40→110）；
+  - `selected == limit` → 0；
+  - `selected > limit` → `None`，且**不再抛异常**（10/11 与 10/49 两组）；
+  - `capacity` 保持来源 `limitNumber`（4 组组合）；
+  - ⛔ 不 clamp、⛔ 不新增 `selected_count`（`hasattr` 断言）；
+  - **错误信息不回显 raw 取值**（9 个非法输入 × 多个敏感串断言，含伪造的"机密"课程名/教学班号）；
+  - ⚠️ **既有用例 `test_selected_greater_than_limit_is_rejected` 已按其裁定删除**
+    （它断言的旧行为正是本次被推翻的行为）。
+- **真实 artifact 再验收**（`daafdb18…a31b` 实测一致；⛔ 未建 SQLite；⛔ 未 skip）：
+  - `load_capture_bundle` ✅（6 页 / total 1071 / rows 合计 1071）；
+  - `collect_captured_pages_snapshot`：**前两个 blocker 已清除、但第三个 fail closed 出现**：
+    1. ✅ sections suffix（上一轮）已通过；
+    2. ✅ `selectedNumber > limitNumber`（本轮）已通过；
+    3. ❌ **新 blocker：`score` 不是合法的字符串数字** ——
+       既有校验 `_parse_credit`（regex `^[0-9]+(\.[0-9]+)?$` 要求小数点前至少一位数字）；
+       错误信息**已不含任何 raw 取值**（符合本轮要求），但**尚无机器可读的安全分类码**。
+  - **只读聚合扫描 `score` 形态**（1071 行，⛔ 只输出匿名模板 + 计数）：
+
+    ```text
+    numeric_string      : 973
+    non_numeric_string  : 98
+    anonymous template  : `.N`（长度 2）× 98      ← 小数点前无数字
+    accounting_ok       : True
+    ```
+
+    ⇒ 即真实来源里存在 `.N` 形态的学分字符串（98 处）；解析规则是否放宽由 Review 裁定。
+  - ⚠️ 49 个 `unsupported_sections_shape` **本轮按要求未处理**（仍是潜在 fail-closed 项）。
+- 测试结果：normalization **106 passed**；parser+importer+normalization 合并 **341 passed**；
+  full backend **2 failed / 2301 passed / 2 skipped**（两个为**既有** Windows Curriculum 用例）；
+  `compileall` exit 0。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未建 SQLite；⛔ 未改公共 Schema；
+  ⛔ 未改 collector / `captured_pages.py` / Capture Bundle format / `sharded_capture.py` /
+  store / `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend。
+- 下一步：等待 Architecture Review 对(a)`score` 的 `.N` 形态与
+  (b)是否给该错误加安全分类码给出裁定。
