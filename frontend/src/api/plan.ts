@@ -199,7 +199,9 @@ function messageFor(
     case 'not_configured':
       return '真实规划运行时尚未完成装配（真实 Curriculum / Course Data / Planner 尚未接入）。'
     case 'input':
-      return '请求未被接受：当前输入（尤其是当前课表的来源）不满足 Real Planning 的要求。'
+      // ⚠️ 422 的**具体原因由后端给出**，前端不猜：
+      // 既可能是学期非法，也可能是 current_schedule 来源不合法，还可能是 preference 形状错误。
+      return 'Real Planning 输入未通过校验（HTTP 422）。具体原因见下方后端返回的 code / detail。'
     case 'server':
       // 503 被归为服务端错误时，必须说清"这不是未装配"，避免误报
       if (status === 503) {

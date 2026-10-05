@@ -35,6 +35,8 @@ const props = defineProps<{
   errorStatus?: number | null
   /** 后端返回的机器可读错误码（如 `real_pipeline_not_configured`）。 */
   errorCode?: string | null
+  /** 后端返回的原始 detail 文本（**具体原因以此为准**）。 */
+  errorDetail?: string | null
   /**
    * 课表 provenance 门禁的阻止原因（fail closed）；`null` 表示通过。
    *
@@ -143,7 +145,11 @@ const errorDisplay = computed(() =>
           </span>
           <span v-if="errorKind" class="mono">{{ errorKind }}</span>
         </p>
-        <p v-if="errorMessage" class="uig-error__detail" data-testid="real-plan-error-detail">
+        <!-- 后端给出的**具体**原因：前端不推断，原样展示 -->
+        <p v-if="errorDetail" class="uig-error__detail" data-testid="real-plan-error-detail">
+          后端返回：{{ errorDetail }}
+        </p>
+        <p v-if="errorMessage" class="uig-error__detail" data-testid="real-plan-error-message">
           {{ errorMessage }}
         </p>
         <p class="uig-error__hint">

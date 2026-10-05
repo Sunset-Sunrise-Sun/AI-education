@@ -925,7 +925,7 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
 | `kind` | 触发条件 | 界面标题 |
 |---|---|---|
 | `not_configured` | **503 且 `detail.error === "real_pipeline_not_configured"`**，或 503 但响应体**无法解析 / 无可识别信息** | **真实规划运行时尚未完成装配** |
-| `input` | 422 | **输入来源不满足 Real Planning 要求** |
+| `input` | 422 | **Real Planning 输入未通过校验** |
 | `server` | 5xx（503 之外）；**或 503 但响应体明确给出其它错误** | Real Planning 服务端错误 |
 | `network` | 请求未能完成（连不上 / 连接被重置） | 无法连接 Real Planning 接口 |
 | `http` | 其它非 2xx | Real Planning 调用失败 |
@@ -937,12 +937,14 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
   ③ 503 但 body **明确给出其它错误**（有可识别 code 或 detail）→ **`server`**，
   ⛔ **不误报成"运行时尚未装配"**，且文案导向服务端排查；
 
+- ⚠️ **422 只表示"输入未通过校验"**：标题统一为"Real Planning 输入未通过校验"，
+  ⛔ **不声称**所有 422 都是"当前课表来源问题"（也可能是 `semester` 非法或 `preference` 形状错误）；
+  具体原因**由后端返回**，前端原样展示 `code` 与 `detail`，⛔ 不推断具体是哪一项；
 - ⚠️ **不假设后端一定有统一 error schema**：`parsePlanErrorBody()` 能识别已知的
   503 形状（`{detail:{error,message}}`）与 FastAPI 422 形状（`{detail:[{loc,msg,type}]}`），
   对未知形状**宽容处理**（返回 `null`，由状态码兜底），⛔ 不解析不存在的字段；
 - ⚠️ **503 是"当前正确状态"，不是系统故障**：文案明确说明
-  "当前页面可继续使用 Mock Demo；Real Planning 暂不可用"，并声明**不会自动回退到 Mock**；
-- ⚠️ **422 不写成"系统错误"**：明确指向"输入 / 来源不满足 Real Planning 要求"。
+  "当前页面可继续使用 Mock Demo；Real Planning 暂不可用"，并声明**不会自动回退到 Mock**。
 
 **成功状态收口**：Real 成功后继续 `规划结果来源：Real`；
 培养要求评估 / 教学班 / 偏好仍标 Mock；⛔ 不重新出现"当前数据模式：Real"这类全局说法。
@@ -958,7 +960,7 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
 **验证**：
 
 ```text
-cd frontend && npm test              →  109 passed / 109（8 个测试文件）
+cd frontend && npm test              →  111 passed / 111（8 个测试文件）
 cd frontend && npm run build         →  成功（含 vue-tsc --noEmit）
 cd frontend && npm run test:scenarios →  既有 14 项全部通过
 ```

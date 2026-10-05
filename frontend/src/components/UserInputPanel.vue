@@ -52,6 +52,8 @@ const props = defineProps<{
   planErrorStatus?: number | null
   /** Real Planning 失败时后端返回的错误码。 */
   planErrorCode?: string | null
+  /** Real Planning 失败时后端返回的原始 detail 文本。 */
+  planErrorDetail?: string | null
   /** 联调调试信息（仅开发环境渲染）。 */
   debugInfo?: E2EDebugInfo
   /** 是否处于开发环境。 */
@@ -219,6 +221,7 @@ function clearGradeFile(): void {
       :error-kind="planErrorKind ?? null"
       :error-status="planErrorStatus ?? null"
       :error-code="planErrorCode ?? null"
+      :error-detail="planErrorDetail ?? null"
       :schedule-block-reason="scheduleBlockReason ?? null"
       @submit-real="emit('submit-real')"
     />

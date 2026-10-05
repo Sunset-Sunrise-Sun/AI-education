@@ -35,13 +35,24 @@ const NOT_CONFIGURED_BODY = {
   },
 }
 
-/** FastAPI 标准 422 校验响应体。 */
-const VALIDATION_BODY = {
+/** FastAPI 标准 422 校验响应体：`current_schedule` 来源不合法。 */
+const PROVENANCE_422_BODY = {
   detail: [
     {
       type: 'value_error',
       loc: ['body', 'current_schedule'],
       msg: 'Value error, current_schedule 中所有教学班的 data_source 必须为 real',
+    },
+  ],
+}
+
+/** FastAPI 标准 422 校验响应体：`semester` 非法（如纯空白）。 */
+const SEMESTER_422_BODY = {
+  detail: [
+    {
+      type: 'value_error',
+      loc: ['body', 'semester'],
+      msg: 'Value error, semester 必须是非空字符串',
     },
   ],
 }
@@ -213,15 +224,31 @@ describe('Real API 错误模型', () => {
     expect(classifyPlanError({ status: 404, code: null, detail: null })).toBe('http')
   })
 
-  it('422 → kind = input，并提取 FastAPI 校验信息', async () => {
-    fetchMock.mockResolvedValue(jsonResponse(VALIDATION_BODY, 422, 'Unprocessable Entity'))
+  it('422 provenance-invalid → kind = input，并提取 FastAPI 校验信息', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(PROVENANCE_422_BODY, 422, 'Unprocessable Entity'))
 
     const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
     expect(error.kind).toBe('input')
     expect(error.status).toBe(422)
     expect(error.code).toBe('value_error')
     expect(error.detail).toContain('data_source 必须为 real')
-    expect(error.message).toContain('不满足 Real Planning 的要求')
+    // 通用标题：只说"输入未通过校验"，不预设原因
+    expect(error.message).toContain('Real Planning 输入未通过校验')
+    expect(error.message).not.toContain('当前课表来源')
+  })
+
+  it('422 semester-invalid → 同样 kind = input，且**不**声称是课表来源问题', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(SEMESTER_422_BODY, 422, 'Unprocessable Entity'))
+
+    const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
+    expect(error.kind).toBe('input')
+    expect(error.status).toBe(422)
+    // 后端给出的具体原因被原样保留（供 UI 展示）
+    expect(error.detail).toContain('semester 必须是非空字符串')
+    // ⛔ 不得把 semester 类 422 说成"当前课表来源问题"
+    expect(error.detail).not.toContain('data_source')
+    expect(error.message).not.toContain('当前课表来源')
+    expect(error.message).toContain('输入未通过校验')
   })
 
   it('500 → kind = server', async () => {
@@ -275,7 +302,7 @@ describe('Real API 错误模型', () => {
       detail: '真实规划链路尚未配置。',
     })
     // FastAPI 数组形状
-    expect(parsePlanErrorBody(VALIDATION_BODY).code).toBe('value_error')
+    expect(parsePlanErrorBody(PROVENANCE_422_BODY).code).toBe('value_error')
     // 字符串 detail
     expect(parsePlanErrorBody({ detail: 'plain text' })).toEqual({
       code: null,
@@ -293,7 +320,11 @@ describe('Real API 错误模型', () => {
     expect(notConfigured.hint).toContain('可继续使用 Mock Demo')
     expect(notConfigured.hint).toContain('不会自动回退到 Mock')
 
-    expect(describePlanError('input', 422).title).toContain('输入来源不满足')
+    // 422 的标题是通用的"输入未通过校验"，不预设具体原因
+    const input422 = describePlanError('input', 422)
+    expect(input422.title).toContain('Real Planning 输入未通过校验')
+    expect(input422.hint).not.toContain('只接受')
+    expect(input422.hint).toContain('code / detail')
     expect(describePlanError('server', 500).title).toContain('服务端错误')
     expect(describePlanError('network', null).title).toContain('无法连接')
 
@@ -360,16 +391,38 @@ describe('App 级：Real 失败状态展示', () => {
     expect(wrapper.find('[data-testid="debug-error-kind"]').text()).toBe('server')
   })
 
-  it('422 → 显示输入 / provenance 类错误，不写成"系统错误"', async () => {
-    const wrapper = await mountAppWith(() => jsonResponse(VALIDATION_BODY, 422))
+  it('422（provenance-invalid）→ 显示通用"输入未通过校验"，不写成"系统错误"', async () => {
+    const wrapper = await mountAppWith(() => jsonResponse(PROVENANCE_422_BODY, 422))
 
     await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
     await flushPromises()
 
     const title = wrapper.find('[data-testid="real-plan-error-title"]').text()
-    expect(title).toContain('输入来源不满足')
+    expect(title).toContain('Real Planning 输入未通过校验')
     expect(title).not.toContain('系统错误')
     expect(wrapper.find('[data-testid="real-plan-error-meta"]').text()).toContain('422')
+    // 后端给出的具体原因仍然展示（provenance 类）
+    expect(wrapper.find('[data-testid="real-plan-error-detail"]').text()).toContain(
+      'data_source 必须为 real',
+    )
+  })
+
+  it('422（semester-invalid）→ 同一个通用标题，且不声称是课表来源问题', async () => {
+    const wrapper = await mountAppWith(() => jsonResponse(SEMESTER_422_BODY, 422))
+
+    await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
+    await flushPromises()
+
+    const title = wrapper.find('[data-testid="real-plan-error-title"]').text()
+    expect(title).toContain('Real Planning 输入未通过校验')
+    // ⛔ UI 不得把 semester 类 422 归因到当前课表来源
+    const hint = wrapper.find('[data-testid="real-plan-error-hint"]').text()
+    expect(hint).not.toContain('只接受')
+    expect(hint).toContain('学期非法')
+    // 后端 detail 被保留
+    expect(wrapper.find('[data-testid="real-plan-error-detail"]').text()).toContain(
+      'semester 必须是非空字符串',
+    )
   })
 
   it('500 → 显示服务端错误', async () => {

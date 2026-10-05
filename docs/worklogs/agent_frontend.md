@@ -1839,7 +1839,8 @@
      `kind ∈ {not_configured, input, server, network, http, unexpected}`，UI 只按 `kind` 分支；
      **503 `real_pipeline_not_configured` 明确显示"真实规划运行时尚未完成装配"**
      （不是笼统的"请求失败"，也不是系统故障），并说明可继续使用 Mock Demo；
-     422 显示"输入来源不满足 Real Planning 要求"（⛔ 不写成"系统错误"）；
+     422 显示通用"**Real Planning 输入未通过校验**"（⛔ 不写成"系统错误"，
+     ⛔ 不声称所有 422 都是课表来源问题），具体原因原样展示后端 `code` / `detail`；
      500 显示服务端错误；network 显示无法连接；
   2. **B. 成功收口**：Real 成功后仍为 `规划结果来源：Real`，基础展示数据仍标 Mock；
   3. **C. 混合来源说明**：沿用 `规划结果来源` 局部文案 + provenance 行 + 页脚两类来源区分；
@@ -1855,7 +1856,7 @@
   `frontend/src/components/{SubmissionActions,UserInputPanel}.vue`、`frontend/src/styles/base.css`、
   新增 `frontend/src/components/E2EDebugPanel.vue`、新增 `frontend/tests/real-e2e-prep.spec.ts`、
   `docs/status/agent_frontend.md`、本文件。
-- 测试结果：`npm test` → **109 passed / 109**（8 文件）；`npm run build` → 成功；
+- 测试结果：`npm test` → **111 passed / 111**（8 文件）；`npm run build` → 成功；
   `npm run test:scenarios` → 既有 14 项全部通过。
 - 是否修改 backend：**否**。公共接口是否变化：**否**（未改 `schemas/`、`docs/interfaces/`）。
 - **明确状态**：**Frontend 已准备好 Real E2E 联调**；⛔ **不是**"Real E2E 已完成"——
@@ -1870,5 +1871,15 @@
   2. **文档日期更正**：本记录与 `docs/status/agent_frontend.md` 头部更新日期
      由 `2026-10-06` 改为 `2026-10-05`（**只改本轮新增记录**，
      早前 4 条 `2026-10-06` 记录未改动）。
+- **本轮补充（Review 反馈第二轮，422 文案收口）**：
+  - 422 的标题改为**通用**"**Real Planning 输入未通过校验**"；
+    ⛔ **不再声称**所有 422 都是"当前课表来源问题"——
+    `semester` 非法、`preference` 形状错误同样会返回 422，前端**不推断具体是哪一项**；
+  - **保留并真正透出** `code` / `detail`：新增 `planErrorDetail` 贯通
+    `App → UserInputPanel → SubmissionActions`，界面展示"后端返回：<detail>"；
+  - 新增两类 422 测试：**semester-invalid**（`loc: body.semester`）与
+    **provenance-invalid**（`loc: body.current_schedule`），断言同一个通用标题、
+    各自保留后端 detail，且 semester 类 422 的提示**不含**课表来源归因；
+  - 非空测试验证：把标题回退为按课表来源归因后，相关用例**失败 3 项**，还原后 29 项全通过。
 - 下一步：等待 Architecture Review；等 Codex runtime 可用后执行第一轮真实联调。
 

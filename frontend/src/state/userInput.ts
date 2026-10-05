@@ -76,11 +76,12 @@ export function describePlanError(kind: string, status: number | null): PlanErro
       }
     case 'input':
       return {
-        title: '输入来源不满足 Real Planning 要求',
+        title: 'Real Planning 输入未通过校验',
         hint:
-          `后端拒绝了本次输入${status !== null ? `（HTTP ${status}）` : ''}：` +
-          'Real Planning 只接受**明确标记为真实来源**的当前课表。' +
-          '请检查当前课表是否含 Mock 教学班或来源未经确认的教学班。',
+          `后端拒绝了本次请求${status !== null ? `（HTTP ${status}）` : ''}。` +
+          '422 只表示"输入未通过校验"，具体是哪一项由后端返回：' +
+          '可能是学期非法、当前课表来源不合规，或 preference 字段形状错误。' +
+          '请以下方后端返回的 code / detail 为准，前端不推断具体原因。',
       }
     case 'server':
       return {

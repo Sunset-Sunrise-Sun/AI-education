@@ -53,6 +53,8 @@ const planErrorMessage = ref('')
 const planErrorKind = ref<string | null>(null)
 const planErrorStatus = ref<number | null>(null)
 const planErrorCode = ref<string | null>(null)
+/** 后端返回的原始 detail 文本（供 UI 展示具体原因）。 */
+const planErrorDetail = ref<string | null>(null)
 const planSubmitting = ref(false)
 
 /** 最近一次 Real 请求的 HTTP 状态码（含成功），供联调调试面板显示。 */
@@ -124,6 +126,7 @@ async function submitRealPlan(): Promise<void> {
     planErrorKind.value = 'blocked'
     planErrorStatus.value = null
     planErrorCode.value = null
+    planErrorDetail.value = null
     return
   }
 
@@ -132,6 +135,7 @@ async function submitRealPlan(): Promise<void> {
   planErrorKind.value = null
   planErrorStatus.value = null
   planErrorCode.value = null
+  planErrorDetail.value = null
 
   try {
     realPlanResult.value = await fetchRealPlan(buildRealPlanRequest(userInput.value))
@@ -146,6 +150,7 @@ async function submitRealPlan(): Promise<void> {
       planErrorKind.value = error.kind
       planErrorStatus.value = error.status
       planErrorCode.value = error.code
+      planErrorDetail.value = error.detail
       planErrorMessage.value = error.message
       lastHttpStatus.value = error.status
     } else {
@@ -153,6 +158,7 @@ async function submitRealPlan(): Promise<void> {
       planErrorKind.value = 'unexpected'
       planErrorStatus.value = null
       planErrorCode.value = null
+      planErrorDetail.value = null
       planErrorMessage.value =
         error instanceof Error ? error.message : '发生了未知错误，请查看浏览器控制台。'
       lastHttpStatus.value = null
@@ -251,6 +257,7 @@ onMounted(() => {
           :plan-error-kind="planErrorKind"
           :plan-error-status="planErrorStatus"
           :plan-error-code="planErrorCode"
+          :plan-error-detail="planErrorDetail"
           :debug-info="e2eDebugInfo"
           :dev="isDev"
           :schedule-block-reason="scheduleProvenanceBlockReason(userInput)"
