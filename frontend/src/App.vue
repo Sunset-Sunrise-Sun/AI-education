@@ -9,7 +9,7 @@ import TopStatusBar from './components/TopStatusBar.vue'
 import UserInputPanel from './components/UserInputPanel.vue'
 import { useDemoData } from './composables/useDemoData'
 import { DEMO_ENDPOINT, PLAN_API_ENABLED, initialDataMode } from './config'
-import { buildRealPlanRequest, createDefaultUserInputForm, isFormValid } from './state/userInput'
+import { buildRealPlanRequest, createDefaultUserInputForm, evaluatePlanSubmission, isScheduleSubmittableToRealPlanning } from './state/userInput'
 import type { UserInputForm } from './state/userInput'
 import { fetchRealPlan } from './api/plan'
 import type { PlanResult } from './types/contracts'
@@ -36,15 +36,42 @@ const realPlanResult = ref<PlanResult | null>(null)
 const planErrorMessage = ref('')
 const planSubmitting = ref(false)
 
+/**
+ * Real 提交是否被 **provenance 门禁**阻止。
+ *
+ * 在真实教学班接入前，Mock 教学班不得进入 Real Planning。
+ */
+const realPlanScheduleBlocked = computed(
+  () => !isScheduleSubmittableToRealPlanning(userInput.value),
+)
+
+/**
+ * **规划结果**的 provenance —— 只看规划结果本身，不冒充整页数据来源。
+ *
+ * ⚠️ `/api/v1/plan` 当前只返回 `PlanResult`：
+ * MakeupTask / CourseOffering / Preference 仍全部来自 Mock Demo，
+ * 因此**绝不能**把整个页面统一标成 Real。
+ */
+const planResultMode = computed<'mock' | 'real'>(() =>
+  realPlanResult.value ? 'real' : 'mock',
+)
+
+/** 当前实际渲染的规划结果：Real 成功后展示 Real，否则展示 Mock Demo 的结果。 */
+const displayedPlanResult = computed<PlanResult | null>(
+  () => realPlanResult.value ?? data.value?.plan_result ?? null,
+)
+
 async function submitRealPlan(): Promise<void> {
   if (planSubmitting.value) {
     return
   }
 
-  // 提交前的最后一道守卫：输入不完整时**一个请求也不发**。
+  // 提交前的最后一道守卫（纯函数，见 `evaluatePlanSubmission`）：
+  // 任一条件不满足时**一个请求也不发**。
   // 按钮的 disabled 只是界面提示，不能作为唯一防线（程序化调用 / 事件顺序异常都可能绕过它）。
-  if (!isFormValid(userInput.value)) {
-    planErrorMessage.value = '表单存在未修正的输入问题，已阻止提交；未发出任何请求。'
+  const gate = evaluatePlanSubmission(userInput.value)
+  if (!gate.allowed) {
+    planErrorMessage.value = gate.reason
     return
   }
 
@@ -149,6 +176,7 @@ onMounted(() => {
           :mode="dataMode"
           :data-source-label="dataSource"
           :plan-error-message="planErrorMessage"
+          :schedule-provenance-blocked="realPlanScheduleBlocked"
           @update:form="userInput = $event"
           @submit-real="submitRealPlan"
         />
@@ -207,11 +235,13 @@ onMounted(() => {
           <div class="overview-metric">
             <span class="overview-metric__label">规划结果状态</span>
             <span
+              v-if="displayedPlanResult"
               class="tag tag--plan"
-              :class="`tag--plan-${data.plan_result.status}`"
+              :class="`tag--plan-${displayedPlanResult.status}`"
             >
-              {{ PLAN_STATUS_LABEL[data.plan_result.status] }}
+              {{ PLAN_STATUS_LABEL[displayedPlanResult.status] }}
             </span>
+            <span v-else class="text-muted">—</span>
           </div>
         </div>
 
@@ -250,16 +280,44 @@ onMounted(() => {
           />
         </SectionCard>
 
-        <!-- 4. 重构方案与求解结果 -->
+        <!--
+          4. 规划结果与建议课表
+
+          ⚠️ provenance 必须精确：
+          `POST /api/v1/plan` **只返回 PlanResult**，MakeupTask / CourseOffering / Preference
+          仍全部来自 Mock Demo。因此这里只把**规划结果**标成 Real，绝不把整页标成 Real。
+        -->
         <SectionCard
-          mock
           section-id="section-plan"
           tone="primary"
           title="4. 规划结果与建议课表 (PlanResult)"
           subtitle="展示 Planner 输出的 PlanResult：包含建议课表、方案变更、风险项与未决事项；前端不补充业务判断。"
         >
+          <div class="uig-provenance" data-testid="plan-provenance">
+            <span class="uig-provenance__item">
+              基础演示数据：<strong class="uig-provenance__mock">Mock</strong>
+            </span>
+            <span class="uig-provenance__sep" aria-hidden="true">·</span>
+            <span class="uig-provenance__item">
+              规划结果：<strong
+                :class="planResultMode === 'real' ? 'uig-provenance__real' : 'uig-provenance__mock'"
+                data-testid="plan-result-provenance"
+              >{{ planResultMode === 'real' ? 'Real' : 'Mock' }}</strong>
+            </span>
+            <span class="uig-provenance__note">
+              <template v-if="planResultMode === 'real'">
+                本区块方案来自 <code class="mono">POST /api/v1/plan</code>；
+                其余区块（MakeupTask / 教学班 / Preference）仍为 Mock 演示数据。
+              </template>
+              <template v-else>
+                本区块方案来自 <code class="mono">GET /api/v1/mock/demo</code>；尚未提交 Real Planning。
+              </template>
+            </span>
+          </div>
+
           <PlanResultPanel
-            :plan-result="data.plan_result"
+            v-if="displayedPlanResult"
+            :plan-result="displayedPlanResult"
             :course-name-by-id="courseNameById"
           />
         </SectionCard>
@@ -272,8 +330,16 @@ onMounted(() => {
           <strong>学航·转衔</strong> —— 面向高校转专业学生的 AI 学业路径重构 Agent 系统
         </p>
         <p class="footer-compliance">
-          数据声明：当前页面所有数据均由后端 <code class="mono">GET /api/v1/mock/demo</code> 通道提供。
-          全部课程信息、教师、教学班、学生偏好与求解方案均属<strong>演示数据</strong>，非真实教务系统正式指令。
+          数据声明：基础演示数据（培养要求评估、教学班、偏好）均由后端
+          <code class="mono">GET /api/v1/mock/demo</code> 通道提供。
+          <template v-if="planResultMode === 'real'">
+            <br />
+            <strong>规划结果</strong>来自 <code class="mono">POST /api/v1/plan</code>（Real），
+            但其输入中的教学班仍是上述 Mock 演示数据，因此该方案<strong>不代表真实教务系统正式指令</strong>。
+          </template>
+          <template v-else>
+            全部课程信息、教师、教学班、学生偏好与求解方案均属<strong>演示数据</strong>，非真实教务系统正式指令。
+          </template>
         </p>
       </div>
     </footer>

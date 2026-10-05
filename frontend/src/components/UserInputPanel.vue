@@ -44,6 +44,10 @@ const props = defineProps<{
   dataSourceLabel?: string | null
   /** Real Planning 失败时的错误信息。 */
   planErrorMessage?: string
+  /**
+   * provenance 门禁：当前课表含 Mock 教学班 → 不允许提交到 Real Planning。
+   */
+  scheduleProvenanceBlocked?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -64,6 +68,15 @@ const gradeFileName = computed(() => gradeFile.value?.name ?? '')
 
 /** 表单是否可提交：只判断输入完整性，不判断学业/排课可行性。 */
 const inputValid = computed(() => isFormValid(props.form))
+
+/**
+ * 是否可以提交到 Real Planning。
+ *
+ * 两道独立条件：输入完整性（`isFormValid`）+ **数据来源门禁**（课表不得含 Mock 教学班）。
+ */
+const realSubmitEnabled = computed(
+  () => inputValid.value && !(props.scheduleProvenanceBlocked ?? false),
+)
 
 function onSemesterUpdate(value: string): void {
   emit('update:form', { ...props.form, semester: value })
@@ -186,9 +199,10 @@ function clearGradeFile(): void {
     <SubmissionActions
       :mode="mode"
       :plan-api-enabled="planApiEnabled"
-      :input-valid="inputValid"
+      :input-valid="realSubmitEnabled"
       :submitting="submitting"
       :error-message="planErrorMessage"
+      :schedule-provenance-blocked="scheduleProvenanceBlocked ?? false"
       @submit-real="emit('submit-real')"
     />
   </div>

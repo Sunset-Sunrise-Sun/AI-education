@@ -1752,3 +1752,43 @@
 - 是否修改 backend：**否**。公共接口是否变化：**否**。
 - 下一步：等待 Architecture Review（含新增测试依赖是否批准的确认）。
 
+### 2026-10-06 - 修复两个 provenance blocker（Real 结果未渲染 / Mock 课表可进 Real）
+
+- 触发：patch Review 发现两个 **provenance blocker**。
+- **Blocker 1：`realPlanResult` 只被赋值、从未渲染**。
+  - 现象：`POST /api/v1/plan` 成功后设置了 `dataMode = 'real'`，
+    但页面 4 号区块仍渲染 `data.plan_result`（来自 `GET /api/v1/mock/demo`）
+    → 出现"**Real 标签 + Mock 结果**"。
+  - 修复：新增 `planResultMode`（只看**规划结果**的来源）与 `displayedPlanResult`
+    （`realPlanResult ?? data.plan_result`），4 号区块与概览"规划结果状态"都改用 `displayedPlanResult`；
+    区块内新增 provenance 行「**基础演示数据：Mock · 规划结果：Mock/Real**」+ 说明文字；
+    `SubmissionActions` 的 Real 模式文案改为"**规划结果**已来自 `/api/v1/plan`；
+    培养要求评估 / 教学班 / 偏好仍为 Mock 演示数据"；页脚数据声明同步区分两种来源。
+  - ⚠️ 关键边界：`/api/v1/plan` 目前**只返回 `PlanResult`**，
+    因此**不得**把整页 MakeupTask / CourseOffering / Preference 标成 Real ——
+    已用测试断言这些区块仍为 Mock 且仍带 `Mock` 标记。
+- **Blocker 2：Mock `current_schedule` 可以进入 Real Planning**。
+  - 现象：`current_schedule` 的教学班来自 Mock Demo，但没有任何来源校验，
+    会把这些"演示用假教学班"当成学生真实已选课程提交给真实求解链路。
+  - 修复：新增 provenance 门禁 `hasMockSchedule()` / `isScheduleSubmittableToRealPlanning()`
+    （只看 `offering.data_source === 'mock'`，与界面模式无关）；
+    `evaluatePlanSubmission()` 把"输入完整性 + provenance"合成**唯一**提交守卫（纯函数，可直接测试）；
+    `App.submitRealPlan()` 改用该守卫；`UserInputPanel` 把门禁结果传给 `SubmissionActions`
+    并禁用按钮；页面给出明确提示"**当前课表来源为 Mock 教学班，不能提交到 Real Planning。**"
+  - ⚠️ **空 `current_schedule` 仍允许提交**（没有 provenance 不明的数据）；
+    全部为 real 教学班时也允许通过。
+- 修改文件：`frontend/src/App.vue`、`frontend/src/state/userInput.ts`、
+  `frontend/src/components/UserInputPanel.vue`、`frontend/src/components/SubmissionActions.vue`、
+  `frontend/src/styles/base.css`、`frontend/vitest.config.ts`（测试环境开启 `VITE_PLAN_API_ENABLED`）、
+  新增 `frontend/tests/{plan-result-provenance,app-provenance-guard,schedule-provenance-gate}.spec.ts`、
+  `docs/status/agent_frontend.md`、本文件。
+- 测试结果：`npm test` → **75 passed / 75**（7 文件）；`npm run build` → 成功；
+  `npm run test:scenarios` → 既有 14 项全部通过。
+- **测试有效性已验证（非空测试）**：
+  - 把 4 号区块改回渲染 `data.plan_result`（模拟修复前）→
+    `plan-result-provenance` 的"Real 成功 → 实际展示 realPlanResult"用例**失败**；
+  - 把 `evaluatePlanSubmission` 的 provenance 分支禁用 → 门禁用例**失败**（2 项）。
+  两者还原后全部通过，说明测试确实锁定了这两个 blocker。
+- 是否修改 backend：**否**。公共接口是否变化：**否**（未改 `schemas/`、`docs/interfaces/`）。
+- 下一步：等待 Architecture Review。
+

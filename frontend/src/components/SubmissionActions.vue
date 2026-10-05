@@ -16,12 +16,14 @@ defineProps<{
   mode: DataMode
   /** Real Planning 接口是否已可用（由 `VITE_PLAN_API_ENABLED` 决定）。 */
   planApiEnabled: boolean
-  /** 表单输入是否完整可提交（仅输入完整性，不是可行性判断）。 */
+  /** 是否可提交（输入完整性 + provenance 门禁，均不是可行性判断）。 */
   inputValid: boolean
   /** 是否正在提交。 */
   submitting: boolean
   /** Real Planning 失败时的错误信息；没有失败时为空字符串。 */
   errorMessage?: string
+  /** provenance 门禁：当前课表含 Mock 教学班 → 禁止提交到 Real Planning。 */
+  scheduleProvenanceBlocked?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -44,7 +46,8 @@ const emit = defineEmits<{
           Mock 演示通道（<code class="mono">GET /api/v1/mock/demo</code>）持续保留；本页当前展示的仍是该通道数据。
         </template>
         <template v-else>
-          Real 通道：仅在成功调用 <code class="mono">POST /api/v1/plan</code> 后才展示其后端返回结果。
+          <strong>规划结果</strong>已来自 <code class="mono">POST /api/v1/plan</code>（Real）；
+          培养要求评估 / 教学班 / 偏好仍为 Mock 演示数据。
         </template>
       </span>
     </div>
@@ -60,9 +63,28 @@ const emit = defineEmits<{
         {{ submitting ? '正在请求 Real Planning…' : '生成规划（Real Planning）' }}
       </button>
 
+      <!-- provenance 门禁优先提示：这是"课表来源不对"，与表单填错是两件事 -->
+      <p
+        v-if="scheduleProvenanceBlocked"
+        class="uig-error"
+        data-testid="schedule-provenance-blocked-hint"
+        role="alert"
+      >
+        当前课表来源为 Mock 教学班，不能提交到 Real Planning。
+        <br />
+        真实教学班（<code class="mono">data_source = "real"</code>）接入前，请先取消勾选当前课表中的 Mock 教学班，
+        或保持当前课表为空。
+      </p>
       <p v-if="!planApiEnabled" class="uig-field__hint" data-testid="real-plan-disabled-hint">
         真实规划接口 <code class="mono">POST /api/v1/plan</code> 尚在并行开发中（<code class="mono">feature/real-plan-api</code>），
         因此该按钮暂不可用。Mock 演示通道保持原样，<strong>不会</strong>在 Real 提交失败时回退到 Mock。
+      </p>
+      <p
+        v-else-if="scheduleProvenanceBlocked"
+        class="uig-field__hint"
+        data-testid="real-plan-provenance-hint"
+      >
+        provenance 门禁已阻止提交；未发出任何请求。
       </p>
       <p v-else-if="!inputValid" class="uig-field__hint" data-testid="real-plan-invalid-hint">
         请先修正表单：学期需为 <code class="mono">YYYY-1</code> / <code class="mono">YYYY-2</code>，

@@ -333,6 +333,38 @@ export function buildCurrentSchedule(form: UserInputForm): CourseOffering[] {
 }
 
 /**
+ * 失败原因：当前课表里含有 **Mock 来源**（`data_source === 'mock'`）的教学班。
+ *
+ * 在真实 `CourseOffering` 接入之前，Mock 教学班不得进入 Real Planning ——
+ * 否则会把"演示用假教学班"当成学生真实已选课程提交给真实求解链路。
+ */
+export const MOCK_SCHEDULE_BLOCK_REASON =
+  '当前课表来源为 Mock 教学班，不能提交到 Real Planning。真实教学班接入前，请先清空当前课表中的 Mock 教学班。'
+
+/**
+ * 当前课表是否含有 Mock 来源的教学班。
+ *
+ * ⚠️ 只看 `data_source`，与"页面当前处于哪个模式"无关：
+ * provenance 是**数据自身**的属性，不因界面模式而改变。
+ */
+export function hasMockSchedule(form: UserInputForm): boolean {
+  return form.currentSchedule.some((offering) => offering.data_source === 'mock')
+}
+
+/**
+ * provenance 门禁：当前课表是否**允许**提交到 Real Planning。
+ *
+ * - **空课表** → 允许（没有 provenance 不明的数据）；
+ * - **全部为 real 教学班** → 允许；
+ * - **含任意 mock 教学班** → **禁止**（`fetch` 0 次调用）。
+ *
+ * ⚠️ 这是**数据来源**校验，不是学业 / 排课可行性判断。
+ */
+export function isScheduleSubmittableToRealPlanning(form: UserInputForm): boolean {
+  return !hasMockSchedule(form)
+}
+
+/**
  * 表单是否完整、可提交。
  *
  * ⚠️ 这是**输入完整性**校验（学期格式、学分范围、节次范围、时段先后），
@@ -368,6 +400,30 @@ export function isFormValid(form: UserInputForm): boolean {
   }
 
   return true
+}
+
+/**
+ * 提交到 Real Planning 前的综合门禁（**纯函数**，可直接测试）。
+ *
+ * 两道**独立**条件，任一不满足都**不得发出请求**：
+ * 1. 输入完整性（`isFormValid`）；
+ * 2. provenance：当前课表不得含 Mock 教学班。
+ *
+ * ⚠️ 这不是学业 / 排课可行性判断，只是"能不能发这个请求"。
+ */
+export function evaluatePlanSubmission(form: UserInputForm): {
+  allowed: boolean
+  reason: string
+} {
+  if (!isFormValid(form)) {
+    return { allowed: false, reason: '表单存在未修正的输入问题，已阻止提交；未发出任何请求。' }
+  }
+
+  if (!isScheduleSubmittableToRealPlanning(form)) {
+    return { allowed: false, reason: MOCK_SCHEDULE_BLOCK_REASON }
+  }
+
+  return { allowed: true, reason: '' }
 }
 
 /** 提交目标 Real 接口所需的三个字段（**只有**这三个）。 */

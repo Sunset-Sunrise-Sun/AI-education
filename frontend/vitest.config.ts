@@ -10,6 +10,15 @@ import { defineConfig } from 'vitest/config'
  */
 export default defineConfig({
   plugins: [vue()],
+  define: {
+    /**
+     * 测试环境下把 Real Planning 开关置为 true，以便测试"提交 → 实际渲染 Real 结果"这条链路。
+     *
+     * ⚠️ 仅影响 `vitest`；生产构建仍由 `.env` / `VITE_PLAN_API_ENABLED` 决定，
+     * 默认关闭（接口未合并前 Real 按钮保持 disabled）。
+     */
+    'import.meta.env.VITE_PLAN_API_ENABLED': JSON.stringify('true'),
+  },
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
