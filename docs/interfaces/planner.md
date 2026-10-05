@@ -129,17 +129,33 @@ optimize_path(makeup_tasks, offerings, current_schedule, preferences) -> PlanRes
     因为"当前课表"本身有一段**时间占用未知**；
     最多只能判断"**与当前课表中已知时间段未发现冲突**"，
     且**整体时间冲突状态仍含未知部分**（必须显式表达为未知 / 待人工确认）；
-- ⚠️ **本轮（DG-07A）只同步公共契约语义，未实现任何 Planner 行为**：
-  unknown-schedule safety 的实现属 **DG-07C**；
-- ⏳ **以下仍留待 Planner Implementation Review，本轮未批准**：
-  `PlanResult.status` 如何取值、`unresolved[].type` 的**最终命名**、
-  `missing_schedule` 是否正式采用 ——
-  当前 **`missing_schedule` 只是 `candidate convention only`**，
-  ⛔ 不得当作已定公共约定；`plan_result.schema.json` 的 `unresolved[].type`
-  是**开放字符串**，因此**不需要**改 Schema；
-- 优化器第一版建议使用 Google OR-Tools CP-SAT；
-- 图关系第一版建议使用 NetworkX；
-- 无解时必须返回明确的 `infeasible` 或 `partially_feasible`，不得伪造可行方案。
+- **DG-07C 已实现并完成项目 Architecture Review 的代码审查**：Planner 内部正式使用
+  `CONFLICT / UNKNOWN / CLEAR` 三态，安全优先级为 **CONFLICT > UNKNOWN > CLEAR**。
+  已发现确定冲突时返回 `CONFLICT`；没有已知冲突但任意相关教学班 schedule unknown
+  时返回 `UNKNOWN`；只有相关 schedule 全部已知并遍历全部 `Meeting` 后无冲突，
+  才能返回 `CLEAR`。
+- **DG-07C 正式采用的 `unresolved[].type` 运行语义**（公共 Schema 仍保持开放字符串，
+  不新增 enum）：
+  - `schedule_unknown`：当前来源快照没有足够的可用排课信息，无法完成完整时间冲突认证。
+    ⛔ 不表示学校尚未排课、异步课程、无课、无时间占用或 conflict-free。
+  - `selection_required`：存在需要调用方 / 用户明确选择的 CLEAR 候选；
+    Planner 不自动代替用户作决定，例如多个 CLEAR 教学班或已有班存在明确可替换方案。
+  - `missing_data`：当前输入数据不足以完成判断；⛔ 不表示学校没有开课，也不构成无解证明。
+  - `manual_confirmation`：涉及尚未冻结的非时间业务规则、课程认定、先修证明、
+    相对学期映射等，需要人工确认；未确认规则不据此筛班、评分或证明无解。
+- **历史沿革**：DG-07A 阶段 `missing_schedule` 曾作为 `candidate convention only`；
+  DG-07C Implementation Review 后正式采用 `schedule_unknown`，前者不再作为当前 Planner 输出约定。
+- **`PlanResult.status` 当前语义**：
+  - `feasible`：影响当前建议方案成立的确定性条件已经认证，且不存在影响该方案成立的 unresolved；
+    不代表学校已经替学生选课成功。
+  - `partially_feasible`：存在 schedule unknown、人工决策、输入不足或尚未完成认证的条件，
+    但当前证据不能证明完整目标无解。
+  - `infeasible`：仅在当前明确目标、当前输入域和已确认硬约束范围内，
+    Planner 已完成必要搜索 / 证明并确认没有可行组合；不表示学校所有真实教学班、
+    所有未来学期均无解，也不表示信息缺失。
+  - 总体不变量：**UNKNOWN != INFEASIBLE**。
+- 优化器第一版可继续评估 Google OR-Tools CP-SAT；图关系可评估 NetworkX，
+  但当前受限 Provider 不因这些建议而宣称已实现完整 Planner MVP。
 
 ## 人工确认边界
 
