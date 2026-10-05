@@ -26,3 +26,10 @@
 - 新增回归测试：注入损坏 Mock 后应用仍可启动、health 正常、已装配 Fake Real pipeline 正常返回原始 `PlanResult`、`/api/v1/mock/demo` 明确失败。
 - 未修改 Curriculum / Planner / Course Data / Schema / Frontend。
 - 修复后验证：targeted **51 passed**；全量 backend **2044 passed / 2 skipped / 2 failed**。两项失败与 rebase 后首次全量回归相同，均为既有 Curriculum Windows 环境问题，本轮未越界修改。
+
+### 2026-10-05 - Real Plan current_schedule provenance Gate
+
+- 在 API 私有 `PlanRequest` 增加来源校验：`current_schedule=[]` 合法；非空时每个 `CourseOffering.data_source` 必须明确为 `real`。
+- 显式 `mock` 被拒绝；缺失 `data_source` 时公共模型会采用默认值 `mock`，随后同样由 Real API 边界返回 422。
+- 校验只约束 Real HTTP 输入，不修改 Planner 算法、frozen Provider contract 或公共 Schema。
+- 验证：targeted **55 passed**；全量 backend **2048 passed / 2 skipped / 2 failed**。两项失败仍为既有 Curriculum Windows 环境问题。

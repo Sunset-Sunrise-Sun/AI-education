@@ -250,6 +250,74 @@ def test_configured_pipeline_calls_each_provider_once_and_preserves_data() -> No
     assert response.json() == result.model_dump(mode="json")
 
 
+@pytest.mark.parametrize(
+    "current_schedule",
+    [
+        pytest.param([], id="empty"),
+        pytest.param(
+            [
+                _offering("REAL-01").model_dump(mode="json"),
+                _offering("REAL-02").model_dump(mode="json"),
+            ],
+            id="all-real",
+        ),
+    ],
+)
+def test_real_plan_accepts_empty_or_all_real_current_schedule(
+    current_schedule: list[dict[str, object]],
+) -> None:
+    orchestrator, log, _curriculum, _course_data, planner, _result = (
+        _recording_orchestrator()
+    )
+    payload = _request_payload()
+    payload["current_schedule"] = current_schedule
+
+    with _configured_client(orchestrator) as client:
+        response = client.post(PLAN_PATH, json=payload)
+
+    assert response.status_code == 200
+    assert log == ["curriculum", "course_data", "planner"]
+    assert [
+        item.model_dump(mode="json") for item in planner.received[0]["current_schedule"]
+    ] == current_schedule
+
+
+@pytest.mark.parametrize(
+    "current_schedule",
+    [
+        pytest.param(
+            [
+                _offering("REAL-ALONGSIDE-MOCK").model_dump(mode="json"),
+                _offering("MOCK-01", data_source="mock").model_dump(mode="json"),
+            ],
+            id="any-explicit-mock",
+        ),
+        pytest.param(
+            [
+                _offering("DEFAULTS-TO-MOCK")
+                .model_dump(mode="json", exclude={"data_source"})
+            ],
+            id="missing-data-source",
+        ),
+    ],
+)
+def test_real_plan_rejects_mock_or_missing_current_schedule_source(
+    current_schedule: list[dict[str, object]],
+) -> None:
+    orchestrator, log, _curriculum, _course_data, _planner, _result = (
+        _recording_orchestrator()
+    )
+    payload = _request_payload()
+    payload["current_schedule"] = current_schedule
+
+    with _configured_client(orchestrator) as client:
+        response = client.post(PLAN_PATH, json=payload)
+
+    assert response.status_code == 422
+    assert log == []
+    assert "data_source 必须为 real" in response.text
+
+
 def test_provider_error_propagates_without_mock_fallback() -> None:
     log: list[str] = []
     curriculum = RecordingCurriculumProvider(log)

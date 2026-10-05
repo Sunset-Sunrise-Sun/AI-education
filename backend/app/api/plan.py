@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.integration import PlanningOrchestrator
-from app.models.contracts import CourseOffering, PlanResult, Preference
+from app.models.contracts import CourseOffering, DataSource, PlanResult, Preference
 from app.services.planning_runtime import (
     PlanningRuntimeNotConfigured,
     get_planning_orchestrator,
@@ -33,6 +33,17 @@ class PlanRequest(BaseModel):
 
         if not value.strip():
             raise ValueError("semester 必须是非空字符串")
+        return value
+
+    @field_validator("current_schedule")
+    @classmethod
+    def current_schedule_must_be_real(
+        cls, value: list[CourseOffering]
+    ) -> list[CourseOffering]:
+        """Real API 只接受明确标记为 real 的当前课表；空课表合法。"""
+
+        if any(item.data_source is not DataSource.REAL for item in value):
+            raise ValueError("current_schedule 中所有教学班的 data_source 必须为 real")
         return value
 
 
