@@ -24,8 +24,9 @@
 > **Phase 2B-2C1D 完成人工界面最小核验**（**n = 2**，见 4.7.2）：
 > 两条典型候选在官方 UI 中均作为**普通教学班行**存在、时间 / 周次 / 地点空白且**无状态文字**，
 > 据此**识别出契约缺口 `DG-07`**（`DATA_GATE_DECISIONS.md` §17），
-> 状态 **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**
-> （**2026-10-01 批准，尚未实施**）；
+> 该契约缺口随后由 **DG-07A / B / C / D** 完成安全处理闭环；
+> 当前状态为 **`IMPLEMENTED / REVIEWED`**（Data Gate 已恢复 PASSED / CLOSED）。
+> ⚠️ 这不表示 G11 的学校侧业务原因已查明；G11 仍保持 school-side business cause unknown；
 > 其余观察（G3 / G4 / G5 / G8）**仍未验证**，保持「待验证」。
 >
 > ## 红线（本文件最重要的两条）
@@ -254,7 +255,9 @@ Phase 1 建立的公共 Schema 是**在没有真实数据的情况下设计的**
 | G8 | **`Preference` 无法表达"已经有什么"**：偏好只表达"想要什么"，不表达已修学分 / 已修课程 | `preference.schema.json` 字段清单 | Agent / Planner | 待验证 |
 | **G9** | **一个教学班可以拥有多个独立的上课时间 / 地点 segment，当前 `CourseOffering` 无法在一个对象中无损表达**：真实接口中 `CSE202` 的**每个教学班都有多个 schedule segment**（例如"1-17周 星期一 第 3-4 节 某教室" ＋ "1-17单周 星期三 第 5-6 节 某教室"），而 `CourseOffering` 只有一组 `weekday` / `start_section` / `end_section` / `weeks[]` / `campus` / `classroom` | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。⚠️ **原缺口描述保留如上**（历史上 `CourseOffering` 确实无法表达多 segment）。**Data Gate-2 已按 DG-01 完成公共契约修复**：`CourseOffering` 改为 1 — N `meetings[]`（见 4.6） |
 | **G10** | **D5 还有多个真实字段在现有 `CourseOffering` 中没有任何表示**：`selectedNumber`（已选人数）、`openingUnitName`（开课单位）、`courseCategoryName`（课程类别）、`examMode`（考核方式）、`readObj`（修读对象）、`teachProgressSubmitState` / `openClass`（**业务语义待确认**） | **真实 D5 样本 `OFFERING-001`** | Course Data / Planner | **已由真实 D5 样本验证**（见 4.5）。**只登记、不设计字段**；`teachProgressSubmitState` / `openClass` **不根据 0/1 值自行解释** |
-| **G11** | **部分真实 `CourseOffering` row 缺少 `teachingTimePlaceStr`**：**第 1 页 200 条真实 row 中有 39 条完全没有该字段**（同页 `non_empty_string = 161`，`null` / `empty_string` / `other_type` 均为 0）；**DG-07B 前** `importer` / `parser` 无法为这样的 row 构造 `meetings`（**DG-07B 起，仅"属性不存在"可规范化为 `meetings = []`**），而 **DG-01 当时的公共契约要求 `CourseOffering.meetings` `minItems = 1`**（**DG-07A 起已放宽为 `0`**，见 4.7.2）。**样本出处：`OFFERING-002`（仅第 1 页，`reported_total = 6892`）** | **负责人真实 smoke run + 结构诊断 + C1C 相关性诊断**（2026-10-01，在「全校开设课程」独立模块内，第 1 页；来源登记 `OFFERING-002`） | Course Data / Planner | **已由真实第 1 页聚合计数观察**（见 4.7）。**结构层取证已大幅收窄**（见 4.7.1）：差异集中在**排课相关字段**（`timePlaceId` 38/39 缺失 vs 161/161 存在；`weekDay` 38/39 缺失 vs 12/161 缺失），而 `limitNumber` / `selectedNumber` 在 39 条中**完整存在**，分类字段**未发现 `missing` 组独占值**。⚠️ **业务语义仍未解决**：缺失**业务原因** / **记录业务类型** / **是否属于有效可选教学班** / **是否应进入 Planner** / **全学期缺失比例** 全部未确认（**契约处理方向已另行裁决**，见 4.7.2）；**已由 C1D 取得部分界面证据**（**n = 2** 条典型候选在官方 UI 中均为普通教学班行、时间 / 周次 / 地点空白且无状态文字，见 4.7.2）→ **契约缺口 `DG-07`**（`DATA_GATE_DECISIONS.md` §17，**`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**；**DG-07A 契约迁移已实施 / 待 Reviewer**，DG-07B/C/D 未开始）。⛔ **不声称 G11 resolved** |
+| **G11** | **部分真实 `CourseOffering` row 缺少 `teachingTimePlaceStr`**：**第 1 页 200 条真实 row 中有 39 条完全没有该字段**（同页 `non_empty_string = 161`，`null` / `empty_string` / `other_type` 均为 0）；**DG-07B 前** `importer` / `parser` 无法为这样的 row 构造 `meetings`（**DG-07B 起，仅"属性不存在"可规范化为 `meetings = []`**），而 **DG-01 当时的公共契约要求 `CourseOffering.meetings` `minItems = 1`**（**DG-07A 起已放宽为 `0`**，见 4.7.2）。**样本出处：`OFFERING-002`（仅第 1 页，`reported_total = 6892`）** | **负责人真实 smoke run + 结构诊断 + C1C 相关性诊断**（2026-10-01，在「全校开设课程」独立模块内，第 1 页；来源登记 `OFFERING-002`） | Course Data / Planner | **已由真实第 1 页聚合计数观察**（见 4.7）。**结构层取证已大幅收窄**（见 4.7.1）：差异集中在**排课相关字段**（`timePlaceId` 38/39 缺失 vs 161/161 存在；`weekDay` 38/39 缺失 vs 12/161 缺失），而 `limitNumber` / `selectedNumber` 在 39 条中**完整存在**，分类字段**未发现 `missing` 组独占值**。⚠️ **业务语义仍未解决**：缺失**业务原因** / **记录业务类型** / **是否属于有效可选教学班** / **是否应进入 Planner** / **全学期缺失比例** 全部未确认（**契约处理方向已另行裁决**，见 4.7.2）；**已由 C1D 取得部分界面证据**（**n = 2** 条典型候选在官方 UI 中均为普通教学班行、时间 / 周次 / 地点空白且无状态文字，见 4.7.2）→ **契约缺口 `DG-07`**（`DATA_GATE_DECISIONS.md` §17）已由
+**DG-07A / B / C / D 全部实施并经 Review**，当前状态为 **`IMPLEMENTED / REVIEWED`**，
+Data Gate 已恢复 PASSED / CLOSED。⛔ **不声称 G11 resolved**；学校侧业务原因仍未知 |
 
 > 对 G1 / G2 / G4 的补充说明：这三条说的是"**当前没有明确的跨模块公共 Schema / 正式表示**"，
 > 而**不是**"一定要新增公共 Schema"。
