@@ -580,33 +580,105 @@ def test_observed_degenerate_week_range_is_expanded() -> None:
 
 
 def test_observed_odd_week_text_is_expanded() -> None:
-    """✅ `1-17单周` —— 单周只允许这一个已观察取值。"""
+    """✅ `1-17单周` = 区间内**奇数周**（原有已观察取值，仍必须合法）。"""
 
     assert expand_weeks("1-17单周") == [1, 3, 5, 7, 9, 11, 13, 15, 17]
 
 
-@pytest.mark.parametrize("text", ["3-15单周", "1-5单周", "10-17单周"])
-def test_unobserved_odd_week_ranges_are_rejected(text: str) -> None:
-    """⛔ 单周**不泛化**为任意 `N-M单周`：只接受已观察到的 `1-17单周`。"""
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("1-5单周", [1, 3, 5]),  # 从 1 起的奇数周
+        ("3-15单周", [3, 5, 7, 9, 11, 13, 15]),  # 非 1 起点
+        ("10-17单周", [11, 13, 15, 17]),  # 非 1 起点（真实 artifact 存在该族）
+        ("10-11单周", [11]),  # 真实 artifact 暴露的取值
+        ("1-4双周", [2, 4]),
+        ("3-4双周", [4]),  # 非 1 起点
+        ("2-8双周", [2, 4, 6, 8]),
+    ],
+)
+def test_parity_week_ranges_are_expanded(text: str, expected: list[int]) -> None:
+    """✅ 单周 = 奇数周、双周 = 偶数周（Architecture Review 裁定，泛化到任意 `N-M`）。"""
 
-    with pytest.raises(CourseDataNormalizationError):
-        expand_weeks(text)
+    assert expand_weeks(text) == expected
 
 
-@pytest.mark.parametrize("text", ["17-1周", "0-17周", "5-3周"])
-def test_invalid_plain_week_range_is_rejected(text: str) -> None:
-    """⛔ `N < 1` 或 `M < N` 的区间非法。"""
+@pytest.mark.parametrize(
+    ("text", "plain_token", "expected"),
+    [
+        ("1-5周校外", "1-5周", [1, 2, 3, 4, 5]),
+        ("1-5周校内(户外)", "1-5周", [1, 2, 3, 4, 5]),
+        ("6-6周校外", "6-6周", [6]),
+        ("10-17周校内(户外)", "10-17周", list(range(10, 18))),
+    ],
+)
+def test_approved_week_qualifiers_do_not_change_the_math(
+    text: str, plain_token: str, expected: list[int]
+) -> None:
+    """✅ 已批准 qualifier（`校外` / `校内(户外)`）**不改变** weeks 数学含义。"""
 
-    with pytest.raises(CourseDataNormalizationError):
-        expand_weeks(text)
+    assert expand_weeks(text) == expected
+    # 与同一区间去掉 qualifier 的结果**逐项相等**
+    assert expand_weeks(plain_token) == expected
+
+
+def test_week_token_surrounding_whitespace_is_tolerated() -> None:
+    """⚠️ 既有行为：`expand_weeks()` 容忍**首尾空白**（⛔ 与 qualifier 处理无关）。"""
+
+    assert expand_weeks("  1-5周  ") == [1, 2, 3, 4, 5]
+    assert expand_weeks("  1-5周校外  ") == [1, 2, 3, 4, 5]
 
 
 @pytest.mark.parametrize(
     "text",
     [
-        "1-17双周",  # 双周：未确认
+        "3-3双周", "2-2单周", "4-4单周", "5-5双周",
+    ],
+)
+def test_empty_parity_range_is_rejected(text: str) -> None:
+    """⛔ 单/双周过滤后为空 → fail closed（⛔ 不生成空 weeks）。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        expand_weeks(text)
+
+    assert "unsupported_week_parity_range" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1-5周线上",  # ⛔ sections 的 `线上` 不适用于 weeks
+        "1-5周未知",
+        "1-5周单周",
+        "1-17周单周",  # 连续区间 + 未批准后缀
+        "12-19周医院",
+    ],
+)
+def test_unknown_week_qualifier_is_rejected(text: str) -> None:
+    """⛔ 未获批准的 qualifier 一律拒绝，分类为 `unsupported_week_qualifier`。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        expand_weeks(text)
+
+    assert "unsupported_week_qualifier" in str(excinfo.value)
+
+
+@pytest.mark.parametrize("text", ["17-1周", "0-17周", "5-3周", "0-0单周", "5-3双周"])
+def test_invalid_plain_week_range_is_rejected(text: str) -> None:
+    """⛔ `N < 1` 或 `M < N` 的区间非法（分类 `unsupported_week_range`）。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        expand_weeks(text)
+
+    assert "unsupported_week_range" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
         "1,3,5周",  # 逗号组合：未确认
-        "1-17周,3-4单周",  # 多段组合：未确认
+        "1-17周,3-4单周",  # 多段组合：未确认（形状问题，非 qualifier）
+        "1-17单双周",  # 未确认组合
         "5周",  # 单个周次号：未确认
         "1-17",  # 缺"周"字
         "第1-17周",  # 带前缀
@@ -617,16 +689,56 @@ def test_invalid_plain_week_range_is_rejected(text: str) -> None:
     ],
 )
 def test_unconfirmed_week_formats_are_rejected(text: str) -> None:
-    """未确认格式一律拒绝 —— **绝不猜**。"""
+    """未确认格式一律拒绝 —— **绝不猜**（分类 `unsupported_week_shape`）。"""
 
-    with pytest.raises(CourseDataNormalizationError):
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
         expand_weeks(text)
+
+    assert "unsupported_week_shape" in str(excinfo.value)
+
+
+def test_week_errors_never_echo_the_raw_token() -> None:
+    """⛔ weeks 错误只给安全分类，不得回显 raw weeks token（含未批准 qualifier 原文）。"""
+
+    rejected = [
+        "1-5周线上",
+        "1-5周未知",
+        "12-19周医院",
+        "3-3双周",
+        "2-2单周",
+        "0-17周",
+        "5-3周",
+        "第1-17周",
+        "1~17周",
+        "1-17周单周",
+    ]
+
+    for text in rejected:
+        with pytest.raises(CourseDataNormalizationError) as excinfo:
+            expand_weeks(text)
+
+        message = str(excinfo.value)
+        assert text not in message, f"错误信息回显了 raw weeks token：{text!r}"
+        assert "未知" not in message
+        assert "医院" not in message
+        assert any(
+            code in message
+            for code in (
+                "unsupported_week_type",
+                "unsupported_week_shape",
+                "unsupported_week_range",
+                "unsupported_week_qualifier",
+                "unsupported_week_parity_range",
+            )
+        ), f"缺少安全分类：{message}"
 
 
 @pytest.mark.parametrize("value", [None, 17, ["1-17周"], {"weeks": "1-17周"}])
 def test_non_string_weeks_input_is_rejected(value: object) -> None:
-    with pytest.raises(CourseDataNormalizationError):
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
         expand_weeks(value)  # type: ignore[arg-type]
+
+    assert "unsupported_week_type" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

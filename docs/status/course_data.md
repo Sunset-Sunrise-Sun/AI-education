@@ -681,18 +681,32 @@ source       → 必须由调用方显式传入
 - 暂缓业务字段：`courseCategoryName`、`openingUnitName`、`examMode`、`readObj`、
   `teachProgressSubmitState`、`openClass`、`outlineTypeNum`。
 
-**周次**（Phase 2B-2B 依据脱敏真实样本重新界定）：
+**周次**（Architecture Review 裁定；2026-1 east artifact 聚合证据见下）：
 
 ```text
-普通连续周次 `N-M周`：N ≥ 1 且 M ≥ N（**允许 M == N**）
-  → 样本中已观察到多种范围（含退化区间）
-单周 `1-17单周`：**只此一个取值**
+普通连续周次 `N-M周`        → 连续全部周次         （N ≥ 1 且 M ≥ N，允许 M == N）
+单周 `N-M单周`              → 区间内**奇数周**
+双周 `N-M双周`              → 区间内**偶数周**
+`N-M周` + 已批准 qualifier  → **与 `N-M周` 完全相同**（qualifier 只做白名单校验）
 ```
 
-- ✅ 普通区间按 `N-M周` 展开；退化区间（`M == N`）合法并展开为单个周次；
-- ⛔ **单周不泛化**为任意 `N-M单周`（那一形态尚无证据）；
-- ⛔ 其余一律 `CourseDataNormalizationError`：双周、逗号组合、多段组合、单个周次号、
-  带"第"字前缀、波浪号、全角数字、`M < N`、`N < 1` 等。
+- ✅ 已批准 **weeks qualifier 白名单本轮只有 `校外` / `校内(户外)`**；
+  qualifier ⛔ **不改变 weeks 数学含义**、⛔ **不写入公共 `Meeting`**（公共 Schema 无该字段）；
+- ⛔ **`N-M周线上` 继续 fail closed**：sections 的 `线上` ⛔ **不迁移**到 weeks
+  （三处白名单——weeks qualifier / sections suffix / parser non-concrete qualifier——**互相独立**）；
+- ⛔ **单/双周过滤后为空 → fail closed**（⛔ 不生成空 weeks，例如 `3-3双周`）；
+- ⛔ 其余一律拒绝：任意其它 suffix、`N-M周单周`、`N-M单双周`、`N,M周`、`第N-M周`、
+  `N~M周`、全角数字、多段组合、`M < N`、`N < 1`；
+- ⛔ 实现上**不用 `.*` / `startswith` / 无条件 strip qualifier**：
+  qualifier 由白名单字面量 + 整段锚定校验；
+- **错误只给安全稳定分类**（⛔ 不回显 raw weeks token）：
+  `unsupported_week_type` / `unsupported_week_shape` / `unsupported_week_range` /
+  `unsupported_week_qualifier` / `unsupported_week_parity_range`
+  （含逗号的多段组合归入 `shape`，因为那是形状问题而非 qualifier 问题）。
+
+> **2026-1 east artifact 聚合证据（3475 个 weeks token）**：
+> `N-M周` 3382（全部接受）、`N-M周校外` 54、`N-M双周` 15、`N-M单周` 13、
+> `N-M周校内(户外)` 11 —— 本轮扩展后 **rejected = 0**（此前 93 个 blocker 全部消失）。
 
 > ✅ **`teachingTimePlaceStr` 已由 `schedule_parser.py` 解析**（Phase 2B-2B，依据私密脱敏样本）；
 > `normalization.py` 本身仍然**不解析**原始串，只接收**已解析好的** `Meeting`。

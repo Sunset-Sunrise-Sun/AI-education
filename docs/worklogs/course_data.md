@@ -2102,3 +2102,54 @@
   store / `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend。
 - 下一步：等待 Architecture Review 对(a)`weeks` 的四个未确认形态与
   (b)weeks 错误的安全分类 / 去 raw 回显给出裁定。
+
+### 2026-10-05 - weeks 窄 grammar（单/双周 + 已批准 qualifier）+ weeks 错误安全化
+
+- 触发：Architecture Review 裁定 —— 批准 `expand_weeks()` 精确支持
+  `N-M周` / `N-M单周` / `N-M双周` / `N-M周校外` / `N-M周校内(户外)`。
+- **实现**（`backend/app/course_data/normalization.py`）：
+  - `N-M单周` → 区间内**奇数周**；`N-M双周` → 区间内**偶数周**；
+    `N >= 1` 且 `M >= N`；**过滤后为空 → fail closed**（⛔ 不生成空 weeks，如 `3-3双周`）；
+  - `N-M周` + 已批准 qualifier → **与 `N-M周` 完全相同**（qualifier 只做白名单校验，
+    ⛔ 不改数学含义、⛔ 不写入公共 `Meeting`、⛔ 未新增公共字段）；
+  - **weeks qualifier 白名单本轮只有 `校外` / `校内(户外)`**：这是**第三张独立白名单**
+    （另两张：sections suffix / parser non-concrete qualifier）；
+    ⛔ `N-M周线上` **继续 fail closed**（sections 的 `线上` ⛔ 不迁移到 weeks）；
+  - ⛔ **不用 `.*` / `startswith` / 无条件 strip qualifier**：qualifier 由白名单字面量 +
+    整段锚定校验；
+  - ⛔ 未顺便加入 `N-M周单双周` / `N,M周` / `第N-M周` / `N~M周` 等无证据形态。
+- **错误安全化（本轮批准）**：`expand_weeks()` 不再回显 `{text!r}`，改为**稳定分类 token**：
+  `unsupported_week_type` / `unsupported_week_shape` / `unsupported_week_range` /
+  `unsupported_week_qualifier` / `unsupported_week_parity_range`
+  （含逗号的多段组合归 `shape`，因为那是形状问题，不是 qualifier 问题）；
+  ⛔ 未重构全局异常系统（分类写在 message 的稳定 token 里）。
+- **测试**（`test_course_data_normalization.py`）：
+  plain / odd / even / **非 1 起点**（`3-15单周`、`10-17单周`、`10-11单周`、`3-4双周`）/
+  `校外` / `校内(户外)`（并与去 qualifier 的同一区间逐项相等）/ parity 过滤为空拒绝 /
+  未知 qualifier 拒绝 / **`线上` qualifier 拒绝** / 非法区间 / 未确认形状（逗号组合、
+  多段、`N-M周单周`、`第N-M周`、`N~M周`、全角）/ **raw token 不出现在错误信息中**
+  （10 个被拒取值逐个断言 + 必须带安全分类）/ 非字符串类型分类。
+  ⚠️ **两个既有用例按其裁定改写**：`test_unobserved_odd_week_ranges_are_rejected`
+  （原断言"单周不泛化"）→ 改为 `test_parity_week_ranges_are_expanded`；
+  `1-17双周` 从"未确认"列表移出（现为已批准形态）。
+- **真实 artifact 再验收**（`daafdb18…a31b` 实测一致；⛔ 未建 SQLite；⛔ 未 skip）：
+  - `load_capture_bundle` ✅（6 页 / total 1071 / rows 合计 1071）；
+  - **第 5 个 blocker（weeks grammar）已清除**：只读聚合复核显示
+    `expand_weeks_rejected = 0`（3475 个 token 全接受：
+    plain 3382 + `校外` 54 + `双周` 15 + `单周` 13 + `校内(户外)` 11）⇒
+    **此前 93 个 weeks blocker 全部消失**；
+  - ❌ **第 6 个 fail closed 出现，且正如预期撞到那 49 个之一**：
+    **安全错误类别 = `unsupported_sections_shape`**（⛔ 未回显 raw token，证明上一轮
+    的安全化在真实链路上生效）；
+  - **匿名结构**（只读诊断镜像 + 全量聚合，⛔ 无字面值）：
+    49 个 = `C-CAC-CAN` × 30（5 字段）+ `C` × 10（4 字段）+ `C-C-CAN` × 9（5 字段）；
+    **本次首个失败类别 = `C-C-CAN`（5 字段，该模板共 9 处）**；
+  - ⛔ 那 49 个**按要求完全不动**，等待单独的 segment layout 裁定。
+- 测试结果：normalization+parser+importer+pagination 合并 **454 passed**；
+  full backend **2 failed / 2357 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例）；`compileall` exit 0。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未建 SQLite；⛔ 未改公共 Schema；
+  ⛔ 未改 collector / `captured_pages.py` / Capture Bundle format / `sharded_capture.py` /
+  store / `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend。
+- 下一步：等待 Architecture Review 对 49 个 `unsupported_sections_shape`
+  （segment layout）单独裁定。

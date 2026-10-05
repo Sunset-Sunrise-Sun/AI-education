@@ -80,20 +80,53 @@ __all__ = [
 #: 那属于"未确认的格式"，一律拒绝而不是宽容接受。
 _PLAIN_WEEK_RANGE = re.compile(r"^([0-9]+)-([0-9]+)周$")
 
-#: 单周语法形状 `N-M单周`。
-#: 只用于**识别**"这看起来像单周"，实际取值仍必须命中 `_ODD_WEEK_TEXTS` 白名单。
+#: 单周语法形状 `N-M单周`（区间内取**奇数周**）。
+#:
+#: ⚠️ Architecture Review 裁定（2026-1 east artifact 已确认存在 `N-M单周` 13 处）
+#: 起**泛化**为任意 `N-M单周`（此前只允许精确取值 `1-17单周`）。
 _ODD_WEEK_RANGE = re.compile(r"^([0-9]+)-([0-9]+)单周$")
 
-#: 单周：**仍然只允许已观察到的精确取值**。
+#: 双周语法形状 `N-M双周`（区间内取**偶数周**）。
+_EVEN_WEEK_RANGE = re.compile(r"^([0-9]+)-([0-9]+)双周$")
+
+#: **weeks 字段**已批准的 qualifier 白名单（Architecture Review 裁定）。
 #:
-#: ⛔ Phase 2B-2B **不把单周泛化成任意 `N-M单周`** ——
-#: 真实样本只确认了 `1-17单周` 这一个取值。
-_ODD_WEEK_TEXTS: dict[str, tuple[int, int]] = {
-    "1-17单周": (1, 17),
-}
+#: ⛔ 这是**独立**于 `_KNOWN_SCHEDULE_QUALIFIERS`（parser 的 non-concrete 路径）
+#: 与 sections suffix 白名单的**第三张**白名单：三处取值即使重合也**互不牵连**。
+#: ⛔ **sections 的 `线上` 不适用于 weeks 字段**（`N-M周线上` 继续 fail closed）。
+WEEK_QUALIFIER_OFF_CAMPUS = "校外"
+WEEK_QUALIFIER_ON_CAMPUS_OUTDOOR = "校内(户外)"
+
+_KNOWN_WEEK_QUALIFIERS = (
+    WEEK_QUALIFIER_OFF_CAMPUS,
+    WEEK_QUALIFIER_ON_CAMPUS_OUTDOOR,
+)
+
+#: 「连续 + 已批准 qualifier」：`N-M周` + 白名单字面量，**整段锚定**。
+#:
+#: ⛔ 不用 `.*`、⛔ 不用 `startswith`、⛔ 不把 qualifier 无条件 strip：
+#: qualifier 的合法性由白名单字面量（逐个 `re.escape`）保证；
+#: qualifier **只做校验**，不改变 weeks 的数学含义。
+_QUALIFIED_CONTINUOUS_WEEK_RANGE = re.compile(
+    r"^([0-9]+)-([0-9]+)周("
+    + "|".join(re.escape(qualifier) for qualifier in _KNOWN_WEEK_QUALIFIERS)
+    + r")$"
+)
+
+#: **仅用于错误分类**（⛔ 不用于接受）：是否形如 `N-M周` + 额外内容，
+#: 用来把"qualifier 未获批准"与"形状本身不认识"分开，且⛔ 不回显任何 token 内容。
+_WEEK_WITH_SUFFIX_PREFIX = re.compile(r"^[0-9]+-[0-9]+周")
+
+#: weeks 错误的**安全稳定分类**（⛔ 不回显 raw weeks token）。
+WEEK_ERROR_UNSUPPORTED_TYPE = "unsupported_week_type"
+WEEK_ERROR_UNSUPPORTED_SHAPE = "unsupported_week_shape"
+WEEK_ERROR_UNSUPPORTED_RANGE = "unsupported_week_range"
+WEEK_ERROR_UNSUPPORTED_QUALIFIER = "unsupported_week_qualifier"
+WEEK_ERROR_UNSUPPORTED_PARITY_RANGE = "unsupported_week_parity_range"
 
 _SUPPORTED_WEEK_TEXTS = (
-    "普通连续周次 `N-M周`（`N >= 1`、`M >= N`）与单周 `1-17单周`"
+    "`N-M周`（连续）/ `N-M单周`（奇数周）/ `N-M双周`（偶数周）/ "
+    "`N-M周` + 已批准 qualifier（校外、校内(户外)）；均要求 N ≥ 1 且 M ≥ N"
 )
 
 
@@ -120,63 +153,104 @@ def is_plain_week_range(text: object) -> bool:
 def expand_weeks(text: str) -> list[int]:
     """把**已确认语法**的周次文本展开成实际周次数组。
 
-    当前支持（依据 Phase 2B-2B 的脱敏真实样本）：
+    已批准语法（Architecture Review 裁定；2026-1 east artifact 聚合证据：
+    `N-M周校外` 54、`N-M双周` 15、`N-M单周` 13、`N-M周校内(户外)` 11）：
 
     ```text
-    1-5周 / 1-6周 / 1-8周 / 7-8周 / 10-17周   → 连续周次
-    6-6周                                     → [6]（退化区间**合法**）
-    1-17单周                                  → [1, 3, 5, …, 17]
+    N-M周              → 连续全部周次          例如 1-5周   → [1,2,3,4,5]
+    N-M单周            → 区间内**奇数周**      例如 1-17单周 → [1,3,…,17]
+    N-M双周            → 区间内**偶数周**      例如 1-4双周  → [2,4]
+    N-M周校外          → 与 `N-M周` **完全相同**（suffix 只做白名单校验）
+    N-M周校内(户外)    → 与 `N-M周` **完全相同**（suffix 只做白名单校验）
     ```
 
     规则：
 
-    - 普通周次 `N-M周`：要求 `N >= 1` 且 `M >= N`（**允许 `M == N`**）；
-    - 单周：**只**接受已观察到的精确取值 `1-17单周`，
-      **不泛化成任意 `N-M单周`**（那一形态尚无证据）；
-    - ⛔ 其余一律拒绝：双周、逗号组合（`1,3,5周`）、带"第"字前缀（`第1-17周`）、
-      波浪号（`1~17周`）、全角数字、其它组合格式。
+    - 一律要求 `N >= 1` 且 `M >= N`（**允许 `M == N`**）；
+    - 单/双周在区间内按奇偶过滤；**过滤后为空 → fail closed**（⛔ 不生成空 weeks，
+      例如 `3-3双周`）；
+    - qualifier **不改变 weeks 的数学含义**，也⛔ **不写入公共 `Meeting`**
+      （公共 Schema 没有 week qualifier 字段）；
+    - **weeks qualifier 白名单本轮只有 `校外` / `校内(户外)`**：
+      ⛔ `N-M周线上` 继续 fail closed（sections 的 `线上` ⛔ 不迁移到 weeks）；
+    - ⛔ 其余一律拒绝：任意其它 suffix、`N-M周单周`、`N-M单双周`、`N,M周`、
+      `第N-M周`、`N~M周`、全角数字、多段组合（`1-17周,3-4单周`）；
+    - ⛔ **不用 `.*` / `startswith` / 无条件 strip qualifier**：qualifier 由
+      白名单字面量整段锚定校验。
 
-    后续如真实样本出现新的周次语法，**按证据**再加；不凭经验扩展。
+    错误只给**安全稳定分类**（`unsupported_week_type` / `unsupported_week_shape` /
+    `unsupported_week_range` / `unsupported_week_qualifier` /
+    `unsupported_week_parity_range`），⛔ **不回显 raw weeks token**。
 
     这是 Course Data **内部函数**，不是跨模块公共 API。
     """
 
     if not isinstance(text, str):
         raise CourseDataNormalizationError(
-            f"周次必须是字符串，实际是 {type(text).__name__}：{text!r}"
+            f"周次必须是字符串（{WEEK_ERROR_UNSUPPORTED_TYPE}），"
+            f"实际类型是 {type(text).__name__}（⛔ 不回显 raw weeks token）"
         )
 
     candidate = text.strip()
     if not candidate:
-        raise CourseDataNormalizationError("周次文本为空")
+        raise CourseDataNormalizationError(
+            f"周次文本为空（{WEEK_ERROR_UNSUPPORTED_SHAPE}）；"
+            f"只接受 {_SUPPORTED_WEEK_TEXTS}（⛔ 不回显 raw weeks token）"
+        )
 
-    odd_match = _ODD_WEEK_RANGE.match(candidate)
-    if odd_match:
-        observed = _ODD_WEEK_TEXTS.get(candidate)
-        if observed is None:
+    def _checked_range(match: re.Match[str]) -> tuple[int, int]:
+        start, end = int(match.group(1)), int(match.group(2))
+        if start < 1 or end < start:
             raise CourseDataNormalizationError(
-                f"暂不支持的单周格式：{text!r}。当前只接受已观察到的精确取值 "
-                f"`1-17单周`；单周暂不泛化为任意 `N-M单周`（尚无证据）。"
+                f"周次区间非法（{WEEK_ERROR_UNSUPPORTED_RANGE}）："
+                f"要求 N ≥ 1 且 M ≥ N（⛔ 不回显 raw weeks token）"
             )
-        start, end = observed
-        return [week for week in range(start, end + 1) if week % 2 == 1]
+        return start, end
 
+    # 1) 连续：N-M周
     plain_match = _PLAIN_WEEK_RANGE.match(candidate)
     if plain_match:
-        start, end = (int(group) for group in plain_match.groups())
-        if start < 1:
-            raise CourseDataNormalizationError(
-                f"周次起点必须 ≥1：{text!r}（解析出 start={start}）"
-            )
-        if end < start:
-            raise CourseDataNormalizationError(
-                f"周次区间非法（结束早于开始）：{text!r}（start={start}, end={end}）"
-            )
+        start, end = _checked_range(plain_match)
         return list(range(start, end + 1))
 
+    # 2) 连续 + 已批准 qualifier（qualifier 只做白名单校验，不改变含义）
+    qualified_match = _QUALIFIED_CONTINUOUS_WEEK_RANGE.match(candidate)
+    if qualified_match:
+        start, end = _checked_range(qualified_match)
+        return list(range(start, end + 1))
+
+    # 3) 单周 / 双周（parity）
+    for pattern, parity in ((_ODD_WEEK_RANGE, 1), (_EVEN_WEEK_RANGE, 0)):
+        parity_match = pattern.match(candidate)
+        if parity_match:
+            start, end = _checked_range(parity_match)
+            weeks = [week for week in range(start, end + 1) if week % 2 == parity]
+            if not weeks:
+                raise CourseDataNormalizationError(
+                    f"单/双周过滤后为空（{WEEK_ERROR_UNSUPPORTED_PARITY_RANGE}）："
+                    f"该区间内没有符合条件的周次，⛔ 不生成空 weeks"
+                    f"（⛔ 不回显 raw weeks token）"
+                )
+            return weeks
+
+    # 4) 未通过：只做**分类**，不回显 token / qualifier / 任何取值
+    #    多段组合（含逗号）是**形状**问题，不是 qualifier 问题。
+    if "," in candidate:
+        raise CourseDataNormalizationError(
+            f"周次形状未确认（{WEEK_ERROR_UNSUPPORTED_SHAPE}）：一个 weeks 字段只承载"
+            f"**一段**周次，逗号组合（多段）未获批准（⛔ 不回显 raw weeks token）"
+        )
+
+    if _WEEK_WITH_SUFFIX_PREFIX.match(candidate) is not None:
+        raise CourseDataNormalizationError(
+            f"周次 qualifier 未获批准（{WEEK_ERROR_UNSUPPORTED_QUALIFIER}）："
+            f"weeks 字段只接受 {'、'.join(_KNOWN_WEEK_QUALIFIERS)}；"
+            f"⛔ sections 的 `线上` 不适用于 weeks（⛔ 不回显 raw weeks token）"
+        )
+
     raise CourseDataNormalizationError(
-        f"暂不支持的周次格式：{text!r}。当前支持 {_SUPPORTED_WEEK_TEXTS}；"
-        f"其余格式需取得脱敏真实样本后再实现，本轮不猜。"
+        f"周次形状未确认（{WEEK_ERROR_UNSUPPORTED_SHAPE}）："
+        f"只接受 {_SUPPORTED_WEEK_TEXTS}（⛔ 不回显 raw weeks token）"
     )
 
 
