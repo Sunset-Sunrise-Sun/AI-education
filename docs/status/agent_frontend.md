@@ -1,18 +1,19 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-02（**成员5工作分支：feature/frontend-demo-polish 已完成并就绪**：
-> 通用 UI 与 Demo 体验 Polish 完成，前端 DG-07D empty-meeting 中性展示（“当前数据中无排课信息”）就绪；
-> unresolved 多类型展示（manual_confirmation / missing_data / schedule_unknown 及通用未知 fallback）就绪；
-> 补修任务筛选、教学班搜索、偏好卡片与方案调班流向（changes）可视化全面升级；
+> 最后更新：2026-10-05（**成员5工作分支：feature/frontend-demo-polish 已完成 Architecture Review 修复，等待复验**：
+> 通用 UI 与 Demo 体验 Polish 保留；DG-07D empty-meeting 中性展示（“当前数据中无排课信息”）已实现；
+> unresolved 展示已覆盖 manual_confirmation / missing_data / schedule_unknown / selection_required 及通用未知 fallback；
+> 已删除前端自行推断的容量阈值、Preference 执行语义、risks=[] / changes=[] / feasible 过度结论；
 > ⛔ **Data Gate 仍保持 Reopened**；公共 Schema / Interface / Provider 签名严格未改）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应、私密脱敏样本、截图与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering.meetings` = `type: array`、`minItems: 0`**（DG-07A；
 > 顶层 `required` 仍含 `meetings`，缺字段 / `null` 非法）；
 > **DG-01 时的 `minItems: 1` 已是历史**；**Data Gate 通过条件 C1–C11 全部完成**
-> ⚠️ **rollout gate**：`meetings = []` 契约合法，但在 **DG-07B / DG-07C / DG-07D 完成前**，
-> 生产真实数据链路**不得**产生或接入 empty-meeting `CourseOffering`；
-> `mock_data/` 保持全部非空；前端已支持 empty-meeting 中性展示（DG-07D 前端部分已就绪）
+> ⚠️ **rollout gate**：`meetings = []` 契约合法；DG-07A / DG-07B / DG-07C 已 IMPLEMENTED / REVIEWED，
+> DG-07D 已在本分支实现并完成 Reviewer 修复，**仍待项目 Architecture Reviewer 最终复验与 merge**。
+> 在 DG-07D 正式批准并合入前，生产真实数据链路仍不得接入 empty-meeting `CourseOffering`；
+> `mock_data/` 保持全部非空。
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
 > Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
@@ -37,8 +38,8 @@
 
 ## 当前阶段
 
-**feature/frontend-demo-polish 已完成（待 Reviewer）
-→ 下一步：等待 Reviewer 检查；等待 DG-07B / DG-07C 任务书**
+**feature/frontend-demo-polish：DG-07D 已实现并完成第一轮 Architecture Review 修复
+→ 下一步：项目 Architecture Reviewer 最终复验**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -61,11 +62,13 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                       两条候选在官方 UI 中均为普通教学班行、时间区域空白、无状态文字
                    →  ⚠️  Data Gate Reopened narrowly for DG-07 only（仍保持 Reopened）
                    →  ✅  DG-07 APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING
-                   →  ✅  DG-07A — Contract Migration 已实施（待 Reviewer）
-                      meetings minItems 1 → 0（required 不变）；接口语义 + 契约级测试已同步；
-                      前端仅注释同步
-                   →  ✅  feature/frontend-demo-polish 通用 UI Polish 与 DG-07D 展示就绪（待 Reviewer）
-                   →  ⏳  待办：DG-07B（Course Data）/ DG-07C（Planner safety）
+                   →  ✅  DG-07A — Contract Migration IMPLEMENTED / REVIEWED
+                      meetings minItems 1 → 0（required 不变）；接口语义 + 契约级测试已同步
+                   →  ✅  DG-07B — Course Data Empty-Meeting Normalization IMPLEMENTED / REVIEWED
+                   →  ✅  DG-07C — Planner Unknown-Schedule Safety IMPLEMENTED / REVIEWED
+                   →  ⏳  DG-07D — Frontend Empty-Meeting / PlanResult Presentation
+                      已在 feature/frontend-demo-polish 实现并完成第一轮 Reviewer 修复，等待最终复验 / merge
+                   →  ⚠️  DG-07 overall — IMPLEMENTATION PENDING；Data Gate 仍 Reopened
                    →  之后：真实 Capture 导入 UI → Phase 2B Integration 接真实 Provider
 ```
 
