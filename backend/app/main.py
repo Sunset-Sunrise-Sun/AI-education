@@ -14,13 +14,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api import health, mock
+from app.api import health, mock, plan
 from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
 from app.services.mock_service import MockDataError, all_mock_data
+from app.services.planning_runtime import PlanningRuntimeNotConfigured
 
 #: 业务接口统一版本前缀。`/health` 作为探针接口不放在前缀下。
 API_V1_PREFIX = "/api/v1"
@@ -51,9 +52,8 @@ app = FastAPI(
     version=__version__,
     description=(
         "组长模块 Phase 1：FastAPI 集成底座。\n\n"
-        "当前只提供健康检查与 Mock 接口，用于在 Curriculum / Course Data / Planner "
-        "尚未完成时模拟完整数据链路。\n\n"
-        "**当前所有数据均为 Mock，尚未接入真实教务数据。**"
+        "提供永久 Mock 回放通道，以及真实规划链路的独立装配入口。\n\n"
+        "**真实 Provider 尚未装配时，规划接口会明确返回 503，不会回退到 Mock。**"
     ),
     lifespan=lifespan,
 )
@@ -61,7 +61,7 @@ app = FastAPI(
 
 @app.middleware("http")
 async def mark_mock_data_source(request: Request, call_next):  # type: ignore[no-untyped-def]
-    """给所有响应打上数据来源标记。
+    """只给永久 Mock 通道的响应打上数据来源标记。
 
     公共 Schema 中只有 CourseOffering 带 `data_source` 字段，其余对象不允许私自加字段
     （`additionalProperties: false`）。因此来源标记通过响应头暴露，确保调用方
@@ -69,8 +69,26 @@ async def mark_mock_data_source(request: Request, call_next):  # type: ignore[no
     """
 
     response = await call_next(request)
-    response.headers[MOCK_DATA_SOURCE_HEADER] = MOCK_DATA_SOURCE_VALUE
+    if request.url.path.startswith(f"{API_V1_PREFIX}/mock/"):
+        response.headers[MOCK_DATA_SOURCE_HEADER] = MOCK_DATA_SOURCE_VALUE
     return response
+
+
+@app.exception_handler(PlanningRuntimeNotConfigured)
+async def planning_runtime_not_configured_handler(
+    request: Request, exc: PlanningRuntimeNotConfigured
+) -> JSONResponse:
+    """把唯一的装配缺失状态翻译成可测试的 503；不捕获 Provider 业务异常。"""
+
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "detail": {
+                "error": "real_pipeline_not_configured",
+                "message": str(exc),
+            }
+        },
+    )
 
 
 @app.exception_handler(MockDataError)
@@ -89,3 +107,4 @@ app.include_router(health.router)
 # 业务接口统一在 /api/v1 下；同一份 health 路由再挂一次，便于带前缀的调用方使用。
 app.include_router(health.router, prefix=API_V1_PREFIX)
 app.include_router(mock.router, prefix=API_V1_PREFIX)
+app.include_router(plan.router, prefix=API_V1_PREFIX)
