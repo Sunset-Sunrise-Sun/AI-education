@@ -137,21 +137,36 @@
 
 ## 汇总表
 
-| # | 场景 | 期望后端 | 期望前端 | 当前 main 可达？ |
-|---|---|---|---|---|
-| A | runtime disabled | 503 `real_pipeline_not_configured` | 显示"尚未完成装配" | ✅ 可验证（当前即此状态） |
-| B | Curriculum missing | 503 | 同上 | ✅ 可验证 |
-| C | Course Data partial | 503 | 同上 | ✅ 可验证 |
-| D | complete + valid runtime | 200 `PlanResult` | Real 结果 + Real provenance | ⛔ **不可达**（runtime 未装配） |
-| E | schedule contains mock | 422 | 输入未通过校验 | ✅ 可验证 |
-| F | schedule = [] | 允许 | gate 放行 | ✅ 可验证 |
-| G | provider exception | 显式 5xx | 服务端错误 | ⛔ 需 runtime 可装配 |
-| H | Real success | 200，无 mock 头 | Real 结果 | ⛔ **不可达** |
-| I | frontend Real disabled | 0 请求 | 按钮 disabled | ✅ 可验证（默认状态） |
-| J | enabled + runtime unavailable | 503 | "尚未完成装配" | ✅ 可验证 |
-| K | frontend Real success | 200 | Real provenance + Mock 基础数据 | ⛔ **不可达** |
+分类口径：
 
-> ⚠️ **"当前 main 可达"≠"已通过 Real E2E"**：
-> A/B/C/E/F/I/J 证明的是**失败路径与隔离正确**，
+- **✅ 当前 main 可直接验证** —— 该场景**在当前 main 上就能完整复算**，
+  不需要任何 runtime wiring（其期望行为本来就不依赖已装配的真实 Provider）；
+- **⛔ 需 runtime wiring 后做 production-path 验证** —— 该场景要求
+  **已装配的 production 链路**才能真正成立；在 runtime 装配之前，
+  观测到的结果（例如同为一个 503）**不能**算作该场景已验证。
+
+| # | 场景 | 期望后端 | 期望前端 | 分类 |
+|---|---|---|---|---|
+| A | runtime disabled | 503 `real_pipeline_not_configured` | 显示"尚未完成装配" | ✅ **当前 main 可直接验证**（当前即此状态） |
+| E | schedule contains mock | 422 | 输入未通过校验 | ✅ **当前 main 可直接验证** |
+| F | schedule = [] | 允许 | gate 放行 | ✅ **当前 main 可直接验证** |
+| I | frontend Real disabled | 0 请求 | 按钮 disabled | ✅ **当前 main 可直接验证**（默认状态） |
+| J | enabled + runtime unavailable | 503 | "尚未完成装配" | ✅ **当前 main 可直接验证** |
+| B | Curriculum missing | 503 | 同上 | ⛔ **需 runtime wiring 后做 production-path 验证** |
+| C | Course Data partial | 503 | 同上 | ⛔ **需 runtime wiring 后做 production-path 验证** |
+| D | complete + valid runtime | 200 `PlanResult` | Real 结果 + Real provenance | ⛔ **需 runtime wiring 后做 production-path 验证** |
+| G | provider exception | 显式 5xx | 服务端错误 | ⛔ **需 runtime wiring 后做 production-path 验证** |
+| H | Real success | 200，无 mock 头 | Real 结果 | ⛔ **需 runtime wiring 后做 production-path 验证** |
+| K | frontend Real success | 200 | Real provenance + Mock 基础数据 | ⛔ **需 runtime wiring 后做 production-path 验证** |
+
+> ⚠️ **为什么 B / C 归入"必须等 runtime"**：
+> 它们期望的 503 与 A 的 503 **表面相同但含义不同**。
+> 在 runtime 未装配时，503 恒来自"**链路尚未装配**"，
+> ⛔ 因此**无法**区分"因为 Curriculum 缺失而 503"或"因为 snapshot 是 partial 而 503"。
+> 要真正验证 B / C，必须先把 production 链路装上，
+> 再让它在**真实**的缺失 / partial 条件下 fail closed。
+
+> ⚠️ **"当前 main 可直接验证"≠"已通过 Real E2E"**：
+> A/E/F/I/J 证明的是**失败路径与隔离正确**，
 > 它们**不构成** LEVEL 3 的任何部分。
-> LEVEL 3 要求 D/H/K 在**真实数据**上成立。
+> LEVEL 3 要求 D/H/K 在**真实数据 + 完整 runtime** 上成立。
