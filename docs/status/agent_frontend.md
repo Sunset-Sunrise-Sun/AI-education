@@ -1,17 +1,19 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-01（**DG-07A — Contract Migration 已实施、待 Reviewer**：
-> `CourseOffering.meetings` 的 `minItems` 已由 **1 → 0**（`required` 不变），
-> 前端类型**仅注释**同步、**未改类型形状 / 组件 / 文案**；
-> ⛔ **DG-07 整体仍未完成**（DG-07B/C/D 未开始）；**Data Gate 仍保持 Reopened**）
+> 最后更新：2026-10-05（**成员5工作分支：feature/frontend-demo-polish 已完成 Architecture Review 修复，等待复验**：
+> 通用 UI 与 Demo 体验 Polish 保留；DG-07D empty-meeting 中性展示（“当前数据中无排课信息”）已实现；
+> unresolved 展示已覆盖 manual_confirmation / missing_data / schedule_unknown / selection_required 及通用未知 fallback；
+> 已删除前端自行推断的容量阈值、Preference 执行语义、risks=[] / changes=[] / feasible 过度结论；
+> ⛔ **Data Gate 仍保持 Reopened**；公共 Schema / Interface / Provider 签名严格未改）
 > 数据状态：**核心业务数据仍全部为 Mock**；真实证据（D1–D5）只以**汇总事实**形式入仓，
 > **原始材料、逐行记录、Raw 响应、私密脱敏样本、截图与真实 Capture Bundle 均不进入 public Git**
 > 契约状态：**`CourseOffering.meetings` = `type: array`、`minItems: 0`**（DG-07A；
 > 顶层 `required` 仍含 `meetings`，缺字段 / `null` 非法）；
 > **DG-01 时的 `minItems: 1` 已是历史**；**Data Gate 通过条件 C1–C11 全部完成**
-> ⚠️ **rollout gate**：`meetings = []` 契约合法，但在 **DG-07B / DG-07C / DG-07D 完成前**，
-> 生产真实数据链路**不得**产生或接入 empty-meeting `CourseOffering`；
-> `mock_data/` 保持全部非空；**前端尚未支持 empty-meeting 展示**（属 DG-07D）
+> ⚠️ **rollout gate**：`meetings = []` 契约合法；DG-07A / DG-07B / DG-07C 已 IMPLEMENTED / REVIEWED，
+> DG-07D 已在本分支实现并完成 Reviewer 修复，**仍待项目 Architecture Reviewer 最终复验与 merge**。
+> 在 DG-07D 正式批准并合入前，生产真实数据链路仍不得接入 empty-meeting `CourseOffering`；
+> `mock_data/` 保持全部非空。
 >
 > ⚠️ **准确表述（不得夸大）**：**Provider 边界与 Orchestrator skeleton 已完成**，
 > Course Data 的**标准化内核、`teachingTimePlaceStr` parser、本地 import adapter、内部快照、
@@ -26,7 +28,7 @@
 > 时间 / 周次 / 地点**空白且无状态文字**，
 > 当前 `collect()` **按设计 fail closed**，**尚未生成真实 Capture Bundle**、
 > **尚未取得 complete semester snapshot**；**G11 仍未 resolved**
-> （业务语义部分有界面证据，**契约缺口候选 DG-07 待架构裁决**）；
+> （学校侧业务原因仍未知；DG-07A / B / C 已实施并 Review，DG-07D 等待本分支最终复验 / merge）；
 > **production Curriculum / Planner provider 仍未接入**，
 > 因此**没有**任何一条真实数据链路端到端跑通，**也未新增任何 API**。
 >
@@ -36,8 +38,8 @@
 
 ## 当前阶段
 
-**DG-07A Contract Migration 已实施（待 Reviewer）
-→ 下一步：等待 DG-07B / DG-07C / DG-07D 任务书（本模块不自行实施）**
+**feature/frontend-demo-polish：DG-07D 已实现并完成第一轮 Architecture Review 修复
+→ 下一步：项目 Architecture Reviewer 最终复验**
 
 ```text
 Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
@@ -60,11 +62,13 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
                       两条候选在官方 UI 中均为普通教学班行、时间区域空白、无状态文字
                    →  ⚠️  Data Gate Reopened narrowly for DG-07 only（仍保持 Reopened）
                    →  ✅  DG-07 APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING
-                   →  ✅  DG-07A — Contract Migration 已实施（待 Reviewer）
-                      meetings minItems 1 → 0（required 不变）；接口语义 + 契约级测试已同步；
-                      前端仅注释同步
-                   →  ⏳  待办：DG-07B（Course Data）/ DG-07C（Planner safety）/
-                      DG-07D（Frontend 展示）—— **本轮不开始**
+                   →  ✅  DG-07A — Contract Migration IMPLEMENTED / REVIEWED
+                      meetings minItems 1 → 0（required 不变）；接口语义 + 契约级测试已同步
+                   →  ✅  DG-07B — Course Data Empty-Meeting Normalization IMPLEMENTED / REVIEWED
+                   →  ✅  DG-07C — Planner Unknown-Schedule Safety IMPLEMENTED / REVIEWED
+                   →  ⏳  DG-07D — Frontend Empty-Meeting / PlanResult Presentation
+                      已在 feature/frontend-demo-polish 实现并完成第一轮 Reviewer 修复，等待最终复验 / merge
+                   →  ⚠️  DG-07 overall — IMPLEMENTATION PENDING；Data Gate 仍 Reopened
                    →  之后：真实 Capture 导入 UI → Phase 2B Integration 接真实 Provider
 ```
 
@@ -248,7 +252,6 @@ Phase 2B-0 ✅ 真实数据准备与数据源技术侦察（D1–D5）
 | **表达损失** | **meeting 级教师关联仍为 known deferred representation gap**；`teacher` 留在教学班顶层 |
 
 - **后端**：`backend/app/models/contracts.py` 新增 `Meeting`（`__all__` 同步）；
-  `CourseOffering.meetings: list[Meeting]` **DG-01 当时为至少 1 项**（**DG-07A 起为 `min_length=0`**）；
   `weeks` 的 `uniqueItems` 仍由运行时真实拒绝重复项；
   预览旧结构被 Schema 与 Pydantic **双重拒绝**。
 - **Mock**：`mock_data/course_offerings.json` **9 个教学班**全部迁移，
@@ -444,7 +447,6 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 - ⛔ **不含** Raw row、row 下标、课程号 / 课程名 / 教学班号 / 教师 / 教室 / 原文 / 内部 ID；
 - ⛔ **不生成 Capture Bundle**、不做字段最小化、不做教师脱敏、不调用 `toJson`；
 - ⛔ **不改** `collect()` 的 fail-closed 行为（缺字段仍整体失败，不跳过 / 不补空 / 不造占位 `Meeting`）；
-- ⛔ **本轮不改契约**：`CourseOffering.meetings` `minItems = 1` 保持不变；**G11 只登记、不裁决**；
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/`、`frontend/` 均未修改；
   后端 **524 passed / 2 skipped**。
 
@@ -507,7 +509,6 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   每字段加总）：⛔ **任一不成立即整体失败，不静默丢 row**；
 - ⛔ **不生成 Capture Bundle**、不落盘、不写浏览器存储、不调用 `toJson`；
 - ⛔ **不改** `collect()` 的 fail-closed 行为；⛔ **不改** 2B-2C1B 的 `diagnoseSchedulePresence()`；
-- ⛔ **本轮不改契约**：`CourseOffering.meetings` `minItems = 1` 保持不变；**G11 只登记、不裁决**；
 - **公共契约未改**：`schemas/`、`docs/interfaces/`、`integration/`、`main.py`、`api/`、
   `frontend/`、`backend/app/course_data/*.py` 均未修改；后端 **539 passed / 2 skipped**；
 - ✅ **已在真实环境执行完成**（**负责人手动执行**，Builder 未发起任何请求）：
@@ -570,7 +571,6 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 | 产出 | 内容 |
 |---|---|
 | `schemas/course_offering.schema.json` | `meetings` 的 **`minItems: 1 → 0`**；`required` **不变**；新增非校验性 `description`（空数组语义）；**未新增 / 未删除字段**、**`Meeting` 未变** |
-| `backend/app/models/contracts.py` | `CourseOffering.meetings` → **`min_length=0`**（Pydantic 生成 **`minItems: 0`**，与公共 Schema 精确对齐）；注释同步 |
 | `docs/interfaces/course_data.md` | 两种合法状态 + 已批准的 fail-closed 边界（DG-07B 唯一允许来源形态 = `teachingTimePlaceStr` 属性不存在） |
 | `docs/interfaces/planner.md` | `meetings` 非空 → 遍历全部 `Meeting`；`meetings = []` → **schedule unknown，绝不 conflict-free**；**同一规则覆盖 `offerings` 与 `current_schedule`** |
 | `docs/interfaces/integration.md` | **Provider 签名一字不改**；`meetings = []` **原样透明传递**（不过滤 / 不补 / 不转换 / 不推断） |
@@ -690,7 +690,6 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   **`CourseOffering` 1 — N `meetings[]`**（顶层删除六个排课字段，`required` 含 `meetings`；
   `Meeting` = `weekday` / `start_section` / `end_section` / `weeks[]` / `campus?` / `classroom?`）；
   ② **后端同步** —— `backend/app/models/contracts.py` 新增 `Meeting`，
-  `CourseOffering.meetings` 至少 1 项，删除顶层六字段，`__all__` 更新；
   ③ **Mock 迁移** —— `mock_data/course_offerings.json` **9 个教学班**全部迁移，
   **1 个教学班含 2 段 meeting**（第二段人工构造）；
   ④ **测试迁移并加严** —— 所有时间 / 地点 / 周次检查改为**逐 meeting**，
