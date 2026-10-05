@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import CurrentScheduleInput from './CurrentScheduleInput.vue'
+import E2EDebugPanel from './E2EDebugPanel.vue'
+import type { E2EDebugInfo } from './E2EDebugPanel.vue'
 import PreferenceForm from './PreferenceForm.vue'
 import StudentContextForm from './StudentContextForm.vue'
 import SubmissionActions from './SubmissionActions.vue'
@@ -44,6 +46,18 @@ const props = defineProps<{
   dataSourceLabel?: string | null
   /** Real Planning 失败时的错误信息。 */
   planErrorMessage?: string
+  /** Real Planning 失败的类型（`PlanErrorKind`）。 */
+  planErrorKind?: string | null
+  /** Real Planning 失败时的 HTTP 状态码。 */
+  planErrorStatus?: number | null
+  /** Real Planning 失败时后端返回的错误码。 */
+  planErrorCode?: string | null
+  /** Real Planning 失败时后端返回的原始 detail 文本。 */
+  planErrorDetail?: string | null
+  /** 联调调试信息（仅开发环境渲染）。 */
+  debugInfo?: E2EDebugInfo
+  /** 是否处于开发环境。 */
+  dev?: boolean
   /**
    * 课表 provenance 门禁的阻止原因（fail closed）。
    *
@@ -204,8 +218,15 @@ function clearGradeFile(): void {
       :input-valid="realSubmitEnabled"
       :submitting="submitting"
       :error-message="planErrorMessage"
+      :error-kind="planErrorKind ?? null"
+      :error-status="planErrorStatus ?? null"
+      :error-code="planErrorCode ?? null"
+      :error-detail="planErrorDetail ?? null"
       :schedule-block-reason="scheduleBlockReason ?? null"
       @submit-real="emit('submit-real')"
     />
+
+    <!-- 联调调试信息：仅开发环境（生产构建不渲染） -->
+    <E2EDebugPanel v-if="debugInfo" :dev="dev ?? false" :info="debugInfo" />
   </div>
 </template>

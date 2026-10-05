@@ -1,6 +1,13 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-06（**Frontend User Input Gate Phase 1 已实现，待 Architecture Review**：
+> 最后更新：2026-10-05（**Frontend Real E2E Wiring Preparation 已实现，待 Architecture Review**：
+> 已把 Real Planning 的失败状态**产品化**（503 `real_pipeline_not_configured` 明确显示为
+> "**真实规划运行时尚未完成装配**"，**不是**笼统的"请求失败"，且**不 fallback 到 Mock**）；
+> 422 / 500 / network 分别有独立文案；`PlanApiError` 携带 `kind` / `status` / `code` / `detail`；
+> 新增**仅开发环境**的 E2E 联调调试信息面板（只有计数 / 枚举 / 状态，不含成绩·姓名·学号·GPA·凭据）；
+> ⛔ 未改 backend / Schema / Interface；⛔ 未做 runtime / provider wiring。
+> **Frontend 已准备好 Real E2E 联调；Real E2E 尚未完成**（需 Codex runtime 真正可用并联调通过）。
+> 上一轮：Frontend User Input Gate Phase 1 已实现并 merge）
 > 前端新增真正的**用户输入区**（目标学期 / 转专业上下文 / 当前课表 / 可编辑 Preference / 成绩文件选择），
 > 并按 DG-03 语义输出 `current_schedule: CourseOffering[]`；
 > **Mock / Real 明确隔离**：页面显示**规划结果来源**（局部 provenance，非"整页数据模式"），Real Planning 在接口就绪前按钮 **disabled**，
@@ -896,6 +903,71 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
 **验证**：`npm test` → **82 passed / 82**（7 文件）；`npm run build` → 成功；
 `npm run test:scenarios` → 既有 14 项全部通过。
 **测试有效性已实测**：回退 4 号区块渲染 → 渲染用例失败；禁用 provenance 分支 → 门禁用例失败（2 项）。
+
+## Frontend Real E2E Wiring Preparation 结果（错误产品化 + 成功收口 + 联调信息）
+
+**目标**：让前端从"已经有 Real client"提升到"**Codex runtime 一旦可用即可直接完成第一轮真实联调**"，
+但本轮**不伪造任何真实数据**，也**不碰 backend / runtime / provider wiring**。
+
+分支 `feature/frontend-real-e2e-prep`，base = `main = d7e17eedcf8d25c20b8a31e01a2e3ec3711ec32f`
+（该 main 已含 Real Case A Curriculum、Frontend User Input Gate、Real Planning API Boundary）。
+
+| 产出 | 内容 |
+|---|---|
+| `frontend/src/api/plan.ts` | 错误模型：`PlanApiError` 携带 **`kind` / `status` / `code` / `detail`**；导出 `parsePlanErrorBody()` 与 `REAL_PIPELINE_NOT_CONFIGURED` |
+| `frontend/src/components/E2EDebugPanel.vue` | **仅开发环境**渲染的联调调试面板 |
+| `frontend/src/state/userInput.ts` | 新增 `describePlanError()`、`describeScheduleProvenance()`、`isPreferencePresent()` |
+| `frontend/src/components/SubmissionActions.vue` | 按错误**类型**分类展示（标题 + 说明 + HTTP 状态 + 后端错误码） |
+| `frontend/src/App.vue` | 记录 `planErrorKind` / `planErrorStatus` / `planErrorCode` / `lastHttpStatus`，组合调试信息 |
+
+**错误模型（`PlanErrorKind`，语义互斥且穷尽；UI 只按 `kind` 分支）**：
+
+| `kind` | 触发条件 | 界面标题 |
+|---|---|---|
+| `not_configured` | **HTTP 503 且 `detail.error === "real_pipeline_not_configured"`**，或 503 但响应体**无法解析 / 无可识别信息** | **真实规划运行时尚未完成装配** |
+| `input` | 422 | **Real Planning 输入未通过校验** |
+| `server` | 5xx（503 之外）；**或 503 但响应体明确给出其它错误** | Real Planning 服务端错误 |
+| `network` | 请求未能完成（连不上 / 连接被重置） | 无法连接 Real Planning 接口 |
+| `http` | 其它非 2xx | Real Planning 调用失败 |
+| `unexpected` | 2xx 但响应体不是合法 `PlanResult` 对象 | 返回了无法解析的结果 |
+
+- ⚠️ **503 三态收紧**（`classifyPlanError()`，纯函数，有分类矩阵测试）：
+  ① **只有 HTTP 503 且** `real_pipeline_not_configured` → `not_configured`
+  （该 code 出现在其它状态码上**不具备**"未装配"含义：500 + 该 code → `server`、404 + 该 code → `http`）；
+  ② 503 且**无法解析 / 无可识别信息** → `not_configured`（宁可如实说"未装配"）；
+  ③ 503 但 body **明确给出其它错误**（有可识别 code 或 detail）→ **`server`**，
+  ⛔ **不误报成"运行时尚未装配"**，且文案导向服务端排查；
+
+- ⚠️ **422 只表示"输入未通过校验"**：标题统一为"Real Planning 输入未通过校验"，
+  ⛔ **不声称**所有 422 都是"当前课表来源问题"（也可能是 `semester` 非法或 `preference` 形状错误）；
+  具体原因**由后端返回**，前端原样展示 `code` 与 `detail`，⛔ 不推断具体是哪一项；
+- ⚠️ **不假设后端一定有统一 error schema**：`parsePlanErrorBody()` 能识别已知的
+  503 形状（`{detail:{error,message}}`）与 FastAPI 422 形状（`{detail:[{loc,msg,type}]}`），
+  对未知形状**宽容处理**（返回 `null`，由状态码兜底），⛔ 不解析不存在的字段；
+- ⚠️ **503 是"当前正确状态"，不是系统故障**：文案明确说明
+  "当前页面可继续使用 Mock Demo；Real Planning 暂不可用"，并声明**不会自动回退到 Mock**。
+
+**成功状态收口**：Real 成功后继续 `规划结果来源：Real`；
+培养要求评估 / 教学班 / 偏好仍标 Mock；⛔ 不重新出现"当前数据模式：Real"这类全局说法。
+
+**E2E 调试信息（`E2EDebugPanel.vue`，⛔ 仅 `import.meta.env.DEV`）**：
+显示 `plan endpoint` / `request semester` / `current_schedule count` / provenance 摘要 /
+`preference present`（只报布尔）/ `plan api enabled` / `last HTTP status` / `last error kind` / `plan result source`。
+⛔ 不显示成绩内容、姓名、学号、GPA；⛔ 不 dump 请求 / 响应；⛔ 不显示 token / cookie / header。
+
+**Real 提交开关**：`VITE_PLAN_API_ENABLED` **只**控制 Real submit 是否开放；
+不改变 Mock Demo 获取、**不触发自动请求**（有测试断言首屏 0 次 `/api/v1/plan`）、不改变 provenance gate。
+
+**验证**：
+
+```text
+cd frontend && npm test              →  113 passed / 113（8 个测试文件）
+cd frontend && npm run build         →  成功（含 vue-tsc --noEmit）
+cd frontend && npm run test:scenarios →  既有 14 项全部通过
+```
+
+**明确状态表述**：**Frontend 已准备好 Real E2E 联调**；
+⛔ **不得**写成"Real E2E 已完成" —— Codex 的 Real Runtime Wiring 尚未可用，后续真实联调尚未进行。
 
 ## 当前接口
 - 读取：`MakeupTask[]`、`CourseOffering[]`（**含 `meetings[]`**）、`Preference`、`PlanResult`

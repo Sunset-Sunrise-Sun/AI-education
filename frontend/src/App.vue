@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import CourseOfferingList from './components/CourseOfferingList.vue'
+import E2EDebugPanel from './components/E2EDebugPanel.vue'
+import type { E2EDebugInfo } from './components/E2EDebugPanel.vue'
 import MakeupTaskList from './components/MakeupTaskList.vue'
 import PlanResultPanel from './components/PlanResultPanel.vue'
 import PreferencePanel from './components/PreferencePanel.vue'
@@ -8,14 +10,28 @@ import SectionCard from './components/SectionCard.vue'
 import TopStatusBar from './components/TopStatusBar.vue'
 import UserInputPanel from './components/UserInputPanel.vue'
 import { useDemoData } from './composables/useDemoData'
-import { DEMO_ENDPOINT, PLAN_API_ENABLED, initialDataMode } from './config'
-import { buildRealPlanRequest, createDefaultUserInputForm, evaluatePlanSubmission, scheduleProvenanceBlockReason } from './state/userInput'
+import { DEMO_ENDPOINT, PLAN_API_ENABLED, PLAN_ENDPOINT, initialDataMode } from './config'
+import {
+  buildRealPlanRequest,
+  createDefaultUserInputForm,
+  describeScheduleProvenance,
+  evaluatePlanSubmission,
+  isPreferencePresent,
+  scheduleProvenanceBlockReason,
+} from './state/userInput'
 import type { UserInputForm } from './state/userInput'
-import { fetchRealPlan } from './api/plan'
+import { PlanApiError, fetchRealPlan } from './api/plan'
 import type { PlanResult } from './types/contracts'
 import { PLAN_STATUS_LABEL } from './utils/labels'
 
 const { state, data, dataSource, errorMessage, load } = useDemoData()
+
+/**
+ * 是否处于开发环境。
+ *
+ * 用于**仅开发环境**的联调调试信息；生产构建下调试面板不会渲染。
+ */
+const isDev = import.meta.env.DEV
 
 /**
  * 用户输入（Frontend User Input Gate, Phase 1）。
@@ -34,7 +50,15 @@ const dataMode = ref(initialDataMode())
  */
 const realPlanResult = ref<PlanResult | null>(null)
 const planErrorMessage = ref('')
+const planErrorKind = ref<string | null>(null)
+const planErrorStatus = ref<number | null>(null)
+const planErrorCode = ref<string | null>(null)
+/** 后端返回的原始 detail 文本（供 UI 展示具体原因）。 */
+const planErrorDetail = ref<string | null>(null)
 const planSubmitting = ref(false)
+
+/** 最近一次 Real 请求的 HTTP 状态码（含成功），供联调调试面板显示。 */
+const lastHttpStatus = ref<number | null>(null)
 
 /**
  * Real 提交是否被 **provenance 门禁**阻止（fail closed）。
@@ -99,24 +123,68 @@ async function submitRealPlan(): Promise<void> {
   const gate = evaluatePlanSubmission(userInput.value)
   if (!gate.allowed) {
     planErrorMessage.value = gate.reason
+    planErrorKind.value = 'blocked'
+    planErrorStatus.value = null
+    planErrorCode.value = null
+    planErrorDetail.value = null
     return
   }
 
   planSubmitting.value = true
   planErrorMessage.value = ''
+  planErrorKind.value = null
+  planErrorStatus.value = null
+  planErrorCode.value = null
+  planErrorDetail.value = null
 
   try {
     realPlanResult.value = await fetchRealPlan(buildRealPlanRequest(userInput.value))
     dataMode.value = 'real'
+    lastHttpStatus.value = 200
   } catch (error) {
+    // 失败时**保持 Mock 结果**，但绝不把 Mock 冒充成 Real，也不回退到 Mock 通道。
     realPlanResult.value = null
     dataMode.value = 'mock'
-    planErrorMessage.value =
-      error instanceof Error ? error.message : '发生了未知错误，请查看浏览器控制台。'
+
+    if (error instanceof PlanApiError) {
+      planErrorKind.value = error.kind
+      planErrorStatus.value = error.status
+      planErrorCode.value = error.code
+      planErrorDetail.value = error.detail
+      planErrorMessage.value = error.message
+      lastHttpStatus.value = error.status
+    } else {
+      // 非 PlanApiError（如主动 abort）：如实记录，不假装是后端错误。
+      planErrorKind.value = 'unexpected'
+      planErrorStatus.value = null
+      planErrorCode.value = null
+      planErrorDetail.value = null
+      planErrorMessage.value =
+        error instanceof Error ? error.message : '发生了未知错误，请查看浏览器控制台。'
+      lastHttpStatus.value = null
+    }
   } finally {
     planSubmitting.value = false
   }
 }
+
+/**
+ * 联调调试信息（**仅开发环境渲染**）。
+ *
+ * ⛔ 只包含计数 / 枚举 / 状态：不含成绩、姓名、学号、GPA，
+ * 不 dump 请求或响应，也不包含任何凭据。
+ */
+const e2eDebugInfo = computed<E2EDebugInfo>(() => ({
+  planEndpoint: PLAN_ENDPOINT,
+  semester: userInput.value.semester,
+  scheduleCount: userInput.value.currentSchedule.length,
+  scheduleProvenance: describeScheduleProvenance(userInput.value),
+  preferencePresent: isPreferencePresent(userInput.value),
+  planApiEnabled: PLAN_API_ENABLED,
+  lastHttpStatus: lastHttpStatus.value,
+  lastErrorKind: planErrorKind.value,
+  planResultSource: planResultMode.value,
+}))
 
 /**
  * 课程号 -> 课程名映射表（原定义已上移，见 `planResultCourseNameById` 附近的说明）。
@@ -186,6 +254,12 @@ onMounted(() => {
           :mode="dataMode"
           :data-source-label="dataSource"
           :plan-error-message="planErrorMessage"
+          :plan-error-kind="planErrorKind"
+          :plan-error-status="planErrorStatus"
+          :plan-error-code="planErrorCode"
+          :plan-error-detail="planErrorDetail"
+          :debug-info="e2eDebugInfo"
+          :dev="isDev"
           :schedule-block-reason="scheduleProvenanceBlockReason(userInput)"
           @update:form="userInput = $event"
           @submit-real="submitRealPlan"

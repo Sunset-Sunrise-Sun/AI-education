@@ -1,22 +1,23 @@
 <script setup lang="ts">
-import { PLAN_RESULT_SOURCE_LABEL } from '../state/userInput'
+import { computed } from 'vue'
+import { PLAN_RESULT_SOURCE_LABEL, describePlanError } from '../state/userInput'
 import type { PlanResultSource } from '../config'
 
 /**
  * **规划结果来源**与提交区。
  *
- * 边界（本轮最重要的一条之一）：
+ * 边界：
  * - 页面显示的是**规划结果的来源**（局部 provenance），
  *   不是"整页数据模式"：`POST /api/v1/plan` 只返回 `PlanResult`，
  *   培养要求评估 / 教学班 / 偏好仍全部是 Mock 演示数据；
- * - Real Planning 接口（`POST /api/v1/plan`）尚未合并进 main 时，
- *   提交按钮**保持 disabled**，并且**绝不**把 Real 提交偷偷改调 Mock 接口；
+ * - `VITE_PLAN_API_ENABLED` 只控制 **Real submit 是否开放**：
+ *   不改变 Mock Demo 获取、不触发自动请求、不改变 provenance gate；
  * - ⛔ 本组件不发任何请求，只表达"当前是否可用"与把点击事件交给父级。
  */
-defineProps<{
+const props = defineProps<{
   /** 规划结果的来源。 */
   mode: PlanResultSource
-  /** Real Planning 接口是否已可用（由 `VITE_PLAN_API_ENABLED` 决定）。 */
+  /** Real Planning 接口是否已开放（由 `VITE_PLAN_API_ENABLED` 决定）。 */
   planApiEnabled: boolean
   /** 是否可提交（输入完整性 + 课表 provenance 门禁，均不是可行性判断）。 */
   inputValid: boolean
@@ -24,6 +25,18 @@ defineProps<{
   submitting: boolean
   /** Real Planning 失败时的错误信息；没有失败时为空字符串。 */
   errorMessage?: string
+  /**
+   * Real Planning 失败的**类型**（`PlanErrorKind`）。
+   *
+   * UI 只按这个分支，因此 503"未装配"不会被笼统显示成"请求失败"。
+   */
+  errorKind?: string | null
+  /** 失败时的 HTTP 状态码；网络错误为 `null`。 */
+  errorStatus?: number | null
+  /** 后端返回的机器可读错误码（如 `real_pipeline_not_configured`）。 */
+  errorCode?: string | null
+  /** 后端返回的原始 detail 文本（**具体原因以此为准**）。 */
+  errorDetail?: string | null
   /**
    * 课表 provenance 门禁的阻止原因（fail closed）；`null` 表示通过。
    *
@@ -35,6 +48,11 @@ defineProps<{
 const emit = defineEmits<{
   (event: 'submit-real'): void
 }>()
+
+/** 失败文案：按 `kind` 分类，而不是统一写"请求失败"。 */
+const errorDisplay = computed(() =>
+  props.errorKind ? describePlanError(props.errorKind, props.errorStatus ?? null) : null,
+)
 </script>
 
 <template>
@@ -105,12 +123,39 @@ const emit = defineEmits<{
         <code class="mono">preference</code> 三个字段。
       </p>
 
-      <!-- Real Planning 失败：如实报错，不回退 Mock、不展示替代结果 -->
-      <p v-if="errorMessage" class="uig-error" data-testid="real-plan-error" role="alert">
-        Real Planning 调用失败：{{ errorMessage }}
-        <br />
-        本页<strong>不会</strong>在失败时回退到 Mock 通道，也不会自行生成替代方案。
-      </p>
+      <!--
+        Real Planning 失败：按**类型**分类展示，不回退 Mock、不展示替代结果。
+
+        ⚠️ 503 real_pipeline_not_configured 是"**运行时尚未装配**"这一当前正确状态，
+        不是系统故障，因此单独标题、单独说明，绝不与 500 混为一谈。
+      -->
+      <div v-if="errorDisplay" class="uig-error" data-testid="real-plan-error" role="alert">
+        <p class="uig-error__title" data-testid="real-plan-error-title">
+          {{ errorDisplay.title }}
+        </p>
+        <p class="uig-error__hint" data-testid="real-plan-error-hint">
+          {{ errorDisplay.hint }}
+        </p>
+        <p class="uig-error__meta" data-testid="real-plan-error-meta">
+          <span v-if="errorStatus !== null && errorStatus !== undefined" class="mono">
+            HTTP {{ errorStatus }}
+          </span>
+          <span v-if="errorCode" class="mono" data-testid="real-plan-error-code">
+            {{ errorCode }}
+          </span>
+          <span v-if="errorKind" class="mono">{{ errorKind }}</span>
+        </p>
+        <!-- 后端给出的**具体**原因：前端不推断，原样展示 -->
+        <p v-if="errorDetail" class="uig-error__detail" data-testid="real-plan-error-detail">
+          后端返回：{{ errorDetail }}
+        </p>
+        <p v-if="errorMessage" class="uig-error__detail" data-testid="real-plan-error-message">
+          {{ errorMessage }}
+        </p>
+        <p class="uig-error__hint">
+          本页<strong>不会</strong>在失败时回退到 Mock 通道，也不会自行生成替代方案。
+        </p>
+      </div>
     </div>
   </div>
 </template>

@@ -49,6 +49,67 @@ export const PLAN_RESULT_SOURCE_LABEL: Record<'mock' | 'real', string> = {
   real: '规划结果来源：Real',
 }
 
+/** Real Planning 失败类型的**展示**文案（纯展示映射，不做业务判断）。 */
+export interface PlanErrorDisplay {
+  /** 这一栏到底发生了什么。 */
+  title: string
+  /** 用户现在可以做什么 / 这属于哪种状态。 */
+  hint: string
+}
+
+/**
+ * 把 Real Planning 的失败类型翻译成界面文案。
+ *
+ * 关键区分（本轮要求）：
+ * `not_configured`（503 `real_pipeline_not_configured`）是**当前正确状态**，
+ * ⛔ **不是**系统故障，也不能被笼统显示成"请求失败"。
+ */
+export function describePlanError(kind: string, status: number | null): PlanErrorDisplay {
+  switch (kind) {
+    case 'not_configured':
+      return {
+        title: '真实规划运行时尚未完成装配',
+        hint:
+          '真实 Curriculum / Course Data / Planner 尚未接入（后端返回 503 ' +
+          'real_pipeline_not_configured）。当前页面可继续使用 Mock Demo；' +
+          'Real Planning 暂不可用，前端也不会自动回退到 Mock。',
+      }
+    case 'input':
+      return {
+        title: 'Real Planning 输入未通过校验',
+        hint:
+          `后端拒绝了本次请求${status !== null ? `（HTTP ${status}）` : ''}。` +
+          '422 只表示"输入未通过校验"，具体是哪一项由后端返回：' +
+          '可能是学期非法、当前课表来源不合规，或 preference 字段形状错误。' +
+          '请以下方后端返回的 code / detail 为准，前端不推断具体原因。',
+      }
+    case 'server':
+      return {
+        title: 'Real Planning 服务端错误',
+        hint:
+          status === 503
+            ? '后端返回 503，但响应体明确给出了**其它**错误原因：' +
+              '这属于服务端故障，**不是**"运行时未装配"这一状态。请查看后端日志或稍后重试。'
+            : `后端在处理本次请求时出错${status !== null ? `（HTTP ${status}）` : ''}。这不代表当前输入有问题；请稍后重试或查看后端日志。`,
+      }
+    case 'network':
+      return {
+        title: '无法连接 Real Planning 接口',
+        hint: '请求没有到达后端（网络不可达或服务未启动）。Mock Demo 仍可正常使用。',
+      }
+    case 'unexpected':
+      return {
+        title: 'Real Planning 返回了无法解析的结果',
+        hint: '响应不是合法的 PlanResult 对象，已停止渲染；不会用 Mock 数据顶替。',
+      }
+    default:
+      return {
+        title: 'Real Planning 调用失败',
+        hint: `接口返回了非预期的状态${status !== null ? `（HTTP ${status}）` : ''}。Mock Demo 仍可正常使用。`,
+      }
+  }
+}
+
 const SEMESTER_RE = new RegExp(SEMESTER_PATTERN)
 
 let nextAvoidTimeKey = 1
@@ -398,6 +459,33 @@ export function scheduleProvenanceBlockReason(form: UserInputForm): string | nul
     return null
   }
   return hasMockSchedule(form) ? MOCK_SCHEDULE_BLOCK_REASON : UNVERIFIED_SCHEDULE_BLOCK_REASON
+}
+
+/**
+ * 当前课表的 provenance **结构摘要**，供联调调试面板显示。
+ *
+ * 只返回枚举式描述，⛔ 不包含任何课程名 / 课程号 / 成绩等具体内容。
+ */
+export function describeScheduleProvenance(form: UserInputForm): string {
+  if (form.currentSchedule.length === 0) {
+    return 'empty'
+  }
+  if (isScheduleSubmittableToRealPlanning(form)) {
+    return 'all real'
+  }
+  return hasMockSchedule(form) ? 'contains mock' : 'unverified'
+}
+
+/** `preference` 是否已填写（**只报布尔**，供联调调试面板显示）。 */
+export function isPreferencePresent(form: UserInputForm): boolean {
+  const preference = form.preference
+  return (
+    preference.maxCredit !== null ||
+    preference.avoidCrossCampus ||
+    preference.preferredCourses.length > 0 ||
+    preference.avoidTimes.length > 0 ||
+    (preference.notes !== null && preference.notes.trim() !== '')
+  )
 }
 
 /**
