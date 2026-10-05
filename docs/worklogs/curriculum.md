@@ -145,3 +145,18 @@
 - 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试，未放宽断言。
 - 使用数据：真实材料仅在本地受控目录只读使用，未提交。**结论仍是本地 validation，不是真实端到端验收。**
 - 下一步：等待 Architecture Review 复验；**不 merge、不 push main**。
+
+### 2026-10-05 - positional discriminator 损坏边界修复
+- 遗留 fail-open：`if not row_kind.matches(kind_value): continue` 会把"判别器（序号）本身损坏、但 course_id + credit 仍明显像课程"的记录**静默跳过**。
+- 修复：区分「确定是非课程行」与「疑似课程行但判别器损坏」——
+  - 判别器命中 + 全部 selector 命中 → 课程行，进入完整 structural guard（不变）；
+  - 判别器命中 + 任一 selector 无值或 selector 不命中 → 结构损坏，fail closed（不变）；
+  - **判别器不命中，但其余 identifying selectors 全部命中**（course_id 有值且 credit 为数字）→ 判别器本身损坏，**fail closed**（新增，报 `row discriminator is damaged`）；
+  - 判别器不命中且其余 selectors 未全部命中 → 真实分区/模块/小计行 → 安全 skip（不变）。
+- 配套修正：positional 模式下**单元格"存在但为空"与"物理缺失"语义相同**（空单元格读出 `None`），否则空序号单元格会伪装成"判别器不命中 + 其余命中"以外的情形而漏检。该归一化**仅作用于 positional 模式**，header 模式保持原有原始文本行为不变（首轮实现曾误扩大到 header 模式，导致 3 项既有 header 测试回归，已当场修正并复跑全绿）。
+- 真实 Case A 导入结果不变：`遥感方案.docx` 84 条、`网安方案.docx` 104 条，均 0 issue；真实 section 行（判别器 False / course_id True / credit False）继续安全跳过。
+- 本轮**未修** PE102 matching bug，继续作为独立 IMPLEMENTATION BUG 记录。
+- 修改文件：`backend/app/curriculum/docx_reader.py`、`backend/tests/test_curriculum_positional_docx.py`；更新 `docs/curriculum/INPUTS.md`、`docs/status/curriculum.md`、本文件。
+- 测试：positional 测试 52 → **56** 项（新增：sequence 单元格无值但 course_id/credit 完好 → reject；sequence 非 numeric 但 course_id/credit 完好 → reject（`row discriminator is damaged`）；判别器不命中且其余 selectors 未全命中 → 仍安全 skip；真实 section 形 `False/True/False` → 安全 skip）。全量后端（`PYTHONUTF8=1`）：**1995 passed、2 failed、2 skipped**。
+- 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
+- 下一步：等待 Architecture Review 终审；**不 merge、不 push main**。

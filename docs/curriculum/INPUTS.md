@@ -74,11 +74,14 @@ Word 解析使用明确映射，不自动解释标题、分区、先修或学校
 - **行选择（fail closed，不得成为绕过结构校验的旁路）**：先由 `row_kind` 判别器决定"这一行是不是课程行"，再判结构：
 
   ```text
-  判别器不命中                          → 明确是非课程行（分区/模块/小计）→ skip
-  判别器命中，但任一 selector 列物理缺失  → 疑似课程行但结构损坏 → fail closed
-  判别器命中，且全部 selector 命中        → 课程行 → 进入完整 structural guard
-  判别器命中，但某个 selector 不命中      → 部分命中 → fail closed（不得 continue）
+  判别器命中，且全部 selector 命中                    → 课程行 → 进入完整 structural guard
+  判别器命中，但任一 selector 无值或 selector 不命中   → 疑似课程行但结构损坏 → fail closed
+  判别器不命中，但其余 identifying selectors 全部命中  → 判别器本身损坏（course_id 有值且
+                                                       credit 为数字）→ fail closed
+  判别器不命中，其余 selectors 未全部命中              → 真实分区/模块/小计行 → skip
   ```
+
+  即：只要 `course_id` 有值且 `credit` 为数字，这一行就按课程行处理；判别器读不到值（单元格缺失**或**为空）只说明判别器损坏，必须阻断而不能 skip。单元格"存在但为空"与"物理缺失"在 positional 模式下语义相同。真实 section 行形如 `判别器 False / course_id True / credit False`，仍然安全跳过。
 
   `row_kind` 只支持 `numeric` 判别（真实课程行必有数字序号，分区标签行没有）。selector 只能读取**标识性列**（`course_id` / `credit` / `recommended_term_text` / `sequence`）；若某个 selector 映射到 `requirement` 这类可选列，会因为可能整表无行命中而被直接拒绝。真实 Case A 的 selector 为 **`sequence` numeric + `course_id` nonempty + `credit` numeric**。
 

@@ -725,7 +725,17 @@ def _import(root: ET.Element, profiles: tuple[_TableProfile, ...], source_id: st
             selected.add(source_position)
             source_row, inherited_codes = rows[index - 1]
             cells, codes = _layout(source_row)
-            values = {key: _cell_text(cells[column]) if column in cells else None for key, column in profile.columns}
+            values = {}
+            for key, column in profile.columns:
+                if column not in cells:
+                    values[key] = None
+                    continue
+                text = _cell_text(cells[column])
+                # Positional row selection must not distinguish "cell physically
+                # absent" from "cell present but blank": both mean no value was
+                # read, so a damaged discriminator cannot hide behind an empty
+                # cell. Header mode keeps its original raw text unchanged.
+                values[key] = None if positional and not text.strip() else text
             visible_text = any(
                 (node.text or "").strip() for node in source_row.iter()
                 if node.tag in {_tag("t"), _tag("delText")}
@@ -742,31 +752,54 @@ def _import(root: ET.Element, profiles: tuple[_TableProfile, ...], source_id: st
                 # guards. The declared ``row_kind`` discriminator decides the row
                 # identity FIRST, then everything else follows:
                 #
-                # - no discriminator -> a section/module/summary row: skip;
-                # - discriminator present, any selector column physically absent
-                #   -> the row is structurally damaged: fail closed;
-                # - discriminator present and every selector holds -> course row:
-                #   run the full structural guards;
-                # - discriminator present but a selector fails -> partial match on
-                #   a row that claims to be a course row: fail closed.
-                kind_value = values.get(_field_for_column(profile, profile.row_kind[0]))
-                if not _RowCondition(profile.row_kind[0], profile.row_kind[1]).matches(kind_value):
+                # - the discriminator and every selector hold -> course row: run
+                #   the full structural guards;
+                # - the discriminator holds but a selector cell is physically
+                #   absent, or a selector fails -> the row claims to be a course
+                #   row and is damaged: fail closed;
+                # - the discriminator misses, but every OTHER identifying
+                #   selector still holds (course_id present, credit numeric) ->
+                #   the discriminator itself is damaged on a row that is
+                #   otherwise a course row: fail closed;
+                # - the discriminator misses and the remaining selectors do not
+                #   all hold -> a real section/module/summary row: skip.
+                kind_key = _field_for_column(profile, profile.row_kind[0])
+                kind_value = values.get(kind_key)
+                if kind_value is not None and _RowCondition(
+                    profile.row_kind[0], profile.row_kind[1]
+                ).matches(kind_value):
+                    selector_values = [
+                        values.get(_field_for_column(profile, condition.column))
+                        for condition in profile.row_filter
+                    ]
+                    if any(value is None for value in selector_values):
+                        _fail(
+                            f"table {profile.table_index} row {index}: row is narrower than the mapped columns"
+                        )
+                    if not all(
+                        condition.matches(value)
+                        for condition, value in zip(profile.row_filter, selector_values)
+                    ):
+                        _fail(
+                            f"table {profile.table_index} row {index}: row is incomplete for the declared selectors"
+                        )
+                else:
+                    others = [
+                        (condition, values.get(_field_for_column(profile, condition.column)))
+                        for condition in profile.row_filter
+                        if condition.column != profile.row_kind[0]
+                    ]
+                    # Only a *physically present* set of remaining selectors that
+                    # all hold proves the discriminator is damaged rather than
+                    # the row being a section label.
+                    if others and all(
+                        value is not None and condition.matches(value)
+                        for condition, value in others
+                    ):
+                        _fail(
+                            f"table {profile.table_index} row {index}: row discriminator is damaged"
+                        )
                     continue
-                selector_values = [
-                    values.get(_field_for_column(profile, condition.column))
-                    for condition in profile.row_filter
-                ]
-                if any(value is None for value in selector_values):
-                    _fail(
-                        f"table {profile.table_index} row {index}: row is narrower than the mapped columns"
-                    )
-                if not all(
-                    condition.matches(value)
-                    for condition, value in zip(profile.row_filter, selector_values)
-                ):
-                    _fail(
-                        f"table {profile.table_index} row {index}: row is incomplete for the declared selectors"
-                    )
             if positional:
                 # "Read by position" is not "read without checks": every mapped
                 # column must exist in this row's physical layout, and no

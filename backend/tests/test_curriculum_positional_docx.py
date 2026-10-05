@@ -485,6 +485,71 @@ def test_row_kind_present_but_a_selector_fails_is_rejected(tmp_path: Path) -> No
         load_curriculum_docx(path, source_id="mock://badselector", tables=[_positional_profile()])
 
 
+def _write_positions(path: Path, rows: list[dict[int, str]]) -> Path:
+    """Write a 5-column table where each row maps physical position -> text."""
+    document = Document()
+    table = document.add_table(rows=0, cols=5)
+    for mapping in rows:
+        cells = table.add_row().cells
+        for position, value in mapping.items():
+            cells[position - 1].text = value
+    document.save(str(path))
+    return path
+
+
+def test_sequence_cell_missing_while_course_id_and_credit_are_intact_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """The discriminator reads no value while course_id and credit are intact."""
+    path = _write_positions(tmp_path / "no_sequence.docx", [
+        {},
+        {},
+        {1: "1", 2: "DEMO101", 3: "示例课程一", 4: "3", 5: "2025-1"},
+        {2: "DEMO102", 3: "示例课程二", 4: "2.5", 5: "2026-1"},
+    ])
+    with pytest.raises(CurriculumNormalizationError, match="discriminator is damaged"):
+        load_curriculum_docx(path, source_id="mock://nosequence", tables=[_positional_profile()])
+
+
+def test_non_numeric_sequence_with_intact_course_id_and_credit_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """A damaged discriminator on an otherwise course-looking row must not be skipped."""
+    path = _write_positions(tmp_path / "bad_sequence.docx", [
+        {},
+        {},
+        {1: "1", 2: "DEMO101", 3: "示例课程一", 4: "3", 5: "2025-1"},
+        {1: "序号损坏", 2: "DEMO102", 3: "示例课程二", 4: "2.5", 5: "2026-1"},
+    ])
+    with pytest.raises(CurriculumNormalizationError, match="discriminator is damaged"):
+        load_curriculum_docx(path, source_id="mock://badsequence", tables=[_positional_profile()])
+
+
+def test_non_numeric_sequence_with_missing_course_id_is_not_a_damaged_row(tmp_path: Path) -> None:
+    """Without an intact remaining selector set, the row is just a section label."""
+    path = _write(tmp_path / "label_only.docx", [
+        [""], [""],
+        ["1", "DEMO101", "示例课程一", "3", "2025-1"],
+        ["专业提升课", "专业提升课", "专业提升课", "专业提升课", "专业提升课"],
+    ])
+    draft = load_curriculum_docx(path, source_id="mock://labelonly", tables=[_positional_profile()])
+    assert [row.course_id for row in draft.rows] == ["DEMO101"]
+
+
+def test_section_row_pattern_false_true_false_still_skips(tmp_path: Path) -> None:
+    """The real section shape (kind False / course_id True / credit False) skips."""
+    path = _write(tmp_path / "real_section.docx", [
+        [""], [""],
+        ["本研贯通课", "本研贯通课", "本研贯通课", "本研贯通课", "本研贯通课"],
+        ["1", "DEMO101", "示例课程一", "3", "2025-1"],
+        ["人工智能与内容安全", "人工智能与内容安全", "人工智能与内容安全", "人工智能与内容安全",
+         "人工智能与内容安全"],
+    ])
+    draft = load_curriculum_docx(path, source_id="mock://realsection", tables=[_positional_profile()])
+    assert [row.course_id for row in draft.rows] == ["DEMO101"]
+    assert draft.issues == ()
+
+
 def test_complete_course_rows_are_read_normally(tmp_path: Path) -> None:
     """Test 4: every selector holds on a full row -> normal read."""
     path = _write(tmp_path / "complete.docx", [
