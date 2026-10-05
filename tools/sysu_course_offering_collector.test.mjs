@@ -1848,6 +1848,16 @@ test("Layout B 诊断：f3 命中统计严格排除 courseNum / classNumber / �
     classNumber: "SYN-LB-ID3",
     internalID: "大写ID值",
   });
+  const bareIdRow = Object.assign(rawRow(`1-8周/${LOCATION}/裸ID值/${ACTIVITY}`), {
+    classNumber: "SYN-LB-ID4",
+    id: "裸ID值",
+  });
+  // ⚠️ 保守**过度排除**：`valid` 以 `id` 结尾 → 按机械形状规则也被排除
+  //    （宁可少报，也不让任何 ID 形状字段进入证据）
+  const overExcludedRow = Object.assign(rawRow(`1-8周/${LOCATION}/保守排除值/${ACTIVITY}`), {
+    classNumber: "SYN-LB-ID5",
+    valid: "保守排除值",
+  });
 
   const rows = [
     // f3 == courseNum → 排除
@@ -1863,12 +1873,14 @@ test("Layout B 诊断：f3 命中统计严格排除 courseNum / classNumber / �
     idRow,
     internalIdRow,
     upperIdRow,
+    bareIdRow,
+    overExcludedRow,
     minimalProviderRow(),
   ];
 
   const { result } = await runLayoutBDiagnostic(rows);
 
-  assert.equal(result.candidate_count, 5);
+  assert.equal(result.candidate_count, 7);
   assert.deepEqual({ ...result.f3_matching_raw_fields }, {}, "⛔ 被排除的字段名不得出现");
 });
 
@@ -1917,6 +1929,106 @@ test("Layout B 诊断：f3 命中统计不泄露取值，且不污染对象原�
   assert.equal({}.原型键值, undefined);
   assert.equal(JSON.parse(JSON.stringify(result.f3_matching_raw_fields))["__proto__"], 1);
   assert.ok(!JSON.stringify(result).includes("原型键值"), "⛔ 取值不得出现在输出中");
+});
+
+test("Layout B 诊断：f3 命中统计 —— 单个字段 10/10", async () => {
+  const rows = [
+    ...Array.from({ length: 10 }, (_, index) =>
+      layoutBRow(`1-8周/${LOCATION}/示例课程/${ACTIVITY}`, {
+        classNumber: `SYN-LB-TEN-${index}`,
+        hasTeachingName: false,
+      }),
+    ),
+    minimalProviderRow(),
+  ];
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(result.candidate_count, 10);
+  assert.deepEqual({ ...result.f3_matching_raw_fields }, { courseName: 10 });
+});
+
+test("Layout B 诊断：f3 命中统计只看 f3（⛔ f4 不参与，候选自身不污染证据）", async () => {
+  const rows = [
+    // 该行 f4 == examMode 的取值，但 f3（= TEACHER）不命中任何字段 → 不得产生条目
+    Object.assign(rawRow(`1-8周/${LOCATION}/${TEACHER}/示例环节丁`), {
+      classNumber: "SYN-LB-F4ONLY",
+      examMode: "示例环节丁",
+    }),
+    minimalProviderRow(),
+  ];
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(result.candidate_count, 1);
+  assert.deepEqual(
+    { ...result.f3_matching_raw_fields },
+    {},
+    "⛔ 只统计 f3；f4 / 候选自身的其它字段不得产生命中",
+  );
+});
+
+test("Layout B 诊断：f3 命中统计跨页累计（页序不影响）", async () => {
+  const filler = Array.from({ length: 199 }, (_, index) =>
+    Object.assign(rawRow(`1-8周/星期五/第5-6节/${ACTIVITY}`), {
+      classNumber: `SYN-FILL-${String(index + 1).padStart(4, "0")}`,
+    }),
+  );
+
+  const rows = [
+    // 第 1 页
+    layoutBRow(`1-8周/${LOCATION}/示例课程/${ACTIVITY}`, {
+      classNumber: "SYN-LB-HIST-P1",
+      hasTeachingName: false,
+    }),
+    ...filler,
+    // 第 2 页
+    layoutBRow(`2-9周/${LOCATION}/示例课程/${ACTIVITY}`, {
+      classNumber: "SYN-LB-HIST-P2",
+      hasTeachingName: false,
+    }),
+    minimalProviderRow(),
+  ];
+
+  const { result, calls } = await runLayoutBDiagnostic(rows, { maxPages: 2 });
+
+  assert.deepEqual(
+    calls.map((call) => call.pageNo),
+    [1, 2],
+    "⛔ 不得跳页",
+  );
+  assert.equal(result.candidate_count, 2);
+  assert.deepEqual({ ...result.f3_matching_raw_fields }, { courseName: 2 });
+});
+
+test("Layout B 诊断：f3 命中统计的返回值与序列化中不出现任何输入取值", async () => {
+  const values = {
+    courseName: "示例唯一课程名",
+    yearTerm: "2027-9",
+    score: "4.5",
+    examMode: "示例唯一考核方式",
+    openingUnitName: "示例唯一开课单位",
+  };
+
+  const row = Object.assign(
+    rawRow(`1-8周/${LOCATION}/示例唯一课程名/${ACTIVITY}`),
+    Object.assign({ classNumber: "SYN-LB-LEAK" }, values),
+  );
+
+  const { result } = await runLayoutBDiagnostic([row, minimalProviderRow()]);
+
+  assert.deepEqual({ ...result.f3_matching_raw_fields }, { courseName: 1 });
+
+  const serialized = JSON.stringify(result);
+
+  // ⛔ 任何**取值**都不得出现（字段名是映射的键，按本轮裁定允许输出）
+  for (const value of Object.values(values)) {
+    assert.ok(!serialized.includes(value), `⛔ 取值不得出现在输出中：${value}`);
+  }
+  for (const forbidden of [TEACHER, ACTIVITY, LOCATION, CAMPUS, "SYN-LB", "示例环节"]) {
+    assert.ok(!serialized.includes(forbidden), `⛔ 输出不得含：${forbidden}`);
+  }
+  assert.ok(serialized.includes("courseName"), "字段名本身按裁定允许出现在映射键里");
 });
 
 test("Layout B 诊断：没有 teachingName 时可比计数不推进（不猜）", async () => {

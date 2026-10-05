@@ -2424,3 +2424,36 @@
 - **真实请求数：0**。
 - 下一步：负责人再跑一次同一诊断（同一命令），把 `fieldName -> count` 发回；
   ⛔ 在此之前不裁定 `f3` 角色、不改 parser、不做 redaction、不重抓。
+
+### 2026-10-05 - 无人值守收口：`f3` 命中统计的**验收矩阵**补齐（⛔ 无实现变更）
+
+- 背景：裁定要求的 `f3_matching_raw_fields` **已在上一轮实现并提交**（`77d9977`）；
+  本轮只补齐"自主验收"清单里尚未**逐条**覆盖的合成用例，并重跑全部验收；
+  ⛔ **未改动任何实现语义**（诊断代码零改动）。
+- **新增 4 项合成测试**（`sysu_course_offering_collector.test.mjs`：118 → **122**）：
+  1. **单个字段 10/10**（10 个候选全部 `f3 == courseName` → `{ courseName: 10 }`）；
+  2. **只统计 f3**（该行 `f4` 等于 `examMode` 的取值 → ⛔ 不产生任何条目；
+     候选自身字段不污染证据）；
+  3. **跨页累计**（候选分布在第 1 / 第 2 页 → `{ courseName: 2 }`，且页序 `[1, 2]` 不跳页）；
+  4. **序列化不泄露**（专门构造 `courseName` / `yearTerm` / `score` / `examMode` /
+     `openingUnitName` 五个唯一取值 → 映射里只出现**字段名**，⛔ 五个取值都不出现在
+     `JSON.stringify(result)` 中）。
+- **排除用例扩充**：新增裸 `id` 字段与**保守过度排除**用例 `valid`（以 `id` 结尾 →
+  按机械形状规则一并排除，已在测试注释中写明"宁可少报"），
+  排除用例总数 5 → **7**。
+- **新增 2 个变异**（`mutate_layout_b_diagnostic.py`：34 → **36 个变异，36/36 全部变红**）：
+  `N22` 命中统计改成比较 **f4**（⛔ f4 不得参与）；`P15` 去掉**内部 ID 形状规则**。
+- **验收矩阵（逐条）**：单字段 10/10 ✅ / 多字段同时命中 ✅ / 部分命中 ✅ / 无字段命中 ✅ /
+  excluded fields 不参与 ✅ / non-string fields 不参与 ✅ / candidate 自身不污染证据 ✅ /
+  跨页顺序不影响 ✅ / 返回值与序列化不含任何输入 token ✅。
+  ⚠️ **本轮没有发现实现自身的 bug**（新增用例全部一次通过），因此**没有**任何实现改动。
+- **测试结果**：`node --check` exit 0；collector node **122 passed**；
+  守卫 **102 passed**；targeted（parser+normalization+importer+pagination+guard，
+  `-W error::SyntaxWarning`）**592 passed**；full backend
+  **2 failed / 2411 passed / 2 skipped**（两个为**既有** Windows Curriculum 用例）；
+  `compileall app` exit 0。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未改 Layout B parser / 4 字段 redaction /
+  Capture Bundle format / 公共 Schema / store / runtime wiring / Planner / Curriculum /
+  frontend；⛔ 真实材料未入 Git；**真实请求数 0**。
+- 下一步：等负责人明天跑一次真实诊断并回传 `fieldName -> count`；
+  ⛔ 在此之前不裁定 `f3` 角色、不改 parser、不做 redaction、不重抓。
