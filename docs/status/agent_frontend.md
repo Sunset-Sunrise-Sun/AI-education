@@ -786,7 +786,7 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
 **验证结果**：
 
 ```text
-cd frontend && npm test              →  44 passed / 44（3 个测试文件）
+cd frontend && npm test              →  55 passed / 55（4 个测试文件）
 cd frontend && npm run build         →  成功（含 vue-tsc --noEmit 类型检查）
 cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过（Mock 通道未回归）
 ```
@@ -794,6 +794,53 @@ cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过�
 ⚠️ **新增 devDependencies**：`vitest` / `@vue/test-utils` / `jsdom`（`package-lock.json` 随之变更）。
 此前前端只有 `verify_all_scenarios.mjs`（SSR 渲染断言），**无法**覆盖表单交互
 （输入 / 勾选 / 增删行），因此为满足本轮测试要求引入标准 Vue 测试栈；**待人工确认**。
+
+## 缺陷修复：invalid 表单必须阻止提交（同分支 `feature/frontend-user-input-gate`）
+
+**Review 发现的真实缺陷（已复现、已修复、已加测试锁定）**：
+
+> 当 `max_credit` 被输入为**负数或非数字**时，表单**仍被判为合法**，Real Planning 按钮**可点**，
+> 请求会被发出。
+
+**根因（两层）**：
+
+1. `PreferenceForm` 把非法输入**归一化成 `null`**（"不猜测"这一半是对的），
+   但归一化后它与"**未触碰 / 主动留空**"**无法区分**，而 `isFormValid` 只看归一化后的
+   `form.preference.maxCredit` → 非法输入被当成"未设定" → 表单 valid；
+2. 提交入口只有按钮 `disabled` 一道防线，`submitRealPlan()` 内部**没有**二次校验。
+
+**修复（最小改动，仅前端）**：
+
+- `state/userInput.ts`：新增 `invalidFields: InvalidatableField[]`（**不是**公共 `Preference` 字段，
+  不进入请求体）与 `normalizeMaxCreditInput(raw) → { value, invalid }`；
+  `isFormValid()` **首条**即判断 `invalidFields.length > 0 → invalid`；
+- `components/PreferenceForm.vue`：用 `normalizeMaxCreditInput` 归一化；
+  非法时把 `maxCredit` 记入 `invalidFields`（取值仍不猜测，按 `null` 保留），
+  修正后自动清除该标记；`max_credit` 输入框由 `type="number"` 改为
+  `type="text" inputmode="decimal"` —— 浏览器会对 number 输入静默丢弃非数字，
+  校验必须由组件自己负责；
+- `App.vue` `submitRealPlan()`：新增**提交前守卫** `if (!isFormValid(...)) return`，
+  不满足时**一个请求也不发**（按钮 `disabled` 只作界面提示，不作为唯一防线）。
+
+**修复过程中同时发现并修掉一个自身引入的回归**：`onMaxCreditInput` 原先**分两次 emit**
+（先 `patchPreference` 再 `setFieldInvalid`），第二次展开的是**过期的 `props.form`**，
+会把刚写入的取值覆盖回 `null`（表现为输入 `24` 后值变 `null`）。
+现已改为**一次性发出同一个新状态**。
+
+**成功标准（逐条测试锁定，见 `tests/form-validation-gate.spec.ts`）**：
+
+| 场景 | 期望 | 结果 |
+|---|---|---|
+| untouched / 主动留空 | 按 `null` / default 序列化，**允许**提交 | ✅ |
+| `max_credit = -5` | invalid → 禁止提交 → **fetch 0 次** | ✅ |
+| `max_credit = abc` | invalid → 禁止提交 → **fetch 0 次** | ✅ |
+| `semester = 2026-9` | invalid → 禁止提交 → **fetch 0 次** | ✅ |
+| `avoid_times` end < start | invalid → 禁止提交 → **fetch 0 次** | ✅ |
+| **程序化触发提交（绕过 disabled 按钮）** | 守卫拦截 → **fetch 0 次** | ✅ |
+| 修正非法输入后 | 恢复可提交 | ✅ |
+
+**验证**：`npm test` → **55 passed / 55**（4 文件）；`npm run build` → 成功；
+`npm run test:scenarios` → 既有 14 项全部通过。
 
 ## 当前接口
 - 读取：`MakeupTask[]`、`CourseOffering[]`（**含 `meetings[]`**）、`Preference`、`PlanResult`（当前来自 Mock）

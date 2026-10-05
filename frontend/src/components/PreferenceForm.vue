@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { formatWeekday } from '../utils/labels'
-import type { AvoidTimeRow, UserInputForm } from '../state/userInput'
+import type { AvoidTimeRow, InvalidatableField, UserInputForm } from '../state/userInput'
 import {
   addPreferredCourse,
   addAvoidTime,
-  parseMaxCredit,
+  normalizeMaxCreditInput,
   removeAvoidTime,
   removePreferredCourse,
   updateAvoidTime,
@@ -43,18 +43,31 @@ function patchPreference(patch: Partial<UserInputForm['preference']>): void {
   })
 }
 
+/**
+ * 学分上限输入的处理。
+ *
+ * ⚠️ 不能只把非法输入归一化成 `null`：那样它与"未触碰 / 主动留空"无法区分，
+ * 表单会被误判为合法并允许提交。因此归一化的同时必须留下显式的 invalid 标记。
+ */
 function onMaxCreditInput(event: Event): void {
-  const parsed = parseMaxCredit((event.target as HTMLInputElement).value)
-  // 非法输入不猜测：保持"未设定"，并在界面上给出提示。
-  patchPreference({ maxCredit: parsed === 'invalid' ? null : parsed })
-  maxCreditInvalid.value = parsed === 'invalid'
+  const { value, invalid } = normalizeMaxCreditInput((event.target as HTMLInputElement).value)
+  const invalidFields: InvalidatableField[] = invalid
+    ? props.form.invalidFields.includes('maxCredit')
+      ? props.form.invalidFields
+      : [...props.form.invalidFields, 'maxCredit']
+    : props.form.invalidFields.filter((item) => item !== 'maxCredit')
+
+  // ⚠️ 必须**一次性**用同一个新状态 emit：
+  // 分两次（先 patchPreference 再 setFieldInvalid）第二次会展开**过期的** props.form，
+  // 把刚写入的取值覆盖掉。
+  emit('update:form', {
+    ...props.form,
+    preference: { ...props.form.preference, maxCredit: value },
+    invalidFields,
+  })
 }
 
-function onMaxCreditBlur(): void {
-  if (maxCreditInvalid.value) {
-    maxCreditInvalid.value = false
-  }
-}
+const maxCreditInvalid = computed(() => props.form.invalidFields.includes('maxCredit'))
 
 function onAvoidCrossCampusChange(event: Event): void {
   patchPreference({ avoidCrossCampus: (event.target as HTMLInputElement).checked })
@@ -98,7 +111,6 @@ function onAvoidTimeField(key: number, field: keyof Omit<AvoidTimeRow, 'key'>, e
 }
 
 const preferredDraft = ref('')
-const maxCreditInvalid = ref(false)
 </script>
 
 <template>
@@ -112,16 +124,14 @@ const maxCreditInvalid = ref(false)
         <input
           class="input-text"
           data-testid="max-credit-input"
-          type="number"
-          min="0"
-          step="0.5"
+          type="text"
+          inputmode="decimal"
           :value="form.preference.maxCredit ?? ''"
           placeholder="留空 = 未设定"
           @input="onMaxCreditInput"
-          @blur="onMaxCreditBlur"
         />
         <span v-if="maxCreditInvalid" class="uig-field__error" data-testid="max-credit-error">
-          请输入不小于 0 的数字；前端不会猜测或补全学分上限。
+          请输入不小于 0 的数字；前端不会猜测或补全学分上限，表单将保持不可提交。
         </span>
         <span v-else class="uig-field__hint">留空表示未设定，序列化为 null。</span>
       </label>

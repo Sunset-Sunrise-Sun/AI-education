@@ -1698,7 +1698,8 @@
     `frontend/src/styles/base.css`、`frontend/package.json`、`frontend/package-lock.json`
   - 修改 `docs/status/agent_frontend.md`、本文件（仅追加）
 - 测试（新增测试框架：Vitest 3 + @vue/test-utils + jsdom，**devDependencies**）：
-  - `cd frontend && npm test` → **44 passed / 44**（3 个文件）
+  - `cd frontend && npm test` → **55 passed / 55**（4 个文件；
+    其中 `tests/form-validation-gate.spec.ts` 11 项锁定"invalid 表单禁止提交 → fetch 0 次"）
   - `cd frontend && npm run build`（`vue-tsc --noEmit && vite build`）→ **成功**
   - `cd frontend && npm run test:scenarios`（既有 SSR 场景回归）→ **14 项全部通过**
   - Real client 测试全部使用 **mocked fetch**，不依赖真实 backend；
@@ -1711,4 +1712,43 @@
   若项目不接受新增测试依赖，可用既有 SSR 场景脚本复核，但交互测试将无法覆盖。
 - 需要人工确认：新增前端测试依赖（Vitest / @vue/test-utils / jsdom）是否批准入库。
 - 下一步：等待 Architecture Review；待 `feature/real-plan-api` 合并后再接线并打开 `VITE_PLAN_API_ENABLED`。
+
+### 2026-10-06 - 缺陷修复：invalid 表单必须阻止提交（同分支）
+
+- 触发：Review 指出"当 `max_credit` 为负数 / 非数字、`semester` 非法、`avoid_times` 的
+  `end < start` 时，用户是否仍能触发 Real Planning 请求"。
+- **复现结论（修复前）**：
+  - `max_credit = -5` → `preference.maxCredit` 被归一化为 `null` → `isFormValid === true`
+    → 按钮**可点** → **会发请求**（缺陷成立）；
+  - `max_credit = abc` → 同上（缺陷成立）；
+  - `semester = 2026-9` → `isFormValid === false` → 按钮 disabled（正确）；
+  - `avoid_times` end < start → `isFormValid === false` → 按钮 disabled（正确）。
+- **根因（两层）**：
+  1. `PreferenceForm` 把非法 `max_credit` 归一化成 `null`（"不猜测"是对的），
+     但归一化后与"未触碰 / 主动留空"**无法区分**，而 `isFormValid` 只看归一化后的值
+     → 非法输入被当成"未设定" → 表单误判为 valid；
+  2. 提交入口只有按钮 `disabled` 一道防线，`submitRealPlan()` 内**没有**二次校验。
+- **修复（最小改动，仅前端；未改 backend）**：
+  - `src/state/userInput.ts`：新增 `invalidFields: InvalidatableField[]`（**不进入请求体**）
+    与 `normalizeMaxCreditInput(raw) -> { value, invalid }`；
+    `isFormValid()` 首条判断 `invalidFields.length > 0` → invalid；
+  - `src/components/PreferenceForm.vue`：改用 `normalizeMaxCreditInput`；
+    非法时把 `maxCredit` 记入 `invalidFields`（取值仍按 `null` 保留、不猜测），
+    修正后自动清除；`max_credit` 输入框 `type="number"` → `type="text" inputmode="decimal"`
+    （浏览器会对 number 静默丢弃非数字，校验必须由组件自己负责）；
+  - `src/App.vue` `submitRealPlan()`：新增**提交前守卫**，`!isFormValid` 时直接返回，
+    **一个请求也不发**。
+- **修复中同时修掉自身引入的回归**：`onMaxCreditInput` 原先分两次 emit
+  （`patchPreference` + `setFieldInvalid`），第二次展开**过期的 `props.form`**
+  把刚写入的取值覆盖回 `null`（表现为输入 `24` 后值变 `null`）；改为一次性发出同一新状态。
+- 新增测试：`frontend/tests/form-validation-gate.spec.ts`（11 项）——
+  逐条锁定"非法 → 禁止提交 → **fetch 0 次调用**"，含**程序化触发提交绕过 disabled 按钮**
+  仍被守卫拦截；反向锁定"untouched empty field 按 default 序列化且允许提交"。
+- 测试结果：`npm test` → **55 passed / 55**（4 文件）；`npm run build` → 成功；
+  `npm run test:scenarios` → 既有 14 项全部通过。
+- 修改文件：`frontend/src/state/userInput.ts`、`frontend/src/components/PreferenceForm.vue`、
+  `frontend/src/App.vue`、新增 `frontend/tests/form-validation-gate.spec.ts`、
+  `docs/status/agent_frontend.md`、本文件。
+- 是否修改 backend：**否**。公共接口是否变化：**否**。
+- 下一步：等待 Architecture Review（含新增测试依赖是否批准的确认）。
 

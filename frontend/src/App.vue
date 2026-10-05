@@ -9,7 +9,7 @@ import TopStatusBar from './components/TopStatusBar.vue'
 import UserInputPanel from './components/UserInputPanel.vue'
 import { useDemoData } from './composables/useDemoData'
 import { DEMO_ENDPOINT, PLAN_API_ENABLED, initialDataMode } from './config'
-import { buildRealPlanRequest, createDefaultUserInputForm } from './state/userInput'
+import { buildRealPlanRequest, createDefaultUserInputForm, isFormValid } from './state/userInput'
 import type { UserInputForm } from './state/userInput'
 import { fetchRealPlan } from './api/plan'
 import type { PlanResult } from './types/contracts'
@@ -38,6 +38,13 @@ const planSubmitting = ref(false)
 
 async function submitRealPlan(): Promise<void> {
   if (planSubmitting.value) {
+    return
+  }
+
+  // 提交前的最后一道守卫：输入不完整时**一个请求也不发**。
+  // 按钮的 disabled 只是界面提示，不能作为唯一防线（程序化调用 / 事件顺序异常都可能绕过它）。
+  if (!isFormValid(userInput.value)) {
+    planErrorMessage.value = '表单存在未修正的输入问题，已阻止提交；未发出任何请求。'
     return
   }
 

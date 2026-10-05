@@ -57,6 +57,9 @@ export function createAvoidTimeRow(
   }
 }
 
+/** 可能处于"用户输入了非法值"状态的字段。 */
+export type InvalidatableField = 'maxCredit'
+
 /** 用户输入表单的完整状态。 */
 export interface UserInputForm {
   semester: string
@@ -69,6 +72,17 @@ export interface UserInputForm {
     notes: string | null
   }
   currentSchedule: CourseOffering[]
+  /**
+   * 当前处于"用户输入了非法值"状态的字段。
+   *
+   * ⚠️ 这是区分两种情况的**必要条件**：
+   * - **未被触碰 / 主动留空** → 按 `null`（default）序列化，**允许提交**；
+   * - **用户确实输入了非法值** → 保留在 `null` 的同时记入本数组 → 表单 invalid → **禁止提交**。
+   *
+   * 只靠归一化后的 `null` 无法区分二者，因此必须有这个显式标记。
+   * 该字段**不是**公共 `Preference` 的一部分，序列化时不会进入请求体。
+   */
+  invalidFields: InvalidatableField[]
 }
 
 /** 按 Case A 默认值创建表单状态。 */
@@ -88,6 +102,7 @@ export function createDefaultUserInputForm(): UserInputForm {
       notes: null,
     },
     currentSchedule: [],
+    invalidFields: [],
   }
 }
 
@@ -118,6 +133,25 @@ export function parseMaxCredit(raw: string): number | null | 'invalid' {
     return 'invalid'
   }
   return value
+}
+
+/**
+ * 把 `max_credit` 的原始输入归一化为"可序列化值 + 是否非法"。
+ *
+ * 这个区分是本文件最关键的守卫之一：
+ * - **空串（未触碰 / 主动留空）** → `value: null`、`invalid: false` → 允许提交（按 default 序列化）；
+ * - **非法值（负数 / 非数字 / 科学计数等）** → `value: null`、**`invalid: true`** → 表单一律 invalid，
+ *   **禁止提交**；⛔ 既**不猜测**取值，也**不把非法输入静默降级成"未设定"**。
+ */
+export function normalizeMaxCreditInput(raw: string): {
+  value: number | null
+  invalid: boolean
+} {
+  const parsed = parseMaxCredit(raw)
+  if (parsed === 'invalid') {
+    return { value: null, invalid: true }
+  }
+  return { value: parsed, invalid: false }
 }
 
 /** 把 `'HH:MM'` 形式的节次输入解析为正整数；空串或非法输入返回 `null`。 */
@@ -303,8 +337,18 @@ export function buildCurrentSchedule(form: UserInputForm): CourseOffering[] {
  *
  * ⚠️ 这是**输入完整性**校验（学期格式、学分范围、节次范围、时段先后），
  * **不是**学业或排课可行性判断。
+ *
+ * 关键区分：
+ * - **未被触碰 / 主动留空**的字段 → 合法（按 `null` / default 序列化）；
+ * - **用户输入过非法值**的字段 → 记在 `invalidFields` 中 → 一律 invalid，**禁止提交**。
  */
 export function isFormValid(form: UserInputForm): boolean {
+  // 用户确实输入过非法值（例如负数 / 非数字学分）→ 直接 invalid。
+  // 这条不能省：归一化后 max_credit 也是 null，与"未设定"无法区分。
+  if (form.invalidFields.length > 0) {
+    return false
+  }
+
   if (!isValidSemester(form.semester.trim())) {
     return false
   }
