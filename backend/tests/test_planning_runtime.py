@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.course_data import SnapshotCourseDataProvider
@@ -27,6 +29,7 @@ _ENV_NAMES = (
     "APP_CASE_A_CURRICULUM_CASE_PATH",
     "APP_COURSE_SNAPSHOT_PATH",
     "APP_COURSE_SNAPSHOT_SOURCE",
+    "APP_COURSE_SNAPSHOT_SHA256",
 )
 
 
@@ -119,7 +122,9 @@ def _write_snapshot(
                     "code": 200,
                     "data": {
                         "total": total,
-                        "rows": rows or [_row(semester=semester)],
+                        "rows": (
+                            rows if rows is not None else [_row(semester=semester)]
+                        ),
                     },
                 },
             }
@@ -130,13 +135,24 @@ def _write_snapshot(
     return path
 
 
-def _environment(case_path: Path, snapshot_path: Path) -> dict[str, str]:
-    return {
+def _environment(
+    case_path: Path,
+    snapshot_path: Path,
+    *,
+    source: str = "case-owner-confirmed://runtime-test/course-data",
+    include_digest: bool = True,
+) -> dict[str, str]:
+    environment = {
         "APP_REAL_CASE_A_ENABLED": "1",
         "APP_CASE_A_CURRICULUM_CASE_PATH": str(case_path),
         "APP_COURSE_SNAPSHOT_PATH": str(snapshot_path),
-        "APP_COURSE_SNAPSHOT_SOURCE": "case-owner-confirmed://runtime-test/course-data",
+        "APP_COURSE_SNAPSHOT_SOURCE": source,
     }
+    if include_digest:
+        environment["APP_COURSE_SNAPSHOT_SHA256"] = hashlib.sha256(
+            snapshot_path.read_bytes()
+        ).hexdigest()
+    return environment
 
 
 def _configure_process_environment(monkeypatch, values: Mapping[str, str]) -> None:
@@ -182,6 +198,73 @@ def test_incomplete_course_data_cannot_enter_runtime(tmp_path: Path) -> None:
     assert result.reason == "course_data_not_ready"
 
 
+def test_complete_snapshot_without_approved_digest_is_not_ready(tmp_path: Path) -> None:
+    result = build_planning_runtime(
+        _environment(
+            _write_curriculum_case(tmp_path),
+            _write_snapshot(tmp_path),
+            source="real://looks-trusted-but-is-only-a-label",
+            include_digest=False,
+        )
+    )
+
+    assert result.orchestrator is None
+    assert result.reason == "course_data_not_ready"
+
+
+def test_approved_digest_mismatch_is_not_ready(tmp_path: Path) -> None:
+    environment = _environment(
+        _write_curriculum_case(tmp_path),
+        _write_snapshot(tmp_path),
+    )
+    environment["APP_COURSE_SNAPSHOT_SHA256"] = "0" * 64
+
+    result = build_planning_runtime(environment)
+
+    assert result.orchestrator is None
+    assert result.reason == "course_data_not_ready"
+
+
+def test_missing_snapshot_artifact_is_not_ready(tmp_path: Path) -> None:
+    snapshot_path = _write_snapshot(tmp_path)
+    environment = _environment(_write_curriculum_case(tmp_path), snapshot_path)
+    environment["APP_COURSE_SNAPSHOT_PATH"] = str(tmp_path / "does-not-exist.json")
+
+    result = build_planning_runtime(environment)
+
+    assert result.orchestrator is None
+    assert result.reason == "course_data_not_ready"
+
+
+def test_mock_source_label_is_not_ready_even_with_exact_digest(tmp_path: Path) -> None:
+    result = build_planning_runtime(
+        _environment(
+            _write_curriculum_case(tmp_path),
+            _write_snapshot(tmp_path),
+            source="mock://not-a-real-source-label",
+        )
+    )
+
+    assert result.orchestrator is None
+    assert result.reason == "course_data_not_ready"
+
+
+def test_synthetic_bundle_and_real_looking_source_need_exact_approval(
+    tmp_path: Path,
+) -> None:
+    result = build_planning_runtime(
+        _environment(
+            _write_curriculum_case(tmp_path),
+            _write_snapshot(tmp_path),
+            source="real://synthetic-does-not-prove-provenance",
+            include_digest=False,
+        )
+    )
+
+    assert result.orchestrator is None
+    assert result.reason == "course_data_not_ready"
+
+
 def test_malformed_runtime_input_fails_closed(tmp_path: Path) -> None:
     malformed = tmp_path / "case-a.json"
     malformed.write_text("{not-json", encoding="utf-8")
@@ -206,6 +289,18 @@ def test_complete_snapshot_for_another_semester_fails_closed(tmp_path: Path) -> 
     assert result.reason == "course_data_not_ready"
 
 
+def test_empty_complete_snapshot_is_not_ready(tmp_path: Path) -> None:
+    result = build_planning_runtime(
+        _environment(
+            _write_curriculum_case(tmp_path),
+            _write_snapshot(tmp_path, total=0, rows=[]),
+        )
+    )
+
+    assert result.orchestrator is None
+    assert result.reason == "course_data_not_ready"
+
+
 def test_mock_labeled_curriculum_cannot_enter_runtime(tmp_path: Path) -> None:
     result = build_planning_runtime(
         _environment(
@@ -223,6 +318,48 @@ def test_invalid_enable_flag_fails_closed() -> None:
 
     assert result.orchestrator is None
     assert result.reason == "invalid_runtime_configuration"
+
+
+@pytest.mark.parametrize("approved_digest", ["abc", "g" * 64, "0" * 63, "0" * 65])
+def test_invalid_approved_digest_is_invalid_configuration(
+    tmp_path: Path,
+    approved_digest: str,
+) -> None:
+    environment = _environment(
+        _write_curriculum_case(tmp_path),
+        _write_snapshot(tmp_path),
+    )
+    environment["APP_COURSE_SNAPSHOT_SHA256"] = approved_digest
+
+    result = build_planning_runtime(environment)
+
+    assert result.orchestrator is None
+    assert result.reason == "invalid_runtime_configuration"
+
+
+def test_uppercase_exact_digest_is_accepted(tmp_path: Path) -> None:
+    environment = _environment(
+        _write_curriculum_case(tmp_path),
+        _write_snapshot(tmp_path),
+    )
+    environment["APP_COURSE_SNAPSHOT_SHA256"] = environment[
+        "APP_COURSE_SNAPSHOT_SHA256"
+    ].upper()
+
+    result = build_planning_runtime(environment)
+
+    assert result.ready is True
+
+
+def test_artifact_change_after_approval_is_not_ready(tmp_path: Path) -> None:
+    snapshot_path = _write_snapshot(tmp_path)
+    environment = _environment(_write_curriculum_case(tmp_path), snapshot_path)
+    snapshot_path.write_bytes(snapshot_path.read_bytes() + b" ")
+
+    result = build_planning_runtime(environment)
+
+    assert result.orchestrator is None
+    assert result.reason == "course_data_not_ready"
 
 
 def test_all_valid_sources_build_only_real_provider_implementations(

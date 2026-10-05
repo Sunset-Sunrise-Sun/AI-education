@@ -57,7 +57,7 @@
 
 | 项 | 内容 |
 |---|---|
-| **Precondition** | runtime 已装配 **production** factory；三个 Provider 均为真实实现类；Course Data **complete** 2026-1 snapshot（见 checklist）；Curriculum 为**真实受控** Case A 输入 |
+| **Precondition** | runtime 已装配 **production** factory；三个 Provider 均为真实实现类；Course Data artifact 原始 bytes 与人工批准 SHA-256 精确匹配，且为**非空 complete** 2026-1 snapshot（见 checklist）；Curriculum 为**真实受控** Case A 输入 |
 | **Request** | 同上 `POST /api/v1/plan` |
 | **Expected backend** | **200** + 合法 `PlanResult`（符合 `schemas/plan_result.schema.json`）；⛔ 无 mock/fake/stub |
 | **Expected frontend** | 结果区渲染 **real PlanResult**；`规划结果来源：Real`；基础演示数据（培养要求评估 / 教学班 / 偏好）**仍标 Mock** |

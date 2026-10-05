@@ -46,3 +46,13 @@
 - 新增测试使用人工 source-shaped 本地工件，覆盖默认关闭、缺失 Curriculum、缺失/partial Course Data、损坏输入、Mock 拒绝、非法 enable 配置、真实 Provider identity、production dependency 到 API 的 200 路径及 503 路径。测试工件不是 Real Case A 数据。
 - 验证：targeted **358 passed**；`python -m compileall -q app` 通过；全量 backend **2059 passed / 2 skipped / 2 failed**。两项失败与基线相同，均为既有 Curriculum Windows 环境差异（ZIP 反斜杠成员、当前绝对路径日期含 `-1`），本轮未修改 Curriculum。
 - Runtime wiring complete；仓库当前只有两页 partial 采集证据，没有 complete 2026-1 CourseOffering snapshot，因此 **完整 Real Case A E2E 仍被该 snapshot 阻塞，未宣称 REAL E2E PASSED**。
+
+### 2026-10-05 - Approved exact-artifact SHA-256 gate
+
+- 保留原始 wiring 的备份分支 `backup/case-a-runtime-wiring-3458d0a`，并将工作分支从原始 `3458d0a` 无冲突 rebase 到 `main@21f558f26b34602a97212d3be4055d28a62f0295`；Acceptance Pack 口径优先。
+- 修复已确认的 provenance 缺陷：`APP_COURSE_SNAPSHOT_SOURCE` 不再被当作信任证明，只保留为审计标签与 `CourseOffering.source`；新增 `APP_COURSE_SNAPSHOT_SHA256` 作为人工批准的 exact-artifact digest。
+- Runtime 对 `APP_COURSE_SNAPSHOT_PATH` 指向文件的**原始 bytes**计算 SHA-256，并用同一次读取的 bytes 解析 Capture Bundle；digest 缺失、文件不可读、digest mismatch、bundle 非法、学期非 2026-1、partial 或空 snapshot、source 标签非法，均 fail closed，不装配 Course Data Provider。
+- SHA-256 只接受 64 位十六进制，比较前统一为小写（大小写输入均可）；格式非法归 `invalid_runtime_configuration`，工件不可用归 `course_data_not_ready`。外部 API 仍保持 `503 real_pipeline_not_configured`。
+- Gate 防止未被批准的任意工件替换，但 **digest 本身不证明文件最初来自何种采集过程**；真实 complete snapshot 与正式 approved digest 尚未产生，未写入任何生产默认值。
+- 使用动态生成的 synthetic fixture digest 只验证 LEVEL 1 wiring capability；正式项目状态仍为 **LEVEL 0 on main**，不声明 Real E2E passed。
+- 验证：runtime/API/Integration targeted **53 passed**（其中 Real Plan API **16 passed**）；`python -m compileall -q app` 通过；全量 backend **2071 passed / 2 skipped / 2 failed**。两项失败均为既有 Windows Curriculum 基线差异（ZIP 反斜杠成员、当前绝对路径日期含 `-1`），本轮未修改 Curriculum。

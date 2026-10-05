@@ -5,7 +5,7 @@
 >
 > 状态：**验收标准已准备（acceptance criteria prepared）**。
 > ⛔ 本文件**不声明** Real E2E 已完成；
-> 当前 main（`111c41a7faa68b9076adcac6fe26081d07c43fde`）的状态是 **LEVEL 0**。
+> 当前正式 main（`21f558f26b34602a97212d3be4055d28a62f0295`）的状态是 **LEVEL 0**。
 
 ---
 
@@ -119,10 +119,10 @@ LEVEL 0 on main
 
 ---
 
-## 4. OPEN ARCHITECTURE ITEM：snapshot provenance
+## 4. Runtime architecture decision：approved exact-artifact gate
 
-> 本节记录一个**已知且尚未解决**的架构问题。
-> ⛔ 本文件**不提出最终实现**，只把问题固定下来，供架构决策。
+> Runtime 采用 deadline 前的最小决策：人工批准 exact Capture Bundle artifact，
+> 再用其原始 bytes 的 SHA-256 把配置绑定到该工件。
 
 **问题**：当前无法仅凭数据本身证明"这份 Course Data 快照来自受信 capture pipeline"。
 
@@ -135,20 +135,21 @@ LEVEL 0 on main
 - `CourseOffering.data_source` 由 Course Data 代码**无条件**置为 `real`，
   因此**受信 capture 与任意 synthetic bundle 走的是同一条代码路径**。
 
-**安全不变量（本文件据此提出验收要求，非实现方案）**：
+**安全不变量**：
 
 ```text
-✅ 允许： captured provenance → runtime **校验** → expected source（来自配置）
-⛔ 禁止： 配置（env / 常量）→ **赋值** provenance → 数据变 Real
+✅ 允许： 采集流程证据 + 人工审核 → 批准 exact artifact digest → runtime 校验原始 bytes
+⛔ 禁止： source 标签（env / 常量）→ **赋值** provenance → 数据变 Real
 ```
 
-即：**runtime 配置不得替数据"证明自己是真实来源"**；
-环境变量至多作为**期望值**参与校验。
+即：**runtime 配置不得替数据"证明自己是真实来源"**；source 环境变量仅是标签。
+`APP_COURSE_SNAPSHOT_SHA256` 是人工批准后记录的**期望值**，runtime 必须对路径所指文件的
+原始 bytes 重新计算并精确匹配；缺失或 mismatch 均 fail closed。
 ⛔ 不得出现 `arbitrary bundle + env says real → trusted Real snapshot`。
 
-**当前处置**：在架构裁决之前，Real E2E 只能通过
-「**受信 capture pipeline 产出 + 现有 completeness evidence**」的证据链来认定（见 checklist），
-否则 **fail closed**（不得为了 E2E 放行）。
+**边界**：SHA-256 gate 可以防止任意 artifact substitution，并把 runtime 绑定到已人工批准的
+exact artifact；它**不能以密码学方式证明该文件最初如何取得**。Real E2E 仍必须同时具备
+受信采集的流程证据、现有 completeness evidence 与 checklist 全部证据，否则 fail closed。
 
 ---
 

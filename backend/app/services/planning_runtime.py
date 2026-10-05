@@ -8,15 +8,20 @@ unavailable，并可通过 ``inspect_planning_runtime()`` 取得不含私密路�
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from app.course_data import (
     CourseDataNormalizationError,
     SnapshotCourseDataProvider,
     collect_captured_pages_snapshot,
-    load_capture_bundle,
+    validate_capture_bundle,
 )
 from app.curriculum import (
     CurriculumCaseProvider,
@@ -46,7 +51,9 @@ _ENABLED = "APP_REAL_CASE_A_ENABLED"
 _CURRICULUM_CASE_PATH = "APP_CASE_A_CURRICULUM_CASE_PATH"
 _COURSE_SNAPSHOT_PATH = "APP_COURSE_SNAPSHOT_PATH"
 _COURSE_SNAPSHOT_SOURCE = "APP_COURSE_SNAPSHOT_SOURCE"
+_COURSE_SNAPSHOT_SHA256 = "APP_COURSE_SNAPSHOT_SHA256"
 _CASE_A_PLANNING_SEMESTER = "2026-1"
+_SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
 
 
 class PlanningRuntimeNotConfigured(RuntimeError):
@@ -55,6 +62,10 @@ class PlanningRuntimeNotConfigured(RuntimeError):
 
 class _RuntimeSourceUnavailable(RuntimeError):
     """一个显式配置的 runtime source 尚不能安全进入 production 链路。"""
+
+
+class _RuntimeConfigurationInvalid(RuntimeError):
+    """Runtime 配置值存在格式错误。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,18 +103,36 @@ def build_course_data_provider(
     snapshot_path: str,
     *,
     source: str,
+    approved_sha256: str,
 ) -> SnapshotCourseDataProvider:
-    """从明确指定的脱敏 Capture Bundle 构造完整快照 Provider。"""
+    """从经 exact-artifact digest 批准的 Capture Bundle 构造 Provider。"""
 
     if not source.strip() or source.strip().lower().startswith("mock://"):
         raise _RuntimeSourceUnavailable("course data source is not an explicit real source")
 
-    bundle = load_capture_bundle(snapshot_path)
+    normalized_digest = _normalize_sha256(approved_sha256)
+    artifact_bytes = Path(snapshot_path).read_bytes()
+    actual_digest = hashlib.sha256(artifact_bytes).hexdigest()
+    if not hmac.compare_digest(actual_digest, normalized_digest):
+        raise _RuntimeSourceUnavailable("course offering artifact digest mismatch")
+
+    try:
+        bundle = json.loads(artifact_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise CourseDataNormalizationError(
+            "Capture Bundle 不是合法 UTF-8 JSON"
+        ) from None
+    validate_capture_bundle(bundle)
+    if not isinstance(bundle, Mapping):
+        raise CourseDataNormalizationError("Capture Bundle 必须是对象")
+
     snapshot = collect_captured_pages_snapshot(bundle, source=source)
     if snapshot.semester != _CASE_A_PLANNING_SEMESTER:
         raise _RuntimeSourceUnavailable("course offering snapshot is for another semester")
     if not snapshot.is_complete:
         raise _RuntimeSourceUnavailable("course offering snapshot is incomplete")
+    if snapshot.loaded_count == 0:
+        raise _RuntimeSourceUnavailable("course offering snapshot is empty")
     return SnapshotCourseDataProvider(snapshot)
 
 
@@ -118,6 +147,15 @@ def _required(environment: Mapping[str, str], name: str) -> str | None:
     if value is None or not value.strip():
         return None
     return value
+
+
+def _normalize_sha256(value: str) -> str:
+    normalized = value.strip()
+    if _SHA256_PATTERN.fullmatch(normalized) is None:
+        raise _RuntimeConfigurationInvalid(
+            "approved course snapshot SHA-256 must be exactly 64 hexadecimal characters"
+        )
+    return normalized.lower()
 
 
 def build_planning_runtime(
@@ -135,20 +173,26 @@ def build_planning_runtime(
     if case_path is None:
         return PlanningRuntimeInspection(None, "curriculum_not_ready")
 
+    snapshot_path = _required(environment, _COURSE_SNAPSHOT_PATH)
+    snapshot_source = _required(environment, _COURSE_SNAPSHOT_SOURCE)
+    approved_sha256 = _required(environment, _COURSE_SNAPSHOT_SHA256)
+    if snapshot_path is None or snapshot_source is None or approved_sha256 is None:
+        return PlanningRuntimeInspection(None, "course_data_not_ready")
+    try:
+        normalized_digest = _normalize_sha256(approved_sha256)
+    except _RuntimeConfigurationInvalid:
+        return PlanningRuntimeInspection(None, "invalid_runtime_configuration")
+
     try:
         curriculum = build_curriculum_provider(case_path)
     except (CurriculumNormalizationError, OSError, _RuntimeSourceUnavailable):
         return PlanningRuntimeInspection(None, "curriculum_not_ready")
 
-    snapshot_path = _required(environment, _COURSE_SNAPSHOT_PATH)
-    snapshot_source = _required(environment, _COURSE_SNAPSHOT_SOURCE)
-    if snapshot_path is None or snapshot_source is None:
-        return PlanningRuntimeInspection(None, "course_data_not_ready")
-
     try:
         course_data = build_course_data_provider(
             snapshot_path,
             source=snapshot_source,
+            approved_sha256=normalized_digest,
         )
     except (CourseDataNormalizationError, OSError, _RuntimeSourceUnavailable):
         return PlanningRuntimeInspection(None, "course_data_not_ready")

@@ -144,9 +144,12 @@ loaded_count == reported_total
 is_complete == true
 不是 partial 两页样本
 不含 mock:// source
+APP_COURSE_SNAPSHOT_SHA256 与目标文件原始 bytes 精确匹配
 ```
 
 ⛔ 任一不满足 → **不得**装配进 Real pipeline（fail closed）。
+`APP_COURSE_SNAPSHOT_SOURCE` 只是审计标签，不是 provenance proof；SHA-256 gate
+绑定人工批准的 exact artifact，但不能证明该文件最初如何取得。
 
 ---
 

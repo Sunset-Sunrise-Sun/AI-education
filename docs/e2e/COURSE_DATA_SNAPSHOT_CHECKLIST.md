@@ -69,10 +69,10 @@
 
 ---
 
-## 5. ⚠️ OPEN ARCHITECTURE ITEM：snapshot provenance
+## 5. Runtime approved exact-artifact gate
 
-> 本节记录一个**已存在、尚未解决**的架构问题。
-> ⛔ 本文档**不提出最终实现方案**。
+> Capture Bundle 格式保持不变。Runtime 使用人工批准的原始文件 SHA-256，
+> 将实际加载工件绑定到 exact reviewed artifact。
 
 **问题**：这份快照**是否真的来自受信 capture pipeline**，
 **无法仅凭数据本身证明**。
@@ -91,14 +91,15 @@
 
 - 上表 §1–§4 能证明的是「**数据看起来完整、合法、合规**」；
 - 它们**不能**证明「**这份数据来自受信采集**」；
-- 在架构裁决之前，来源可信只能通过**流程证据**认定
-  （即"由谁、在什么权限下、用什么方式采到的"这一人工链条），
-  而**不能**通过配置（env / 常量）"赋"给它。
+- 来源可信仍只能通过**流程证据**认定
+  （即"由谁、在什么权限下、用什么方式采到的"这一人工链条）；
+- `APP_COURSE_SNAPSHOT_SOURCE` 只是标签，不能通过配置"赋"给工件 provenance；
+- `APP_COURSE_SNAPSHOT_SHA256` 必须等于目标文件**原始 bytes**的 SHA-256，
+  用于绑定负责人已经人工批准的 exact artifact；缺失或 mismatch 必须 fail closed；
 - ⛔ **禁止**：`arbitrary bundle + 配置说它是 real → trusted Real snapshot`。
 
-**处置**：该问题登记为 **OPEN ARCHITECTURE ITEM**，
-由 Architecture Review 决定最终方案（是否需要 capture-side provenance 证明、
-以及 runtime 应如何校验）。在此之前：
+**限制**：SHA-256 gate 防止 arbitrary artifact substitution，
+但 digest 本身**不能以密码学方式证明原始采集 provenance**。因此：
 
 ```text
 无法证明来源 → fail closed（course_data_not_ready）
@@ -112,8 +113,8 @@
 | 本清单完成度 | 最高可达等级 |
 |---|---|
 | 未通过 | **LEVEL 0**（不得装配） |
-| §1–§4 通过，但用的是 synthetic / test 产物 | **LEVEL 1**（wiring verified，**不是** Real E2E） |
-| §1–§4 通过 + 真实受控 Curriculum 输入 | **LEVEL 2**（Real data path verified） |
+| §1–§5 runtime gate 通过，但用的是 synthetic / test 产物 | **LEVEL 1**（wiring verified，**不是** Real E2E） |
+| §1–§5 通过 + 真实受控 Curriculum 输入 + 真实采集流程证据 | **LEVEL 2**（Real data path verified） |
 | 上述 + 前端实际联调 + `REAL_CASE_A_ACCEPTANCE.md` §1 全部 10 条 | **LEVEL 3**（Real Case A E2E passed） |
 
 等级定义见 `REAL_CASE_A_ACCEPTANCE.md` §2。
