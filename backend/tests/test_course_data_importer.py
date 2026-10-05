@@ -193,6 +193,43 @@ def test_malformed_schedule_still_fails_whole_import() -> None:
         _import([_row(teachingTimePlaceStr="12-19周未知词/实验实践环节")], total=1)
 
 
+def test_three_field_non_concrete_schedule_produces_empty_meetings() -> None:
+    """3 字段 non-concrete（`1-17周/示例教师/实验实践环节`）→ `meetings == []`。
+
+    走**已有的** narrow non-concrete path，⛔ **未新增第二套 importer 逻辑**。
+    """
+
+    snapshot = _import(
+        [_row(teachingTimePlaceStr="1-17周/示例教师/实验实践环节")], total=1
+    )
+
+    assert snapshot.loaded_count == 1
+    assert snapshot.offerings[0].meetings == []
+
+
+def test_two_and_three_field_non_concrete_coexist_in_one_snapshot() -> None:
+    """两种 non-concrete（2 字段与 3 字段）可同时存在，都产出 `meetings == []`。"""
+
+    snapshot = _import(
+        [
+            _row(classNumber="6200100120260101", teachingTimePlaceStr="12-19周校外/实验实践环节"),
+            _row(classNumber="6200100120260102", teachingTimePlaceStr="1-17周/示例教师/实验实践环节"),
+        ],
+        total=2,
+    )
+
+    assert snapshot.loaded_count == 2
+    assert snapshot.offerings[0].meetings == []
+    assert snapshot.offerings[1].meetings == []
+
+
+def test_three_field_with_bad_weeks_still_fails_whole_import() -> None:
+    """3 字段 weeks 非法 → 整体失败（⛔ 不静默接受）。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([_row(teachingTimePlaceStr="abc周/示例教师/实验实践环节")], total=1)
+
+
 def test_multiple_segments_are_all_kept() -> None:
     multi = (
         f"1-5周/星期五/第3-4节/示例校区-示例教学楼-2108/{TEACHER_A}/{ACTIVITY},"
@@ -390,13 +427,22 @@ def test_present_schedule_field_with_unusable_value_is_rejected(value: object) -
 
 
 def test_present_schedule_field_with_malformed_text_is_rejected() -> None:
-    """⛔ 非空但 malformed → **整体失败**（parser 原样抛错）。"""
+    """⛔ 非空但 malformed → **整体失败**（parser 原样抛错）。
+
+    ⚠️ `1-8周/星期五/第5-6节` 这类 **3 字段**自本轮起是**合法结构**
+    （`weeks / teacher / activity`），因此不再作为 malformed 样例。
+    """
 
     with pytest.raises(CourseDataNormalizationError):
         _import([_row(teachingTimePlaceStr="只有一段没有分隔符的文本")])
 
     with pytest.raises(CourseDataNormalizationError):
-        _import([_row(teachingTimePlaceStr="1-8周/星期五/第5-6节,")])  # 字段数不足
+        # 7 字段 → 字段数不支持
+        _import([_row(teachingTimePlaceStr="1-8周/星期五/第5-6节/示例教师A/示例环节/多/再多")])
+
+    with pytest.raises(CourseDataNormalizationError):
+        # 3 字段但 weeks token 非法
+        _import([_row(teachingTimePlaceStr="abc周/示例教师/实验实践环节")])
 
 
 def test_parser_exception_is_never_converted_into_empty_meetings() -> None:

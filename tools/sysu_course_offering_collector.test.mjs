@@ -269,12 +269,71 @@ test("混合：concrete + non-concrete 段同时存在时都能通过", async ()
 });
 
 // ---------------------------------------------------------------------------
+// 3 字段：non-concrete 带 teacher（`weeks` / `teacher` / `activity`）
+// ---------------------------------------------------------------------------
+
+test("3 字段 weeks/teacher/activity：teacher 替换为 REDACTED，weeks 与 activity 保留", async () => {
+  const text = "1-17周/示例教师/实验实践环节";
+
+  const out = await collectSingle(text);
+
+  assert.equal(out, "1-17周/REDACTED/实验实践环节");
+  assert.ok(!out.includes("示例教师"), "⛔ 真实 teacher 不得出现在产物中");
+  assert.ok(out.startsWith("1-17周/"), "weeks 必须原样保留");
+  assert.ok(out.endsWith("/实验实践环节"), "activity 必须原样保留");
+});
+
+for (const [label, text] of [
+  ["teacher 为空", "1-17周//实验实践环节"],
+  ["teacher 全空白", "1-17周/   /实验实践环节"],
+  ["weeks token 非法", "abc周/示例教师/实验实践环节"],
+  ["weeks 区间非法", "5-1周/示例教师/实验实践环节"],
+  ["缺 activity", "1-17周/示例教师/"],
+  ["缺 weeks", "示例教师/实验实践环节/多余"],
+]) {
+  test(`3 字段非法（${label}）：fail closed`, async () => {
+    const { collector } = loadCollector([rawRow(text)]);
+
+    await assert.rejects(
+      () => collector.collect({ semester: SEMESTER }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        // ⛔ 不回显 teacher 取值
+        assert.ok(!error.message.includes("示例教师"), "⛔ 不得回显 teacher 取值");
+        return true;
+      },
+    );
+  });
+}
+
+test("混合：concrete + 2 字段 + 3 字段 non-concrete 各自正确处理", async () => {
+  const text = [
+    `1-8周/星期五/第5-6节/${TEACHER}/${ACTIVITY}`,
+    "12-19周校外/实验实践环节",
+    "1-17周/示例教师/实验实践环节",
+  ].join(",");
+
+  const out = await collectSingle(text);
+
+  assert.equal(
+    out,
+    [
+      `1-8周/星期五/第5-6节/REDACTED/${ACTIVITY}`,
+      "12-19周校外/实验实践环节",
+      "1-17周/REDACTED/实验实践环节",
+    ].join(","),
+  );
+  assert.ok(!out.includes(TEACHER), "⛔ 真实 teacher 不得出现在产物中");
+  assert.ok(!out.includes("示例教师"), "⛔ 3 字段的 teacher 也必须被脱敏");
+});
+
+// ---------------------------------------------------------------------------
 // 未知字段数：继续 fail closed
 // ---------------------------------------------------------------------------
 
 for (const [label, text] of [
-  ["3 字段", `1-8周/星期五/第5-6节`],
   ["7 字段", `1-8周/星期五/第5-6节/${LOCATION}/${TEACHER}/${ACTIVITY}/多出来`],
+  ["8 字段", `1-8周/星期五/第5-6节/${LOCATION}/${TEACHER}/${ACTIVITY}/多出来/还更多`],
 ]) {
   test(`${label}：继续 fail closed（不产出 bundle）`, async () => {
     const { collector } = loadCollector([rawRow(text)]);

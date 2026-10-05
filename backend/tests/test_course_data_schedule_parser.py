@@ -451,17 +451,152 @@ def test_non_concrete_error_message_does_not_echo_token() -> None:
 @pytest.mark.parametrize(
     "text",
     [
-        "1-8周/星期五/第5-6节",  # 3 字段 → 仍拒绝
-        "1-8周/星期五/第5-6节/示例教师A/示例环节/多出来的/再多一个",  # 7 字段 → 仍拒绝
+        "1-8周/星期五/第5-6节/示例教师A/示例环节/多出来的/再多一个",  # 7 字段 → 拒绝
+        "1-8周/星期五/第5-6节/示例教师A/示例环节/多出来的/再多一个/还更多",  # 8 字段 → 拒绝
     ],
 )
 def test_unexpected_field_count_is_rejected(text: str) -> None:
-    """字段数只接受 2 / 4 / 5 / 6，其它（3、7+）fail closed。"""
+    """字段数只接受 2 / 3 / 4 / 5 / 6，其它（7+）fail closed。
+
+    ⚠️ 3 字段**现在是合法结构**（`weeks / teacher / activity`，2026-1 真实证据），
+    因此**不再**出现在本拒绝列表里。
+    """
 
     with pytest.raises(CourseDataNormalizationError) as excinfo:
         parse_teaching_time_place(text)
 
     assert "字段数" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# 3 字段：non-concrete 带 teacher（`weeks` / `teacher` / `activity`）
+# ---------------------------------------------------------------------------
+
+
+def test_three_field_non_concrete_with_teacher() -> None:
+    """真实证据：`1-17周/龙霞/实验实践环节`（同行 `teachingName` 亦为教师姓名）。
+
+    ⇒ `fields[1]` 是 **teacher**，⛔ 不是 location，⛔ 不是未知 qualifier。
+    """
+
+    (segment,) = parse_teaching_time_place("1-17周/示例教师/实验实践环节")
+
+    assert segment.meeting is None
+    assert segment.schedule_weeks == list(range(1, 18))
+    assert segment.teacher == "示例教师"
+    assert segment.activity == "实验实践环节"
+    assert segment.schedule_qualifier is None
+
+
+def test_three_field_non_concrete_does_not_fake_meeting_or_location() -> None:
+    """⛔ 不生成 `Meeting`；⛔ 不把 teacher 当成 location / campus。"""
+
+    (segment,) = parse_teaching_time_place("1-17周/示例教师/实验实践环节")
+
+    assert segment.meeting is None  # 没有 weekday / sections
+    assert extract_meetings([segment]) == []
+
+
+def test_three_field_weeks_are_expanded_from_plain_token() -> None:
+    """周次必须由 `<weeks token>` 展开并保存在 `schedule_weeks`。"""
+
+    (segment,) = parse_teaching_time_place("2-6周/示例教师/实验实践环节")
+
+    assert segment.schedule_weeks == [2, 3, 4, 5, 6]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "1-17周//实验实践环节",  # teacher 为空
+        "1-17周/   /实验实践环节",  # teacher 全空白
+        "1-17周/示例教师/",  # activity 为空
+        "abc周/示例教师/实验实践环节",  # weeks token 非法
+        "1-17/示例教师/实验实践环节",  # weeks token 缺"周"
+        "第1-17周/示例教师/实验实践环节",  # ⛔ 带"第"字前缀无证据
+        "1-17单周/示例教师/实验实践环节",  # 单周形态未泛化 → 拒绝
+    ],
+)
+def test_three_field_invalid_parts_fail_closed(text: str) -> None:
+    """3 字段的 weeks / teacher / activity 任一非法 → fail closed。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        parse_teaching_time_place(text)
+
+
+def test_three_field_error_message_does_not_echo_teacher() -> None:
+    """3 字段路径的错误信息不得回显 teacher 取值（隐私）。"""
+
+    # weeks token 非法（但 teacher 本身合法）→ 报错只讲 weeks，不回显 teacher
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_teaching_time_place("不是周次/某位教师/实验实践环节")
+
+    assert "某位教师" not in str(excinfo.value)
+
+    # activity 为空 → 只讲 activity，不回显 teacher
+    with pytest.raises(CourseDataNormalizationError) as excinfo2:
+        parse_teaching_time_place("1-17周/某位教师/")
+
+    assert "某位教师" not in str(excinfo2.value)
+
+
+def test_known_gap_weekday_error_echoes_token() -> None:
+    """⚠️ **已登记的既有隐私缺口（本轮未修，属既有行为）**。
+
+    4 字段结构是 `weeks / weekday / sections / activity`，
+    因此当某条**含教师姓名**的文本被误当作 4 字段时，
+    `fields[1]` 会作为 weekday token 被 `parse_weekday()` 回显到错误信息里：
+
+    ```text
+    无法识别的星期 token：'某位教师'；只接受 星期一 / … / 星期日
+    ```
+
+    本测试**只用于固定当前事实**（防止被误以为已修），
+    ⛔ **不代表**该行为可接受。修它需要单独决策（会牵动既有 `parse_weekday` 契约与测试）。
+    """
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_teaching_time_place("1-8周/某位教师/实验实践环节/多余一段")
+
+    # 当前**确实**会回显 —— 记录事实
+    assert "某位教师" in str(excinfo.value)
+
+
+def test_mixed_concrete_two_field_and_three_field_all_segments_kept() -> None:
+    """混合：concrete + 2 字段 non-concrete + 3 字段 non-concrete。
+
+    要求：`ParsedScheduleSegment` **全部保留**（3 条）；
+    `Meeting` **只含 concrete**（1 条）；两种 non-concrete 的 **weeks 均保留**。
+    """
+
+    text = ",".join(
+        [
+            _segment("1-8周", "星期五", "第5-6节"),  # concrete
+            "12-19周校外/实验实践环节",  # 2 字段 non-concrete
+            "1-17周/示例教师/实验实践环节",  # 3 字段 non-concrete
+        ]
+    )
+
+    segments = parse_teaching_time_place(text)
+    meetings = extract_meetings(segments)
+
+    # 段数全部保留
+    assert len(segments) == 3, "⛔ 不得丢弃任何 segment"
+    # 只有 concrete 进入公共契约
+    assert len(meetings) == 1
+    assert meetings[0].weeks == list(range(1, 9))
+
+    # 2 字段 non-concrete：qualifier + weeks 保留
+    assert segments[1].meeting is None
+    assert segments[1].schedule_qualifier == "校外"
+    assert segments[1].schedule_weeks == list(range(12, 20))
+    assert segments[1].teacher is None
+
+    # 3 字段 non-concrete：teacher + weeks 保留，qualifier 为 None
+    assert segments[2].meeting is None
+    assert segments[2].schedule_qualifier is None
+    assert segments[2].teacher == "示例教师"
+    assert segments[2].schedule_weeks == list(range(1, 18))
 
 
 # ---------------------------------------------------------------------------

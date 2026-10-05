@@ -50,6 +50,7 @@ __all__ = [
     "build_course_offering_from_missing_schedule_field",
     "build_course_offering_from_non_concrete_schedule",
     "expand_weeks",
+    "is_plain_week_range",
 ]
 
 
@@ -82,6 +83,26 @@ _ODD_WEEK_TEXTS: dict[str, tuple[int, int]] = {
 _SUPPORTED_WEEK_TEXTS = (
     "普通连续周次 `N-M周`（`N >= 1`、`M >= N`）与单周 `1-17单周`"
 )
+
+
+def is_plain_week_range(text: object) -> bool:
+    """`text` 是否是**普通连续周次** token（`N-M周`，`N >= 1`、`M >= N`）。
+
+    只用于**结构判别**（例如 non-concrete segment 的 `<weeks token>` 是否为该形态），
+    ⛔ 不扩大 `expand_weeks()` 本身接受的语法集合：
+    `1-17单周` 这类**白名单单周**不在此函数返回 `True`，
+    调用方仍应把真正的取值校验交给 `expand_weeks()`。
+    """
+
+    if not isinstance(text, str):
+        return False
+
+    match = _PLAIN_WEEK_RANGE.match(text.strip())
+    if match is None:
+        return False
+
+    start, end = int(match.group(1)), int(match.group(2))
+    return start >= 1 and end >= start
 
 
 def expand_weeks(text: str) -> list[int]:

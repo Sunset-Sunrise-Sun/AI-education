@@ -1275,3 +1275,45 @@
   ⛔ 按指示**未重新执行真实 35 页采集**。
 - 下一步：等待 Architecture Review。
 
+### 2026-10-05 - 新增 3 字段 non-concrete（`weeks / teacher / activity`）
+
+- 触发：**新真实证据** `1-17周/龙霞/实验实践环节`，同行 `row.teachingName` 亦为同一教师姓名。
+  ⇒ 该 3 字段是 **`weeks / teacher / activity`**：
+  ⛔ **不是** location，⛔ **不是**未知 qualifier。
+- **只支持这一个已确认结构**：
+  - `fields[0]` 合法 `N-M周`（`N >= 1`、`M >= N`）→ `expand_weeks()` → `schedule_weeks`；
+  - `fields[1]` 非空 **teacher**（⛔ 不塞进 `Meeting`、⛔ 不猜成 location）；
+  - `fields[2]` 非空 activity；
+  - `meeting = None`、`schedule_qualifier = None`；
+  - ⛔ weeks 非法 / teacher 空 / activity 空 → fail closed；⛔ **不放开为任意 3 字段**。
+- **Python**：新增 `FIELDS_NON_CONCRETE_WITH_TEACHER = 3`、
+  `_try_parse_non_concrete_with_teacher_fields()`；`_ALLOWED_FIELD_COUNTS` 加入 3。
+  `normalization.py` 新增**结构判别**辅助 `is_plain_week_range()`（⛔ 不扩大
+  `expand_weeks()` 本身接受的语法集合），供 parser 与规则说明共用。
+- **Collector**：`redactSegmentTeacher()` 新增 3 字段分支 ——
+  `fields[1]`（teacher）替换为 `REDACTED`，weeks / activity 原样保留；
+  新增 `PLAIN_WEEK_RANGE` 常量与 Python **同规则**；空 teacher → fail closed。
+- **Importer**：⛔ **未新增第二套逻辑** —— 3 字段 non-concrete 与 2 字段一样
+  `meeting = None`，因此**复用已有的** narrow non-concrete path →
+  `meetings = []`（已验证）。
+- **现有 2 字段 `weeks+校外/activity` 规则保持不变**（含既有测试）。
+- **既有测试修正**：原先把"3 字段"当作非法字段数的 3 处断言
+  （parser 字段数用例、importer malformed 用例、node 字段数用例）
+  已按新证据更新为 7+ 字段或其它真正非法输入。
+- **⚠️ 顺带发现的既有隐私缺口（本轮未修）**：
+  4 字段结构是 `weeks / weekday / sections / activity`，
+  当含教师姓名的文本被误当作 4 字段时，`fields[1]` 会作为 weekday token
+  被 `parse_weekday()` **回显**到错误信息里。这是**既有行为**（非本轮引入），
+  已登记为测试 `test_known_gap_weekday_error_echoes_token` 固定事实，
+  ⛔ **未在本轮修改** `parse_weekday`（会牵动既有契约与测试）。
+- 修改文件：`backend/app/course_data/schedule_parser.py`、
+  `backend/app/course_data/normalization.py`、
+  `tools/sysu_course_offering_collector.js`、
+  `backend/tests/test_course_data_schedule_parser.py`、
+  `backend/tests/test_course_data_importer.py`、
+  `backend/tests/test_sysu_collector_guard.py`、
+  `tools/sysu_course_offering_collector.test.mjs`、
+  `docs/status/course_data.md`、本文件。
+- **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
+  ⛔ 按指示**未重新执行真实 35 页采集**。
+- 下一步：等待 Architecture Review。

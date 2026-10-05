@@ -157,6 +157,13 @@
    */
   var NON_CONCRETE_FIRST_FIELD = /^([0-9]+-[0-9]+周)(校外)$/;
 
+  /**
+   * **non-concrete 带 teacher** 的 3 字段段第 1 个字段：普通周次 token `N-M周`。
+   *
+   * 与 Python `normalization.is_plain_week_range()` **同规则**。
+   */
+  var PLAIN_WEEK_RANGE = /^([0-9]+)-([0-9]+)周$/;
+
   // ---------------------------------------------------------------------
   // 基础工具
   // ---------------------------------------------------------------------
@@ -259,6 +266,49 @@
     var fields = segment.split(FIELD_SEPARATOR);
     var fieldCount = fields.length;
 
+    if (fieldCount === 3) {
+      // non-concrete 带 teacher：`<weeks token>` / teacher / activity
+      // （2026-1 真实证据：`1-17周/龙霞/实验实践环节`，同行 teachingName 亦为教师姓名）。
+      var weeksField = fields[0].trim();
+      var weekMatch = PLAIN_WEEK_RANGE.exec(weeksField);
+
+      if (weekMatch === null) {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "是 3 字段（weeks / teacher / activity），但其第 1 个字段不是合法的 " +
+            "`N-M周` 周次 token。本采集器不猜格式，已整体停止（不回显该字段取值）。"
+        );
+      }
+
+      var startWeek = parseInt(weekMatch[1], 10);
+      var endWeek = parseInt(weekMatch[2], 10);
+      if (startWeek < 1 || endWeek < startWeek) {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "3 字段段的周次区间非法（要求 N >= 1 且 M >= N）。本采集器不猜格式，已整体停止。"
+        );
+      }
+
+      var teacher3 = fields[1];
+      if (typeof teacher3 !== "string" || teacher3.trim() === "") {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "中 teacher 字段为空或不是字符串。本采集器不写入脱敏占位符来掩盖该问题，已整体停止。"
+        );
+      }
+
+      if (fields[2].trim() === "") {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "中 activity 字段为空。已整体停止。"
+        );
+      }
+
+      // teacher 在 fields[1]：替换为 REDACTED；weeks / activity 原样保留。
+      fields[1] = REDACTED_TEACHER;
+      return fields.join(FIELD_SEPARATOR);
+    }
+
     if (fieldCount === 2) {
       // non-concrete 段：`<weeks token><已确认 qualifier>` / activity。
       if (NON_CONCRETE_FIRST_FIELD.test(fields[0].trim())) {
@@ -282,7 +332,7 @@
       fail(
         "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
           "出现不支持的字段数（" + fieldCount + "）。" +
-          "只接受 2（non-concrete）/ 4 / 5 / 6，本采集器不猜格式，已整体停止。"
+          "只接受 2 / 3（non-concrete）/ 4 / 5 / 6，本采集器不猜格式，已整体停止。"
       );
     }
 

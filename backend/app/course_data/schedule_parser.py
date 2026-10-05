@@ -12,6 +12,8 @@ field separator   = "/"
 
 2 字段（non-concrete：无 weekday / sections / 具体地点 / teacher）：
         <weeks token><qualifier> / activity       例如 12-19周校外 / 实验实践环节
+3 字段（non-concrete：无 weekday / sections / 具体地点）：
+        <weeks token> / teacher / activity        例如 1-17周 / 龙霞 / 实验实践环节
 4 字段（无地点、无教师）：weeks / weekday / sections / activity
 5 字段 A（有地点、无教师）：weeks / weekday / sections / location / activity
 5 字段 B（无地点、有教师）：weeks / weekday / sections / teacher / activity
@@ -63,7 +65,21 @@ field separator   = "/"
 - **最多一个末尾逗号**：`seg,` → 忽略末尾空 segment；
   ⛔ `seg,,` / `seg,,,`（多个末尾逗号）**失败**；
 - **中间**空 segment **不得静默忽略**：`segment1,,segment2` → `CourseDataNormalizationError`；
-- **字段数只接受 2 / 4 / 5 / 6**，其它（3、7+）一律 fail closed。
+- **字段数只接受 2 / 3 / 4 / 5 / 6**，其它（7+）一律 fail closed。
+
+### 3 字段 non-concrete（带 teacher，2026-1 真实证据）
+
+真实证据：`1-17周/龙霞/实验实践环节`，同行 `row.teachingName` 亦为同一教师姓名。
+⇒ 该 3 字段是 **`weeks / teacher / activity`**：
+⛔ **不是** location，⛔ **不是**未知 qualifier。
+
+- `meeting = None`（没有 weekday / sections）；⛔ 不生成 `Meeting`；
+- `teacher` 保留在内部字段（脱敏由 collector 负责）；
+- `schedule_weeks` 保存展开后的周次；`schedule_qualifier = None`；
+- ⛔ `weeks` 必须是合法 `N-M周`（`N >= 1`、`M >= N`）；
+  ⛔ teacher / activity 必须非空；任一非法 → fail closed；
+- ⛔ **不放开为"任意 3 字段"**：3 字段只有这一个已确认结构。
+
 
 ## 为什么需要内部 `ParsedScheduleSegment`
 
@@ -97,7 +113,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.course_data.errors import CourseDataNormalizationError
-from app.course_data.normalization import expand_weeks
+from app.course_data.normalization import expand_weeks, is_plain_week_range
 from app.models.contracts import Meeting
 
 __all__ = [
@@ -127,9 +143,17 @@ FIELDS_WITH_LOCATION_AND_TEACHER = 6
 #: `<weeks token> + <qualifier>` / `<activity>`，**没有** weekday / sections / 具体地点 / teacher。
 FIELDS_NON_CONCRETE = 2
 
+#: **non-concrete、带 teacher** segment 的字段数（2026-1 真实证据确认）：
+#: `<weeks token>` / `<teacher>` / `<activity>`，**没有** weekday / sections / 具体地点。
+#:
+#: 真实证据：`1-17周/龙霞/实验实践环节`，同行 `row.teachingName` 亦为同一教师姓名。
+#: ⇒ 该 3 字段是 **teacher**，⛔ **不是** location，⛔ 也不是未知 qualifier。
+FIELDS_NON_CONCRETE_WITH_TEACHER = 3
+
 #: 允许的字段数集合（其它一律 fail closed）。
 _ALLOWED_FIELD_COUNTS = (
     FIELDS_NON_CONCRETE,
+    FIELDS_NON_CONCRETE_WITH_TEACHER,
     FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER,
     FIELDS_FIVE,
     FIELDS_WITH_LOCATION_AND_TEACHER,
@@ -436,6 +460,58 @@ def _try_parse_non_concrete_fields(
     )
 
 
+def _try_parse_non_concrete_with_teacher_fields(
+    fields: Sequence[str], segment_index: int
+) -> ParsedScheduleSegment:
+    """把 **3 字段** 解析为 **non-concrete、带 teacher** 的 segment。
+
+    ```text
+    <weeks token> / <non-empty teacher> / <non-empty activity>
+    例如：1-17周 / 龙霞 / 实验实践环节
+    ```
+
+    ⚠️ **真实证据（2026-1）**：`1-17周/龙霞/实验实践环节`，
+    同行 `row.teachingName` 亦为同一教师姓名 ⇒ `fields[1]` 是 **teacher**。
+    ⛔ **不是** location（没有 weekday / sections / 具体地点），
+    ⛔ 也**不是**未知 qualifier。
+
+    ⛔ **不生成 `Meeting`**（没有 weekday / sections）；
+    ⛔ **不把 teacher 塞进 `Meeting`**；
+    ✅ 周次**必须**随 segment 保留在 `schedule_weeks`；
+    ✅ teacher 保留在内部 `teacher` 字段（脱敏由 collector 负责）。
+    """
+
+    weeks_token = fields[0].strip()
+
+    # 先校验 weeks（按字段顺序），非法即 fail closed。
+    if not is_plain_week_range(weeks_token):
+        raise CourseDataNormalizationError(
+            f"teachingTimePlaceStr 的第 {segment_index} 段是 3 字段"
+            f"（weeks / teacher / activity），但其第 1 个字段不是合法的"
+            f"`N-M周` 周次 token。本 parser 不猜格式，已整体停止"
+            f"（不回显该字段取值）"
+        )
+
+    weeks = expand_weeks(weeks_token)
+
+    teacher = _require_non_empty_token(
+        fields[1], field="teacher", segment_index=segment_index
+    )
+    activity = _require_non_empty_token(
+        fields[2], field="activity", segment_index=segment_index
+    )
+
+    # non-concrete：没有 weekday / sections / 具体地点；
+    # ⛔ 不生成 Meeting；qualifier 不适用（该形态没有 qualifier）。
+    return ParsedScheduleSegment(
+        meeting=None,
+        teacher=teacher,
+        activity=activity,
+        schedule_qualifier=None,
+        schedule_weeks=weeks,
+    )
+
+
 def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
     """解析整条 `teachingTimePlaceStr`，按 Raw 顺序返回**全部** segment。
 
@@ -497,6 +573,8 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
                 f"teachingTimePlaceStr 的第 {offset} 段字段数为 {field_count}，只接受 "
                 f"{FIELDS_NON_CONCRETE}（non-concrete："
                 f"`<weeks token><已确认 qualifier>` / activity）/ "
+                f"{FIELDS_NON_CONCRETE_WITH_TEACHER}（non-concrete："
+                f"`<weeks token>` / teacher / activity）/ "
                 f"{FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER}（无地点无教师）/ "
                 f"{FIELDS_FIVE}（有地点无教师 或 无地点有教师）/ "
                 f"{FIELDS_WITH_LOCATION_AND_TEACHER}（有地点有教师）"
@@ -515,6 +593,14 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
                     f"（不回显该字段取值）"
                 )
             parsed.append(non_concrete)
+            continue
+
+        # 3 字段：**只有**已确认的 `weeks / teacher / activity` 结构才接受
+        # （2026-1 真实证据；⛔ 不是 location，⛔ 不生成 Meeting）。
+        if field_count == FIELDS_NON_CONCRETE_WITH_TEACHER:
+            parsed.append(
+                _try_parse_non_concrete_with_teacher_fields(fields, offset)
+            )
             continue
 
         weeks = expand_weeks(fields[0])

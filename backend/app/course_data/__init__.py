@@ -49,12 +49,16 @@ CourseDataProvider.get_course_offerings(semester)
   但**不进入公共 `Meeting`**，**不修改任何 Schema**；
 - ⛔ `max_pages` 截断产生的 `partial` snapshot **不得**接入 Integration / Planner 产品链路；
 - ⚠️ **non-concrete schedule segment**（2026-1 真实证据）：
-  `12-19周校外/实验实践环节` 这类 2 字段段的 `meeting = None`
-  （没有 weekday / sections / 具体地点），qualifier 存入
-  `ParsedScheduleSegment.schedule_qualifier`（⛔ **不伪装成 `campus`**），
-  已展开的周次存入 **`ParsedScheduleSegment.schedule_weeks`**
-  （⛔ 否则 `meeting is None` 时周次会永久丢失）；
-  `extract_meetings()` 不投影它，但 segment 本身**仍保留**。
+  两种形态都没有 weekday / sections / 具体地点，因此 `meeting = None`
+  （⛔ 不生成公共 `Meeting`）：
+  - `12-19周校外/实验实践环节`（2 字段）：qualifier 存入
+    `ParsedScheduleSegment.schedule_qualifier`（⛔ **不伪装成 `campus`**）；
+  - `1-17周/龙霞/实验实践环节`（3 字段 = `weeks / teacher / activity`）：
+    teacher 存入 `ParsedScheduleSegment.teacher`（**脱敏由 collector 负责**），
+    `schedule_qualifier = None`；
+  两者的已展开周次都存入 **`ParsedScheduleSegment.schedule_weeks`**
+  （⛔ 否则 `meeting is None` 时周次会永久丢失）。
+  `extract_meetings()` 不投影它们，但 segment 本身**仍保留**。
   只有这类段的 `CourseOffering` → `meetings == []` → 按 **DG-07** 视为 **schedule UNKNOWN**。
 """
 

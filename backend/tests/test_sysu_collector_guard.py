@@ -388,6 +388,25 @@ def test_collector_non_concrete_two_field_grammar_matches_python_parser(
     assert "NON_CONCRETE_FIRST_FIELD.test(fields[0].trim())" in collector_source
 
 
+def test_collector_non_concrete_three_field_redacts_teacher_field(
+    collector_source: str,
+) -> None:
+    """3 字段 non-concrete（`weeks` / `teacher` / `activity`）必须脱敏 `fields[1]`。
+
+    ⛔ 不得把 teacher 当成 location；⛔ 不得跳过脱敏；
+    weeks 与 activity 必须原样保留。
+    """
+
+    assert "fieldCount === 3" in collector_source
+    # 周次 token 用普通 `N-M周` 形状（与 Python `is_plain_week_range()` 同规则）
+    assert "PLAIN_WEEK_RANGE" in collector_source
+    assert r"/^([0-9]+)-([0-9]+)周$/" in collector_source
+    # teacher 在 fields[1] 被替换
+    assert "fields[1] = REDACTED_TEACHER;" in collector_source
+    # 空 teacher 必须 fail closed（不得写占位符掩盖）
+    assert "中 teacher 字段为空或不是字符串" in collector_source
+
+
 def test_collector_source_is_plain_utf8_without_bom() -> None:
     """源码必须是 UTF-8 且不含 BOM（本地打开 / 复制粘贴都不应出乱码）。"""
 
