@@ -48,6 +48,7 @@ from app.models.contracts import CourseOffering, DataSource, Meeting
 __all__ = [
     "build_course_offering",
     "build_course_offering_from_missing_schedule_field",
+    "build_course_offering_from_non_concrete_schedule",
     "expand_weeks",
 ]
 
@@ -408,6 +409,40 @@ def build_course_offering_from_missing_schedule_field(
         raise CourseDataNormalizationError(
             f"Raw row 存在 `{_SCHEDULE_RAW_FIELD}` 字段，不得走 missing-schedule 路径："
             f"字段存在时必须由 parser 解析，解析失败应整体失败（不回显取值）"
+        )
+
+    return CourseOffering(
+        **_build_common_offering_fields(raw, source=source),  # type: ignore[arg-type]
+        meetings=[],
+    )
+
+
+def build_course_offering_from_non_concrete_schedule(
+    raw: Mapping[str, object],
+    *,
+    source: str,
+) -> CourseOffering:
+    """**窄语义**路径：当 `teachingTimePlaceStr` **存在且已被解析**，
+    但其中**没有任何 concrete segment**（即全部是 non-concrete）时，
+    构造 `meetings = []` 的 `CourseOffering`。
+
+    语义（与 DG-07B 一致，且**不混用**）：
+
+    - `meetings = []` 表示「**有课程安排信息，但不足以确定时间冲突**」——
+      由现有 **DG-07** 语义承接为 **schedule UNKNOWN**；
+    - ⛔ 本函数**不解析**任何文本、**不吞**任何异常；调用方必须已经成功
+      `parse_teaching_time_place()` 并确认 `extract_meetings()` 为空；
+    - ⛔ 与 `build_course_offering_from_missing_schedule_field()` **不是同一条路径**：
+      后者要求 `teachingTimePlaceStr` **属性不存在**，本函数要求"属性存在且已解析"。
+      两者都不接受"字段存在但解析失败"。
+
+    ⚠️ 这是 Course Data **内部函数**：不进 `docs/interfaces/`、不进 Provider / API、
+    不是新的公共 Schema。
+    """
+
+    if not isinstance(raw, Mapping):
+        raise CourseDataNormalizationError(
+            f"raw 必须是字段映射，实际是 {type(raw).__name__}"
         )
 
     return CourseOffering(

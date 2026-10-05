@@ -47,7 +47,13 @@ CourseDataProvider.get_course_offerings(semester)
   parser **内部保留** `teacher`（`ParsedScheduleSegment.teacher`，**可为 `None`** ——
   2026-1 真实证据已确认 teacher 并不总在 `teachingTimePlaceStr` 中出现），
   但**不进入公共 `Meeting`**，**不修改任何 Schema**；
-- ⛔ `max_pages` 截断产生的 `partial` snapshot **不得**接入 Integration / Planner 产品链路。
+- ⛔ `max_pages` 截断产生的 `partial` snapshot **不得**接入 Integration / Planner 产品链路；
+- ⚠️ **non-concrete schedule segment**（2026-1 真实证据）：
+  `12-19周校外/实验实践环节` 这类 2 字段段的 `meeting = None`
+  （没有 weekday / sections / 具体地点），qualifier 存入
+  `ParsedScheduleSegment.schedule_qualifier`，⛔ **不伪装成 `campus`**；
+  `extract_meetings()` 不投影它，但 segment 本身**仍保留**。
+  只有这类段的 `CourseOffering` → `meetings == []` → 按 **DG-07** 视为 **schedule UNKNOWN**。
 """
 
 from __future__ import annotations

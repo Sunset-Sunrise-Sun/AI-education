@@ -210,6 +210,65 @@ test("混合 segment：逐个 segment 正确脱敏", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2 字段：non-concrete（`<weeks token><qualifier>` / activity）
+// ---------------------------------------------------------------------------
+
+test("2 字段 non-concrete：允许通过，且不做 teacher 脱敏", async () => {
+  const text = "12-19周校外/实验实践环节";
+
+  const out = await collectSingle(text);
+
+  assert.equal(out, text, "non-concrete 段必须原样保留");
+  assert.ok(!out.includes("REDACTED"), "⛔ 无 teacher 时不得插入 REDACTED");
+});
+
+for (const [label, text] of [
+  ["未知 qualifier", "12-19周未知词/实验实践环节"],
+  ["尚无证据的 qualifier", "12-19周线上/实验实践环节"],
+  ["缺 weeks token", "校外/实验实践环节"],
+  ["随机 2 字段", "foo/bar"],
+]) {
+  test(`2 字段但非已确认 grammar（${label}）：fail closed`, async () => {
+    const { collector } = loadCollector([rawRow(text)]);
+
+    await assert.rejects(
+      () => collector.collect({ semester: SEMESTER }),
+      (error) => {
+        assert.ok(error instanceof Error);
+        assert.ok(
+          error.message.includes("non-concrete"),
+          `错误信息应说明 non-concrete grammar，实际：${error.message}`,
+        );
+        // ⛔ 不回显该字段取值
+        assert.ok(!error.message.includes("未知词"), "⛔ 不得回显取值");
+        return true;
+      },
+    );
+  });
+}
+
+test("混合：concrete + non-concrete 段同时存在时都能通过", async () => {
+  const text = [
+    `1-8周/星期五/第5-6节/${TEACHER}/${ACTIVITY}`,
+    "12-19周校外/实验实践环节",
+    `3-10周/星期一/第3-4节/${LOCATION}/${ACTIVITY}`,
+  ].join(",");
+
+  const out = await collectSingle(text);
+
+  assert.equal(
+    out,
+    [
+      `1-8周/星期五/第5-6节/REDACTED/${ACTIVITY}`,
+      "12-19周校外/实验实践环节",
+      `3-10周/星期一/第3-4节/${LOCATION}/${ACTIVITY}`,
+    ].join(","),
+    "各自按自己的规则处理：teacher 段脱敏、non-concrete 原样保留",
+  );
+  assert.ok(!out.includes(TEACHER), "⛔ 真实 teacher 不得出现在产物中");
+});
+
+// ---------------------------------------------------------------------------
 // 未知字段数：继续 fail closed
 // ---------------------------------------------------------------------------
 

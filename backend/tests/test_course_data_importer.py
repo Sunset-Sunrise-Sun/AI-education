@@ -147,6 +147,52 @@ def test_data_source_is_real_and_source_is_preserved() -> None:
     assert offering.source == SOURCE
 
 
+# ---------------------------------------------------------------------------
+# non-concrete schedule（2026-1 真实证据新增）
+# ---------------------------------------------------------------------------
+
+
+def test_non_concrete_only_schedule_produces_empty_meetings() -> None:
+    """`12-19周校外/实验实践环节`（见习类课程）→ `meetings == []`，row 不被跳过。
+
+    ⚠️ 语义：**有课程安排信息，但不足以确定时间冲突**（没有 weekday / sections /
+    具体地点），由现有 **DG-07** 承接为 **schedule UNKNOWN**。
+    ⛔ 这与"字段不存在"是**两条不同路径**，但都产出 `meetings == []`。
+    """
+
+    snapshot = _import([_row(teachingTimePlaceStr="12-19周校外/实验实践环节")], total=1)
+
+    assert snapshot.loaded_count == 1
+    assert snapshot.offerings[0].meetings == []
+    assert snapshot.offerings[0].data_source is DataSource.REAL
+
+
+def test_non_concrete_with_concrete_in_same_snapshot_keeps_both_rows() -> None:
+    """混合：concrete row + non-concrete row → 两条都保留（⛔ 不丢 row）。"""
+
+    snapshot = _import(
+        [
+            _row(classNumber="6200100120260101"),
+            _row(
+                classNumber="6200100120260102",
+                teachingTimePlaceStr="12-19周校外/实验实践环节",
+            ),
+        ],
+        total=2,
+    )
+
+    assert snapshot.loaded_count == 2
+    assert len(snapshot.offerings[0].meetings) >= 1
+    assert snapshot.offerings[1].meetings == []
+
+
+def test_malformed_schedule_still_fails_whole_import() -> None:
+    """⛔ non-concrete 支持**不得**放宽"解析失败"：未知 2 字段仍整体失败。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([_row(teachingTimePlaceStr="12-19周未知词/实验实践环节")], total=1)
+
+
 def test_multiple_segments_are_all_kept() -> None:
     multi = (
         f"1-5周/星期五/第3-4节/示例校区-示例教学楼-2108/{TEACHER_A}/{ACTIVITY},"

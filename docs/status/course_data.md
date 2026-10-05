@@ -476,9 +476,44 @@ segment separator = ","      field separator = "/"
 - **⛔ 不自动补 teacher / location**：缺失就是缺失，保持 `None`；
 - **不丢段、不合并、不排序**：输出顺序 == Raw 顺序。
 
+**non-concrete segment（2026-1 真实证据确认，见习类课程）**：
+
+```text
+2 字段：<weeks token><qualifier> / activity     例如 12-19周校外 / 实验实践环节
+```
+
+- ✅ 该 segment **没有** weekday / sections / 具体地点 / teacher；
+- ⛔ **不制造** `Meeting`：`ParsedScheduleSegment.meeting = None`
+  （⛔ 不得把 `weekday=None` / `sections=None` 塞进公共 `Meeting`；⛔ 不猜星期 / 节次）；
+- ⛔ **不把 qualifier 伪装成 `campus`**：`"校外"` 不是具体校区
+  （与 `openingSchoolName → campus` 是两回事）→ 单独存入
+  `ParsedScheduleSegment.schedule_qualifier`；
+- ⚠️ **不能整串**把 `12-19周校外` 交给 `expand_weeks()` —— 它只认识 `<weeks token>`：
+  必须先拆成 `weeks_token = "12-19周"`（→ `expand_weeks`）与 `qualifier = "校外"`；
+- ⛔ qualifier 是**白名单**（目前只有 `校外`）：`12-19周XXX` 一律拒绝；
+  后续按新真实证据逐个加入，⛔ **不预先泛化**；
+- `extract_meetings()` **不投影** non-concrete segment，但
+  `ParsedScheduleSegment` **仍保留**（⛔ 不是静默丢弃）；
+- ⛔ 因此**字段数只接受 2 / 4 / 5 / 6**，3 / 7+ 仍 fail closed。
+
+**importer 的三类状态（严格分开）**：
+
+| 状态 | 结果 |
+|---|---|
+| `teachingTimePlaceStr` **属性不存在** | 窄语义路径 → `meetings = []`（DG-07B） |
+| 属性存在、**解析成功但无 concrete segment**（仅 non-concrete） | 另一条窄语义路径 → `meetings = []`（**schedule UNKNOWN**） |
+| 属性存在但**解析失败**（`null` / 空串 / 畸形 / 字段数不支持） | **整体失败**（⛔ 不吞成 `meetings = []`） |
+
+⚠️ 前两种都产出 `meetings == []`，但**是两条不同路径**，⛔ 不得混用。
+⚠️ 若某 `CourseOffering` 最终 `meetings == []`，按现有 **DG-07** 视为 **schedule UNKNOWN**
+（有课程安排信息，但不足以判断时间冲突）。⛔ **本轮未修改 DG-07 / Planner**。
+
+
 **collector 脱敏同步（`tools/sysu_course_offering_collector.js`）**：
 
 - 新规则与 parser **一致**：
+  `2 字段` → **只有**已确认的 non-concrete grammar 才通过（无 teacher，⛔ 不做脱敏），
+  其余任意 2 字段结构 fail closed；
   `4 字段` → 无 teacher，原样保留；`5 字段` → 按**同一严格三态规则**判别
   （无 `-` → teacher 则 `fields[3] = REDACTED`；`>= 3` 个非空 `-` 分段 → location 则原样保留；
   其余二义 → fail closed）；
@@ -486,7 +521,9 @@ segment separator = ","      field separator = "/"
 - ⛔ 未知字段数（3、7+）继续 `fail()`；
 - ⛔ 空 teacher 仍**不得**被写成 `REDACTED`（不静默修复原始数据问题）；
 - JS 侧 `classifyFiveFieldToken()` 与 Python `_classify_five_field_token()` **同规则**
-  （含同一门槛常量 `MIN_LOCATION_SEGMENTS = 3`）。
+  （含同一门槛常量 `MIN_LOCATION_SEGMENTS = 3`）；
+- JS 侧 `NON_CONCRETE_FIRST_FIELD` 与 Python `_NON_CONCRETE_FIRST_FIELD` **同规则**
+  （整段匹配 + qualifier 白名单，⛔ 不通配）。
 
 **importer（零网络）**：
 

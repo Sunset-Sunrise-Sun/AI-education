@@ -142,6 +142,21 @@
    */
   var MIN_LOCATION_SEGMENTS = 3;
 
+  /**
+   * 目前**唯一**经真实证据确认的 schedule qualifier（校外见习类）。
+   *
+   * ⛔ **白名单而非通配**：`12-19周XXX` 一律拒绝。
+   */
+  var SCHEDULE_QUALIFIER_OFF_CAMPUS = "校外";
+
+  /**
+   * **non-concrete** 2 字段段第 1 个字段的形状：`<weeks token><已确认 qualifier>`。
+   *
+   * 与 Python `schedule_parser._NON_CONCRETE_FIRST_FIELD` **同规则**，
+   * 且必须**整段**匹配（`^...$`），因此不会出现"周次后面接任意字符"。
+   */
+  var NON_CONCRETE_FIRST_FIELD = /^([0-9]+-[0-9]+周)(校外)$/;
+
   // ---------------------------------------------------------------------
   // 基础工具
   // ---------------------------------------------------------------------
@@ -244,6 +259,21 @@
     var fields = segment.split(FIELD_SEPARATOR);
     var fieldCount = fields.length;
 
+    if (fieldCount === 2) {
+      // non-concrete 段：`<weeks token><已确认 qualifier>` / activity。
+      if (NON_CONCRETE_FIRST_FIELD.test(fields[0].trim())) {
+        // 没有 weekday / sections / 具体地点 / teacher → ⛔ 不做任何脱敏。
+        return segment;
+      }
+      // ⛔ 2 字段**只接受已验证 grammar**；其余一律 fail closed（不回显取值）。
+      fail(
+        "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+          "是 2 字段，但不符合已确认的 non-concrete grammar" +
+          "（`<weeks token>` + 已确认 qualifier " + SCHEDULE_QUALIFIER_OFF_CAMPUS +
+          " / activity）。本采集器不猜格式，已整体停止（不回显该字段取值）。"
+      );
+    }
+
     if (
       fieldCount !== 4 &&
       fieldCount !== 5 &&
@@ -251,7 +281,8 @@
     ) {
       fail(
         "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
-          "出现不支持的字段数（" + fieldCount + "）。本采集器不猜格式，已整体停止。"
+          "出现不支持的字段数（" + fieldCount + "）。" +
+          "只接受 2（non-concrete）/ 4 / 5 / 6，本采集器不猜格式，已整体停止。"
       );
     }
 

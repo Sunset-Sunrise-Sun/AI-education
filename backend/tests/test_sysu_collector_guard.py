@@ -370,6 +370,24 @@ def test_collector_does_not_reuse_generic_location_grammar_for_five_fields(
     assert "classifyFiveFieldToken(fields[3])" in collector_source
 
 
+def test_collector_non_concrete_two_field_grammar_matches_python_parser(
+    collector_source: str,
+) -> None:
+    """Collector 的 non-concrete 2 字段 grammar 必须与 Python **同规则**。
+
+    即 `<weeks token><已确认 qualifier>`：整段匹配、白名单而非通配，
+    ⛔ 不得放开为"任意 2 字段"。
+    """
+
+    assert "NON_CONCRETE_FIRST_FIELD" in collector_source
+    # 整段匹配（`^...$`），且周次部分要求 `N-M周`
+    assert r"/^([0-9]+-[0-9]+周)(校外)$/" in collector_source
+    assert "SCHEDULE_QUALIFIER_OFF_CAMPUS" in collector_source
+    # ⛔ 不得无条件接受任意 2 字段
+    assert "fieldCount === 2" in collector_source
+    assert "NON_CONCRETE_FIRST_FIELD.test(fields[0].trim())" in collector_source
+
+
 def test_collector_source_is_plain_utf8_without_bom() -> None:
     """源码必须是 UTF-8 且不含 BOM（本地打开 / 复制粘贴都不应出乱码）。"""
 

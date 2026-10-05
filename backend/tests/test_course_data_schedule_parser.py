@@ -270,6 +270,127 @@ def test_empty_or_separator_only_input_is_rejected(text: str) -> None:
         parse_teaching_time_place(text)
 
 
+# ---------------------------------------------------------------------------
+# 2 字段：non-concrete（`<weeks token><qualifier>` / activity）
+# ---------------------------------------------------------------------------
+
+
+def test_non_concrete_segment_is_parsed_without_meeting() -> None:
+    """真实证据：`12-19周校外/实验实践环节`（见习类课程）。
+
+    该 segment **没有** weekday / sections / 具体地点 / teacher，
+    因此**不制造** `Meeting`，但 `ParsedScheduleSegment` **必须保留**。
+    """
+
+    (segment,) = parse_teaching_time_place("12-19周校外/实验实践环节")
+
+    assert isinstance(segment, ParsedScheduleSegment)
+    assert segment.meeting is None
+    assert segment.teacher is None
+    assert segment.schedule_qualifier == "校外"
+    assert segment.activity == "实验实践环节"
+
+
+def test_non_concrete_segment_weeks_are_expanded_from_token_not_whole_field() -> None:
+    """⚠️ 周次必须来自**拆出来的 weeks token**，⛔ 不能把 `12-19周校外` 整串送进 `expand_weeks()`。
+
+    本测试同时锁住"qualifier 不被当成周次的一部分"。
+    """
+
+    (segment,) = parse_teaching_time_place("12-19周校外/实验实践环节")
+
+    # 12..19 连续周次（若把整串送进 expand_weeks 会直接失败）
+    assert segment.meeting is None  # non-concrete 不投影
+    # 通过 concrete 同名周次对照，确认 expand_weeks 的语义没被改动
+    (concrete,) = parse_teaching_time_place("12-19周/星期五/第5-6节/示例教师A/示例环节")
+    assert concrete.meeting is not None
+    assert concrete.meeting.weeks == list(range(12, 20))
+
+
+def test_non_concrete_segment_does_not_fake_campus_or_weekday() -> None:
+    """⛔ `校外` 不得被伪装成 `campus`；⛔ 不得猜 weekday / sections。"""
+
+    (segment,) = parse_teaching_time_place("12-19周校外/实验实践环节")
+
+    # 没有 Meeting 就没有 campus / weekday / sections 可猜
+    assert segment.meeting is None
+    assert segment.schedule_qualifier == "校外"
+    assert segment.schedule_qualifier != "北校园"  # ⛔ 与具体校区是两回事
+
+
+def test_extract_meetings_skips_non_concrete_segment() -> None:
+    """`extract_meetings()` 对该 segment 返回 `[]`（DG-07：schedule UNKNOWN）。"""
+
+    segments = parse_teaching_time_place("12-19周校外/实验实践环节")
+
+    assert extract_meetings(segments) == []
+
+
+def test_mixed_concrete_and_non_concrete_keeps_segment_not_dropped() -> None:
+    """混合：concrete + 校外实践 → **segment 数 2、Meeting 数 1**。
+
+    证明 non-concrete 只是"不投影成 Meeting"，⛔ **不是静默丢 segment**。
+    """
+
+    text = ",".join(
+        [
+            _segment("1-8周", "星期五", "第5-6节"),
+            "12-19周校外/实验实践环节",
+        ]
+    )
+
+    segments = parse_teaching_time_place(text)
+    meetings = extract_meetings(segments)
+
+    assert len(segments) == 2, "⛔ non-concrete segment 不得被丢弃"
+    assert len(meetings) == 1
+    assert segments[1].meeting is None
+    assert segments[1].schedule_qualifier == "校外"
+    # concrete 段不受影响
+    assert segments[0].meeting is not None
+    assert segments[0].teacher == TEACHER_A
+
+
+def test_non_concrete_after_trailing_comma_still_parses() -> None:
+    """末尾逗号与 non-concrete 段可以共存。"""
+
+    (segment,) = parse_teaching_time_place("12-19周校外/实验实践环节,")
+
+    assert segment.meeting is None
+    assert segment.schedule_qualifier == "校外"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "随便写的东西/实验实践环节",  # 第 1 字段根本不是 weeks token
+        "12-19周未知词/实验实践环节",  # ⛔ qualifier 不在白名单（不得通配）
+        "12-19周线上/实验实践环节",  # 尚无证据的 qualifier
+        "12-19周医院/实验实践环节",  # 尚无证据的 qualifier
+        "12-19周实践基地/实验实践环节",  # 尚无证据的 qualifier
+        "校外/实验实践环节",  # 缺 weeks token
+        "12-19周校外/",  # activity 为空
+        "12-19周校外",  # 只有 1 字段 → 字段数不在允许集合
+    ],
+)
+def test_non_concrete_unknown_two_field_grammar_fails_closed(text: str) -> None:
+    """⛔ 2 字段只接受**已验证** grammar；其余任意 2 字段结构 fail closed。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        parse_teaching_time_place(text)
+
+
+def test_non_concrete_error_message_does_not_echo_token() -> None:
+    """错误信息不得回显未识别 2 字段的取值。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_teaching_time_place("12-19周未知词/实验实践环节")
+
+    message = str(excinfo.value)
+    assert "不猜格式" in message
+    assert "12-19周未知词" not in message
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -278,7 +399,7 @@ def test_empty_or_separator_only_input_is_rejected(text: str) -> None:
     ],
 )
 def test_unexpected_field_count_is_rejected(text: str) -> None:
-    """字段数只接受 4 / 5 / 6，其它（3、7+）fail closed。"""
+    """字段数只接受 2 / 4 / 5 / 6，其它（3、7+）fail closed。"""
 
     with pytest.raises(CourseDataNormalizationError) as excinfo:
         parse_teaching_time_place(text)

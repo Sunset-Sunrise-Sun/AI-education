@@ -1212,3 +1212,58 @@
   ⛔ 按指示**未重新执行真实 35 页采集**。
 - 下一步：等待 Architecture Review。
 
+### 2026-10-05 - non-concrete schedule segment（2 字段）支持，保持 fail closed
+
+- 触发：**新真实证据**确认一个合法 2 字段 `teachingTimePlaceStr` segment：
+  `12-19周校外/实验实践环节`（见习类课程）。
+  该 segment **没有** weekday / sections / 具体地点 / teacher。
+- **架构决定**：⛔ **不为它制造 `Meeting`**；作为 Course Data **内部**的
+  **non-concrete schedule segment** 表示。
+- **解析规则**（⛔ 白名单，不是通配）：
+  ```text
+  2 字段：<weeks token><qualifier> / <non-empty activity>
+          目前唯一已确认 qualifier = 校外
+  ```
+  - ✅ 先**分别**取得 `weeks_token = "12-19周"` 与 `qualifier = "校外"`，
+    ⛔ **不把整串** `12-19周校外` 送进 `expand_weeks()`（它只认识 `<weeks token>`）；
+  - 结果：`meeting = None`、`teacher = None`、
+    `schedule_qualifier = "校外"`、`activity` 保留、周次正常展开；
+  - ⛔ 不把 `校外` 伪装成 `Meeting.campus`（`"校外"` 不是具体校区，
+    与 `openingSchoolName → campus` 是两回事）；
+  - ⛔ `12-19周未知词` / `12-19周线上` / `12-19周医院` / `12-19周实践基地` 等
+    **尚无证据**的 qualifier 一律拒绝；后续按新证据逐个加入。
+- **内部对象**：`ParsedScheduleSegment.meeting` 改为 **`Meeting | None`**；
+  新增 **`schedule_qualifier: str | None = None`**。
+  ⛔ **未修改**公共 `Meeting` / `CourseOffering` / `schemas` / Provider contracts。
+- **`extract_meetings()`**：只投影 `meeting is not None` 的 segment；
+  ⛔ **不是静默丢弃** —— `ParsedScheduleSegment` 仍完整保留在解析结果中。
+- **importer 三类状态**（严格分开，⛔ 不混用）：
+  1. 属性**不存在** → 窄语义路径 → `meetings = []`（DG-07B，未变）；
+  2. 属性存在、**解析成功但无 concrete segment** → **新增**窄语义路径
+     `build_course_offering_from_non_concrete_schedule()` → `meetings = []`；
+  3. 属性存在但**解析失败** → **整体失败**（⛔ 不吞成 `meetings = []`）。
+  ⚠️ 新增的第 2 条路径是必需的：否则含该形态的真实 row 会在普通路径
+  （`_require_meetings` 拒绝空数组）**整体失败**，使真实全量采集无法完成。
+- **Collector**：`redactSegmentTeacher()` 对 2 字段先做
+  `NON_CONCRETE_FIRST_FIELD` 整段匹配（与 Python 同规则）；命中 → 原样保留
+  （无 teacher，⛔ 不做脱敏）；未命中 → `fail()`（⛔ 不放开为任意 2 字段）。
+  字段数错误信息更新为"只接受 2（non-concrete）/ 4 / 5 / 6"。
+- **保留既有规则**：4 字段 / 5 字段 teacher / 5 字段 location /
+  5 字段二义 fail closed / 6 字段 —— 全部保持。
+- **DG-07**：⛔ **未修改**；Planner ⛔ **未修改**。
+  只有 non-concrete segment 的 `CourseOffering` → `meetings == []` →
+  由现有 Planner 语义视为 **schedule UNKNOWN**（正好合理：
+  有课程安排信息，但没有足够信息判断时间冲突）。
+- 修改文件：`backend/app/course_data/schedule_parser.py`、
+  `backend/app/course_data/normalization.py`（新增窄语义构造函数）、
+  `backend/app/course_data/importer.py`（第三类状态分流）、
+  `tools/sysu_course_offering_collector.js`、
+  `backend/tests/test_course_data_schedule_parser.py`、
+  `backend/tests/test_course_data_importer.py`、
+  `backend/tests/test_sysu_collector_guard.py`、
+  `tools/sysu_course_offering_collector.test.mjs`、
+  `docs/status/course_data.md`、本文件。
+- **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
+  ⛔ 按指示**未重新执行真实 35 页采集**。
+- 下一步：等待 Architecture Review。
+
