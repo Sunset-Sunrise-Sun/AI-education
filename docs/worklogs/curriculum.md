@@ -184,3 +184,27 @@
 - 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
 - 使用数据：真实 D4 与两份培养方案仅在本地受控目录只读使用，未提交、未复制进仓库。
 - 下一步：等待 Architecture Review；**不 merge main**。
+
+### 2026-10-05 - 真实 Case A 区间学期 scope decision（case 数据，非算法规则）
+- 只读实测：目标方案 range-term entry 共 **7 条**（以实际导入结果为准，非凭记忆）：MAR116/PSY199/PUB1991（`2025-1~2025-2`，均已 **satisfied**）、PUB178（`2025-1~2028-2`，manual_confirmation）、MAR117（`2026-1~2026-2`）、MAR118（`2027-1~2027-2`）、MAR119（`2028-1~2028-2`）。
+- 决策（严格按区间自身文字，不猜）：区间整体 **> 2025-2** 的 3 条 → `future`（转专业后的正常培养计划）；区间**横跨** 2025-2/2026-1 的 PUB178 → **BUSINESS CONFIRMATION NEEDED，不记录 decision**；3 条 **satisfied** 的 range entry 按冻结语义（unresolved+satisfied 不阻断）**不加无必要 decision**。
+- 实现方式（最小）：**未改任何算法或 parser**（`terms.py` / `matching.py` / `docx_reader.py` / `requirements.py` / 公共 Schema / Provider / Planner / Course Data / Frontend 全未触碰）。新增 `backend/app/curriculum/case_a_decisions.py`，把真实 Case A 的 `as_of_term`、evidence、3 条 `future` decision、以及"横跨未决"与"已满足无需 decision"清单表达为**纯 case 数据**；`confirmed_scope_decisions()` 返回可直接传给 `CurriculumCase` 的内部对象。evidence 一律 `case-owner-confirmed://case-a/range-term-scope`，**不使用** `official-policy://`，也不以当前日期推断。
+- 反硬编码：通用代码中**没有**任何 `course_id == "MAR116"` / `term` 字符串匹配 / `major == "网络空间安全"` 式分支；换另一个转专业学生只需替换 case 输入（decision 集合），scope 算法不变。
+- 真实 Case A 复跑：target 94 / completed 24 / historical 20 / future 70 / **unresolved 4**（原 7）/ `unrepresented_requirements=()` / `group_gaps=()`；satisfied 12 / possibly_equivalent 0 / manual_confirmation 82。**projection_ready = False**，唯一 blocker：`table:2!row:11`（PUB178 劳动教育 `2025-1~2028-2`）横跨时点，需负责人确认（历史缺口 / 按转专业时点拆分 / 整体归属转专业后计划）。
+- 解除该 blocker 后的预期投影（**探针验证**，该 PUB178 decision 仅临时用于测量，未入库）：23 tasks —— satisfied 12 / manual_confirmation 11 / required 0 / possibly_equivalent 0；future unmet 条目不出现在 `MakeupTask[]` 中。
+- 修改文件：新增 `backend/app/curriculum/case_a_decisions.py`、`backend/tests/test_curriculum_case_a_scope_decisions.py`；更新 `docs/status/curriculum.md`、本文件。
+- 测试：新增 **12** 项（decision 集合的声明式属性：cutoff、仅"整体在时点后"才记 future、横跨条目必须无 decision、已满足条目无 decision、evidence 类型与绑定、内部对象构造；以及集成属性：不改 elective group、按 `target_source_record` 绑定而非 course_id、不改 exact matching、future unmet 不出现在投影、决定一条不豁免另一条、satisfied range 单独不阻断）。已被 `test_curriculum_scope_decisions.py` 覆盖的同义场景未重复。全量后端（`PYTHONUTF8=1`）：**2031 passed、2 failed、2 skipped**。
+- 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
+- 使用数据：真实 D4 与两份培养方案仅在本地受控目录只读使用，未提交、未复制进仓库；新增文件不含姓名/学号/成绩/GPA/排名，也不含私有 DOCX。
+- 下一步：等待 Architecture Review 与负责人对 PUB178 的业务确认；**不 push、不开 PR、不 merge main**。
+
+### 2026-10-05 - PUB178 case-owner 裁定 future：Real Case A 首次打通
+- case owner 裁定：PUB178 劳动教育 `2025-1~2028-2` 在 Real Case A 记为 `future`。理由：该培养方案安排窗口横跨 `as_of_term=2025-2` 且持续至 2028-2，没有证据表明必须在转专业时点前完成，也没有阶段性拆分规则；为避免把仍有后续履行窗口的要求误判成历史欠修，本 Case 按 future 处理。该裁决**仅是 case-owner-confirmed 的 Case A 输入**，未升级为通用 scope 算法或学校官方政策。
+- 实现：`case_a_decisions.py` 新增 `_CASE_OWNER_CONFIRMED_CROSSING`（PUB178）并入 `CONFIRMED_SCOPE_DECISIONS`（现 4 条，全 `future`），并以 `CASE_OWNER_FUTURE_RATIONALE` 记录裁定理由；原 `UNDECIDED_CROSSING_CUTOFF` 移除（该条目已被裁定，不再处于"未决"状态）。**未改任何算法或 parser**。
+- 文档修复：`docs/status/curriculum.md` 中 `MakeupTask[]` 段落与 `- 最新后端回归：` 之间**缺失换行**（两条 bullet 被并成一行）已修复并复核。
+- **Real Case A 首次打通（实测）**：target_records 94 / completed_records 24 / historical 20 / future 71 / unresolved 3（均为已 satisfied 的 range 条目，按冻结语义不阻断）；`unrepresented_requirements = ()`、`group_gaps = ()`；**projection_ready = True**，`CurriculumProvider.get_makeup_tasks()` 成功返回 **makeup_task_count = 23** —— satisfied 12 / manual_confirmation 11 / required 0 / possibly_equivalent 0；总学分 58（satisfied 32 + manual_confirmation 26）。23 条**全部为 historical** 条目（推荐学期均 ≤ 2025-2），future unmet 条目不出现在 `MakeupTask[]` 中。
+- 修改文件：`backend/app/curriculum/case_a_decisions.py`、`backend/tests/test_curriculum_case_a_scope_decisions.py`、`docs/status/curriculum.md`、本文件。
+- 测试：Case A decision 测试 12 → **13** 项（新增"横跨区间由 case-owner 裁定为 future"与"4 条 decision 全为 future 且逐条绑定 requirement entry"；原先的"横跨必须未决"断言随裁定更新，不再是同义测试）。全量后端（`PYTHONUTF8=1`）：**2032 passed、2 failed、2 skipped**。
+- 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
+- 使用数据：真实 D4 与两份培养方案仅在本地受控目录只读使用，未提交、未复制进仓库；仓库内文件不含姓名/学号/成绩/GPA/排名，也不含私有 DOCX。
+- 下一步：等待 Architecture Review 对该 Case A 输入与首次打通结果的复核；**不 push、不开 PR、不 merge main**。
