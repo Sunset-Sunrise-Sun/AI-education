@@ -64,9 +64,10 @@ export interface Meeting {
  * - `[]` → **仅**表示当前来源快照没有能够形成公共 `Meeting` 的可用排课信息；
  *   ⛔ 不表示没有上课时间、异步教学、时间自由，**更不表示没有时间冲突**。
  *
- * ⚠️ 契约层允许空数组 ≠ 产品链路可以产生：前端 empty-meeting 展示属 DG-07D，
- * 在 DG-07B / DG-07C / DG-07D 完成前，界面不应收到 `meetings = []` 的数据
- * （rollout gate，见 `docs/status/agent_frontend.md`）。
+ * ✅ DG-07A / B / C / D 已完成并 Review：
+ * Course Data 可在严格窄路径下产生 `meetings = []`，Planner 将其视为 schedule unknown，
+ * Frontend 使用中性数据文案展示。DG-07 empty-meeting safety rollout gate 已解除。
+ * ⚠️ 这不等于 partial snapshot 可以进入真实产品链路；真实 E2E 仍要求完整 snapshot 与真实 Provider / Integration。
  */
 export interface CourseOffering {
   course_id: string
