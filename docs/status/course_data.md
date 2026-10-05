@@ -1,18 +1,16 @@
 # Course Data 当前状态
 
-> 最后更新：2026-10-01（**DG-07B — Course Data Empty-Meeting Normalization 已实施、待 Reviewer**：
+> 最后更新：2026-10-05（**DG-07B — Course Data Empty-Meeting Normalization 已实施 / REVIEWED**：
 > **只有** Raw row **没有** `teachingTimePlaceStr` 这个 key 时才产出 `meetings = []`；
 > `null` / 空串 / 其它类型 / malformed / 解析失败**继续 fail closed**；
-> 缺排课信息的 row **不被跳过**（仍计入 `loaded_count`）；
-> ⛔ **DG-07 整体仍未完成**（DG-07C / DG-07D 未开始）；**Data Gate 仍保持 Reopened**）
+> 缺排课信息的 row **不被跳过**（仍计入 `loaded_count`）。
+> **DG-07A / B / C / D 均已实施 / REVIEWED；Data Gate 已恢复 PASSED / CLOSED。**）
 >
-> ⚠️ **新的 rollout gate（DG-07B 后）**：
-> **Course Data 内部 capture / import / snapshot 已可以忠实表示 `meetings = []`**，
-> 但 **Planner unknown-schedule safety（DG-07C）与前端 empty-meeting 展示（DG-07D）
-> 尚未实现** —— 因此 **empty-meeting `CourseOffering` 仍不得接入真实产品端到端链路**：
-> ⛔ 不新增真实 API、⛔ 不接 `PlanningOrchestrator`、⛔ 不把真实 empty-meeting snapshot
-> 交 Planner、⛔ 不送进前端、⛔ 不修改 Mock 让 Demo 提前出现 `[]`。
-> 这是**阶段性 rollout gate**，不是新的 Schema 字段。
+> ✅ **DG-07 empty-meeting rollout safety gate 已解除**：
+> Course Data 可以忠实产生 `meetings = []`，Planner 已按 schedule unknown 安全处理，
+> Frontend 已中性展示。⚠️ 这只解除“unknown schedule 的安全处理”阶段门；
+> **complete semester snapshot、真实 Provider / Integration / API / Frontend E2E
+> 仍未完成，partial snapshot 仍不得进入产品链路。**
 >
 > ⚠️ **准确表述（不得夸大）**：
 > **真实 Course Data 尚未完成**，**尚未取得 complete semester snapshot**。
@@ -30,9 +28,8 @@
 > 但**时间 / 周次 / 地点完全空白**且**无任何状态文字**；
 > 因此 `collect()` **不再因"缺排课字段"而整体失败**（DG-07B 起该 row 规范化为
 > `meetings = []`），**但仍未重新采集**，**尚未生成真实 Capture Bundle**。
-> **G11 仍未 resolved**：契约方向已裁决、**契约迁移已完成（DG-07A）**、
-> **Course Data 空 meetings 归一化已完成（DG-07B）**，
-> 但**下游处理待定**（DG-07C / DG-07D）、**学校侧业务原因仍未查明**。
+> **G11 仍未 resolved**：契约方向与下游安全处理已经闭环
+> （DG-07A / B / C / D 均已实施 / REVIEWED），但**学校侧业务原因仍未查明**。
 > 不推测、不写成任何业务结论。
 > 后端 Python 侧仍然**零网络**：没有 endpoint、没有认证处理、**不会自动发起 SYSU 请求**。
 >
@@ -59,20 +56,20 @@ SYSU 分页参数人工验证（pageNo / pageSize / total）   ✅ 已完成（�
                                                     ✅ **真实聚合结果已回填**（见 §4.7.1 / 下表）
 G11 业务语义最小核验（2B-2C1D，人工 UI，n = 2）      ✅ **已完成**（两条候选在官方 UI 中均为普通
                                                     教学班行；时间 / 周次 / 地点空白、无状态文字）
-契约缺口 DG-07（CourseOffering 空 meetings）     ✅ **APPROVED WITH MODIFICATION**
-                                                    （**2026-10-01 批准**；DG-07 整体
-                                                    **IMPLEMENTATION PENDING**）
+契约缺口 DG-07（CourseOffering 空 meetings）     ✅ **IMPLEMENTED / REVIEWED**
+                                                    （DG-07A / B / C / D 全部完成，
+                                                    Data Gate 已恢复 CLOSED）
 契约迁移 DG-07A                                 ✅ **已实施 / 已 merge**
                                                     （`meetings` `minItems: 1 → 0`，`required` 不变；
                                                     Pydantic 镜像 + 接口语义 + 契约级测试已同步）
-Course Data 空 meetings 归一化 DG-07B             ✅ **已实施、待 Reviewer**
+Course Data 空 meetings 归一化 DG-07B             ✅ **已实施 / REVIEWED**
                                                     （**唯一**来源形态 = Raw row 没有
                                                     `teachingTimePlaceStr` key；解析失败仍 fail closed；
                                                     缺排课信息的 row 不被跳过）
-Planner unknown-schedule safety DG-07C            ⏳ **未开始**
-Frontend empty-meeting 展示 DG-07D                ⏳ **未开始**
-真实完整学期程序化采集                              ⏳ 未完成（**尚未**重新采集；缺字段不再是 blocker，
-                                                    但 DG-07C/D 未完成前不得把 empty-meeting 接入产品链路）
+Planner unknown-schedule safety DG-07C            ✅ **已实施 / REVIEWED**
+Frontend empty-meeting 展示 DG-07D                ✅ **已实施 / REVIEWED**
+真实完整学期程序化采集                              ⏳ 未完成（**尚未**重新采集；DG-07 safety gate 已解除，
+                                                    但仍须取得 complete snapshot 后才能进入真实产品联调）
 完整 semester snapshot                              ⏳ 未取得
 ```
 
@@ -626,54 +623,14 @@ complete ：必须有 reported_total，且 reported_total == loaded_count
 
 ## 下一步
 
-- ✅ **1 页结构诊断已完成**（2B-2C1B，由**负责人手动执行**）：
-  `diagnoseSchedulePresence({ semester: "2026-1" })` 已返回第 1 页聚合计数
-  （`total_rows = 200`，`missing = 39`，`non_empty_string = 161`，其余形态 0）；
-- ✅ **1 页相关性诊断已完成**（2B-2C1C，由**负责人手动执行**）：
-  `diagnoseMissingScheduleCorrelation({ semester: "2026-1" })` 的真实聚合结果
-  **已回填**（见本文「C1C 真实相关性诊断结果」与缺口报告 §4.7.1）；
-  ⛔ **不再需要重复运行**这两个诊断；
-- ✅ **G11 业务语义最小核验已完成**（2B-2C1D，**人工 UI，n = 2**，由**负责人本人**完成）：
-  两条典型候选在官方 UI 中**均为普通教学班行**，时间 / 周次 / 地点**完全空白**、
-  **无状态文字**；**契约缺口 `DG-07`** 已形成并获批
-  （`docs/data/DATA_GATE_DECISIONS.md` §17）；⛔ **不再要求重复人工核验**；
-- ✅ **DG-07 架构裁决已落档**（2026-10-01）：
-  **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**
-  —— **契约处理方向已批准**（`meetings` `minItems: 1 → 0`，`required` 不变）；
-- ✅ **DG-07A — Contract Migration 已实施 / 已 merge**：
-  公共契约放宽为 `minItems: 0`、Pydantic 镜像 `min_length=0`（生成 `minItems: 0`）、
-  接口语义（`course_data` / `planner` / `integration`）与契约级测试已同步，
-  前端**仅注释**同步；
-- ✅ **DG-07B — Course Data empty-meeting normalization 已实施 / 待 Reviewer**（本轮）：
-  `normalization.py` 保留普通路径（仍拒绝空数组）并新增**窄语义**
-  `build_course_offering_from_missing_schedule_field()`（内部**再验证**
-  `teachingTimePlaceStr` key 不存在）；`importer.py` 按 key 是否存在分流，
-  **没有** `try/except`；`schedule_parser.py` / `pagination.py` /
-  `captured_pages.py` / `snapshot.py` **0 diff**；Collector 同步
-  （7 个基础字段仍必填；该字段 absent 时**保持 key 不存在**）；
-  缺排课信息的 row **仍计入 `loaded_count`、不被跳过**；
-- **下一步：DG-07C — Planner unknown-schedule safety**（**待任务书**）：
-  `meetings = []` ≠ conflict-free，**含 `current_schedule` 一侧**；
-  ⛔ **本模块不自行实施**，也不自行拆分 / 命名阶段；
-  Data Gate **仍保持 Reopened**（⛔ **未 CLOSED**；⛔ **DG-01 – DG-06 不重新打开**），
-  关闭前置条件见 `DATA_GATE_DECISIONS.md` §17.15；
-- **G11 仍未解决**（见 `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` §4.7.2）：
-  **学校侧业务原因仍未查明**；缺失原因 / 这些记录的业务类型 /
-  是否属于有效可选教学班 / 是否应最终被 Planner 选择 / 全学期缺失比例 仍**未确认**；
-  ⛔ **不声称 G11 resolved**（**contract migration implemented;
-  Course Data empty-meeting normalization implemented;
-  Planner / Frontend downstream handling pending; school-side business cause still unknown**）、
-  ⛔ **不推断学校业务状态**；
-- 采集器与 Capture Bridge 目前**不接入** Integration / Planner / API / 前端产品 UI
-  （真实 Capture Bundle 的导入 UI 属后续步骤）；
-- `max_pages` 是**内部安全阀**，不是学校侧参数；
-  只能取得部分范围时**必须显式记录 completeness**，**不得宣称 complete**（C9）；
-- **完整 semester snapshot**：目标为 **2026-1**，取得后以 `OfferingSnapshot` 表达，
-  并由 `SnapshotCourseDataProvider` 供 Integration 消费；
-- ⛔ 上述后续步骤（含 **DG-07C / DG-07D**）都属于后续任务书范围，**本轮不得自行开始**；
-  ⛔ **本轮 Builder 未登录 SYSU、未发任何真实请求、未生成真实数据**，
-  也**不**把 `partial` snapshot 接入 Integration；
-  ⛔ **DG-07 整体仍为 `IMPLEMENTATION PENDING`**：
-  本模块**内部**已可产生 `meetings = []`，但 ⛔ **在 DG-07C / DG-07D 完成前，
-  不得把 empty-meeting Offering 接入 Planner / API / 前端产品链路**（新 rollout gate）。
-- ⛔ **不得开始**任何后续阶段（DG-07C / DG-07D；亦**不得**自行命名 / 拆分实施阶段）。
+- **不再等待 DG-07C / DG-07D**：DG-07A / B / C / D 已全部 IMPLEMENTED / REVIEWED，
+  Data Gate 已恢复 **PASSED / CLOSED**；
+- **Course Data 当前主任务转为真实数据完备化**：在负责人正常授权会话中取得
+  **完整 2026-1 semester snapshot**，并以 `OfferingSnapshot` 明确记录 completeness；
+- ⛔ **partial snapshot 仍不得进入 Integration / Planner 产品链路**，不得把已验证的前两页或
+  第 1 页诊断结果冒充完整学期数据；
+- 完整 snapshot 准备好后，由 `SnapshotCourseDataProvider` 交给 Integration，
+  再与 Curriculum / Planner 做真实 Case A E2E；
+- **G11 仍保留为学校侧业务原因未知**：DG-07 已解决“如何安全表示和处理”，
+  但没有解决“学校为什么缺少 schedule”；
+- 公共契约、fail-closed 边界、Raw / Capture 隐私规则继续保持不变。

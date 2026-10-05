@@ -12,9 +12,11 @@
 > **当前来源快照没有能够形成公共 `Meeting` 的可用排课信息**。
 > ✅ **DG-07B** 起，本模块**已能忠实产生**该状态（唯一来源形态：Raw row **没有
 > `teachingTimePlaceStr` 这个 key**）。
-> ⚠️ 但 **Planner unknown-schedule safety（DG-07C）与前端 empty-meeting 展示（DG-07D）
-> 尚未实现**，因此 empty-meeting `CourseOffering` **仍不得接入真实产品端到端链路**
-> （新的 rollout gate）。
+> ✅ **DG-07C / DG-07D 已实施并 Review**：Planner 已把 empty meetings 视为
+> schedule unknown（绝不等同于 conflict-free），前端已使用中性数据文案展示。
+> 因此 **DG-07 的 empty-meeting rollout safety gate 已解除**。
+> ⚠️ 这不等于真实产品链路已经就绪：complete semester snapshot、真实 Provider /
+> Integration / API 联调仍需分别满足各自前置条件，partial snapshot 仍不得冒充 complete。
 
 ## 职责
 

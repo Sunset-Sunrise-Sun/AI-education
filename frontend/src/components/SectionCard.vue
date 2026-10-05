@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
- * 所有展示区块共用的外壳：标题 + Mock 标记 + 内容插槽。
- * 存在的意义只是让四个区块的样式和行为保持一致，不含任何业务逻辑。
+ * 所有展示区块共用的外壳容器：标题 + 副标题 + Mock 标记 + 内容插槽。
+ * 保持设计统一与信息层级分明，无业务判断。
  */
 withDefaults(
   defineProps<{
@@ -9,23 +9,42 @@ withDefaults(
     subtitle?: string
     /** 是否在标题旁显示 Mock 标记（本 Demo 中四个区块都是 Mock）。 */
     mock?: boolean
-    /** 需要强调"这里有必须人工确认的内容"时使用。 */
-    tone?: 'default' | 'attention'
+    /** 需要强调时使用。 */
+    tone?: 'default' | 'attention' | 'primary'
+    /** 用于锚点定位与快捷跳转。 */
+    sectionId?: string
+    /** 数量徽章。 */
+    badgeCount?: number
   }>(),
   {
     subtitle: '',
     mock: true,
     tone: 'default',
+    sectionId: '',
+    badgeCount: undefined,
   },
 )
 </script>
 
 <template>
-  <section class="card" :class="`card--${tone}`">
+  <section
+    :id="sectionId"
+    class="card"
+    :class="`card--${tone}`"
+  >
     <header class="card__head">
-      <h2 class="card__title">{{ title }}</h2>
-      <span v-if="mock" class="tag tag--mock" title="本条数据来自后端 Mock 通道，非真实教务数据">
-        Mock
+      <div class="card__title-wrap">
+        <h2 class="card__title">{{ title }}</h2>
+        <span v-if="badgeCount !== undefined" class="card__count-badge">
+          {{ badgeCount }}
+        </span>
+      </div>
+      <span
+        v-if="mock"
+        class="tag tag--mock"
+        title="本区块数据由后端 Mock 通道提供，非教务系统真实快照"
+      >
+        Mock 数据
       </span>
     </header>
 
