@@ -1814,6 +1814,78 @@ code.mono {
   border-radius: var(--radius-sm);
 }
 
+.uig-error p {
+  margin: 0;
+}
+
+.uig-error__title {
+  font-weight: 700;
+}
+
+.uig-error__hint {
+  margin-top: 4px !important;
+  color: var(--text-muted);
+}
+
+.uig-error__meta {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px !important;
+  font-size: 11px;
+  color: var(--text-light);
+}
+
+.uig-error__detail {
+  margin-top: 4px !important;
+  overflow-wrap: anywhere;
+  color: var(--error-text);
+}
+
+/* 联调调试信息（仅开发环境渲染） */
+.uig-debug {
+  padding: 10px 12px;
+  font-size: 12px;
+  background: var(--panel-subtle);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+}
+
+.uig-debug__summary {
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.uig-debug__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px 16px;
+  margin: 10px 0 0;
+}
+
+.uig-debug__item {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.uig-debug__item dt {
+  color: var(--text-muted);
+}
+
+.uig-debug__item dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.uig-debug__note {
+  margin: 10px 0 0;
+  font-size: 11px;
+  color: var(--text-light);
+}
+
 /* provenance 标注：区分"基础演示数据"与"规划结果"的来源，不冒充整页 Real */
 .uig-provenance {
   display: flex;

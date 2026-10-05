@@ -1825,3 +1825,40 @@
 - 是否修改 backend：**否**。公共接口是否变化：**否**。
 - 下一步：等待 Architecture Review。
 
+### 2026-10-06 - Frontend Real E2E Wiring Preparation（错误产品化 / 成功收口 / 联调信息）
+
+- 本次目标：让前端从"已经有 Real client"提升到"Codex runtime 一旦可用即可直接完成第一轮真实联调"，
+  ⛔ **不伪造真实数据**、⛔ **不改 backend**、⛔ **不做 runtime / provider wiring**。
+- 分支：`feature/frontend-real-e2e-prep`，base = `main = d7e17eedcf8d25c20b8a31e01a2e3ec3711ec32f`。
+- 后端契约（**只读**，来自已合并的 Real Planning API Boundary）：
+  - 503 形状 `{"detail": {"error": "real_pipeline_not_configured", "message": ...}}`；
+  - 422 为 FastAPI 标准校验形状（`detail` 为数组，元素含 `loc` / `msg` / `type`）；
+  - `X-Data-Source: mock` 现**只**加在 mock 通道响应上。
+- 已完成：
+  1. **A. 错误产品化**：`PlanApiError` 扩展为携带 `kind` / `status` / `code` / `detail`；
+     `kind ∈ {not_configured, input, server, network, http, unexpected}`，UI 只按 `kind` 分支；
+     **503 `real_pipeline_not_configured` 明确显示"真实规划运行时尚未完成装配"**
+     （不是笼统的"请求失败"，也不是系统故障），并说明可继续使用 Mock Demo；
+     422 显示"输入来源不满足 Real Planning 要求"（⛔ 不写成"系统错误"）；
+     500 显示服务端错误；network 显示无法连接；
+  2. **B. 成功收口**：Real 成功后仍为 `规划结果来源：Real`，基础展示数据仍标 Mock；
+  3. **C. 混合来源说明**：沿用 `规划结果来源` 局部文案 + provenance 行 + 页脚两类来源区分；
+  4. **D. 联调入口**：新增**仅开发环境**的 `E2EDebugPanel.vue`，
+     显示 endpoint / semester / schedule count / provenance 摘要 / preference present /
+     plan api enabled / last HTTP status / last error kind / plan result source；
+     ⛔ 不含成绩·姓名·学号·GPA，⛔ 不 dump 请求响应，⛔ 不显示 token·cookie·header。
+- 关键边界：
+  - `parsePlanErrorBody()` **不假设统一 error schema**：识别已知形状，未知形状宽容返回 `null` 并由状态码兜底；
+  - `VITE_PLAN_API_ENABLED` 只控制 Real submit 开放：不改 Mock 获取、**不自动请求**、不改 provenance gate；
+  - 失败时保持 Mock 结果与 Mock provenance，⛔ 绝不把 Mock 冒充为 Real、⛔ 不 fallback 到 mock 通道。
+- 修改文件：`frontend/src/api/plan.ts`、`frontend/src/state/userInput.ts`、`frontend/src/App.vue`、
+  `frontend/src/components/{SubmissionActions,UserInputPanel}.vue`、`frontend/src/styles/base.css`、
+  新增 `frontend/src/components/E2EDebugPanel.vue`、新增 `frontend/tests/real-e2e-prep.spec.ts`、
+  `docs/status/agent_frontend.md`、本文件。
+- 测试结果：`npm test` → **103 passed / 103**（8 文件）；`npm run build` → 成功；
+  `npm run test:scenarios` → 既有 14 项全部通过。
+- 是否修改 backend：**否**。公共接口是否变化：**否**（未改 `schemas/`、`docs/interfaces/`）。
+- **明确状态**：**Frontend 已准备好 Real E2E 联调**；⛔ **不是**"Real E2E 已完成"——
+  Codex 的 Real Runtime Wiring 尚未可用，后续真实联调尚未进行。
+- 下一步：等待 Architecture Review；等 Codex runtime 可用后执行第一轮真实联调。
+
