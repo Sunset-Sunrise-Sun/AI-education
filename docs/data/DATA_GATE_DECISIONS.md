@@ -1,20 +1,23 @@
 # Data Gate-1 架构决策与裁决记录
 
 > **状态：Data Gate-1 架构裁决已完成；DG-01 与 DG-06 已于 Data Gate-2 实施。**
-> **Data Gate 已 PASSED / CLOSED —— 通过条件 C1–C11 全部完成。**
+> **Data Gate 当前状态：✅ PASSED / CLOSED。**
 >
-> ⚠️ **Data Gate Reopen（2026-10-01，narrow）：**
-> 因 **G11** 的新真实证据（见 §17 与 `REAL_TO_SCHEMA_GAP_REPORT.md` §4.7 / §4.7.1 / §4.7.2），
-> Data Gate 已**仅在 DG-07 范围内临时 Reopen** —— **Reopened narrowly for DG-07 only**。
-> **DG-01 – DG-06 不重新打开**，其它已裁决完成的问题**不重新讨论**。
-> ⚠️ **Data Gate 仍保持 Reopened**：**尚未**回到 CLOSED
-> （DG-07 已批准；**DG-07A 已 Review 并 merge**；**DG-07B 已实施 / 待 Reviewer**；
-> Planner safety、Frontend 展示与整体回归**尚未完成**）。
+> ⚠️ **Data Gate 曾于 2026-10-01 因 G11 新真实证据仅在 DG-07 范围内临时 Reopen。**
+> 该 narrow reopen 已于 **2026-10-05** 完成收口：DG-07A / B / C / D
+> 均已实施、经项目 Architecture Review，并已 merge 到 `main`。
+> **DG-01 – DG-06 从未重新打开**，其它已裁决完成的问题不重新讨论。
 >
-> **DG-07 状态：`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**
-> （**2026-10-01 由项目负责人批准**）。
-> **DG-07A（Contract Migration）：✅ IMPLEMENTED / REVIEWED**
-> **DG-07B（Course Data 空 meetings）：✅ IMPLEMENTED / WAITING REVIEW**（见 §12.3）。
+> **DG-07 状态：✅ IMPLEMENTED / REVIEWED**
+> - **DG-07A（Contract Migration）：✅ IMPLEMENTED / REVIEWED**
+> - **DG-07B（Course Data Empty-Meeting Normalization）：✅ IMPLEMENTED / REVIEWED**
+> - **DG-07C（Planner Unknown-Schedule Safety）：✅ IMPLEMENTED / REVIEWED**
+> - **DG-07D（Frontend Presentation Safety）：✅ IMPLEMENTED / REVIEWED**
+>
+> ⚠️ **Data Gate CLOSED 不表示 G11 学校侧业务原因已查明。**
+> G11 仍保持“school-side business cause unknown”；关闭 Data Gate 只表示公共契约、
+> Course Data fail-closed 归一化、Planner unknown-schedule safety 与 Frontend 中性展示
+> 已形成一致的安全处理闭环。
 > ⚠️ **"WITH MODIFICATION" 的准确含义**：**不是**只批准把 `meetings` 的
 > `minItems: 1 → 0`，而是 **Schema 放宽** 与
 > **Course Data fail-closed 不变量（§17.12.1）**、
@@ -63,8 +66,9 @@
 > 真实联调真正被阻塞的只有 **多 segment 建模** 与 **接口文档职责冲突** 两项。
 >
 > ⚠️ **DG-07（2026-10-01，独立于上表）**：`CourseOffering` 空 `meetings` / 未知排课信息，
-> 状态 **`APPROVED WITH MODIFICATION / IMPLEMENTATION PENDING`**
-> （**尚未实施**）—— 见 **§17.5.1 裁决** 与 **§12.3**。
+> 已于 **2026-10-05** 完成 A / B / C / D 全链路实施与 Review，当前状态为
+> **`IMPLEMENTED / REVIEWED`**。原 Proposal / Implementation Pending 过程作为历史记录保留，
+> 见 **§17.5.1 裁决**、**§17.15 关闭条件**与本次收口记录。
 > ⛔ 上表 DG-01 – DG-06 的裁决与实施状态**不受影响、不重新打开**。
 
 ---
@@ -1868,26 +1872,53 @@ school-side business cause still unknown
 - ❌ 新增 SYSU 请求（**Builder 实际请求数 = 0**）
 - ❌ 开始任何实施阶段（**DG-07 仍为 `IMPLEMENTATION PENDING`**）
 
-### 17.15 关闭 Data Gate 的前置条件（**未完成前不得 CLOSED**）
+### 17.15 关闭 Data Gate 的前置条件（**2026-10-05 已全部满足**）
 
-> ⚠️ 下列条件**全部**完成并经 **Reviewer 验收**后，才允许登记 **`DG-07 IMPLEMENTED`**
-> 并把 Data Gate 回到 **CLOSED**。**当前只有第 1 项完成（DG-07A，待 Reviewer）。**
+> 下列条件已全部完成并经项目 Architecture Reviewer 验收。
+> 因此允许登记 **`DG-07 IMPLEMENTED / REVIEWED`**，并把 Data Gate 从
+> “Reopened narrowly for DG-07 only”正式恢复为 **`PASSED / CLOSED`**。
 
-1. ✅ **DG-07 Contract Migration（DG-07A）已实施（待 Reviewer）**：
+1. ✅ **DG-07 Contract Migration（DG-07A）已实施 / REVIEWED**：
    `schemas/course_offering.schema.json`（`meetings` `minItems: 1 → 0`，`required` 不变）、
    `docs/interfaces/{course_data,planner,integration}.md` 语义同步、
    `backend/app/models/contracts.py`（`min_length=0`，生成 `minItems: 0`）、
    `frontend/src/types/contracts.ts` 注释同步、契约级测试迁移；
    ⚠️ **`mock_data/` 未迁移且本轮不需要迁移**（rollout gate 要求产品 Mock 保持 ≥1 段）；
-2. ✅ **Course Data（DG-07B）已实施（待 Reviewer）**：§17.12.1 fail-closed 不变量落地
+2. ✅ **Course Data（DG-07B）已实施 / REVIEWED**：§17.12.1 fail-closed 不变量落地
    （**仅 `teachingTimePlaceStr` 属性不存在**可映射为 `[]`）；
    `schedule_parser.py` / `pagination.py` / `captured_pages.py` / `snapshot.py` **0 diff**；
    浏览器 Collector 同步（排课字段 absent 时保持 key absent）；
-3. ⏳ **Planner safety（DG-07C）未开始**：§17.9 不变量落地
-   （`meetings = []` ≠ conflict-free，**含 `current_schedule` 一侧**）；
-4. ⏳ **Frontend / Mock（DG-07D）未开始**：展示支持 `meetings = []`（文案候选「排课信息暂缺」）；
-5. ⏳ **tests（随各阶段）**：DG-07C/D 的回归用例；
-   ✅ 契约级用例已在 DG-07A 完成（含"`meetings: []` 必须失败"→"必须通过"的**翻转**）；
-   ✅ Course Data 用例已在 DG-07B 完成（narrow path + absent/present 分流 + 不跳过 row）。
+3. ✅ **Planner safety（DG-07C）已实施 / REVIEWED**：§17.9 不变量已落地；
+   Planner 使用 `CONFLICT / UNKNOWN / CLEAR` 三态，`meetings = []` 绝不视为
+   conflict-free，且相同规则覆盖 `offerings` 与 `current_schedule`；
+4. ✅ **Frontend（DG-07D）已实施 / REVIEWED**：`meetings = []` 采用中性数据文案
+   「当前数据中无排课信息」，并与 DG-07C 的 `schedule_unknown` /
+   `selection_required` / `PlanResult.status` 语义对齐；`mock_data/` 未为此改造，
+   继续保持永久 Mock 通道原有样本；
+5. ✅ **tests / verification（随各阶段）已完成**：
+   ✅ DG-07A 契约级用例完成（含"`meetings: []` 必须失败"→"必须通过"的翻转）；
+   ✅ DG-07B narrow path + absent/present 分流 + 不跳过 row 用例完成；
+   ✅ DG-07C Planner 三态 / unknown-schedule / current_schedule / 多 Meeting 回归完成；
+   ✅ DG-07D 前端场景与反向语义守卫完成。
 
-⛔ **在以上全部完成之前**：不得声称 `DG-07 IMPLEMENTED`、不得关闭 Data Gate。
+**关闭裁决（2026-10-05）**：
+- ✅ `DG-07 = IMPLEMENTED / REVIEWED`
+- ✅ `Data Gate = PASSED / CLOSED`
+- ✅ DG-07 empty-meeting rollout safety gate 已解除
+- ⚠️ 仍保留：G11 学校侧业务原因未知、complete semester snapshot 尚未取得、
+  partial snapshot 不得进入产品链路、真实 E2E Integration 尚未完成。
+### 17.16 2026-10-05 — DG-07 / Data Gate 最终收口记录
+- 基线：`main = c4373c9114e80eecbc0ff343b71fe2a19397a8af`（DG-07D merge 后）。
+- DG-07A：公共契约允许 `meetings=[]`，required 保持不变；契约 / Pydantic /接口语义已 Review。
+- DG-07B：只有 Raw row 真正缺失 `teachingTimePlaceStr` 属性时可进入 empty-meeting 窄路径；
+  null / 空串 / 其它类型 / malformed / parse exception 仍 fail closed；已 Review。
+- DG-07C：Planner 使用 CONFLICT / UNKNOWN / CLEAR 三态，unknown ≠ conflict-free，
+  同一规则覆盖 offerings / current_schedule；`UNKNOWN != INFEASIBLE`；已 Review。
+- DG-07D：前端对 `meetings=[]` 使用中性数据文案，支持 `schedule_unknown` /
+  `selection_required`，并删除前端自造业务阈值和过度承诺；已 Review。
+- 结论：§17.15 五项关闭条件全部满足，DG-07 登记为 **IMPLEMENTED / REVIEWED**，
+  Data Gate 从 narrow reopen 恢复为 **PASSED / CLOSED**。
+- 范围澄清：该关闭仅代表“未知排课信息”的数据契约与下游安全处理闭环；
+  **不代表 G11 学校侧业务原因 resolved，不代表已获得完整 2026-1 semester snapshot，
+  不代表真实 Provider / Integration / API / Frontend E2E 已完成。**
+
