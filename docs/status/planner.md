@@ -1,9 +1,9 @@
 # Planner 当前状态
 
-更新日期：2026-10-05。阶段：阶段3受限 Provider / PlanResult / DG-07C 安全处理及四项验收修复已 commit / push；阶段4成员4既有 Mock 回归已通过。成员4内部独立技术复核结论为 **PASS WITH NOTES**，该结果仅作为 Builder 自检证据，不等同于项目 Architecture Review。项目 Architecture Reviewer 已完成 DG-07C 代码正式审查：代码主体通过，当前仅剩文档 / governance 一致性修复待复验。
+更新日期：2026-10-05。阶段：**DG-07C Planner Unknown-Schedule Safety 已 IMPLEMENTED / REVIEWED 并 merge 到 main**。成员4内部独立技术复核的 PASS WITH NOTES 仅作为 Builder 自检证据；项目 Architecture Reviewer 已完成正式审查并批准 DG-07C。
 
-- 当前分支：`feature/planner-dg07c-unknown-schedule`；阶段3代码 checkpoint：`2fe77bdf912c2ef51f4ca832a2bbd279ed34d36a`；本次文档修复前远端 HEAD：`2478dd15e567e00e2d90af4cc782431a197a9fc2`。
-- 阶段3代码与阶段4成员4内部技术复核已 push；项目 Architecture Review 以远端分支实际 HEAD 与 diff 为准。
+- DG-07C 实现分支：`feature/planner-dg07c-unknown-schedule`；批准前最终 HEAD：`774ea5138eac7b7e884369eb4d43a29baffd04ca`。
+- PR #26 已 merge；其后 DG-07D Frontend 也已 merge。当前 DG-07A / B / C / D 均已 IMPLEMENTED / REVIEWED，Data Gate 已恢复 PASSED / CLOSED。
 
 ## 已实现
 - 阶段1/2三态时间检测、全部Meeting比较、同课同学期替代搜索及显式单目标repair保持不变。
@@ -38,11 +38,11 @@
 ## 成员4内部独立技术复核（≠ 项目 Architecture Review）
 - 成员4内部独立技术复核已完成，结论为 **PASS WITH NOTES**；该结果只能作为 Builder 自检证据，不得称为项目级 Architecture Review，也不构成项目级批准。
 - 内部复核记录：Planner **342 passed / 0 skipped / 1 warning**；独立穷举校验 **3,645组通过**。Contracts **127 passed / 2 skipped / 1 warning**与全量 **938 passed / 2 skipped / 1 warning**沿用阶段4成员4本地重新验证记录。
-- NOTES：真实数据验证仍未完成；Data Gate / rollout仍未解除；DG-07整体未关闭；完整 Planner MVP 未最终验收；API 接线、人工选择产品闭环、Frontend DG-07D 和非时间规则仍属于外部依赖。
+- NOTES：真实数据验证仍未完成；完整 Planner MVP 未最终验收；API 接线、人工选择产品闭环和非时间规则仍属于后续依赖。**DG-07 safety rollout gate 已解除，Data Gate 已 CLOSED。**
 
 ## 项目 Architecture Reviewer（正式审查）
 - 项目 Architecture Reviewer 已对 DG-07C 分支做正式代码审查；三态冲突、empty-meeting safety、current_schedule unknown safety、多 Meeting 检测、受限 Provider、PlanResult 安全状态与跨模块边界未发现代码 blocker。
-- 正式审查当前结论：**代码主体通过；文档 / governance 修复后复验**。本结论不等于 DG-07 整体完成，不解除 Data Gate / rollout gate。
+- 最终结论：**DG-07C APPROVED / IMPLEMENTED / REVIEWED**；PR #26 已 merge。其后 DG-07D 也已通过并 merge，因此 DG-07 safety rollout gate 已解除，Data Gate 已恢复 PASSED / CLOSED。
 
 ## 未完成与边界
 - 受限Provider不是完整Planner MVP；候选展示→人工选择→回传→正式repair产品链本阶段不实现。
@@ -50,10 +50,10 @@
 - 无连锁换班、全局目标优化、OR-Tools、自动优先级或跨学期规划。
 - 搜索已缓存并剪枝，不构造完整笛卡尔积；一般约束组合的最坏复杂度仍为指数级，不能承诺任意规模实时完成。未加入超时/节点限制，搜索未完成绝不生成infeasible。
 - 真实联调BLOCKED：成员4当前未持有完整批准联调包，仓库内也未发现满足当前联调条件的完整输入交接；成员4当前可用的完整学期CourseOffering快照、稳定真实MakeupTask、学生当前课表与Preference未齐备，真实证据汇总不等于可联调逐行数据。
-- 产品API接线、人工选择调用闭环、Frontend DG-07D与非时间未定义规则保持BLOCKED，不由成员4补造或跨模块实现；partial snapshot不得进入产品链路。
-- 成员4内部独立技术复核已完成并给出 PASS WITH NOTES；项目 Architecture Reviewer 已完成正式代码审查，代码主体通过，当前等待本次 docs/governance 修复复验。DG-07 / 完整 Planner MVP 仍未通过最终整体验收。
-- Schema/Interface/公共模型/Integration/其他成员模块/依赖未修改。
-- **DG-07整体未完成，Data Gate保持Reopened**，DG-07D 与 DG-07 整体验收 gate 未解除，真实端到端 rollout 不开放；成员4内部技术复核的 PASS WITH NOTES 不等于项目 Architecture Review，也不等于 DG-07 关闭。
+- 产品 API 接线、人工选择调用闭环与非时间未定义规则仍未完成，不由 Planner 模块补造或跨模块实现；partial snapshot 仍不得进入产品链路。
+- 成员4内部独立技术复核已完成并给出 PASS WITH NOTES；项目 Architecture Reviewer 已完成正式审查并批准 DG-07C。
+- Schema / Interface / 公共模型 / Integration / 其他成员模块 / 依赖未由 DG-07C 私自修改。
+- **DG-07A / B / C / D 已全部 IMPLEMENTED / REVIEWED，Data Gate 已 PASSED / CLOSED。** 这不等于完整 Planner MVP 或真实 E2E 已完成。
 
 ## 运行与排查
 - Python导入 `from app.planner import RestrictedPlannerProvider` 并用冻结四参数调用plan；网页仍是Mock回放，无新增API。
