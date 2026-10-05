@@ -225,3 +225,13 @@
 - 交付边界：通过范围仅为成员4当前受限Provider交付；既有算法/规则/输入输出及真实联调BLOCKED不变，不扩大成员4职责，不解除empty-meeting或partial snapshot的产品链路限制。
 - 本次修改：仅更新`docs/status/planner.md`当前Reviewer状态并在本WORKLOG追加记录；分支保持`feature/planner-dg07c-unknown-schedule`，未修改源码、测试、fixture、公共Schema/Interface、配置、依赖或其他模块。未commit、未push、未merge。
 - 下一步：由项目负责人安排受限交付后续流程与外部依赖交接；真实联调、DG-07关闭和完整MVP最终验收仍需分别满足其前置条件。
+
+### 2026-10-05 - Reviewer identity clarification / DG-07C 接口语义同步
+- 本次目标：按项目 Architecture Reviewer 正式审查意见，仅修正文档 / governance 一致性；不修改 Planner 源码、测试、公共 Schema、Integration、Frontend 或 Mock。
+- Reviewer 身份澄清：此前工作日志中的“独立 Architecture Reviewer / PASS WITH NOTES”实际属于**成员4内部独立技术复核**，仅作为 Builder 自检证据；该内部复核不等同于项目级 Architecture Review，也不构成项目级批准。历史记录保留，不删除、不伪造历史。
+- 项目 Architecture Reviewer 已完成 DG-07C 正式代码审查：三态冲突、`meetings=[]` safety、`current_schedule` unknown safety、多 Meeting、受限 Provider、`PlanResult` 安全状态及跨模块边界未发现代码 blocker；正式结论为“代码主体通过，docs/governance 修复后复验”。
+- `docs/interfaces/planner.md` 同步 DG-07C 当前运行语义：正式采用 `schedule_unknown`，并记录 `selection_required` / `missing_data` / `manual_confirmation`；DG-07A 的 `missing_schedule` 作为历史 candidate convention 保留，不再是当前输出约定。
+- `PlanResult.status` 同步为保守语义：`feasible` 只用于确定性条件已认证且无影响方案成立的 unresolved；`partially_feasible` 用于 unknown / 人工决策 / 输入不足但尚未证明无解；`infeasible` 仅用于当前明确目标、输入域和已确认硬约束范围内的完整无解证明；明确 **UNKNOWN != INFEASIBLE**。
+- 当前治理状态保持：DG-07A / DG-07B 已实施并 Review；DG-07C 代码已正式审查、等待本次文档修复复验；DG-07D 尚未批准 / merge；DG-07 overall 仍 IMPLEMENTATION PENDING；Data Gate 仍 Reopened；G11 仍 not resolved。
+- 修改范围：仅 `docs/status/planner.md`、`docs/worklogs/planner.md`、`docs/interfaces/planner.md`。
+
