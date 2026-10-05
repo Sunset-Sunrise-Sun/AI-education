@@ -2361,3 +2361,7 @@
   只有在 `f3_equals_teacher = 0/10`、`f4_equals_teacher = 10/10`、
   `f3_known_activity = 10/10`、`f4_known_activity = 0/10` 全部成立时才请求正式裁定
   "Layout B = weeks | location | activity | teacher" 与后续 4 字段 f4 脱敏 / parser / 重抓。
+- ⚠️ **解释边界（已在回报中明确）**：集合由**本次语料**枚举得到，
+  `*_in_confirmed_activity_set_count = 0` ≠ "已证明不是 activity"
+  （可能只是该 token 未出现在已确认槽位里）；必须与两个 `*_equals_teaching_name_count`
+  一起读，⛔ 不得单独据 0 下结论。

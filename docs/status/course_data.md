@@ -608,6 +608,10 @@ weeks | weekday | location | REDACTED | activity
   `f3_known_activity = 10/10`、`f4_known_activity = 0/10` 全部成立后，
   才进入"Layout B = weeks | location | activity | teacher"的正式裁定与
   4 字段 f4 脱敏 / parser / East 重抓。
+- ⚠️ **解释边界（必须与 Review 一起读）**：集合是从**本次扫描的语料**里枚举出来的，
+  因此 `*_in_confirmed_activity_set_count = 0` 只表示"该 token 没有出现在本次已确认的
+  activity 槽位中"，**不**等于"已证明它不是 activity"（可能是语料未覆盖该 token）；
+  判定时必须与两个 `*_equals_teaching_name_count` 一起看，⛔ 不得单独用 0 下结论。
 
 **2 字段（无 teacher）**：
 
