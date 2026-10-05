@@ -15,9 +15,23 @@ from app.curriculum.requirements import (
     CurriculumVersion,
     RequirementKind,
 )
+from app.curriculum.terms import (
+    SCOPE_FUTURE,
+    SCOPE_HISTORICAL,
+    SCOPE_UNRESOLVED,
+    ConfirmedScopeDecision,
+    ScopeDecision as InternalScopeDecision,
+    scope_decisions,
+)
 from app.models.contracts import Course, MakeupStatus, MakeupTask
 
 _BUILD_TOKEN = object()
+
+# Group scope classification. These are internal facts, never public contract values.
+GROUP_SCOPE_UNSCOPED = "unscoped"
+GROUP_SCOPE_HISTORICAL = "historical"
+GROUP_SCOPE_FUTURE = "future"
+GROUP_SCOPE_MIXED = "mixed"
 
 
 def _text(value: object, field: str) -> None:
@@ -164,21 +178,89 @@ class GroupGap:
     group_id: str
     remaining_credit: float | None
     reason: str
+    scope: str = GROUP_SCOPE_UNSCOPED
+    historical_minimum_credit: float | None = None
 
     def __post_init__(self) -> None:
         _text(self.group_id, "group_id")
         _text(self.reason, "group reason")
-        if self.remaining_credit is not None:
-            value = self.remaining_credit
+        if self.scope not in (
+            GROUP_SCOPE_UNSCOPED, GROUP_SCOPE_HISTORICAL, GROUP_SCOPE_FUTURE, GROUP_SCOPE_MIXED
+        ):
+            raise CurriculumNormalizationError("group gap: unsupported scope classification")
+        for field in ("remaining_credit", "historical_minimum_credit"):
+            value = getattr(self, field)
+            if value is None:
+                continue
             if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise CurriculumNormalizationError("remaining_credit: invalid number")
+                raise CurriculumNormalizationError(f"{field}: invalid number")
             try:
                 value = float(value)
             except (OverflowError, ValueError):
-                raise CurriculumNormalizationError("remaining_credit: invalid number") from None
+                raise CurriculumNormalizationError(f"{field}: invalid number") from None
             if not math.isfinite(value) or value < 0:
-                raise CurriculumNormalizationError("remaining_credit: invalid number")
-            object.__setattr__(self, "remaining_credit", value)
+                raise CurriculumNormalizationError(f"{field}: invalid number")
+            object.__setattr__(self, field, value)
+
+    @property
+    def historical_ambiguous(self) -> bool:
+        """A mixed group whose historical share of the minimum is not stated."""
+        return self.scope == GROUP_SCOPE_MIXED and self.historical_minimum_credit is None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfirmedGroupScopeDecision:
+    """An explicit credit split for ONE mixed course group.
+
+    A plan source that only states "this group needs 6 credits" does **not**
+    state how many of them were expected before the transfer cut-off. That split
+    can never be derived from course counts, recommended terms, or earned
+    credits, so a mixed group needs this explicit, evidence-backed decision.
+
+    ``historical_minimum_credit`` is the historical share only; it is never a
+    school policy statement.
+    """
+
+    target_version_id: str
+    group_id: str
+    historical_minimum_credit: float
+    evidence: str
+
+    def __post_init__(self) -> None:
+        for name in ("target_version_id", "group_id", "evidence"):
+            _text(getattr(self, name), name)
+        value = self.historical_minimum_credit
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise CurriculumNormalizationError("historical_minimum_credit: invalid number")
+        try:
+            value = float(value)
+        except (OverflowError, ValueError):
+            raise CurriculumNormalizationError("historical_minimum_credit: invalid number") from None
+        if not math.isfinite(value) or value < 0:
+            raise CurriculumNormalizationError("historical_minimum_credit: invalid number")
+        object.__setattr__(self, "historical_minimum_credit", value)
+
+
+@dataclass(frozen=True, slots=True)
+class MakeupScope:
+    """Case-level boundary for *historical* transfer makeup decisions.
+
+    ``as_of_term`` answers exactly one question: **up to which explicit term
+    should historical makeup gaps be judged?** It is supplied by the case input
+    together with its own evidence; it is never derived from the system date,
+    from a deadline field, or from a school policy this MVP does not have.
+
+    This object stays inside the Curriculum module: it is not part of the
+    ``CurriculumProvider`` signature, ``MakeupTask``, Integration, or Planner.
+    """
+
+    target_version_id: str
+    as_of_term: str
+    evidence: str
+
+    def __post_init__(self) -> None:
+        for name in ("target_version_id", "as_of_term", "evidence"):
+            _text(getattr(self, name), name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +274,8 @@ class CurriculumDiff:
     changed_course_ids: tuple[str, ...] | None
     unrepresented_requirements: tuple[str, ...]
     elective_selections: tuple[ConfirmedElectiveSelection, ...] = ()
+    makeup_scope: MakeupScope | None = None
+    scope_decisions: tuple[InternalScopeDecision, ...] = ()
     _build_token: object = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
@@ -203,6 +287,19 @@ class CurriculumDiff:
         object.__setattr__(self, "matches", matches)
         object.__setattr__(self, "group_gaps", _items(self.group_gaps, GroupGap, "group_gaps"))
         object.__setattr__(self, "elective_selections", _elective_selections(self.new, self.elective_selections))
+        if self.makeup_scope is not None:
+            if not isinstance(self.makeup_scope, MakeupScope):
+                raise CurriculumNormalizationError("diff: unexpected makeup scope type")
+            if self.makeup_scope.target_version_id != self.new.version_id:
+                raise CurriculumNormalizationError("diff: makeup scope is outside the target curriculum")
+            decisions = _items(self.scope_decisions, InternalScopeDecision, "scope_decisions")
+            if not decisions:
+                raise CurriculumNormalizationError("diff: a makeup scope requires scope decisions")
+            if [decision.course_id for decision in decisions] != [course.course_id for course in self.new.courses]:
+                raise CurriculumNormalizationError("diff: scope decisions must cover the target entries in order")
+            object.__setattr__(self, "scope_decisions", decisions)
+        elif self.scope_decisions:
+            raise CurriculumNormalizationError("diff: scope decisions require an explicit makeup scope")
         for field in ("added_course_ids", "removed_course_ids", "changed_course_ids", "unrepresented_requirements"):
             value = getattr(self, field)
             if value is None and field != "unrepresented_requirements":
@@ -211,6 +308,19 @@ class CurriculumDiff:
             for item in values:
                 _text(item, field)
             object.__setattr__(self, field, values)
+
+    def scope_bucket(self, course_id: str) -> str | None:
+        """Return the historical/future/unresolved bucket, or ``None`` when unscoped."""
+        if self.makeup_scope is None:
+            return None
+        for decision in self.scope_decisions:
+            if decision.course_id == course_id:
+                return decision.bucket
+        raise CurriculumNormalizationError("diff: target is outside the makeup scope")
+
+    def unresolved_scope_courses(self) -> tuple[str, ...]:
+        """Target entries whose arrangement term cannot be safely classified."""
+        return tuple(decision.course_id for decision in self.scope_decisions if decision.unresolved)
 
 
 def _name(value: str) -> str:
@@ -254,6 +364,71 @@ def _exact_rule_candidates(
     return passed, None
 
 
+def _group_scope_decisions(
+    version: CurriculumVersion,
+    decisions: tuple[InternalScopeDecision, ...],
+    values: Sequence[ConfirmedGroupScopeDecision],
+) -> dict[str, ConfirmedGroupScopeDecision]:
+    """Validate explicit credit splits for mixed groups.
+
+    Only a *mixed* group (some members arranged within the historical range and
+    some after it) may carry a split. A split is refused when the source already
+    places every member on one side, or when it cannot actually be met by the
+    historical members or exceeds the stated group minimum.
+    """
+
+    if isinstance(values, (str, bytes, bytearray)) or not isinstance(values, Sequence):
+        raise CurriculumNormalizationError("confirmed_group_scope_decisions: expected a sequence")
+    bucket_by_record = {decision.source_record: decision.bucket for decision in decisions}
+    groups = {group.group_id: group for group in version.groups}
+    seen: set[str] = set()
+    result: dict[str, ConfirmedGroupScopeDecision] = {}
+    for value in values:
+        if not isinstance(value, ConfirmedGroupScopeDecision):
+            raise CurriculumNormalizationError("confirmed group scope decision: unexpected entry type")
+        if value.target_version_id != version.version_id:
+            raise CurriculumNormalizationError(
+                "confirmed group scope decision: target version is outside the supplied curriculum"
+            )
+        group = groups.get(value.group_id)
+        if group is None:
+            raise CurriculumNormalizationError(
+                "confirmed group scope decision: group is not in the supplied curriculum"
+            )
+        if value.group_id in seen:
+            raise CurriculumNormalizationError(
+                "confirmed group scope decision: duplicate decision for the same group"
+            )
+        seen.add(value.group_id)
+        if group.minimum_credit is None:
+            raise CurriculumNormalizationError(
+                "confirmed group scope decision: group minimum credit is unknown"
+            )
+        if value.historical_minimum_credit > group.minimum_credit:
+            raise CurriculumNormalizationError(
+                "confirmed group scope decision: historical share exceeds the group minimum"
+            )
+        members = [course for course in version.courses if course.group_id == value.group_id]
+        member_buckets = {bucket_by_record.get(course.source_record) for course in members}
+        if (
+            SCOPE_HISTORICAL not in member_buckets
+            or (SCOPE_FUTURE not in member_buckets and SCOPE_UNRESOLVED not in member_buckets)
+        ):
+            raise CurriculumNormalizationError(
+                "confirmed group scope decision: only a mixed group needs a credit split"
+            )
+        available = math.fsum(
+            course.credit for course in members
+            if bucket_by_record.get(course.source_record) == SCOPE_HISTORICAL
+        )
+        if value.historical_minimum_credit > available:
+            raise CurriculumNormalizationError(
+                "confirmed group scope decision: historical share exceeds the historical course pool"
+            )
+        result[value.group_id] = value
+    return result
+
+
 def build_curriculum_diff(
     old: CurriculumVersion,
     new: CurriculumVersion,
@@ -266,10 +441,30 @@ def build_curriculum_diff(
     completed_source_id: str | None = None,
     rules: MatchingRules | None = None,
     elective_selections: Sequence[ConfirmedElectiveSelection] = (),
+    makeup_scope: MakeupScope | None = None,
+    confirmed_scope_decisions: Sequence[ConfirmedScopeDecision] = (),
+    confirmed_group_scope_decisions: Sequence[ConfirmedGroupScopeDecision] = (),
 ) -> CurriculumDiff:
-    """Use supplied decisions or case rules; defaults never approve equivalence."""
+    """Use supplied decisions or case rules; defaults never approve equivalence.
+
+    When an explicit ``makeup_scope`` is supplied, every target entry is also
+    classified as historical, future, or unresolved. When it is omitted, the
+    generic curriculum-diff behaviour is preserved unchanged.
+    """
     if not isinstance(old, CurriculumVersion) or not isinstance(new, CurriculumVersion):
         raise CurriculumNormalizationError("curriculum: expected a CurriculumVersion")
+    if makeup_scope is not None:
+        if not isinstance(makeup_scope, MakeupScope):
+            raise CurriculumNormalizationError("scope: expected a MakeupScope")
+        if makeup_scope.target_version_id != new.version_id:
+            raise CurriculumNormalizationError("scope: makeup scope is outside the supplied curriculum")
+        decisions = scope_decisions(new, makeup_scope.as_of_term, confirmed_scope_decisions)
+    else:
+        if confirmed_scope_decisions:
+            raise CurriculumNormalizationError("scope: confirmed decisions require an explicit makeup scope")
+        if confirmed_group_scope_decisions:
+            raise CurriculumNormalizationError("scope: group decisions require an explicit makeup scope")
+        decisions = ()
     completed = _items(completed, CompletedCourse, "completed")
     recognitions = _items(recognitions, ConfirmedRecognition, "recognitions")
     missing_requirements = _items(missing_requirements, ConfirmedMissingRequirement, "missing_requirements")
@@ -344,6 +539,10 @@ def build_curriculum_diff(
         candidates = identity + named
         evidence = [f"{new.source_id}#{target.source_record}"]
         evidence.extend(_source(record) for record in candidates)
+        if makeup_scope is not None:
+            # The scope decision is part of the provenance of every task, so the
+            # explicit as-of basis stays auditable in the projected output.
+            evidence.append(makeup_scope.evidence)
         approved = granted[target.course_id]
         missing_decisions = missing[target.course_id]
         evidence.extend(decision.evidence for decision in (*approved, *missing_decisions))
@@ -435,23 +634,76 @@ def build_curriculum_diff(
     unrepresented: list[str] = []
     if any(course.requirement is RequirementKind.ELECTIVE and course.group_id is None for course in new.courses):
         unrepresented.append("elective course has no group requirement")
+    bucket_by_record = {decision.source_record: decision.bucket for decision in decisions}
+    group_scope = _group_scope_decisions(new, decisions, confirmed_group_scope_decisions)
     group_gaps: list[GroupGap] = []
     for group in new.groups:
         if group.minimum_credit is None:
             group_gaps.append(GroupGap(group.group_id, None, "课程组学分要求尚未确认。"))
             continue
-        try:
-            covered = math.fsum(
-                match.target.credit for match in matches
-                if match.target.group_id == group.group_id and match.status is MakeupStatus.SATISFIED
+        members = [course for course in new.courses if course.group_id == group.group_id]
+        member_buckets = {bucket_by_record.get(course.source_record) for course in members}
+        if makeup_scope is None:
+            scope = GROUP_SCOPE_UNSCOPED
+        elif SCOPE_HISTORICAL not in member_buckets:
+            # No member of this group is arranged within the historical range, so
+            # the group states no historical requirement and must not block the
+            # current historical projection.
+            scope = GROUP_SCOPE_FUTURE
+        elif SCOPE_FUTURE not in member_buckets and SCOPE_UNRESOLVED not in member_buckets:
+            scope = GROUP_SCOPE_HISTORICAL
+        else:
+            scope = GROUP_SCOPE_MIXED
+        decision = group_scope.get(group.group_id)
+        historical_minimum = None
+        if scope == GROUP_SCOPE_MIXED and decision is not None:
+            historical_minimum = decision.historical_minimum_credit
+        eligible = [
+            match for match in matches
+            if match.target.group_id == group.group_id
+            and (
+                scope != GROUP_SCOPE_HISTORICAL
+                or bucket_by_record.get(match.target.source_record) == SCOPE_HISTORICAL
             )
+            and (
+                match.status is MakeupStatus.SATISFIED
+                or (
+                    scope == GROUP_SCOPE_HISTORICAL
+                    and match.target.requirement is RequirementKind.REQUIRED
+                )
+            )
+        ]
+        try:
+            covered = math.fsum(match.target.credit for match in eligible)
         except OverflowError:
             raise CurriculumNormalizationError("group credits: total is not finite") from None
-        remaining = max(group.minimum_credit - covered, 0.0)
+        if scope == GROUP_SCOPE_FUTURE:
+            # Future-only: the historical share is zero by construction.
+            remaining = 0.0
+        elif scope == GROUP_SCOPE_MIXED and historical_minimum is None:
+            # The source never states the historical share; keep the total as the
+            # conservative bar rather than inventing a proportional split.
+            remaining = max(group.minimum_credit - covered, 0.0)
+        else:
+            bar = group.minimum_credit if historical_minimum is None else historical_minimum
+            remaining = max(bar - covered, 0.0)
         if remaining > 0:
-            group_gaps.append(GroupGap(group.group_id, remaining, "课程组仍有未确认满足的学分要求。"))
+            if scope == GROUP_SCOPE_MIXED:
+                reason = "混合课程组的历史学分要求无法从来源分割，需人工确认。"
+            elif scope == GROUP_SCOPE_FUTURE:
+                reason = "课程组要求全部安排在历史范围之后。"
+            else:
+                reason = "课程组仍有未确认满足的学分要求。"
+            group_gaps.append(GroupGap(
+                group.group_id, remaining, reason, scope, historical_minimum,
+            ))
 
-    unmet_groups = {gap.group_id for gap in group_gaps}
+    # Historical projection view: a group with no historical member is dropped
+    # entirely, so the unmet-group rewrite below cannot reach future groups.
+    historical_gaps = tuple(
+        gap for gap in group_gaps if gap.scope != GROUP_SCOPE_FUTURE
+    )
+    unmet_groups = {gap.group_id for gap in historical_gaps}
     matches = [
         CourseMatch(match.target, MakeupStatus.MANUAL_CONFIRMATION, match.candidates,
                     "选修组已满足，未修的已选课程不因此成为补修要求。", match.evidence)
@@ -478,7 +730,7 @@ def build_curriculum_diff(
             and signatures(old, course.course_id) != signatures(new, course.course_id)
         ))
     diff = CurriculumDiff(old, new, tuple(matches), tuple(group_gaps), added, removed, changed,
-                          tuple(unrepresented), elective_selections)
+                          tuple(unrepresented), elective_selections, makeup_scope, decisions)
     # Replacements and manually assembled results remain useful for inspection,
     # but cannot bypass the builder's recognition and group checks.
     object.__setattr__(diff, "_build_token", _BUILD_TOKEN)
@@ -507,6 +759,11 @@ def group_plan_covers_requirement(diff: CurriculumDiff, group_id: str) -> bool:
     Known mandatory requirements already have public tasks. Unearned elective
     requirements need an explicit choice. Pending matching or prerequisites
     stay pending; capacity never changes a task's status or the earned gap.
+
+    When an explicit makeup scope is active, coverage is judged against that
+    group's *historical* bar instead of its total minimum credit, so a group
+    whose requirement is arranged entirely after the historical range cannot
+    demand historical makeup credits.
     """
     if not isinstance(diff, CurriculumDiff):
         raise CurriculumNormalizationError("diff: expected a CurriculumDiff")
@@ -516,10 +773,29 @@ def group_plan_covers_requirement(diff: CurriculumDiff, group_id: str) -> bool:
     counts = Counter(match.target.course_id for match in diff.matches)
     if any(count != 1 for count in counts.values()):
         return False
+    if diff.makeup_scope is None:
+        bar = group.minimum_credit
+        eligible = list(diff.matches)
+    else:
+        gap = next((value for value in diff.group_gaps if value.group_id == group_id), None)
+        if gap is not None:
+            if gap.historical_ambiguous:
+                # The historical share of the minimum is unstated: never split it.
+                return False
+            if gap.scope == GROUP_SCOPE_FUTURE:
+                return gap.remaining_credit == 0
+            bar = gap.historical_minimum_credit if gap.historical_minimum_credit is not None else group.minimum_credit
+        else:
+            bar = group.minimum_credit
+        eligible = [
+            match for match in diff.matches
+            if match.target.group_id == group_id
+            and diff.scope_bucket(match.target.course_id) == SCOPE_HISTORICAL
+        ]
     selected = set(selected_elective_course_ids(diff))
     try:
         coverage = math.fsum(
-            match.target.credit for match in diff.matches
+            match.target.credit for match in eligible
             if match.target.group_id == group_id and (
                 match.status is MakeupStatus.SATISFIED
                 or match.target.requirement is RequirementKind.REQUIRED
@@ -528,7 +804,7 @@ def group_plan_covers_requirement(diff: CurriculumDiff, group_id: str) -> bool:
         )
     except OverflowError:
         return False
-    return math.isfinite(coverage) and coverage >= group.minimum_credit
+    return math.isfinite(coverage) and coverage >= bar
 
 
 def elective_plan_covers_group(diff: CurriculumDiff, group_id: str) -> bool:
@@ -541,6 +817,28 @@ def project_makeup_tasks(diff: CurriculumDiff) -> list[MakeupTask]:
     _require_built_diff(diff)
     if not diff.new.complete:
         raise CurriculumNormalizationError("target curriculum is incomplete")
+    # The scope only stops *unmet future requirements* from being reported as
+    # current makeup. An entry already confirmed SATISFIED keeps its existing
+    # public semantics and must never be withheld because of its term.
+    def historical_unmet(match: CourseMatch) -> bool:
+        if match.status is MakeupStatus.SATISFIED:
+            return False
+        return (diff.makeup_scope is not None
+                and diff.scope_bucket(match.target.course_id) == SCOPE_FUTURE)
+
+    def unresolved_unmet(match: CourseMatch) -> bool:
+        if match.status is MakeupStatus.SATISFIED:
+            return False
+        return (diff.makeup_scope is not None
+                and diff.scope_bucket(match.target.course_id) == SCOPE_UNRESOLVED)
+
+    # An uninterpretable arrangement term on an unmet requirement is a missing
+    # manual range decision, not a future course: fail closed.
+    unresolved_unmet_ids = [m.target.course_id for m in diff.matches if unresolved_unmet(m)]
+    if unresolved_unmet_ids:
+        raise CurriculumNormalizationError(
+            "makeup scope: target entries have no confirmable arrangement term"
+        )
     if diff.unrepresented_requirements:
         raise CurriculumNormalizationError("group requirements cannot be projected to MakeupTask")
     ids = [match.target.course_id for match in diff.matches]
@@ -549,16 +847,26 @@ def project_makeup_tasks(diff: CurriculumDiff) -> list[MakeupTask]:
     by_id = {match.target.course_id: match for match in diff.matches}
     groups_by_id = {group.group_id: group for group in diff.new.groups}
     for gap in diff.group_gaps:
+        if gap.scope == GROUP_SCOPE_FUTURE:
+            # No member is arranged within the historical range: nothing to project.
+            continue
         if groups_by_id[gap.group_id].minimum_credit is None:
             raise CurriculumNormalizationError("group requirements cannot be projected to MakeupTask")
+        if gap.historical_ambiguous:
+            raise CurriculumNormalizationError(
+                "group scope: mixed group minimum credit cannot be split without a decision"
+            )
         if not group_plan_covers_requirement(diff, gap.group_id):
             raise CurriculumNormalizationError("group plan cannot cover the known credit requirement")
     selected_tasks = set(selected_elective_course_ids(diff))
 
     emitted_ids = {
         match.target.course_id for match in diff.matches
-        if match.target.requirement is not RequirementKind.ELECTIVE
-        or match.status is MakeupStatus.SATISFIED or match.target.course_id in selected_tasks
+        if not historical_unmet(match)
+        and (
+            match.target.requirement is not RequirementKind.ELECTIVE
+            or match.status is MakeupStatus.SATISFIED or match.target.course_id in selected_tasks
+        )
     }
     referenced_pool: set[str] = set()
     pending = [course_id for course_id in emitted_ids if by_id[course_id].status is not MakeupStatus.SATISFIED]
@@ -571,6 +879,10 @@ def project_makeup_tasks(diff: CurriculumDiff) -> list[MakeupTask]:
                 referenced_pool.add(reference)
                 emitted_ids.add(reference)
                 pending.append(reference)
+    scope_evidence = {
+        decision.course_id: decision.evidence
+        for decision in diff.scope_decisions if decision.evidence is not None
+    }
     tasks: list[MakeupTask] = []
     for match in diff.matches:
         target = match.target
@@ -579,6 +891,9 @@ def project_makeup_tasks(diff: CurriculumDiff) -> list[MakeupTask]:
         reason = match.reason
         status = match.status
         evidence = "；".join(match.evidence)
+        if target.course_id in scope_evidence:
+            # An explicit human range decision stays auditable on the task.
+            evidence += f"；人工范围确认依据：{scope_evidence[target.course_id]}"
         if target.course_id in selected_tasks:
             reason += "人工已确认选修计划范围，所列学分是未来计划，不表示课程已修或选修组已满足。"
         elif target.course_id in referenced_pool:

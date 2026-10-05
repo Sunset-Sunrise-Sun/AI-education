@@ -1,0 +1,27 @@
+{
+  "data_source": "mock",
+  "makeup_tasks": [
+    {
+      "course_id": "SCOPE101",
+      "course_name": "示例历史必修补修课",
+      "credit": 3.0,
+      "status": "required",
+      "deadline_semester": null,
+      "recommended_semester": null,
+      "prerequisites": [],
+      "reason": "依据本 case 缺课规则，完整目标要求与已修记录中未发现通过匹配或身份未知的通过记录。",
+      "source_evidence": "mock://curriculum-demo/scope-new#row:SCOPE101；mock://curriculum-demo/scope-as-of人工假定，仅用于开发验证，不是学校转专业执行时点；case 匹配规则依据：mock://curriculum-demo/scope人工案例规则，仅用于开发验证，不是学校政策；目标方案完整性依据：mock://curriculum-demo/scope-new/完整范围说明；已修记录来源：mock://curriculum-demo/scope-completed；已修记录完整性依据：mock://curriculum-demo/scope-completed/完整范围说明"
+    },
+    {
+      "course_id": "SCOPE102",
+      "course_name": "示例历史必修正课",
+      "credit": 3.0,
+      "status": "satisfied",
+      "deadline_semester": null,
+      "recommended_semester": null,
+      "prerequisites": [],
+      "reason": "依据本 case 匹配规则，课程号、规范化名称、学分及通过事实完全匹配。",
+      "source_evidence": "mock://curriculum-demo/scope-new#row:SCOPE102；mock://curriculum-demo/scope-completed#row:1；mock://curriculum-demo/scope-as-of人工假定，仅用于开发验证，不是学校转专业执行时点；case 匹配规则依据：mock://curriculum-demo/scope人工案例规则，仅用于开发验证，不是学校政策"
+    }
+  ]
+}
