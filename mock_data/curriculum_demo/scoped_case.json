@@ -1,0 +1,133 @@
+{
+  "data_source": "mock",
+  "old": {
+    "version_id": "mock-scope-old",
+    "major": "示例old专业",
+    "cohort": "示例年级",
+    "source_id": "mock://curriculum-demo/scope-old",
+    "complete": true,
+    "completeness_evidence": "mock://curriculum-demo/scope-old/完整范围说明",
+    "course_records": [
+      {
+        "course_id": "SCOPE101",
+        "course_name": "示例历史必修补修课",
+        "credit": 3,
+        "requirement": "required",
+        "source_record": "row:SCOPE101",
+        "recommended_term_text": "2025-1",
+        "prerequisites": []
+      },
+      {
+        "course_id": "SCOPE999",
+        "course_name": "示例不相关old课程",
+        "credit": 2,
+        "requirement": "required",
+        "source_record": "row:SCOPE999",
+        "recommended_term_text": "2025-1",
+        "prerequisites": []
+      }
+    ]
+  },
+  "new": {
+    "version_id": "mock-scope-new",
+    "major": "示例new专业",
+    "cohort": "示例年级",
+    "source_id": "mock://curriculum-demo/scope-new",
+    "complete": true,
+    "completeness_evidence": "mock://curriculum-demo/scope-new/完整范围说明",
+    "course_records": [
+      {
+        "course_id": "SCOPE101",
+        "course_name": "示例历史必修补修课",
+        "credit": 3,
+        "requirement": "required",
+        "source_record": "row:SCOPE101",
+        "recommended_term_text": "2025-1",
+        "prerequisites": []
+      },
+      {
+        "course_id": "SCOPE102",
+        "course_name": "示例历史必修正课",
+        "credit": 3,
+        "requirement": "required",
+        "source_record": "row:SCOPE102",
+        "recommended_term_text": "2025-2",
+        "prerequisites": []
+      },
+      {
+        "course_id": "SCOPE201",
+        "course_name": "示例未来必修课",
+        "credit": 4,
+        "requirement": "required",
+        "source_record": "row:SCOPE201",
+        "recommended_term_text": "2026-1",
+        "prerequisites": []
+      },
+      {
+        "course_id": "SCOPE202",
+        "course_name": "示例未来必修课二",
+        "credit": 3,
+        "requirement": "required",
+        "source_record": "row:SCOPE202",
+        "recommended_term_text": "2026-2",
+        "prerequisites": []
+      },
+      {
+        "course_id": "SCOPE-E1",
+        "course_name": "示例未来选修课",
+        "credit": 2,
+        "requirement": "elective",
+        "group_id": "SCOPE-GROUP",
+        "source_record": "row:SCOPE-E1",
+        "recommended_term_text": "2026-2",
+        "prerequisites": []
+      }
+    ],
+    "group_records": [
+      {
+        "group_id": "SCOPE-GROUP",
+        "name": "示例选修池",
+        "minimum_credit": 2,
+        "source_record": "group:SCOPE-GROUP"
+      }
+    ]
+  },
+  "completed": {
+    "source_id": "mock://curriculum-demo/scope-completed",
+    "complete": true,
+    "completeness_evidence": "mock://curriculum-demo/scope-completed/完整范围说明",
+    "records": [
+      {
+        "course_id": "SCOPE102",
+        "course_name": "示例历史必修正课",
+        "credit": 3,
+        "semester": "2025-2",
+        "passed": true,
+        "course_type": "示例必修",
+        "course_id_status": "已确认",
+        "id_match_source": "mock://curriculum-demo/scope-课程号依据",
+        "source_record": "row:1"
+      }
+    ]
+  },
+  "rules": {
+    "target_version_id": "mock-scope-new",
+    "completed_source_id": "mock://curriculum-demo/scope-completed",
+    "evidence": "mock://curriculum-demo/scope人工案例规则，仅用于开发验证，不是学校政策",
+    "allow_exact_match": true,
+    "allow_confirmed_absence": true
+  },
+  "elective_selections": [
+    {
+      "target_version_id": "mock-scope-new",
+      "group_id": "SCOPE-GROUP",
+      "course_ids": ["SCOPE-E1"],
+      "evidence": "mock://curriculum-demo/scope选修计划依据，仅用于开发验证"
+    }
+  ],
+  "makeup_scope": {
+    "target_version_id": "mock-scope-new",
+    "as_of_term": "2025-2",
+    "evidence": "mock://curriculum-demo/scope-as-of人工假定，仅用于开发验证，不是学校转专业执行时点"
+  }
+}

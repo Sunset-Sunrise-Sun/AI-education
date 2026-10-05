@@ -13,14 +13,17 @@ from app.curriculum.errors import CurriculumNormalizationError
 from app.curriculum.json_reader import load_json_input, resolve_local_input
 from app.curriculum.matching import (
     ConfirmedElectiveSelection,
+    ConfirmedGroupScopeDecision,
     ConfirmedMissingRequirement,
     ConfirmedRecognition,
     CurriculumDiff,
     CurriculumResultProvider,
+    MakeupScope,
     MatchingRules,
     build_curriculum_diff,
 )
 from app.curriculum.requirements import CurriculumVersion, normalize_curriculum_version
+from app.curriculum.terms import ConfirmedScopeDecision
 from app.models.contracts import DataSource, MakeupTask
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -91,6 +94,9 @@ class CurriculumCase:
     missing_requirements: tuple[ConfirmedMissingRequirement, ...] = ()
     priority_policy: PriorityPolicy | None = None
     elective_selections: tuple[ConfirmedElectiveSelection, ...] = ()
+    makeup_scope: MakeupScope | None = None
+    confirmed_scope_decisions: tuple[ConfirmedScopeDecision, ...] = ()
+    confirmed_group_scope_decisions: tuple[ConfirmedGroupScopeDecision, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.data_source, DataSource):
@@ -104,6 +110,11 @@ class CurriculumCase:
                 raise CurriculumNormalizationError("priority_policy: unexpected type")
             if self.priority_policy.target_version_id != self.new.version_id:
                 raise CurriculumNormalizationError("priority policy: target version mismatch")
+        if self.makeup_scope is not None:
+            if not isinstance(self.makeup_scope, MakeupScope):
+                raise CurriculumNormalizationError("makeup_scope: unexpected type")
+            if self.makeup_scope.target_version_id != self.new.version_id:
+                raise CurriculumNormalizationError("makeup scope: target version mismatch")
         for key, kind in (("completed", CompletedCourse), ("recognitions", ConfirmedRecognition),
                           ("missing_requirements", ConfirmedMissingRequirement),
                           ("elective_selections", ConfirmedElectiveSelection)):
@@ -129,6 +140,10 @@ class CurriculumCase:
             evidence += (self.rules.evidence,)
         if self.priority_policy is not None:
             evidence += (self.priority_policy.evidence,)
+        if self.makeup_scope is not None:
+            evidence += (self.makeup_scope.evidence,)
+        evidence += tuple(decision.evidence for decision in self.confirmed_scope_decisions)
+        evidence += tuple(decision.evidence for decision in self.confirmed_group_scope_decisions)
         if self.data_source is DataSource.REAL and any("mock://" in value.lower() for value in sources + evidence):
             raise CurriculumNormalizationError("case: explicit Mock sources cannot be labeled real")
 
@@ -141,6 +156,9 @@ class CurriculumCase:
             rules=self.rules, recognitions=self.recognitions,
             missing_requirements=self.missing_requirements,
             elective_selections=self.elective_selections,
+            makeup_scope=self.makeup_scope,
+            confirmed_scope_decisions=self.confirmed_scope_decisions,
+            confirmed_group_scope_decisions=self.confirmed_group_scope_decisions,
         )
 
 
@@ -152,7 +170,8 @@ def normalize_curriculum_case(payload: object) -> CurriculumCase:
 def _normalize_case(payload: object, *, directory: Path | None = None) -> CurriculumCase:
     record = _object(payload, required={"data_source", "old", "new", "completed"},
                      optional={"rules", "recognitions", "missing_requirements", "priority_policy",
-                               "elective_selections"}, label="case")
+                               "elective_selections", "makeup_scope", "confirmed_scope_decisions",
+                               "confirmed_group_scope_decisions"}, label="case")
     try:
         data_source = DataSource(record["data_source"])
     except (ValueError, TypeError):
@@ -193,12 +212,31 @@ def _normalize_case(payload: object, *, directory: Path | None = None) -> Curric
     selections = _decisions(record.get("elective_selections", ()), ConfirmedElectiveSelection,
                             {"target_version_id", "group_id", "course_ids", "evidence"},
                             "elective_selections")
+    makeup_scope = None
+    if record.get("makeup_scope") is not None:
+        scope_record = _object(record["makeup_scope"],
+                               required={"target_version_id", "as_of_term", "evidence"},
+                               optional=set(), label="makeup_scope")
+        makeup_scope = MakeupScope(**scope_record)
+    confirmed_scope = _decisions(
+        record.get("confirmed_scope_decisions", ()), ConfirmedScopeDecision,
+        {"target_version_id", "target_source_record", "target_course_id", "decision", "evidence"},
+        "confirmed_scope_decisions",
+    )
+    confirmed_group_scope = _decisions(
+        record.get("confirmed_group_scope_decisions", ()), ConfirmedGroupScopeDecision,
+        {"target_version_id", "group_id", "historical_minimum_credit", "evidence"},
+        "confirmed_group_scope_decisions",
+    )
     return CurriculumCase(
         data_source=data_source, old=old, new=new, completed=rows,
         completed_source_id=completed["source_id"], completed_complete=completed.get("complete", False),
         completed_completeness_evidence=completed.get("completeness_evidence"),
         rules=rules, recognitions=recognitions, missing_requirements=missing,
         priority_policy=priority_policy, elective_selections=selections,
+        makeup_scope=makeup_scope,
+        confirmed_scope_decisions=confirmed_scope,
+        confirmed_group_scope_decisions=confirmed_group_scope,
     )
 
 
