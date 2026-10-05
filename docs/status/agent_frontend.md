@@ -782,50 +782,11 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
-- **浏览器侧诊断已全部真实执行完成**（2B-2C1B 结构诊断 + 2B-2C1C 相关性诊断，
-  均由**负责人手动执行**）：⛔ **不再需要重复运行任何一个诊断**；
-  两者的真实聚合结果均已登记（见 `docs/status/course_data.md` 与
-  `docs/data/REAL_TO_SCHEMA_GAP_REPORT.md` §4.7 / §4.7.1）；
-- **当前人工下一步：等待 DG-07B / DG-07C / DG-07D 的任务书**
-  （`docs/data/DATA_GATE_DECISIONS.md` §17；**DG-07A 契约迁移已实施 / 待 Reviewer**）；
-  ⛔ **DG-07 整体仍为 `IMPLEMENTATION PENDING`**：
-  Course Data 归一化（DG-07B）、Planner safety（DG-07C）、
-  前端 empty-meeting 展示（DG-07D）**均未开始**；
-  Data Gate **仍保持 Reopened**（⛔ 未 CLOSED；⛔ DG-01 – DG-06 不重新打开）；
-  ⛔ **本模块不自行实施**，也**不自行命名 / 拆分实施阶段**；
-  ⛔ **不再要求重复** C1B / C1C 诊断或 C1D 人工核验；
-  ⚠️ **rollout gate**：`meetings = []` 契约合法，但在 DG-07B/C/D 完成前，
-  产品链路（含前端展示）**不得**接入 empty-meeting `CourseOffering`；
-- **真实 Capture Bundle 的导入 UI**（前端产品链路）属**后续步骤**，本轮不做；
-- **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
-  `max_pages` 是**内部安全阀**，不是学校侧参数；
-  **partial snapshot 必须显式记录 completeness，不得宣称 complete**（C9）
-- **仍不允许实现层自行补齐**：`prerequisites[]` / `weekDay` / `openingSchoolName → campus` /
-  meeting-level teacher 四项保持"待确认"或"已知暂缓"（C11）；
-  **G11（部分 row 缺 `teachingTimePlaceStr`）**同样**只登记、不推测业务含义**，
-  且 **DG-07B/C/D 实施前，⛔ 不得**在 Course Data / Planner / Frontend 里
-  以任何 workaround 方式表达"排课信息不可用"（不得伪造 `Meeting`、不得过滤、不得猜时间、
-  不得把 `meetings = []` 提前接入产品链路）
-- ⚠️ **公共契约不得再自行修改**：任何后续变更仍须走 `【接口变更请求】` → 人工确认
-- ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（仅用于规模 / 小范围 / parser 验证）
-- **真实 Capture Bundle 属 Real Sanitized Capture**：**不得进入 Git**（含 `mock_data/` 与测试 fixture）
-- 真实 Curriculum / Planner provider 的接入顺序与形式**待负责人安排**
-  （Phase 2B-1 只定义了插座，未决定实现方式）
-- 2B-0 全程遵守 `docs/data/DATA_ACQUISITION_PLAN.md` 的三层数据模型与红线：
-  **Raw 不进 Git；D4 的 Raw 与逐行脱敏样本均不得进入 public 仓库；`/mock_data/` 保持人工虚构**
-- 比赛 Demo 故事线**不属于当前开发主线**，推迟到后续产品展示阶段再评估
-- 在真实 Curriculum / Planner / Course Data 稳定之前，不接 Agent / LLM
-- **分页参数人工验证已完成**（`first_page_no=1`、单页上限 200、前两页 `total=6892`）；
-  `max_pages` 是**内部安全阀**，不是学校侧参数；
-  **partial snapshot 必须显式记录 completeness，不得宣称 complete**（C9）
-- **仍不允许实现层自行补齐**：`prerequisites[]` / `weekDay` / `openingSchoolName → campus` /
-  meeting-level teacher 四项保持"待确认"或"已知暂缓"（C11）
-- ⚠️ **公共契约不得再自行修改**：任何后续变更仍须走 `【接口变更请求】` → 人工确认
-- ⛔ **`partial` snapshot 不得接入 Integration / Planner 产品链路**（仅用于规模 / 小范围 / parser 验证）
-- **真实 Capture Bundle 属 Real Sanitized Capture**：**不得进入 Git**（含 `mock_data/` 与测试 fixture）
-- 真实 Curriculum / Planner provider 的接入顺序与形式**待负责人安排**
-  （Phase 2B-1 只定义了插座，未决定实现方式）
-- 2B-0 全程遵守 `docs/data/DATA_ACQUISITION_PLAN.md` 的三层数据模型与红线：
-  **Raw 不进 Git；D4 的 Raw 与逐行脱敏样本均不得进入 public 仓库；`/mock_data/` 保持人工虚构**
-- 比赛 Demo 故事线**不属于当前开发主线**，推迟到后续产品展示阶段再评估
-- 在真实 Curriculum / Planner / Course Data 稳定之前，不接 Agent / LLM
+- **不再等待 DG-07B / DG-07C / DG-07D**：DG-07A / B / C / D 已全部 IMPLEMENTED / REVIEWED / MERGED，
+  Data Gate 已恢复 **PASSED / CLOSED**；
+- 前端继续保持展示层边界，不新增容量阈值、课程优先级、冲突推断或 Preference 执行推断；
+- 真实产品联调的前置条件转为：**complete semester snapshot + 真实 CurriculumProvider +
+  真实 PlannerProvider + Integration 接线**；
+- `partial` snapshot 仍不得进入产品链路，真实 Capture Bundle 仍不得进入 public Git；
+- G11 学校侧业务原因仍未知；前端只展示 `meetings=[]` 的中性数据状态，不命名学校业务状态；
+- 完成真实 Provider 联调后，再做 Case A 端到端 Demo 与比赛展示收尾。
