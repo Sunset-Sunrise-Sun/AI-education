@@ -5,14 +5,11 @@
     cd backend
     python -m uvicorn app.main:app --reload
 
-本文件只负责组装应用：路由、版本前缀、启动自检。
+本文件只负责组装应用：路由、版本前缀、异常处理。
 不包含任何业务算法。
 """
 
 from __future__ import annotations
-
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
@@ -20,32 +17,11 @@ from fastapi.responses import JSONResponse
 from app import __version__
 from app.api import health, mock, plan
 from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
-from app.services.mock_service import MockDataError, all_mock_data
+from app.services.mock_service import MockDataError
 from app.services.planning_runtime import PlanningRuntimeNotConfigured
 
 #: 业务接口统一版本前缀。`/health` 作为探针接口不放在前缀下。
 API_V1_PREFIX = "/api/v1"
-
-#: 启动自检失败时的报错文案前缀，便于人工在日志里快速定位。
-_STARTUP_CHECK_FAILED = "启动自检失败：Mock 数据不符合公共契约。"
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """启动自检。
-
-    启动时立刻读一遍全部 Mock 数据，让「数据坏了」在启动阶段就暴露，
-    而不是等前端调到某个接口才发现。数据损坏时进程直接启动失败，
-    避免带着错误数据对外提供服务。
-    """
-
-    try:
-        all_mock_data()
-    except MockDataError as exc:
-        raise RuntimeError(f"{_STARTUP_CHECK_FAILED}{exc}") from exc
-
-    yield
-
 
 app = FastAPI(
     title="学航·转衔 — 后端集成底座",
@@ -55,7 +31,6 @@ app = FastAPI(
         "提供永久 Mock 回放通道，以及真实规划链路的独立装配入口。\n\n"
         "**真实 Provider 尚未装配时，规划接口会明确返回 503，不会回退到 Mock。**"
     ),
-    lifespan=lifespan,
 )
 
 

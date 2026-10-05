@@ -15,7 +15,7 @@ from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
 from app.integration import PlanningOrchestrator
 from app.main import app
 from app.models.contracts import CourseOffering, MakeupTask, PlanResult, Preference
-from app.services import planning_runtime
+from app.services import mock_service, planning_runtime
 from app.services.planning_runtime import get_planning_orchestrator
 
 PLAN_PATH = "/api/v1/plan"
@@ -194,6 +194,36 @@ def test_mock_demo_remains_separate_and_marked(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.headers[MOCK_DATA_SOURCE_HEADER] == MOCK_DATA_SOURCE_VALUE
     assert "plan_result" in response.json()
+
+
+def test_broken_mock_data_does_not_block_health_or_real_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mock 损坏只影响 Mock endpoint，不得阻断应用启动或真实规划链路。"""
+
+    def broken_makeup_tasks() -> list[MakeupTask]:
+        raise mock_service.MockDataError("测试注入：Mock 数据损坏")
+
+    monkeypatch.setattr(mock_service, "load_makeup_tasks", broken_makeup_tasks)
+    orchestrator, log, _curriculum, _course_data, _planner, result = (
+        _recording_orchestrator()
+    )
+
+    with _configured_client(orchestrator) as client:
+        health_response = client.get("/health")
+        plan_response = client.post(PLAN_PATH, json=_request_payload())
+        mock_response = client.get("/api/v1/mock/demo")
+
+    assert health_response.status_code == 200
+    assert plan_response.status_code == 200
+    assert plan_response.json() == result.model_dump(mode="json")
+    assert log == ["curriculum", "course_data", "planner"]
+    assert MOCK_DATA_SOURCE_HEADER not in plan_response.headers
+
+    assert mock_response.status_code == 500
+    assert mock_response.json()["detail"]["error"] == "mock_data_invalid"
+    assert "Mock 数据损坏" in mock_response.json()["detail"]["message"]
+    assert mock_response.headers[MOCK_DATA_SOURCE_HEADER] == MOCK_DATA_SOURCE_VALUE
 
 
 def test_configured_pipeline_calls_each_provider_once_and_preserves_data() -> None:

@@ -17,3 +17,12 @@
 - 最终相关回归：50 passed；`python -m compileall -q app` 通过；
 - 首次全量回归：2016 passed / 2 skipped / 15 failed；失败均位于 Curriculum 既有测试，原因是 Windows 默认 GBK、Windows ZIP 路径行为及当前仓库绝对路径包含 `-1`，与本轮修改无关；后续以 UTF-8 模式再次复核。
 - UTF-8 全量复核：2030 passed / 2 skipped / 2 failed；剩余两项均为 Curriculum 既有 Windows 环境问题：ZIP 成员反斜杠安全断言未触发，以及仓库目录日期 `2026-10-05` 令“异常文本不得含 `-1`”断言误命中。按任务边界未修改 `backend/app/curriculum/**`。
+
+### 2026-10-05 - Rebase 与 Mock 启动耦合修复
+
+- 已 rebase 到 `main@1a740b2d960bb4bb78771d56aa1ec9f0424a12e1`；rebase 后首次全量回归为 **2043 passed / 2 skipped / 2 failed**；两项失败仍是既有 Curriculum Windows 环境问题。
+- 去除 FastAPI 启动时读取全部 Mock 文件的全局耦合；Mock 数据损坏不再阻断 `/health` 或 `/api/v1/plan`。
+- Mock endpoint 调用时仍按公共 Schema + Pydantic 严格校验；损坏时返回明确的 `500 mock_data_invalid`，不返回部分数据、不 fallback。
+- 新增回归测试：注入损坏 Mock 后应用仍可启动、health 正常、已装配 Fake Real pipeline 正常返回原始 `PlanResult`、`/api/v1/mock/demo` 明确失败。
+- 未修改 Curriculum / Planner / Course Data / Schema / Frontend。
+- 修复后验证：targeted **51 passed**；全量 backend **2044 passed / 2 skipped / 2 failed**。两项失败与 rebase 后首次全量回归相同，均为既有 Curriculum Windows 环境问题，本轮未越界修改。
