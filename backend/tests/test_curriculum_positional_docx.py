@@ -68,7 +68,11 @@ def _positional_profile(**overrides) -> dict:
         "column_count": 5,
         "columns": {"sequence": 1, "course_id": 2, "course_name": 3, "credit": 4,
                     "recommended_term_text": 5},
+        # The course-row discriminator: a real row always has a numeric index in
+        # the sequence column; a section label does not.
+        "row_kind": {"column": 1, "condition": "numeric"},
         "row_filter": [
+            {"column": 1, "condition": "numeric"},
             {"column": 2, "condition": "nonempty"},
             {"column": 4, "condition": "numeric"},
         ],
@@ -161,10 +165,6 @@ def test_positional_row_filter_drops_declared_non_data_rows(tmp_path: Path) -> N
         ["2", "小计", "", "3", ""],
     ])
     profile = _positional_profile(data_start_row=2)
-    profile["row_filter"] = [
-        {"column": 2, "condition": "nonempty"},
-        {"column": 4, "condition": "numeric"},
-    ]
     # A declared exclusion label; no semantic guessing is involved.
     profile["exclude"] = [{"column": 2, "condition": "equals", "values": ["小计", "合计"]}]
     draft = load_curriculum_docx(path, source_id="mock://mix", tables=[profile])
@@ -402,9 +402,10 @@ def test_horizontal_merge_over_a_mapped_column_is_rejected(tmp_path: Path) -> No
     table.add_row()
     table.add_row()
     row = table.add_row()
+    row.cells[0].text = "1"                             # the row-kind discriminator
     merged = row.cells[1].merge(row.cells[2])          # covers columns 2-3
-    merged.text = "DEMO101"                             # would pass a content rule
-    row.cells[3].text = "3"                             # so the row is not filtered out
+    merged.text = "DEMO101"
+    row.cells[3].text = "3"
     row.cells[4].text = "2025-1"
     document.save(str(tmp_path / "merged.docx"))
     with pytest.raises(CurriculumNormalizationError, match="merged cells overlap mapped columns"):
@@ -424,10 +425,119 @@ def test_foreign_section_merge_outside_mapped_columns_is_tolerated(tmp_path: Pat
     for index, value in enumerate(["1", "DEMO101", "示例课程一", "3", "2025-1"]):
         data.cells[index].text = value
     document.save(str(tmp_path / "section.docx"))
-    profile = _positional_profile()
-    profile["row_filter"] = [
-        {"column": 2, "condition": "nonempty"},
-        {"column": 4, "condition": "numeric"},
-    ]
-    draft = load_curriculum_docx(tmp_path / "section.docx", source_id="mock://section", tables=[profile])
+    draft = load_curriculum_docx(tmp_path / "section.docx", source_id="mock://section",
+                                 tables=[_positional_profile()])
     assert [row.course_id for row in draft.rows] == ["DEMO101"]
+
+
+# ==========================================================================
+# Row selection must not be a way to bypass the structural guards
+# ==========================================================================
+
+def _kind_row(sequence: str, course_id: str, name: str, credit: str, term: str = "2025-1") -> list[str]:
+    return [sequence, course_id, name, credit, term]
+
+
+def test_row_kind_absent_means_a_section_row_is_skipped(tmp_path: Path) -> None:
+    """Test 3: no discriminator -> definitely not a course row -> skip."""
+    path = _write(tmp_path / "section_rows.docx", [
+        [""], [""],
+        ["", "本研贯通课", "本研贯通课", "本研贯通课", "本研贯通课"],
+        _kind_row("1", "DEMO101", "示例课程一", "3"),
+        ["", "专业提升课", "专业提升课", "专业提升课", "专业提升课"],
+        _kind_row("2", "DEMO102", "示例课程二", "2"),
+    ])
+    draft = load_curriculum_docx(path, source_id="mock://sections", tables=[_positional_profile()])
+    assert [row.course_id for row in draft.rows] == ["DEMO101", "DEMO102"]
+    assert draft.issues == ()
+
+
+def test_row_kind_present_but_course_id_cell_missing_is_rejected(tmp_path: Path) -> None:
+    """Test 1: it claims to be a course row, but the course_id cell is absent."""
+    path = _write(tmp_path / "missing_id.docx", [
+        [""], [""],
+        ["1", "DEMO101", "示例课程一", "3", "2025-1"],
+        ["2"],
+    ])
+    with pytest.raises(CurriculumNormalizationError, match="narrower than the mapped columns"):
+        load_curriculum_docx(path, source_id="mock://missingid", tables=[_positional_profile()])
+
+
+def test_row_kind_present_but_credit_cell_missing_is_rejected(tmp_path: Path) -> None:
+    """Test 2: discriminator and course_id exist, the credit cell is absent."""
+    path = _write(tmp_path / "missing_credit.docx", [
+        [""], [""],
+        ["1", "DEMO101", "示例课程一", "3", "2025-1"],
+        ["2", "DEMO102", "示例课程二"],
+    ])
+    with pytest.raises(CurriculumNormalizationError, match="narrower than the mapped columns"):
+        load_curriculum_docx(path, source_id="mock://missingcredit", tables=[_positional_profile()])
+
+
+def test_row_kind_present_but_a_selector_fails_is_rejected(tmp_path: Path) -> None:
+    """A row that claims to be a course row but has a bad selector fails closed."""
+    path = _write(tmp_path / "bad_selector.docx", [
+        [""], [""],
+        ["1", "DEMO101", "示例课程一", "3", "2025-1"],
+        ["2", "DEMO102", "示例课程二", "not-a-credit", "2026-1"],
+    ])
+    with pytest.raises(CurriculumNormalizationError, match="incomplete for the declared selectors"):
+        load_curriculum_docx(path, source_id="mock://badselector", tables=[_positional_profile()])
+
+
+def test_complete_course_rows_are_read_normally(tmp_path: Path) -> None:
+    """Test 4: every selector holds on a full row -> normal read."""
+    path = _write(tmp_path / "complete.docx", [
+        [""], [""],
+        _kind_row("1", "DEMO101", "示例课程一", "3", "2025-1"),
+        _kind_row("2", "DEMO102", "示例课程二", "2.5", "2026-1"),
+    ])
+    draft = load_curriculum_docx(path, source_id="mock://complete", tables=[_positional_profile()])
+    assert [(r.course_id, r.credit, r.recommended_term_text) for r in draft.rows] == [
+        ("DEMO101", 3.0, "2025-1"), ("DEMO102", 2.5, "2026-1"),
+    ]
+    assert draft.issues == ()
+
+
+def test_row_filter_requires_an_explicit_row_kind(tmp_path: Path) -> None:
+    profile = _positional_profile()
+    del profile["row_kind"]
+    with pytest.raises(CurriculumNormalizationError, match="row_filter requires an explicit row_kind"):
+        load_curriculum_docx(_positional_doc(tmp_path / "p.docx"), source_id="mock://p",
+                             tables=[profile])
+
+
+def test_row_kind_must_use_a_numeric_discriminator(tmp_path: Path) -> None:
+    with pytest.raises(CurriculumNormalizationError, match="only a numeric discriminator"):
+        load_curriculum_docx(_positional_doc(tmp_path / "p.docx"), source_id="mock://p",
+                             tables=[_positional_profile(row_kind={"column": 1, "condition": "nonempty"})])
+
+
+def test_row_kind_must_map_a_declared_column(tmp_path: Path) -> None:
+    with pytest.raises(CurriculumNormalizationError, match="row_kind: column is not declared"):
+        load_curriculum_docx(_positional_doc(tmp_path / "p.docx"), source_id="mock://p",
+                             tables=[_positional_profile(row_kind={"column": 9, "condition": "numeric"})])
+
+
+def test_row_kind_must_also_be_a_selector(tmp_path: Path) -> None:
+    profile = _positional_profile(row_filter=[{"column": 2, "condition": "nonempty"},
+                                              {"column": 4, "condition": "numeric"}])
+    with pytest.raises(CurriculumNormalizationError, match="must also be a declared selector"):
+        load_curriculum_docx(_positional_doc(tmp_path / "p.docx"), source_id="mock://p",
+                             tables=[profile])
+
+
+def test_selector_must_read_an_identifying_column(tmp_path: Path) -> None:
+    """A selector over a non-identifying column could skip every row: rejected."""
+    profile = _positional_profile(**{
+        # "requirement" is a legal mapped field but not an identifying column,
+        # so it can never serve as a course-row selector.
+        "columns": {"sequence": 1, "course_id": 2, "course_name": 3, "credit": 4,
+                    "requirement": 5},
+        "row_filter": [{"column": 5, "condition": "nonempty"}],
+        "row_kind": {"column": 5, "condition": "numeric"},
+        "identity": {"column": 2, "values": ["DEMO101"]},
+    })
+    with pytest.raises(CurriculumNormalizationError, match="selector must read an identifying"):
+        load_curriculum_docx(_positional_doc(tmp_path / "p.docx"), source_id="mock://p",
+                             tables=[profile])

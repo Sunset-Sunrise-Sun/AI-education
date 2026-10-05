@@ -43,10 +43,17 @@ def _course_table(
         # These plans print a bilingual course name inside one cell
         # ("中文\nEnglish"); only the leading Chinese name line is the identifier.
         "course_name_lines": 1,
-        # A real course row carries an identifier and a numeric credit in the
-        # declared columns; section labels, module headers and summary rows do
-        # not. These are declared rules, not content sniffing.
+        # The row-kind discriminator: a course row always has a numeric index in
+        # the sequence column, while section / module labels do not. This is what
+        # separates "definitely not a course row" from "looks like a course row
+        # but is structurally broken".
+        "row_kind": {"column": columns["sequence"], "condition": "numeric"},
+        # Selectors that identify a course row, in this order:
+        #   sequence numeric + course_id nonempty + credit numeric.
+        # A row carrying the discriminator must satisfy all of them; a row with
+        # the discriminator but a missing or failing selector fails closed.
         "row_filter": [
+            {"column": columns["sequence"], "condition": "numeric"},
             {"column": columns["course_id"], "condition": "nonempty"},
             {"column": columns["credit"], "condition": "numeric"},
         ],

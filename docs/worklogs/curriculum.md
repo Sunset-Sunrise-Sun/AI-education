@@ -128,3 +128,20 @@
 - 使用数据：真实 D4 与两份真实培养方案**仅在本地受控目录只读使用**，未提交、未复制进仓库。**本轮结论仍是 Mock + 本地真实材料的 validation，不是真实端到端验收。**
 - 未完成/需要人工确认：7 条区间学期 decision；选修组额度定义；PHY137↔大学物理（工）上、大学英语↔大学外语、程序设计系列、MAR110↔MAR108 的课程认定；真实 as_of_term 的正式依据；G11 与 complete 2026-1 snapshot 未变。
 - 下一步：等待 Architecture Review 决定 positional 设计是否接受，以及上述 IMPLEMENTATION BUG 的处理方式；**不自行 merge main**。
+
+### 2026-10-05 - positional row selection fail-closed 修复
+- 问题：positional 的 `row_filter` 原先在 mapped-column structural guard **之前**执行，因此一个本应属于课程的数据行如果恰好缺失 `course_id` / `credit` 等 selector 列，会因 filter 不满足而 `continue`，**绕过**"row is narrower than the mapped columns" 的 fail-closed 校验（fail-open）。
+- 修复：引入显式**行身份判别器** `row_kind`（`{column, condition}`，仅支持 `numeric`，声明 `row_filter` 时必填，且该列必须同时是 selector）。判定顺序改为"先定行身份，再判结构"：
+  - 判别器不命中 → 明确是分区/模块/小计行 → skip；
+  - 判别器命中，但任一 selector 列物理缺失 → 疑似课程行但结构损坏 → **fail closed**；
+  - 判别器命中且全部 selector 命中 → 课程行 → 进入完整 structural guard（行宽、`column_count`、横向合并、锚点）；
+  - 判别器命中但某个 selector 不命中 → 部分命中 → **fail closed（不得 continue）**。
+- 真实版式为何需要判别器：Case A 的 section 行（"本研贯通课"/"专业提升课"/"人工智能与内容安全"等）在 `course_id` 列**有非空文本**但在序号与学分列非数字，因此 `[False, True, False]` 属"部分命中"。若一律按"部分命中即 fail"会把真实 section 行变成错误；`row_kind`（numeric 序号）才能区分"确定非课程行"与"疑似课程行但损坏"。
+- 附加守卫：selector 只能读取**标识性列**（`course_id` / `credit` / `recommended_term_text` / `sequence`）；映射到 `requirement` 这类可选列的 selector 直接拒绝（否则可能整表无行命中而静默 skip）。`exclude` 仍在行身份判定之前生效。
+- 真实 Case A profile 的 selector 更新为 **`sequence` numeric + `course_id` nonempty + `credit` numeric**，`row_kind = sequence numeric`。真实导入结果不变：`遥感方案.docx` 84 条、`网安方案.docx` 104 条，均 0 issue。
+- 明确未做：本轮**不修** PE102 matching bug（D4 `PE102 体育` 在 identity 命中后仍作名称候选，导致 `PE201/PE202/PE305/PE302` 误报 `possibly_equivalent`），继续作为独立 **IMPLEMENTATION BUG** 记录，等待 Architecture 决定。header mode 行为完全未变。
+- 修改文件：修改 `backend/app/curriculum/docx_reader.py`、`backend/app/curriculum/plan_profiles.py`、`backend/tests/test_curriculum_positional_docx.py`；更新 `docs/curriculum/INPUTS.md`、`docs/status/curriculum.md`、本文件。
+- 测试：positional 测试由 42 增至 **52** 项（新增：判别器缺失时 section 行仍安全跳过、判别器命中但 course_id 物理缺失 → reject、判别器命中但 credit 物理缺失 → reject、selector 不命中 → reject、完整课程行正常读取、`row_kind` 必填 / 仅 numeric / 须为已声明列 / 须同时是 selector、selector 须读标识性列）。全量后端（`PYTHONUTF8=1`）：**1991 passed、2 failed、2 skipped**。
+- 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试，未放宽断言。
+- 使用数据：真实材料仅在本地受控目录只读使用，未提交。**结论仍是本地 validation，不是真实端到端验收。**
+- 下一步：等待 Architecture Review 复验；**不 merge、不 push main**。

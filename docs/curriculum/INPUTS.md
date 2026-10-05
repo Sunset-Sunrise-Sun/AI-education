@@ -55,8 +55,9 @@ Word 解析使用明确映射，不自动解释标题、分区、先修或学校
 | `table_index` | 是 | 目标表序号（1 起） |
 | `data_start_row` | 是 | 数据起始行（1 起）。**不会**自动寻找"第一条像课程的行" |
 | `columns` | 是 | 逻辑字段 → 物理列号，**绝不推断** |
-| `row_filter` | 否 | 数据行**必须全部满足**的声明式条件 |
-| `exclude` | 否 | 命中任一即丢弃该行的声明式条件 |
+| `row_filter` | 否 | 数据行**必须全部满足**的声明式 selector（见下方判定顺序） |
+| `row_kind` | 声明 `row_filter` 时必填 | **行身份判别器**：`{column, condition}`，且该列必须同时是 `row_filter` 中的 selector |
+| `exclude` | 否 | 命中任一即丢弃该行的声明式条件（先于行身份判定） |
 | `column_count` | 否 | 声明的表宽守卫（缺省取最大映射列号） |
 | `identity` | 否 | 结构锚点：`{column, values}`，列必须已在 `columns` 中声明 |
 | `course_name_lines` | 否 | 名称单元格为双语"中文\nEnglish"时，保留前 N 行（0=保留全部） |
@@ -70,6 +71,17 @@ Word 解析使用明确映射，不自动解释标题、分区、先修或学校
 - **表宽**：数据行的物理列不得超过 `column_count`，否则失败——学校改版把整块列右移时必须报错而不是错列读取。
 - **身份锚点**：`identity` 声明某一（已映射）列必须出现指定值之一（取自首个数据行）。列被整体移动后锚点失配，导入失败。
 - **横向合并**：若某数据行存在 `gridSpan > 1` 的合并单元格且覆盖任一映射列，该行位置语义不唯一，导入失败。（纵向合并只是把分区标签下延，不影响位置，允许。）
+- **行选择（fail closed，不得成为绕过结构校验的旁路）**：先由 `row_kind` 判别器决定"这一行是不是课程行"，再判结构：
+
+  ```text
+  判别器不命中                          → 明确是非课程行（分区/模块/小计）→ skip
+  判别器命中，但任一 selector 列物理缺失  → 疑似课程行但结构损坏 → fail closed
+  判别器命中，且全部 selector 命中        → 课程行 → 进入完整 structural guard
+  判别器命中，但某个 selector 不命中      → 部分命中 → fail closed（不得 continue）
+  ```
+
+  `row_kind` 只支持 `numeric` 判别（真实课程行必有数字序号，分区标签行没有）。selector 只能读取**标识性列**（`course_id` / `credit` / `recommended_term_text` / `sequence`）；若某个 selector 映射到 `requirement` 这类可选列，会因为可能整表无行命中而被直接拒绝。真实 Case A 的 selector 为 **`sequence` numeric + `course_id` nonempty + `credit` numeric**。
+
 - **行选择**：`row_filter` / `exclude` 只使用声明式条件（`nonempty` / `numeric` / `equals` + 显式取值），没有任何内容猜测。分区标题、模块行、小计行由这些规则显式排除。
 
 没有任何自动回退：未知 `.docx`、无 profile、或 header 模式读无表头文档，一律 reject；不存在 `try header except positional`。
@@ -82,7 +94,8 @@ Word 解析使用明确映射，不自动解释标题、分区、先修或学校
   "column_count": 9,
   "columns": {"sequence": 3, "course_id": 4, "course_name": 5, "credit": 6, "recommended_term_text": 9},
   "course_name_lines": 1,
-  "row_filter": [{"column": 4, "condition": "nonempty"}, {"column": 6, "condition": "numeric"}],
+  "row_kind": {"column": 3, "condition": "numeric"},
+  "row_filter": [{"column": 3, "condition": "numeric"}, {"column": 4, "condition": "nonempty"}, {"column": 6, "condition": "numeric"}],
   "exclude": [{"column": 5, "condition": "equals", "values": ["小计", "合计"]}],
   "identity": {"column": 4, "values": ["FL101"]},
   "requirement": "required",

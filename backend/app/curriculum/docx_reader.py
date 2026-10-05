@@ -41,15 +41,19 @@ _HEADER_FIELDS = frozenset({
     "last_data_row", "requirement", "course_type", "group_id", "requirement_values",
 })
 _POSITIONAL_FIELDS = frozenset({
-    "mode", "table_index", "data_start_row", "columns", "row_filter", "exclude", "column_count",
-    "identity", "last_data_row", "requirement", "course_type", "group_id", "requirement_values",
-    "course_name_lines",
+    "mode", "table_index", "data_start_row", "columns", "row_filter", "row_kind", "exclude",
+    "column_count", "identity", "last_data_row", "requirement", "course_type", "group_id",
+    "requirement_values", "course_name_lines",
 })
 _POSITIONAL_ONLY_FIELDS = frozenset({
-    "data_start_row", "row_filter", "exclude", "column_count", "identity", "course_name_lines",
+    "data_start_row", "row_filter", "row_kind", "exclude", "column_count", "identity",
+    "course_name_lines",
 })
 _HEADER_ONLY_FIELDS = frozenset({"header_row", "expected_headers"})
 _ROW_CONDITIONS = frozenset({"numeric", "nonempty", "equals"})
+# Only these fields can prove "this is a course row": every real course row has
+# them, while a section/module label row never has all of them.
+_SELECTOR_SOURCE_FIELDS = frozenset({"course_id", "credit", "recommended_term_text", "sequence"})
 _CREDIT = re.compile(r"\+?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)\Z")
 _UNKNOWN_IDS = frozenset({"待确认", "未知", "未确认", "未提供", "pending", "unknown", "?"})
 _REVISION_TAGS = frozenset({
@@ -200,6 +204,7 @@ class _TableProfile:
     group_id: str | None
     requirement_values: tuple[tuple[str, RequirementKind], ...]
     row_filter: tuple[_RowCondition, ...] = ()
+    row_kind: tuple[int, str] | None = None
     exclude: tuple[_RowCondition, ...] = ()
     column_count: int | None = None
     identity: tuple[int, tuple[str, ...]] | None = None
@@ -288,10 +293,40 @@ def _positional_profile(spec: Mapping) -> _TableProfile:
             _fail("document profile: invalid data row range")
     conditions = _row_conditions(spec["row_filter"]) if "row_filter" in spec else ()
     excluded = _row_conditions(spec["exclude"]) if "exclude" in spec else ()
+    field_by_position = {position: key for key, position in columns}
     for condition in (*conditions, *excluded):
         if condition.column not in positions:
             # A row rule may only read a column the profile already declares.
             _fail("row_filter: column is not declared in columns")
+    # A selector must be able to tell a course row from a section row on its own;
+    # a rule over an optional column (course_type / group_id / requirement) could
+    # silently skip every row, so it is rejected outright.
+    for condition in conditions:
+        if field_by_position[condition.column] not in _SELECTOR_SOURCE_FIELDS:
+            _fail("row_filter: selector must read an identifying course column")
+    # ``row_kind`` names the one declared discriminator that decides whether a
+    # row is a course row at all. It is required whenever selectors are declared,
+    # so the profile always states how rows are told apart.
+    row_kind = None
+    if "row_kind" in spec:
+        kind = spec["row_kind"]
+        if not isinstance(kind, Mapping) or set(kind) != {"column", "condition"}:
+            _fail("row_kind: expected column and condition")
+        kind_column = _positive_int(kind["column"], "row_kind column")
+        if kind_column not in positions:
+            _fail("row_kind: column is not declared in columns")
+        kind_condition = kind["condition"]
+        if not isinstance(kind_condition, str) or kind_condition not in _ROW_CONDITIONS:
+            _fail("row_kind: unsupported condition")
+        if kind_condition != "numeric":
+            # Only a "numeric" marker is guaranteed present on every course row
+            # and absent on section labels; weaker kinds cannot discriminate.
+            _fail("row_kind: only a numeric discriminator is supported")
+        row_kind = (kind_column, kind_condition)
+    elif conditions:
+        _fail("document profile: row_filter requires an explicit row_kind")
+    if row_kind is not None and row_kind[0] not in {condition.column for condition in conditions}:
+        _fail("row_kind: discriminator column must also be a declared selector")
     declared_width = spec.get("column_count")
     if declared_width is not None:
         declared_width = _positive_int(declared_width, "column_count")
@@ -307,7 +342,7 @@ def _positional_profile(spec: Mapping) -> _TableProfile:
         _fail("course_name_lines: expected a nonnegative integer")
     return _TableProfile(
         _positive_int(spec["table_index"], "table_index"), _MODE_POSITIONAL, 0, columns, (), start,
-        last, requirement, fixed, course_type, group_id, values, conditions, excluded,
+        last, requirement, fixed, course_type, group_id, values, conditions, row_kind, excluded,
         declared_width, anchor, name_lines,
     )
 
@@ -695,25 +730,43 @@ def _import(root: ET.Element, profiles: tuple[_TableProfile, ...], source_id: st
                 (node.text or "").strip() for node in source_row.iter()
                 if node.tag in {_tag("t"), _tag("delText")}
             )
-            if positional and (profile.row_filter or profile.exclude):
-                # Deterministic, declared selection rules only (no content
-                # guessing). A row that is not a data row is dropped here, before
-                # its layout is judged, so section headers never become rows:
-                # every include rule must hold, and no exclude rule may hold.
-                values_for_rules = {
-                    condition.column: values.get(_field_for_column(profile, condition.column))
-                    for condition in (*profile.row_filter, *profile.exclude)
-                }
-                if not all(
-                    condition.matches(values_for_rules[condition.column])
-                    for condition in profile.row_filter
-                ):
-                    continue
+            if positional and profile.exclude:
+                # Explicit exclusions beat row interpretation.
                 if any(
-                    condition.matches(values_for_rules[condition.column])
+                    condition.matches(values.get(_field_for_column(profile, condition.column)))
                     for condition in profile.exclude
                 ):
                     continue
+            if positional and profile.row_filter:
+                # Row selection must not become a way to bypass the structural
+                # guards. The declared ``row_kind`` discriminator decides the row
+                # identity FIRST, then everything else follows:
+                #
+                # - no discriminator -> a section/module/summary row: skip;
+                # - discriminator present, any selector column physically absent
+                #   -> the row is structurally damaged: fail closed;
+                # - discriminator present and every selector holds -> course row:
+                #   run the full structural guards;
+                # - discriminator present but a selector fails -> partial match on
+                #   a row that claims to be a course row: fail closed.
+                kind_value = values.get(_field_for_column(profile, profile.row_kind[0]))
+                if not _RowCondition(profile.row_kind[0], profile.row_kind[1]).matches(kind_value):
+                    continue
+                selector_values = [
+                    values.get(_field_for_column(profile, condition.column))
+                    for condition in profile.row_filter
+                ]
+                if any(value is None for value in selector_values):
+                    _fail(
+                        f"table {profile.table_index} row {index}: row is narrower than the mapped columns"
+                    )
+                if not all(
+                    condition.matches(value)
+                    for condition, value in zip(profile.row_filter, selector_values)
+                ):
+                    _fail(
+                        f"table {profile.table_index} row {index}: row is incomplete for the declared selectors"
+                    )
             if positional:
                 # "Read by position" is not "read without checks": every mapped
                 # column must exist in this row's physical layout, and no
