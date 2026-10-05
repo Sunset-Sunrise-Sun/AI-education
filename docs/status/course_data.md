@@ -740,11 +740,63 @@ baseline_before != baseline_after → 整体不得标 complete，fail closed
 
 ⚠️ 该校 `total` **会漂移**（历史 6892 → 现 6880），因此三次读取必须落在**同一采集窗口**内。
 
+### Python 侧 sharded 编排（已实现 + synthetic 验证）
+
+`backend/app/course_data/sharded_capture.py`（**Course Data 内部模块**，
+⛔ 不进 `schemas/`、⛔ 不进 `docs/interfaces/`）：
+
+```text
+5 个 ShardSource（shard_id + 已加载 bundle 或本地路径，必须**显式**逐个给出）
+        ↓  load_capture_bundle() → collect_captured_pages_snapshot()   （【现有】入口）
+   5 个 OfferingSnapshot（各自 complete）
+        ↓  校验 shard 集合 / 各 shard 自洽 / 覆盖一致性
+        ↓  merge_offering_snapshots(...)                                （已 Review 通过）
+   ShardedCaptureSet{merged, shards, 计数…}
+```
+
+- `APPROVED_SHARD_IDS` = 上表五个校区的**固定顺序**（顺序即合并顺序，保证可复现；
+  ⛔ 不猜其它校区、⛔ 不自动读取下拉框、⛔ 不扫描目录发现 bundle）；
+- 公开的内部符号：`collect_sharded_capture_set` / `ShardSource` / `ShardedCaptureSet` /
+  `ShardedCaptureError` / `APPROVED_SHARD_IDS` / `SHARDED_CAPTURE_SOURCE`
+  （已并入 `app.course_data.__all__`，与 `merge_offering_snapshots` 一致）；
+- 编排层**自己负责**的 fail-closed 条件（任一不满足 → `ShardedCaptureError`，
+  ⛔ 不静默跳过、⛔ 不静默去重）：
+
+  1. baseline 恰好一个快照，且自身 complete / 计数自洽 / semester 匹配；
+  2. shard 集合**恰好等于**已批准五校区：**无缺 shard、无多余 shard、无重复 shard**；
+  3. 每个 bundle **独立** complete（各自 `loaded_count == reported_total`）；
+  4. 每个 shard `semester == expected_semester`（与 3 同一处强制，便于定位到 shard）；
+  5. 每个 shard **内部**无重复 identity（`OfferingSnapshot` 构造已强制，本层显式重申）；
+  6. `Σ shard reported_total == baseline reported_total`（分片覆盖全体、与基线一致）；
+  7. 合并结果**物化后重新计数**仍须 complete：行数 == Σ 各 shard 已加载行数 == baseline，
+     且 unique identity 数 == baseline（⛔ **不采信下层自报数字**：数的是最终交给
+     runtime 的那份数据）。
+
+- ⛔ **零网络**；⛔ 不重编号 / 不重切分页码；⛔ 不 retry；⛔ 不跳页；
+- `baseline_before == baseline_after` 的**对拍发生在调用方**（采集编排层）：
+  本函数只接受**一个**已确认的 baseline；
+- 隐私：⛔ 不读取 / 不记录课程、教师、教室、学生任何取值；错误信息只含 shard 名、
+  **最小 identity**（`semester` + `course_id` + `class_id`）、计数、bundle **文件名**
+  （⛔ 不含完整路径）；下层 `captured_pages.py` 错误信息里可能带的本地路径会被
+  **擦成文件名**（`_scrub_paths()`）。合并失败时附上 `shard[i]=校区名` 顺序表，
+  因为下层只报位置下标。
+- 测试：`backend/tests/test_course_data_sharded_capture.py`（**31 个 synthetic 测试**，
+  ⛔ 零网络、⛔ 零真实采集中间件；真实分片数字 1071/405/… ⛔ 不进测试常量）。
+- non-vacuity：11 个 mutation 逐一改坏一条检查后确认**至少一个测试变红**
+  （缺 shard / 多余 shard / 重复 shard / baseline 计数 / baseline 自洽 /
+  单 shard 自洽 / 路径擦除 / shard 名还原 / 错误类型统一）；
+  **唯一被下层掩盖**的是"同 shard 内重复"的显式重申
+  （`OfferingSnapshot.__post_init__` 已先拦下，移除它不会有测试变红 ——
+  已在代码注释里如实标注为**刻意的冗余重申**，而非独立检查）。
+
 ### 尚未实现（待 Review 通过后）
 
-- **JS 侧分片 orchestration**（五 shard 串行、各自独立分页、baseline sandwich、
+- **JS 侧分片 orchestration**（五 shard 串行、各自从 `pageNo=1` 起、shard 内
+  `expectedTotal` 取自该 shard 首页、`reached_total` 停止、baseline sandwich、
   diagnostics 外层）；
-- ⛔ 本轮**未改** collector、⛔ **未跑真实五校区采集**。
+- **runtime manifest / provenance 格式**与 **exact-artifact SHA-256 gate**
+  （属 PR #39；本轮**刻意未设计**，避免在编排能力尚未 Review 前先定格式）；
+- ⛔ 本轮**未改** collector、⛔ **未跑真实五校区采集**、⛔ **未改 Capture Bundle format**。
 
 ## 当前接口
 

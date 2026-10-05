@@ -1433,3 +1433,75 @@
 - **本轮未做**：⛔ 未改 `planning_runtime.py`、⛔ 未改 PR #39、⛔ 未改 Capture Bundle format、
   ⛔ JS 侧 orchestration **尚未实现**（待 Review 通过）。
 - 下一步：等待 Architecture Review。
+
+### 2026-10-05 - 五校区分片合并（方案 B）：sharded capture-set 编排模块（Python 侧）
+
+- 触发：Architecture Review 对上一轮 `merge_offering_snapshots()` 的裁定 ——
+  **批准新增一个 Course Data 内部 sharded capture-set orchestration 模块**，
+  ⛔ **不得写在 README 里**、⛔ **不得只做临时运维脚本**；目标链路：
+  `5 个独立 Capture Bundle 文件 → 各自 load_capture_bundle() →
+  collect_captured_pages_snapshot() → 校验五个预期 shard → baseline_before == baseline_after
+  → merge_offering_snapshots(...) → merged OfferingSnapshot`。
+- **新增模块**：`backend/app/course_data/sharded_capture.py`（Course Data **内部**，
+  ⛔ 不进 `schemas/`、⛔ 不进 `docs/interfaces/`）：
+  - `APPROVED_SHARD_IDS = (东校园, 北校园, 南校园, 深圳校区, 珠海校区)` ——
+    顺序即**合并顺序**（与调用方传入顺序无关，保证可复现）；
+  - `ShardSource(shard_id, bundle)`：`bundle` 是**已加载的 bundle** 或**本地路径**；
+    ⛔ **不提供目录扫描自动发现** —— 每一份必须由调用方**显式**给出；
+  - `collect_sharded_capture_set(*, shard_sources, baseline, expected_semester)
+    -> ShardedCaptureSet`；
+  - `ShardedCaptureSet` 记录 `merged` / 各 shard 快照 / 四个对账计数
+    （⛔ 不含任何课程、教师、学生取值）；
+  - 公开符号并入 `app.course_data.__all__`（与 `merge_offering_snapshots` 一致），
+    `__init__.py` 的流水线图补上"五 shard → 合并"这条真实路径。
+- **编排层自己负责的 fail-closed 条件**（任一不满足 → `ShardedCaptureError`，
+  `CourseDataNormalizationError` 子类，调用方**一处捕获**）：
+  1. baseline **恰好一个**快照，且自身 complete / `loaded_count == reported_total` /
+     semester 匹配；
+  2. shard 集合**恰好等于**五个已批准校区：**无缺 / 无多余 / 无重复**；
+  3. 每个 bundle **独立** complete（各自计数自洽）；
+  4. 每个 shard `semester == expected_semester`（与 3 同一处强制，便于定位到 shard）；
+  5. 每个 shard **内部**无重复 identity（`OfferingSnapshot.__post_init__` 已强制，
+     本层**显式重申**，与"跨 shard 重复"共用同一 identity 口径）；
+  6. `Σ shard reported_total == baseline reported_total`（覆盖一致）；
+  7. 合并结果**物化后重新计数**仍须 complete：行数 == Σ 各 shard 已加载行数 == baseline，
+     且 unique identity 数 == baseline（⛔ **不采信下层自报数字**）。
+- **本次修正（自查发现）**：
+  - 原先"shard semester 集合 == [expected]"的**聚合**检查是**不可达死代码**
+    （每 shard 已由条件 4 拦下）→ **删除**；
+  - 原先 `assert` 用于类型收敛 → 改为 `_require_single_snapshot()` **返回**已确认的
+    `reported_total`，⛔ 生产代码不留 `assert`；
+  - 下层 `captured_pages.py` 的"文件不存在 / JSON 非法"错误信息**含本地绝对路径**
+    （那是给本地读取场景的）→ 转述前用 `_scrub_paths()` 擦成**文件名**；
+  - 合并失败时下层只报**位置下标**（`shard[0]` / `shard[1]`）→ 本层附上
+    `shard[i]=校区名` 顺序表，并统一包装成 `ShardedCaptureError`。
+- **新增测试**：`backend/tests/test_course_data_sharded_capture.py`
+  （**31 项，纯 synthetic、零网络、零真实采集**）；
+  ⚠️ 真实分片数字（1071/405/2898/1171/1335）⛔ **不进测试文件、不作断言常量**。
+  覆盖：五 shard 全成功 / 合并顺序固定 / 结果可被现有 Provider 持有；
+  缺 shard、多余 shard、重复 shard、空列表；任一 bundle partial（含"四 complete + 一 partial"）、
+  bundle 结构非法；shard 与 baseline 的 semester 不一致；baseline 漂移两个方向、
+  baseline 非恰好一个、baseline partial；**同 shard 内重复**与**跨 shard 重复**
+  （含"不回显课程名"、"同课不同班不算重复"）；输入类型校验；
+  显式文件路径入口、文件不存在、文件 JSON 非法（**均只暴露文件名**）；
+  Capture Bundle format 常量未变。
+- **non-vacuity（mutation 验证，脚本在 repo 外，未入库）**：11 个 mutation 逐一改坏一条检查
+  → 确认**至少一个测试变红**：
+  缺 shard（2 红）/ 多余 shard（1）/ 重复 shard（1）/ baseline 恰好一个（1）/
+  baseline 自洽（7）/ 单 shard 自洽（1）/ Σ shard == baseline（2，**先加强断言**：
+  必须**归因于覆盖性**而非被下游 merge 顺手拦下）/ 路径擦除（2）/ shard 名还原（1）/
+  错误类型统一（2）。
+  **唯一被下层掩盖**：同 shard 内重复的显式重申（`OfferingSnapshot` 已先拦下，
+  移除它不会有测试变红）—— 已在代码注释中**如实标注为刻意的冗余重申**，
+  不谎称是独立检查。
+- 测试结果：sharded **29 passed**；merge **23 passed**；parser **127 passed**；
+  importer **76 passed**；collector guard **65 passed**；上述合并 320 passed；
+  full backend **2 failed / 2183 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例，未修、未 skip、未删）；
+  `compileall` exit 0；`node --check` exit 0；collector node **45 passed**。
+- **数据来源**：⛔ **未发起任何真实请求**；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
+  ⛔ **未跑真实五校区采集**。
+- **本轮未做**：⛔ 未改 Capture Bundle format；⛔ 未改 `planning_runtime.py`；
+  ⛔ 未改 PR #39；⛔ 未设计 runtime manifest / provenance 格式；⛔ 未碰 SHA-256 gate；
+  ⛔ JS 侧五校区 orchestration **仍未实现**。
+- 下一步：等待 Architecture Review（之后再决定如何接入 PR #39 的 exact-artifact gate）。

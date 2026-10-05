@@ -17,6 +17,18 @@ OfferingSnapshot（带 completeness 证据链）
 CourseDataProvider.get_course_offerings(semester)
 ```
 
+⚠️ **2026-1 深分页异常 → 校区 shard 合并路径**（Architecture Review 裁定方案 B）：
+学校接口在 **offset >= 6500** 稳定 `HTTP 600`，因此**按已确认校区维度分片**捕获
+（⛔ 不重编号、⛔ 不重切分、⛔ 不拼伪单流、⛔ 不改 Capture Bundle format）：
+
+```text
+5 份独立 Capture Bundle（各自真实捕获，⛔ 不入 Git）
+        ↓  各自 collect_captured_pages_snapshot()
+   5 个 OfferingSnapshot（各自必须 complete）
+        ↓  sharded_capture.collect_sharded_capture_set(...)   ← 编排 + fail closed
+   合并后的 complete OfferingSnapshot（唯一维度 = (semester, course_id, class_id)）
+```
+
 ⚠️ **本包是 Course Data 的内部实现，不是跨模块公共契约。**
 
 - 公共边界**只有** `CourseDataProvider.get_course_offerings(semester)`
@@ -38,7 +50,8 @@ CourseDataProvider.get_course_offerings(semester)
 - ✅ 已完成：已确认字段的确定性映射 / 校验、周次展开、`teachingTimePlaceStr` parser、
   纯本地 Raw-response import adapter、带 completeness 的内部快照、Provider 最小落点、
   零网络分页采集核心（含 completeness 证据链）、
-  **浏览器端授权采集器代码 + Capture Bridge**；
+  **浏览器端授权采集器代码 + Capture Bridge**、
+  **多 shard Capture Bundle 的内部合并编排（`sharded_capture`，纯 synthetic 验证）**；
 - ⏳ 未执行：**真实完整学期程序化采集**（由负责人在 Reviewer 合并后手动 smoke run），
   因此**尚未取得 complete semester snapshot**；
 - ⛔ **不做**：`weekDay → weekday`、`openingSchoolName → campus`
@@ -91,6 +104,14 @@ from app.course_data.schedule_parser import (
     parse_teaching_time_place,
     parse_weekday,
 )
+from app.course_data.sharded_capture import (
+    APPROVED_SHARD_IDS,
+    SHARDED_CAPTURE_SOURCE,
+    ShardedCaptureError,
+    ShardedCaptureSet,
+    ShardSource,
+    collect_sharded_capture_set,
+)
 from app.course_data.snapshot import (
     OfferingSnapshot,
     SnapshotCourseDataProvider,
@@ -98,16 +119,22 @@ from app.course_data.snapshot import (
 )
 
 __all__ = [
+    "APPROVED_SHARD_IDS",
     "CAPTURE_FORMAT",
     "CapturedPagesFetcher",
     "CourseDataNormalizationError",
     "OfferingSnapshot",
     "OpeningCoursesPageFetcher",
     "ParsedScheduleSegment",
+    "SHARDED_CAPTURE_SOURCE",
+    "ShardedCaptureError",
+    "ShardedCaptureSet",
+    "ShardSource",
     "SnapshotCourseDataProvider",
     "build_course_offering",
     "collect_captured_pages_snapshot",
     "collect_opening_courses_snapshot",
+    "collect_sharded_capture_set",
     "expand_weeks",
     "extract_meetings",
     "import_opening_courses_response",
