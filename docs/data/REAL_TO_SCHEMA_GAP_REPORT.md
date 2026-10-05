@@ -1,8 +1,9 @@
 # 真实数据 → 公共 Schema 承载能力分析（框架）
 
 > **状态：分析框架 ＋ 四轮真实材料验证 ＋ Phase 2B-2C1B / 2B-2C1C 真实结构证据
-> ＋ Phase 2B-2C1D 人工界面核验（n = 2，见 4.7.2）＋ DG-07 契约裁决（DG-07A 迁移已 merge、
-> DG-07B Course Data 归一化已实施待 Reviewer）。**
+> ＋ Phase 2B-2C1D 人工界面核验（n = 2，见 4.7.2）＋ DG-07 全链路实施收口完成。**
+> **DG-07A / B / C / D 均已 IMPLEMENTED / REVIEWED，Data Gate 已恢复 PASSED / CLOSED。**
+> ⚠️ **G11 学校侧业务原因仍未知，不写 resolved。**
 > Phase 2B-0B 取得部分公开官方材料（见 `SYSU_CASE_A_PUBLIC_EVIDENCE.md`）；
 > **Phase 2B-0B+ 取得 Case A 两份 2025 级真实培养方案（认证来源，见
 > `SYSU_CASE_A_AUTHENTICATED_CURRICULUM_EVIDENCE.md`）** → **G1 升级为「由 Case A 两份
