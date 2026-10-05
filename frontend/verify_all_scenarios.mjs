@@ -112,6 +112,7 @@ async function runTests() {
           { type: 'manual_confirmation', message: '课程等价关系需教务人工核实' },
           { type: 'missing_data', message: '缺少开课教室详细数据' },
           { type: 'schedule_unknown', message: '选中的班级排课信息在数据源中未知' },
+          { type: 'selection_required', message: '存在多个 CLEAR 候选，需要用户明确选择' },
           { type: 'unrecognized_custom_type', message: '未来扩展的自定义未决类型' },
         ],
         objective_summary: '多类型 unresolved 测试',
@@ -124,9 +125,10 @@ async function runTests() {
       if (!html.includes('待人工确认')) throw new Error('场景 4 失败：manual_confirmation 未正确翻译')
       if (!html.includes('缺少数据')) throw new Error('场景 4 失败：missing_data 未正确翻译')
       if (!html.includes('排课信息未知')) throw new Error('场景 4 失败：schedule_unknown 未正确翻译')
+      if (!html.includes('需要明确选择')) throw new Error('场景 4 失败：selection_required 未正确翻译')
       if (!html.includes('unrecognized_custom_type')) throw new Error('场景 4 失败：未知类型 fallback 未生效')
 
-      console.log('  ✓ 成功渲染 manual_confirmation、missing_data、schedule_unknown 及未知类型 fallback')
+      console.log('  ✓ 成功渲染 manual_confirmation、missing_data、schedule_unknown、selection_required 及未知类型 fallback')
     }
 
     // 场景 5: 空列表测试
@@ -152,7 +154,7 @@ async function runTests() {
         render: () => h(PlanResultPanel, { planResult: planEmpty, courseNameById: {} }),
       })
       const htmlPlan = await renderToString(appPlan)
-      if (!htmlPlan.includes('无已排定教学班') || !htmlPlan.includes('无需换班')) {
+      if (!htmlPlan.includes('当前建议课表中暂无教学班') || !htmlPlan.includes('未返回方案变更记录')) {
         throw new Error('场景 5 失败：PlanResult 空列表提示不完善')
       }
       console.log('  ✓ 所有空列表边界均优雅呈现友好提示')
@@ -196,7 +198,132 @@ async function runTests() {
       console.log('  ✓ 响应式断点完整支持 (860px / 640px)')
     }
 
-    console.log('\n=== 全部 7 项关键场景自动化测试均已通过！===')
+
+    // 场景 8: feasible 不得暗示学校可直接执行
+    console.log('[测试 8] feasible 文案不得过度承诺...')
+    {
+      const planResult = {
+        status: 'feasible',
+        selected_classes: [],
+        changes: [],
+        risks: [],
+        unresolved: [],
+        objective_summary: null,
+      }
+      const app = createSSRApp({ render: () => h(PlanResultPanel, { planResult, courseNameById: {} }) })
+      const html = await renderToString(app)
+      if (html.includes('可直接执行')) throw new Error('场景 8 失败：feasible 仍包含“可直接执行”')
+      if (!html.includes('不代表学校已经完成正式选课或审批')) throw new Error('场景 8 失败：feasible 边界说明缺失')
+      console.log('  ✓ feasible 文案保持认证范围，不冒充学校执行结果')
+    }
+
+    // 场景 9: Preference 仅展示输入，不声称 Planner 已执行
+    console.log('[测试 9] PreferencePanel 不得暗示 Planner 已执行...')
+    {
+      const preference = { avoid_cross_campus: true, max_credit: 20, preferred_courses: [], avoid_times: [] }
+      const app = createSSRApp({ render: () => h(PreferencePanel, { preference, courseNameById: {} }) })
+      const html = await renderToString(app)
+      if (html.includes('将优先过滤') || html.includes('允许调度不同校区')) {
+        throw new Error('场景 9 失败：PreferencePanel 仍包含越权求解文案')
+      }
+      if (!html.includes('以 PlanResult 输出为准')) throw new Error('场景 9 失败：Preference 边界声明缺失')
+      console.log('  ✓ PreferencePanel 只展示偏好，不声称已被 Planner 执行')
+    }
+
+    // 场景 10: risks=[] 不得推断无风险
+    console.log('[测试 10] risks=[] 不得推断无风险...')
+    {
+      const planResult = {
+        status: 'partially_feasible',
+        selected_classes: [],
+        changes: [],
+        risks: [],
+        unresolved: [],
+        objective_summary: null,
+      }
+      const app = createSSRApp({ render: () => h(PlanResultPanel, { planResult, courseNameById: {} }) })
+      const html = await renderToString(app)
+      if (html.includes('未检测到显著方案风险')) throw new Error('场景 10 失败：risks=[] 被错误解释为无风险')
+      if (!html.includes('本次 PlanResult 未返回风险项')) throw new Error('场景 10 失败：risks=[] 中性文案缺失')
+      console.log('  ✓ risks=[] 仅表示本次未返回风险项')
+    }
+
+    // 场景 11: changes=[] 不得推断无需换班
+    console.log('[测试 11] changes=[] 不得推断无需换班...')
+    {
+      const planResult = {
+        status: 'partially_feasible',
+        selected_classes: [],
+        changes: [],
+        risks: [],
+        unresolved: [{ type: 'selection_required', message: '需要用户选择' }],
+        objective_summary: null,
+      }
+      const app = createSSRApp({ render: () => h(PlanResultPanel, { planResult, courseNameById: {} }) })
+      const html = await renderToString(app)
+      if (html.includes('无需换班')) throw new Error('场景 11 失败：changes=[] 被错误解释为无需换班')
+      if (!html.includes('未返回方案变更记录')) throw new Error('场景 11 失败：changes=[] 中性文案缺失')
+      console.log('  ✓ changes=[] 仅表示没有返回变更记录')
+    }
+
+    // 场景 12: 容量展示不得引入 <=5 的业务阈值
+    console.log('[测试 12] 容量展示无前端自造阈值...')
+    {
+      const fs = await import('fs')
+      const source = fs.readFileSync('./src/components/CourseOfferingList.vue', 'utf-8')
+      const css = fs.readFileSync('./src/styles/base.css', 'utf-8')
+      if (source.includes('remaining_capacity <= 5') || source.includes('capacity-remain--low')) {
+        throw new Error('场景 12 失败：组件仍包含容量阈值业务判断')
+      }
+      if (css.includes('.capacity-remain--low')) throw new Error('场景 12 失败：CSS 仍保留容量阈值样式')
+      console.log('  ✓ 容量只展示数据，不自行判定紧俏')
+    }
+
+    // 场景 13: 地点缺失采用数据中性描述
+    console.log('[测试 13] 地点缺失使用数据中性描述...')
+    {
+      const offerings = [{
+        course_id: 'CS103',
+        course_name: '地点未知课程',
+        class_id: 'CS103-01',
+        semester: '2026-1',
+        meetings: [{ weekday: 2, start_section: 1, end_section: 2, weeks: [1,2] }],
+        data_source: 'mock',
+      }]
+      const app = createSSRApp({ render: () => h(CourseOfferingList, { offerings }) })
+      const html = await renderToString(app)
+      if (!html.includes('当前数据中无地点信息')) throw new Error('场景 13 失败：地点中性文案缺失')
+      if (html.includes('地点待公布')) throw new Error('场景 13 失败：仍在推断未来公布状态')
+      console.log('  ✓ 地点缺失仅描述当前数据状态')
+    }
+
+    // 场景 14: 静态语义防回潮
+    console.log('[测试 14] 前端业务语义静态防回潮...')
+    {
+      const fs = await import('fs')
+      const files = [
+        './src/App.vue',
+        './src/components/PreferencePanel.vue',
+        './src/components/PlanResultPanel.vue',
+        './src/utils/labels.ts',
+      ]
+      const combined = files.map((path) => fs.readFileSync(path, 'utf-8')).join('\n')
+      const forbidden = [
+        '方案可直接执行',
+        '核心排课可行',
+        '求解器将优先过滤',
+        '允许调度不同校区的可用教学班',
+        '未检测到显著方案风险',
+        '方案未发生教学班调整（无需换班）',
+        '地点待公布',
+      ]
+      for (const phrase of forbidden) {
+        if (combined.includes(phrase)) throw new Error(`场景 14 失败：发现过度业务推断文案“${phrase}”`)
+      }
+      console.log('  ✓ 关键越权文案均未回潮')
+    }
+
+    console.log('\n=== 全部 14 项关键场景自动化测试均已通过！===')
   } finally {
     await server.close()
   }
