@@ -149,6 +149,18 @@ version = draft.to_version(version_id=version_id, major=major, cohort=cohort)
 
 内存函数 `normalize_curriculum_case` 不读取文件。任何文件导入失败都会停止整个 case，不回退到 Demo，也不输出部分任务。
 
+### 真实培养方案的课程组声明（`plan_group_records`）
+
+无标签培养方案的 profile 除了选表与列位置，还可以声明**结构性的课程组事实**。真实 Case A 目标方案（网络空间安全）已确认：
+
+- table 6 `（专业选修课）` 共 37 门 / 课程学分合计 86，方案给出的**主修应修专选 = 23**（table 7 合计行，并被 table 1、table 10 独立重复）。
+- 因此建模为**一个统一池**：`group_id = CSE-ELECTIVE-POOL`、`minimum_credit = 23`；table 6 的 37 门课全部 `requirement = elective` 且带该 `group_id`。
+- table 6 内部六个 banner 分区（人工智能与内容安全 / 本研贯通课 / 网络与通信安全 / 软硬件系统及安全 / 安全基础模块 / 密码与攻防对抗）是**展示分区**，**不**各自生成 `CurriculumGroup`，23 **不**按模块拆分。
+- table 8 `（荣誉课程）`（table 9 合计应修 **0** 学分）**不属于普通主修毕业要求**，因此**不进入**目标方案的普通 requirement 导入；也**不**为它创建 `minimum_credit = 0` 的假组。荣誉课程暂留在当前模型之外。
+
+声明式表达见 `backend/app/curriculum/plan_profiles.py` 的 `plan_group_records(role)`；调用方把结果传给 `DocxImportResult.to_version(group_records=...)` 即可构造 `CurriculumGroup`。`source_record` 指向可追溯来源（如 `table:7!row:2`）。
+
+> ⚠️ 课程组的数量与额度**只能来自原文事实**：`course_type`（展示分区名）**不等于** `group_id`，课程学分合计**不等于** `minimum_credit`。
 ## 课程组与人工选修确认
 
 仅支持现有平面课程组及最低学分。组成员、最低学分和所选课程均须来自明确输入，不支持跨组抵扣、门数、互斥或复杂组合规则。已有必修任务可表达组内未来要求，无需为了必修课程额外提供选修选择。

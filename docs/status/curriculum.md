@@ -28,8 +28,11 @@
 - **DOCX 导入支持两种显式模式**：原有 `header` 模式（要求 `header_row` + 逐字匹配的 `expected_headers`）行为**完全未变**；新增 `positional` 模式用于**没有列标题行**的真实培养方案（`data_start_row` + 位置式 `columns`）。两种模式字段互不混用，未知文档 / 无 profile / header 模式读无表头文档一律 reject，**没有自动回退**。
 - **positional 模式的结构守卫**：行宽必须覆盖全部映射列；数据行物理列不得超过声明的 `column_count`（学校改版整体移列时失败而非错列读取）；`identity` 锚点必须在指定（已映射）列命中；横向合并覆盖映射列时失败。`course_name_lines` 显式声明双语名称单元格保留前 N 行。
 - **行选择 fail closed（不得成为绕过结构校验的旁路）**：先由 `row_kind` 判别器（仅支持 numeric）判定是否为课程行，再判结构 —— 判别器不命中 → 明确非课程行 skip；判别器命中但 selector 列物理缺失 → 结构损坏，fail closed；判别器命中且全部 selector 命中 → 进入完整结构校验；判别器不命中但**其余 identifying selectors 全部命中**（course_id 有值且 credit 为数字）→ 视为**判别器本身损坏**，**fail closed**（不得 skip）；只有判别器不命中且其余 selectors 未全部命中才是真实分区行可 skip。单元格"存在但为空"与"物理缺失"在 positional 下语义相同。selector 只能读标识性列（`course_id` / `credit` / `recommended_term_text` / `sequence`），映射到可选列的 selector 直接拒绝。真实 Case A selector = `sequence` numeric + `course_id` nonempty + `credit` numeric。
-- **真实 Case A 两份培养方案现已可导入**：`遥感方案.docx` 84 条课程条目、`网安方案.docx` 104 条，均 0 issue，可转成 `CurriculumVersion`。声明式 profile 见 `backend/app/curriculum/plan_profiles.py`（不含真实文件、路径或隐私字段）。真实文档仍在受控本地，未入库。
-- 最新后端回归：**2008 passed、2 failed、2 skipped**（UTF-8 模式）。两类失败均为既有环境性差异，与本次改动无关，详见下方说明。
+- **真实 Case A 两份培养方案现已可导入**：`遥感方案.docx` 84 条课程条目、`网安方案.docx` 94 条，均 0 issue，可转成 `CurriculumVersion`。声明式 profile 见 `backend/app/curriculum/plan_profiles.py`（不含真实文件、路径或隐私字段）。真实文档仍在受控本地，未入库。
+- **真实目标方案（网络空间安全）选修组已按原文确认为单一池**：table 6 `（专业选修课）` 37 门 / 课程学分 86，方案给出主修应修专选 **23**（table 7 合计行，table 1 / table 10 独立重复）→ 建模为 `group_id = CSE-ELECTIVE-POOL`、`minimum_credit = 23`，37 门课全部 `requirement=elective` 且带该 `group_id`；六个 banner 分区仅为展示，不生成独立组、不拆 23。声明见 `plan_profiles.plan_group_records("target")`，`source_record = table:7!row:2`。
+- **荣誉课程（table 8）不再作为普通主修 requirement 导入**：原文 `（荣誉课程）`、table 9 合计应修 **0** 学分；其 8 门课在 table 4 已是专业课，`CS5701/CS5702` 只从选修池导入一次 → 目标版本无重复 course_id，也**未**创建 `minimum_credit=0` 的假组。
+- **真实 Case A 投影现状**：target courses 94（elective 37）、groups 1（`CSE-ELECTIVE-POOL`，23，37 名成员）、`unrepresented_requirements = ()`（**选修组阻断已消除**）；剩余唯一阻断为 **7 条区间学期 scope unresolved**。satisfied 12 / possibly_equivalent 0 / manual_confirmation 82。
+- 最新后端回归：**2019 passed、2 failed、2 skipped**（UTF-8 模式）。两类失败均为既有环境性差异，与本次改动无关，详见下方说明。
 - 人工 Office 文件到 Provider 的计算链路已验证。真实 D2/D3、真实规则和真实端到端结果尚未验收，官方 Word 格式仍须按实物核对映射。
 
 ## 判定时点与已知环境差异
