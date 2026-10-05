@@ -1925,3 +1925,29 @@
   `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend；
   ⛔ 未 push / 未开 PR / 未 merge。
 - 下一步：等待 Architecture Review。
+
+### 2026-10-06 - Course Data Real Artifact Acceptance CLI
+
+- 新增内部 CLI `tools/validate_course_data_artifact.py`，显式参数：bundle path、expected
+  semester、scope kind/id、source audit label、可选 SQLite path；
+- Phase 1：读取 raw bytes 并用现有 `compute_artifact_sha256()` 计算 digest；调用现有
+  `load_capture_bundle()` 与 `collect_captured_pages_snapshot()`；校验后再次读取 bytes，
+  若采纳期间文件变化则 fail closed；输出只含 artifact/snapshot/scope 聚合字段；
+- Phase 2：只在 `snapshot.is_complete == true` 且调用方给出 `--sqlite` 时，调用现有
+  `SnapshotScope` / `import_offering_snapshot()` / `load_course_data_provenance()` /
+  `load_course_offerings()`，并输出写入计数、DB offering count 与 provenance read-back；
+- campus source label 固定为
+  `capture://sysu/<semester>/campus/<openingSchoolNumber>`；source 只是 audit label，
+  ⛔ 不是 provenance proof；SHA-256 只证明 exact bytes identity/integrity；
+- fail-closed：read/hash、malformed bundle、normalization、semester mismatch、scope、
+  incomplete snapshot 均非零退出；normalization/parser 异常不 skip / continue，且 CLI
+  不打印异常消息，避免回显原始 schedule token；失败前不调用 SQLite；
+- synthetic / zero-network 新增 10 项：valid complete、malformed、normalization failure
+  零 DB 写入、incomplete 零 DB 写入、SHA-256 deterministic、显式/非法 scope、SQLite
+  import、provenance round-trip、missing file 安全错误、无网络/parser 实现；
+- 验证结果：CLI targeted **10 passed**；Course Data targeted **665 passed**；
+  full backend **2 failed / 2275 passed / 2 skipped**（仅两个既有 Windows Curriculum
+  用例，未修、未 skip、未删）；`compileall` exit 0；
+- ⛔ 未改 schedule parser、collector、Capture Bundle format、public schemas、runtime、
+  Planner、Curriculum、frontend 或 PR #39；⛔ 未处理真实 artifact、未发网络请求；
+  ⛔ 未 push / 未开 PR / 未 merge。

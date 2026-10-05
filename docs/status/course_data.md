@@ -1130,3 +1130,19 @@ course_data_import（artifact 级审计；同一 (artifact, semester, scope) 只
 - **G11 仍保留为学校侧业务原因未知**：DG-07 已解决“如何安全表示和处理”，
   但没有解决“学校为什么缺少 schedule”；
 - 公共契约、fail-closed 边界、Raw / Capture 隐私规则继续保持不变。
+
+## Real Artifact Acceptance CLI（2026-10-06）
+
+- 新增内部入口 `tools/validate_course_data_artifact.py`：把本地 Capture Bundle 的
+  exact-byte SHA-256、现有 bundle validation、snapshot normalization/completeness 与
+  可选 SQLite import / provenance read-back 串成一个确定性流程；
+- CLI **只复用** `load_capture_bundle()`、`collect_captured_pages_snapshot()`、
+  `SnapshotScope`、`import_offering_snapshot()`、`load_course_data_provenance()` 与
+  `load_course_offerings()`；⛔ 不实现第二套 parser / validator / store；
+- `source` 只是显式 audit label；`artifact_sha256` 才是 exact artifact identity/integrity；
+  ⛔ source label 不构成 acquisition provenance proof；
+- hash/read、bundle、normalization、scope 或 completeness 任一失败均非零退出；
+  incomplete/normalization/scope 失败发生在任何 SQLite 调用之前；错误输出只含
+  status / exception type / stage / category 与安全聚合计数，不打印异常消息或 row/token；
+- 只有 complete snapshot 且显式给出 `--sqlite` 才调用现有 store，并回读 provenance；
+- 当前仅使用 synthetic / zero-network 测试；尚未允许 CLI 处理真实 east artifact。
