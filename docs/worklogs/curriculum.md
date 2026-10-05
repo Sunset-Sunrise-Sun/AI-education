@@ -172,3 +172,15 @@
 - 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
 - 使用数据：真实 D4 与两份培养方案仅在本地受控目录只读使用，未提交、未复制进仓库。
 - 下一步：等待 Architecture Review；**不 merge main**。
+
+### 2026-10-05 - 真实选修组建模：CSE-ELECTIVE-POOL + 荣誉课程移出普通 requirement
+- 背景（Architecture 已确认的真实原文事实）：目标方案 table 6 `（专业选修课）` 共 37 门 / 课程学分合计 86，方案给出**主修应修专选 23**（table 7 合计行 `23 | 37 | 86 | 1314 | 324.0+4周`；table 1 `专选 23`；table 10 r12 专选 应修 `23.0`，与开设学分总和 `86.0` 并排）。table 6 的六个 banner 分区（人工智能与内容安全 / 本研贯通课 / 网络与通信安全 / 软硬件系统及安全 / 安全基础模块 / 密码与攻防对抗）**不带任何独立学分数字**，全文档亦无"至少修 X 学分"或"任选 X 门"说明。
+- 建模决策：整个 table 6 是**一个池** —— `group_id = CSE-ELECTIVE-POOL`、`minimum_credit = 23`、`source_record = table:7!row:2`；六个分区仅作展示（保留在 `course_type`），**不**生成六个 `CurriculumGroup`，23 **不**拆分。
+- 实现：`plan_profiles._course_table()` 新增可选 `group_id`，目标 profile 的 table 6 传入 `CSE-ELECTIVE-POOL`（`group_id` 本就是 positional profile 的合法字段，parser 无需改动）；新增 `plan_group_records(role)` 暴露声明式 group 记录，调用方传给 `DocxImportResult.to_version(group_records=...)` 即可构造 `CurriculumGroup`。
+- 荣誉课程处理：table 8 `（荣誉课程）`（table 9 合计应修 **0** 学分）**从目标 profile 移除**，不再作为普通主修 requirement 导入；**未**创建 `minimum_credit = 0` 的假组。副作用（正向）：其 10 门课中 8 门在 table 4 已是专业课（CSE211/CSE210/CSE212/CSE309/CSE349/CSE360/CSE310/CSE362），`CS5701/CS5702` 现只从选修池导入一次 → 目标版本**无重复 course_id**（此前 104 行含 10 行荣誉课且 `CS5701/CS5702` 重复计入）。
+- 修改文件：`backend/app/curriculum/plan_profiles.py`；新增 `backend/tests/test_curriculum_elective_group.py`；更新 `docs/curriculum/INPUTS.md`、`docs/status/curriculum.md`、本文件。未改 docx_reader（`group_id` 已支持）、未改 `matching.py` 的 `unrepresented_requirements` 逻辑、未改公共 Schema / Provider / Planner / Course Data / Frontend。
+- 内部分层：本仓库内合成 fixture 覆盖 group 装配（同一 group_id、minimum_credit=23、banner 不生成组、池成员学分合计 ≠ 23、声明完整性）；真实文件侧只读验证，不提交。
+- 测试：新增 **11** 项。全量后端（`PYTHONUTF8=1`）：**2019 passed、2 failed、2 skipped**。
+- 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
+- 使用数据：真实 D4 与两份培养方案仅在本地受控目录只读使用，未提交、未复制进仓库。
+- 下一步：等待 Architecture Review；**不 merge main**。
