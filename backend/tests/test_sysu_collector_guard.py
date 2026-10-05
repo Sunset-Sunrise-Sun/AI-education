@@ -118,56 +118,123 @@ def test_collector_enforces_page_size_upper_bound(collector_source: str) -> None
 
 
 def test_collector_enforces_minimum_delay(collector_source: str) -> None:
-    """⛔ 同一 endpoint 的相邻请求下限 = **10000ms**（conservative operational minimum）。
+    """⛔ 同一 endpoint 的相邻请求下限 = **30000ms**（conservative operational minimum）。
 
-    来源是**人工实测**（短间隔连续请求稳定 `HTTP 600 / 系统异常`，
-    间隔 10 秒时北校园 pageSize=50 两页均 200）；⛔ 不声称是学校官方阈值。
+    来源是**人工实测**（短间隔连续请求稳定 `HTTP 600 / 系统异常`）；
+    ⛔ 不声称是学校官方阈值。
     """
 
-    assert "MIN_DELAY_MS = 10000" in collector_source
-    assert "DEFAULT_DELAY_MS = 10000" in collector_source
+    assert "MIN_DELAY_MS = 30000" in collector_source
+    assert "DEFAULT_DELAY_MS = 30000" in collector_source
     assert "delayMs < MIN_DELAY_MS" in collector_source
-    # ⛔ 旧的 1 秒 / 1.5 秒取值不得残留
+    # ⛔ 旧的更小取值不得残留
     assert "MIN_DELAY_MS = 1000;" not in collector_source
     assert "DEFAULT_DELAY_MS = 1500;" not in collector_source
+    assert "MIN_DELAY_MS = 10000;" not in collector_source
+    assert "DEFAULT_DELAY_MS = 10000;" not in collector_source
 
 
-def test_collector_paces_every_consecutive_request(collector_source: str) -> None:
-    """⛔ pacing 必须覆盖**所有四类相邻请求**，不允许只在同 shard 页间 sleep：
+def test_collector_enforces_global_batch_pacing_constants(collector_source: str) -> None:
+    """⛔ 全局 batch pacing：每 5 个成功请求冷却 5 分钟（保守运营策略）。
 
-    ```text
-    baseline_before → first shard    ：shard 循环顶部 sleep
-    shard page      → shard next page：分页核心内部 sleep
-    one shard       → next shard     ：shard 循环顶部 sleep
-    last shard      → baseline_after ：baseline_after 之前的显式 sleep
-    ```
-
-    ⛔ 所有 `sleep()` 都必须传**变量 / 常量**，不得传字面量（否则会绕过下限）。
+    ⚠️ 人工 sustained pacing 实测：`pageSize=50` + 30 秒间隔连续 7 次成功后
+    第 8 次即 `HTTP 600`；⇒ "5-request batch + 5-minute cooldown"
+    **不是学校公开阈值**。
     """
 
-    assert collector_source.count("await sleep(") == 3, (
-        "恰好三处 sleep：分页核心内、shard 循环顶部、baseline_after 之前"
+    assert "MAX_REQUESTS_PER_BATCH = 5" in collector_source
+    assert "BATCH_COOLDOWN_MS = 300000" in collector_source
+    # ⛔ 不接受调用方覆盖 batch 大小 / 冷却时长（白名单里没有这两个键）
+    assert "MAX_REQUESTS_PER_BATCH = 5;" in collector_source and (
+        "opts.maxRequestsPerBatch" not in collector_source
     )
-    assert "await sleep(delayMs);" in collector_source
-    assert collector_source.count("await sleep(resolved.delayMs);") == 2
+    assert "opts.batchCooldownMs" not in collector_source
+    assert '"maxRequestsPerBatch"' not in collector_source
+    assert '"batchCooldownMs"' not in collector_source
 
-    # ⛔ 不得出现字面量间隔（sleep(0) / sleep(1000) …）
-    assert re.search(r"await sleep\(\s*[0-9]", collector_source) is None, (
-        "sleep 的间隔不得写成字面量"
+
+def test_collector_has_exactly_one_global_pacing_controller(collector_source: str) -> None:
+    """⛔ 等待与批次计数只允许存在于**一个**全局 pacing controller 里。
+
+    ```text
+    第 1 个请求            → 立即发送
+    其它请求（前一批未满）  → sleep(delayMs)
+    前一批已满 5 个成功请求 → sleep(max(BATCH_COOLDOWN_MS, delayMs))
+    ```
+    """
+
+    assert collector_source.count("function createRequestPacer(") == 1
+    # 定义 1 处 + 两个入口各创建 1 个（每次 run 恰好一个 controller）；只看代码，不看注释
+    assert _collector_code_only(collector_source).count("createRequestPacer(") == 3
+
+    pacer = _js_function_slice(
+        collector_source, "function createRequestPacer(", "function requireAllowedHost("
     )
 
-    # 分页核心的 sleep 在**第一页之后**（页间），shard 循环顶部的 sleep 在**取页之前**
-    core_start = collector_source.index("async function collectPages(")
-    core_end = collector_source.index("async function requestReportedTotal(")
-    core = collector_source[core_start:core_end]
-    assert "if (index > 0) {" in core
-    assert core.index("if (index > 0) {") < core.index("await requestPage(")
+    # 全文件只有两处等待，且都在 controller 内
+    assert collector_source.count("await sleep(") == 2
+    assert pacer.count("await sleep(") == 2
 
-    sharded = _collect_sharded_slice(collector_source)
-    assert sharded.index("await sleep(resolved.delayMs);") < sharded.index("await collectPages(")
-    assert sharded.index("baselineAfter = await requestReportedTotal(") > sharded.index(
-        "await sleep(resolved.delayMs);"
+    assert "if (isFirstRequest) {" in pacer, "第 1 个请求必须立即发送"
+    assert "successfulInBatch >= MAX_REQUESTS_PER_BATCH" in pacer
+    assert "Math.max(BATCH_COOLDOWN_MS, delayMs)" in pacer, (
+        "批次边界只等冷却（若 delayMs 更大则取较大者），⛔ 不叠加"
     )
+
+    # ⛔ 等待时长不得写成字面量
+    assert re.search(r"await sleep\(\s*[0-9]", collector_source) is None
+
+
+def test_collector_does_not_duplicate_pacing_outside_the_controller(
+    collector_source: str,
+) -> None:
+    """⛔ baseline / 分页核心 / shard 循环里**不得**再各自等待或各自计数。"""
+
+    blocks = {
+        "collectPages": _js_function_slice(
+            collector_source, "async function collectPages(", "async function requestReportedTotal("
+        ),
+        "requestReportedTotal": _js_function_slice(
+            collector_source, "async function requestReportedTotal(", "async function collect("
+        ),
+        "collectSharded": _collect_sharded_slice(collector_source),
+    }
+
+    for name, block in blocks.items():
+        assert "await sleep(" not in block, f"{name} 不得自己等待（必须交给全局 pacer）"
+        assert "successfulInBatch" not in block, f"{name} 不得自己维护批次计数"
+
+
+def test_collector_every_paced_request_goes_through_the_controller(
+    collector_source: str,
+) -> None:
+    """⛔ 每个受 pacing 的请求都必须在 `requestPage()` 里经过同一个 controller。"""
+
+    # 发请求之前统一等一次；响应校验成功之后统一记一次成功
+    assert collector_source.count("pacer.beforeRequest()") == 1
+    assert collector_source.count("pacer.noteSuccess()") == 1
+
+    # 分页核心与 baseline 探针都把 pacer 传下去
+    assert (
+        "requestPage(semester, currentPageNo, pageSize, openingSchoolNumber, pacer)"
+        in collector_source
+    )
+    assert "requestPage(semester, FIRST_PAGE_NO, SHARD_PAGE_SIZE, undefined, pacer)" in (
+        collector_source
+    )
+
+    # baseline_before 与 baseline_after 走同一个 controller（同一个 run 的全局计数）
+    assert collector_source.count("requestReportedTotal(resolved.semester, pacer)") == 2
+
+    # 两个分页调用点（collect / 每个 shard）都传入 pacer
+    for marker in ("var core = await collectPages(", "core = await collectPages("):
+        index = collector_source.index(marker)
+        window = collector_source[index : index + 260]
+        assert "pacer" in window, f"{marker} 必须把 pacer 传下去"
+
+    # ⛔ 一次性诊断仍然不传 pacer（它们各自只发 1 次请求、不受批次影响）
+    assert "requestPage(semester, DIAGNOSTIC_PAGE_NO, DIAGNOSTIC_PAGE_SIZE)" in collector_source
+    assert "requestPage(semester, CORRELATION_PAGE_NO, CORRELATION_PAGE_SIZE)" in collector_source
 
 
 def test_collector_does_not_add_retry_backoff_skip_or_resume(collector_source: str) -> None:
@@ -178,11 +245,7 @@ def test_collector_does_not_add_retry_backoff_skip_or_resume(collector_source: s
     因此本断言只看**非注释代码行**。
     """
 
-    code = "\n".join(
-        line
-        for line in collector_source.splitlines()
-        if not line.lstrip().startswith(("*", "//", "/*"))
-    )
+    code = _collector_code_only(collector_source)
 
     for token in ("retry", "backoff", "resume", "skip", "attempt", "setInterval"):
         assert token not in code, f"⛔ 不得出现重试 / 跳页 / 续采 / 定时轮询写法：{token}"
@@ -592,8 +655,10 @@ def test_diagnostic_uses_the_shared_request_path(collector_source: str) -> None:
     #   `collectPages()` 分页循环（`collect()` 与每个 shard 都走它）、
     #   `requestReportedTotal()` baseline 探针、
     #   2C1B / 2C1C 诊断各只调一次。
-    assert collector_source.count("requestPage(") == collector_source.count("await requestPage(") + 1
-    assert collector_source.count("await requestPage(") == 4
+    # ⚠️ 只看**代码**（注释里也提到 `requestPage()`）。
+    code = _collector_code_only(collector_source)
+    assert code.count("requestPage(") == code.count("await requestPage(") + 1
+    assert code.count("await requestPage(") == 4
 
     # 唯一的 `fetch(` 仍在 `requestPage` 内部（⛔ 新增入口不得自己发请求）
     assert collector_source.count("fetch(") == 1
@@ -899,6 +964,20 @@ def _js_function_slice(collector_source: str, start_marker: str, end_marker: str
         slice_ = slice_[:tail_comment]
 
     return slice_
+
+
+def _collector_code_only(collector_source: str) -> str:
+    """去掉**整行注释**后的源码（用于"某写法是否真的出现在代码里"的计数）。
+
+    ⚠️ 说明性文字里会提到 `createRequestPacer()` / `requestPage()` / `backoff` 等，
+    因此这类断言必须只看**非注释代码行**，否则计数会被文档带偏。
+    """
+
+    return "\n".join(
+        line
+        for line in collector_source.splitlines()
+        if not line.lstrip().startswith(("*", "//", "/*"))
+    )
 
 
 def test_correlation_diagnostic_is_exposed_and_not_auto_called(collector_source: str) -> None:
@@ -1496,7 +1575,8 @@ def test_sharded_reuses_the_single_paging_core(collector_source: str) -> None:
     """⛔ 只有一个分页循环：五个 shard 全部走 `collectPages()`。
 
     这样 `pageNo` 从 1 起、`pageSize`、`expectedTotal` 取本 shard 第一页、
-    `reached_total` 停止、串行 delay 全部是**同一份**实现，不存在第二套分页逻辑。
+    `reached_total` 停止、以及 **pacing** 全部是**同一份**实现，
+    不存在第二套分页 / 等待逻辑。
     """
 
     assert collector_source.count("async function collectPages(") == 1
@@ -1506,7 +1586,9 @@ def test_sharded_reuses_the_single_paging_core(collector_source: str) -> None:
     body = _collect_sharded_slice(collector_source)
 
     assert body.count("await collectPages(") == 1, "五个 shard 必须复用同一个分页核心"
-    assert "await sleep(resolved.delayMs);" in body, "每个 shard 的第一个请求也要间隔 delayMs"
+    # ⛔ 编排层**不自己等待**：相邻请求的间隔（含跨 shard / 跨批次）由全局 pacer 保证
+    assert "await sleep(" not in body, "五校区编排层不得自己 sleep"
+    assert "pacer" in body[body.index("await collectPages(") : body.index("await collectPages(") + 260]
 
     # ⛔ 不得并发 / 定时轮询 / 重试
     for forbidden in ("Promise.all", "Promise.allSettled", "Promise.race", "setInterval", "retry"):

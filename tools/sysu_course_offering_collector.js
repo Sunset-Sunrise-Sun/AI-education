@@ -30,6 +30,8 @@
  *     await window.XuehangSysuCollector.diagnoseMissingScheduleCorrelation({ semester: "2026-1" })
  *
  * 默认只跑 2 页 smoke test；要跑更多页必须显式提高 `maxPages`，并会弹出确认框。
+ * **全局 batch pacing**：同一 endpoint 的相邻请求至少间隔 30 秒，
+ * 且每累计 5 个**成功**请求先冷却 5 分钟（计数是整个采集 run 的全局计数）。
  *
  * 取出结果：
  *
@@ -96,16 +98,36 @@
   /**
    * 串行请求间隔（**同一 endpoint 的所有连续请求**都必须满足）。
    *
-   * ⚠️ **10 秒是当前的 conservative operational minimum**，来源是**人工实测**：
+   * ⚠️ **30 秒是当前的 conservative operational minimum**，来源是**人工实测**：
    * 同一 endpoint 短间隔连续请求会稳定出现
-   * `HTTP 600 / code=50015000 / 系统异常`；而间隔 10 秒时
-   * （北校园 pageSize=50：page1 → 等 10 秒 → page2）两次都是 HTTP 200。
+   * `HTTP 600 / code=50015000 / 系统异常`。
    * ⛔ **不声称**这是学校官方公布的阈值，也不据此推断任何服务端限流实现。
    *
    * ⛔ 调用方**只能把它调大**（更慢、更保守），不能调小。
    */
-  var DEFAULT_DELAY_MS = 10000;
-  var MIN_DELAY_MS = 10000;
+  var DEFAULT_DELAY_MS = 30000;
+  var MIN_DELAY_MS = 30000;
+
+  /**
+   * **全局 batch pacing**（Architecture Review 裁定）。
+   *
+   * ⚠️ 人工 sustained pacing 实测：`pageSize=50` + 30 秒间隔，
+   * **连续 7 次成功（200）后第 8 次**出现 `HTTP 600 / code=50015000`。
+   * ⇒ 单纯继续加大单一 `delayMs` 不足以规避，因此改为
+   * "**每 5 个成功请求 → 冷却 5 分钟**"的批次节奏。
+   *
+   * ⚠️ 因此 **5-request batch + 5-minute cooldown 是当前保守运营策略**，
+   * 来自上述人工实测，⛔ **不是学校公开阈值**。
+   *
+   * ⛔ 计数是**整个 sharded collection 的全局请求数**
+   * （`baseline_before` + 所有 shard 的页 + `baseline_after`）：
+   * ⛔ **不是 per-shard**，⛔ 不会在 shard 边界重置。
+   *
+   * ⛔ `BATCH_COOLDOWN_MS` 本身已大于普通间隔，所以批次边界**只等冷却**，
+   * ⛔ 不再叠加一次 `delayMs`；若调用方把 `delayMs` 调得更大则取较大者。
+   */
+  var MAX_REQUESTS_PER_BATCH = 5;
+  var BATCH_COOLDOWN_MS = 300000;
 
   /** 默认只做 2 页 smoke test；50 是**客户端安全上限**，不是学校系统限制。 */
   var DEFAULT_MAX_PAGES = 2;
@@ -246,6 +268,57 @@
     return new Promise(function (resolve) {
       setTimeout(resolve, ms);
     });
+  }
+
+  /**
+   * **全局 request pacing controller**（每个采集 run **恰好一个**）。
+   *
+   * 它是本文件**唯一**决定"下一次请求什么时候可以发"的地方：
+   * - ⛔ `baseline_before` / `collectPages()` / shard 循环 / `baseline_after`
+   *   **都不再各自 sleep、也不各自计数** —— 它们只是把同一个 controller
+   *   交给 `requestPage()`，由后者在**发请求之前**调用 `beforeRequest()`；
+   * - 计数是**全局**的（整个 run 的所有请求：baseline + 所有 shard 的页 + baseline_after），
+   *   ⛔ 不是 per-shard，也⛔ 不会在 shard 边界重置；
+   * - 规则：
+   *
+   * ```text
+   * 第 1 个请求                → 立即发送（不等待）
+   * 其它请求                   → 先等 delayMs（>= MIN_DELAY_MS）
+   * 已累计 5 个**成功**请求时  → 改为先等 max(BATCH_COOLDOWN_MS, delayMs)
+   *                              （冷却本身已 > 普通间隔，⛔ 不叠加）
+   * ```
+   *
+   * ⛔ 失败（HTTP 非 200 / code 非 200 / 网络错误）**不计入**成功数，
+   * 而且会直接 fail closed 终止整个 run：⛔ 不重试、⛔ 不 backoff 重试、
+   * ⛔ 不续采（no resume）、⛔ 不跳页。
+   */
+  function createRequestPacer(delayMs) {
+    var isFirstRequest = true;
+    var successfulInBatch = 0;
+
+    return {
+      /** 发请求**之前**调用：保证与上一个请求的间隔（含批次冷却）。 */
+      beforeRequest: async function () {
+        if (isFirstRequest) {
+          isFirstRequest = false;
+          return;
+        }
+
+        if (successfulInBatch >= MAX_REQUESTS_PER_BATCH) {
+          successfulInBatch = 0;
+          // 冷却本身已超过普通间隔；若调用方把 delayMs 调得更大则取较大者。
+          await sleep(Math.max(BATCH_COOLDOWN_MS, delayMs));
+          return;
+        }
+
+        await sleep(delayMs);
+      },
+
+      /** 请求**成功后**调用（HTTP 200 且 code 200）：只在这里推进批次计数。 */
+      noteSuccess: function () {
+        successfulInBatch += 1;
+      }
+    };
   }
 
   function requireAllowedHost() {
@@ -656,10 +729,21 @@
    * `openingSchoolNumber` 为 `undefined` 时是 **baseline（全量）** 请求；
    * 传入已批准校区号时是 **该 shard** 的请求。
    *
+   * `pacer` 为本次 run 的**全局 pacing controller**：
+   * - 发请求**之前**调用 `beforeRequest()`（⛔ 这是唯一的等待入口）；
+   * - 响应校验**成功**后调用 `noteSuccess()`（推进全局批次计数）。
+   *
+   * ⚠️ 一次性诊断入口（2C1B / 2C1C）只发 1 次请求、不传 `pacer`：
+   * 它们不受批次影响，也⛔ 不改动任何计数。
+   *
    * `?_t=` 只是**复现已观察到的请求形态**（已观察请求带时间戳参数），
    * 不代表任何业务语义。
    */
-  async function requestPage(semester, pageNo, pageSize, openingSchoolNumber) {
+  async function requestPage(semester, pageNo, pageSize, openingSchoolNumber, pacer) {
+    if (pacer) {
+      await pacer.beforeRequest();
+    }
+
     var url = ENDPOINT_PATH + "?_t=" + Date.now();
 
     var response;
@@ -703,7 +787,14 @@
       fail("第 " + pageNo + " 页 JSON 解析失败。已整体停止。");
     }
 
-    return validatePagePayload(payload, pageNo);
+    var data = validatePagePayload(payload, pageNo);
+
+    // ⛔ 只有"HTTP 200 且 code 200 且结构合法"才算成功：全局批次计数只在这里推进。
+    if (pacer) {
+      pacer.noteSuccess();
+    }
+
+    return data;
   }
 
   // ---------------------------------------------------------------------
@@ -766,21 +857,20 @@
   /**
    * **唯一**的分页循环（`collect()` 与每个 shard 都走这里）。
    *
-   * - 严格串行：一页一页取，中间 sleep；⛔ 不并发、⛔ 不预取、⛔ 不重试、⛔ 不跳页；
+   * - 严格串行：一页一页取；⛔ 不并发、⛔ 不预取、⛔ 不重试、⛔ 不跳页；
    * - `firstPageNo` 恒为 `FIRST_PAGE_NO`（1）：调用方**无法**改变起始页；
    * - `expectedTotal` 取**本次第一页**的 `data.total`；中途变化 → 整体失败；
    * - `accumulatedRows === expectedTotal` → `reached_total` 并停止；
-   * - **pacing**：本循环内的**每一对相邻请求**之间都 sleep `delayMs`
-   *   （`delayMs >= MIN_DELAY_MS`，由 `resolvePagingOptions()` 单点把关）。
-   *   ⚠️ 跨 shard / baseline 的相邻请求由 `collectSharded()` 负责 sleep，
-   *   但**用的是同一个下限**（见该函数的 pacing 说明）。
+   * - **pacing**：本循环**不自己 sleep、也不自己计数**；每一对相邻请求的间隔
+   *   （含批次冷却）全部由传入的**全局 pacing controller** 在 `requestPage()`
+   *   里统一保证 —— 见 `createRequestPacer()`。
    *
    * ⚠️ `openingSchoolNumber === undefined` 时为 **baseline（全量）** 请求形态；
    * 传入已批准校区号时为**该 shard** 的请求形态。
    *
    * 返回值只有结构性计数与**已脱敏**的 pages（不判断完整性、不产出 bundle）。
    */
-  async function collectPages(semester, pageSize, maxPages, delayMs, openingSchoolNumber) {
+  async function collectPages(semester, pageSize, maxPages, pacer, openingSchoolNumber) {
     var pages = [];
     var expectedTotal = null;
     var accumulatedRows = 0;
@@ -790,11 +880,7 @@
     for (var index = 0; index < maxPages; index += 1) {
       var currentPageNo = FIRST_PAGE_NO + index;
 
-      if (index > 0) {
-        await sleep(delayMs);
-      }
-
-      var data = await requestPage(semester, currentPageNo, pageSize, openingSchoolNumber);
+      var data = await requestPage(semester, currentPageNo, pageSize, openingSchoolNumber, pacer);
       requests += 1;
 
       if (expectedTotal === null) {
@@ -855,9 +941,12 @@
    * ⛔ 请求体**只有** `yearTerm`（不带 `openingSchoolNumber`）；
    * ⛔ 不做字段最小化、⛔ 不做脱敏、⛔ 不产出 bundle —— 它只读一个整数。
    * ⛔ 只发**一次**请求（不循环、不重试）。
+   *
+   * ⚠️ 它**也走同一个全局 pacing controller**：`baseline_before` 与
+   * `baseline_after` 都计入全局请求数（⛔ 不是"免费请求"）。
    */
-  async function requestReportedTotal(semester) {
-    var data = await requestPage(semester, FIRST_PAGE_NO, SHARD_PAGE_SIZE, undefined);
+  async function requestReportedTotal(semester, pacer) {
+    var data = await requestPage(semester, FIRST_PAGE_NO, SHARD_PAGE_SIZE, undefined, pacer);
     return data.total;
   }
 
@@ -874,6 +963,8 @@
           "pageSize=" + resolved.pageSize + "\n" +
           "最多请求 " + resolved.maxPages + " 页\n" +
           "请求间隔至少 " + resolved.delayMs / 1000 + " 秒\n" +
+          "批次策略：每 " + MAX_REQUESTS_PER_BATCH + " 个成功请求后冷却 " +
+          BATCH_COOLDOWN_MS / 60000 + " 分钟\n" +
           "是否继续？"
       );
       if (!confirmed) {
@@ -881,12 +972,15 @@
       }
     }
 
+    // 本次 run 的**唯一** pacing controller（分页循环不再自己 sleep / 计数）。
+    var pacer = createRequestPacer(resolved.delayMs);
+
     // ⛔ 不带 openingSchoolNumber：`collect()` 仍是**全量**（baseline）入口。
     var core = await collectPages(
       resolved.semester,
       resolved.pageSize,
       resolved.maxPages,
-      resolved.delayMs,
+      pacer,
       undefined
     );
 
@@ -968,23 +1062,29 @@
    * baseline_after 并判稳定性；**只有** baseline 稳定之后才允许判覆盖性。
    * 否则会拿一个未确认的 snapshot window 去解释覆盖差异。
    *
-   * ⛔ **pacing（保守节流）**：`delayMs` 适用于**同一 endpoint 的所有连续请求**，
-   * 不只是同一 shard 的页间。四类间隔**全部**受同一个下限约束（默认 = 下限 = 10000ms）：
+   * ⛔ **pacing（全局 batch pacing）**：本函数创建**一个**全局 pacing controller，
+   * 它同时管 `baseline_before`、所有 shard 的每一页、以及 `baseline_after`：
    *
    * ```text
-   * baseline_before → first shard   ：shard 循环顶部的 sleep
-   * shard page      → shard next page：collectPages() 内部的 sleep
-   * one shard       → next shard    ：shard 循环顶部的 sleep（含上一 shard 最后一页）
-   * last shard      → baseline_after：baseline_after 之前的显式 sleep
+   * 第 1 个请求（= baseline_before）立即发送
+   * 其它相邻请求                  ：先等 delayMs（默认 = 下限 = 30000ms）
+   * 全局已累计 5 个成功请求时     ：改为先等 max(BATCH_COOLDOWN_MS, delayMs)
+   *                                = 300000ms（冷却本身 > 普通间隔，⛔ 不叠加）
    * ```
    *
-   * ⛔ 10 秒是**人工实测**得到的 conservative operational minimum（短间隔连续请求会稳定
-   * `HTTP 600 / 系统异常`），⛔ 不声称是学校官方阈值。
+   * ⛔ 计数是**整个 sharded collection 的全局计数**，
+   * ⛔ **不是 per-shard**、⛔ 不会在 shard 边界重置（跨 shard / 跨 baseline 连续计数）。
+   * 例如全局第 5、10 个请求之后都会先冷却 5 分钟，再发第 6、11 个请求。
+   *
+   * ⛔ 因此 "5-request batch + 5-minute cooldown" 是**当前保守运营策略**
+   * （人工实测：`pageSize=50` + 30 秒间隔连续 7 次成功后第 8 次即 `HTTP 600`），
+   * ⛔ **不是学校公开阈值**。
    * ⛔ `HTTP 600` 仍然只是 **fail closed**：⛔ 不重试、⛔ 不做 backoff 重试、
    * ⛔ 不跳页、⛔ 不续采、⛔ 不做任何认证绕行。
    *
    * ⛔ 严格白名单：只接受 `semester` / `maxPages` / `delayMs`。
-   * ⛔ 不接受调用方传入 `pageSize` / `firstPageNo` / 自定义 shard 列表。
+   * ⛔ 不接受调用方传入 `pageSize` / `firstPageNo` / 自定义 shard 列表，
+   * 也⛔ 不接受调用方覆盖 batch 大小 / 冷却时长。
    */
   async function collectSharded(options) {
     requireAllowedHost();
@@ -1014,12 +1114,18 @@
           "pageSize=" + pageSize + "\n" +
           "每个 shard 最多请求 " + resolved.maxPages + " 页\n" +
           "请求间隔至少 " + resolved.delayMs / 1000 + " 秒\n" +
+          "批次策略：**全局**每 " + MAX_REQUESTS_PER_BATCH + " 个成功请求后冷却 " +
+          BATCH_COOLDOWN_MS / 60000 + " 分钟（跨 shard / 跨 baseline 连续计数）\n" +
           "是否继续？"
       );
       if (!confirmed) {
         return { cancelled: true, requests: 0, shards: [], diagnostics: null };
       }
     }
+
+    // 本次 run 的**唯一** pacing controller：
+    // ⛔ 全局一个实例，计数覆盖 baseline_before + 所有 shard 的页 + baseline_after。
+    var pacer = createRequestPacer(resolved.delayMs);
 
     var requests = 0;
     var baselineBefore = null;
@@ -1054,25 +1160,23 @@
       };
     }
 
-    // ---- baseline_before -------------------------------------------------
-    baselineBefore = await requestReportedTotal(resolved.semester);
+    // ---- baseline_before（也是全局请求计数的第 1 个请求） ------------------
+    baselineBefore = await requestReportedTotal(resolved.semester, pacer);
     requests += 1;
 
     // ---- 五个 shard：**串行**，顺序即已批准顺序 --------------------------
     for (var shardIndex = 0; shardIndex < APPROVED_SHARDS.length; shardIndex += 1) {
       var shard = APPROVED_SHARDS[shardIndex];
 
-      // pacing：本 shard 的**第一个**请求与前一个请求（baseline_before 或上一个 shard
-      // 的最后一页）之间同样至少间隔 delayMs。⛔ 不允许"只在同 shard 页间 sleep"。
-      await sleep(resolved.delayMs);
-
+      // ⛔ 这里**不再 sleep**：跨 shard / 跨页 / 跨批次的间隔全部由全局 pacer
+      // 在 requestPage() 里统一保证。
       var core;
       try {
         core = await collectPages(
           resolved.semester,
           pageSize,
           resolved.maxPages,
-          resolved.delayMs,
+          pacer,
           shard.openingSchoolNumber
         );
       } catch (error) {
@@ -1129,9 +1233,8 @@
     // ⛔ 顺序是 Review 裁定的：先 baseline 稳定性，再 shard 覆盖性。
     //    覆盖性**不得**抢在 baseline_after 之前判定（那会拿一个未确认的
     //    snapshot window 去解释覆盖差异）。
-    // pacing：最后一个 shard 的最后一页 → baseline_after 同样至少间隔 delayMs。
-    await sleep(resolved.delayMs);
-    baselineAfter = await requestReportedTotal(resolved.semester);
+    // pacing：baseline_after **也走同一个全局 pacer**（计入全局请求数与批次）。
+    baselineAfter = await requestReportedTotal(resolved.semester, pacer);
     requests += 1;
 
     // ④ baseline 稳定性：不等价 → snapshot window unstable，整体失败。
@@ -1866,6 +1969,8 @@
     ABSOLUTE_MAX_PAGES: ABSOLUTE_MAX_PAGES,
     DEFAULT_DELAY_MS: DEFAULT_DELAY_MS,
     MIN_DELAY_MS: MIN_DELAY_MS,
+    MAX_REQUESTS_PER_BATCH: MAX_REQUESTS_PER_BATCH,
+    BATCH_COOLDOWN_MS: BATCH_COOLDOWN_MS,
     REDACTED_TEACHER: REDACTED_TEACHER
   };
 })();

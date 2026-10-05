@@ -1715,3 +1715,77 @@
 - **本轮未做**：⛔ 未改 Capture Bundle format；⛔ 未改 Python；
   ⛔ 未改 runtime / `planning_runtime.py`；⛔ 未碰 PR #39；⛔ 未 push / 未开 PR / 未 merge。
 - 下一步：等待 Architecture Review 复验。
+
+### 2026-10-05 - 全局 batch pacing：30 秒间隔 + 每 5 个成功请求冷却 5 分钟
+
+- 触发：**最新人工 sustained pacing 实验** —— `pageSize=50` + `interval=30000ms`：
+  request 1～7 全部 200，**request 8 → `HTTP 600 / code 50015000`**。
+  ⇒ Architecture 决定：**停止继续增加单一 delayMs**，改为**全局 batch pacing**。
+- **常量**：`MIN_DELAY_MS = 30000`、`DEFAULT_DELAY_MS = 30000`、
+  `MAX_REQUESTS_PER_BATCH = 5`、`BATCH_COOLDOWN_MS = 300000`。
+- **一个全局 request pacing controller**（`createRequestPacer()`）：
+  - 等待与批次计数**只存在于它内部**：`beforeRequest()`（发请求前）与
+    `noteSuccess()`（在 `requestPage()` 里，**HTTP 200 + code 200 + 结构合法**之后才调用）；
+  - ⛔ `baseline_before` / `collectPages()` / shard 循环 / `baseline_after`
+    **不再各自 sleep、也不各自计数**：它们只是把**同一个** controller 交给
+    `requestPage()`；
+  - 规则：第 1 个请求立即发送；其它相邻请求先等 `delayMs`；
+    **全局**已累计 5 个成功请求时改为先等 `max(BATCH_COOLDOWN_MS, delayMs)`
+    （冷却本身 > 普通间隔，⛔ 不叠加；若调用方把 `delayMs` 调大则取较大者）；
+  - ⛔ 计数是整个 sharded collection 的**全局**请求数
+    （`baseline_before` + 所有 shard 的每一页 + `baseline_after`），
+    ⛔ **不是 per-shard**、⛔ **不在 shard 边界重置**；
+  - ⛔ 一次性诊断（2C1B / 2C1C）各自只发 1 次请求，不传 controller、不参与批次计数。
+- **保持不变**：`HTTP 非 200` → **fail closed**；⛔ 不重试；⛔ 不 backoff 重试；
+  ⛔ 不跳页；⛔ 不续采（no resume）；⛔ 不做认证绕行；判定顺序
+  （baseline 稳定性 → shard 覆盖性）不变；⛔ 未扩任何配置面
+  （白名单仍 `semester` / `maxPages` / `delayMs`，⛔ 不接受覆盖 batch 大小 / 冷却时长）。
+- **Node 测试 82 → 92**（新增/改写 10 项）：
+  1. 默认策略下**逐步核对整条等待序列** `[30s,30s,30s,30s,300s,30s]`；
+  2. request 1～5 为普通 `>=30s`；
+  3. **request5 → request6 `>=300000ms`**；
+  4. **request10 → request11 再次 `>=300000ms`**（12 个请求的场景；两次冷却之间仍是 30 秒）；
+  5. **shard 边界不重置计数**：东校园 6 页，全局第 5 个请求落在**同一个 shard 的页间**，
+     冷却必须在那里发生；
+  6. **baseline_before 算请求**（冷却位置可反推）+ **baseline_after 走同一 controller**；
+  7. **batch 未满时不额外等 5 分钟**（失败场景只有 2 个请求 → 只有一次 30 秒等待）；
+  8. `collect()` 也走**同一个** controller（6 请求 → 1 次冷却）；
+  9. 下限/默认 = 30000 且 batch 常量已暴露；
+  10. `delayMs` 只允许调大（45000 的整条序列），以及
+      **`delayMs` 大于冷却时批次边界取较大者**（600000 不被缩短）。
+  公共断言 `assertBatchPacingInvariant()`：`timers.length === calls.length - 1`，
+  且第 R 个请求前的等待严格等于"`R-1` 是否为 batch 边界"对应的值 ——
+  任何"漏等待 / 另起一套计数"都会立刻变红。
+- **静态守卫 81 → 84**（新增 3 项、改写 2 项）：
+  `test_collector_enforces_minimum_delay` 改为 30000（旧值 1000 / 1500 / 10000 不得残留）；
+  新增 `test_collector_enforces_global_batch_pacing_constants`（5 / 300000，
+  且⛔ `opts.maxRequestsPerBatch` / `opts.batchCooldownMs` 不存在）、
+  `test_collector_has_exactly_one_global_pacing_controller`
+  （代码里 `createRequestPacer(` 恰好 3 处 = 定义 + 两个入口；全文件只有 2 处 `await sleep(`；
+  第 1 个请求立即发送；批次分支用 `max(...)`）、
+  `test_collector_does_not_duplicate_pacing_outside_the_controller`
+  （`collectPages` / `requestReportedTotal` / `collectSharded` 都不得出现
+  `await sleep(` 或 `successfulInBatch`）、
+  `test_collector_every_paced_request_goes_through_the_controller`
+  （`pacer.beforeRequest()` / `pacer.noteSuccess()` 各 1 处；
+  `requestReportedTotal(resolved.semester, pacer)` 恰好 2 处；
+  两个分页调用点都带 pacer）；
+  并新增助手 `_collector_code_only()`（注释里也会提到这些名字，计数断言只看非注释代码行）。
+- **non-vacuity（mutation 18 项，脚本在 repo 外）**：
+  **18 / 18** 都至少一个 Node 用例变红；**16 / 18** 同时被静态守卫抓到
+  （只有"取消语义"与"批次计数不重置"是纯行为用例覆盖）。
+  本轮新增 7 项：冷却永不触发 / 批次计数不重置 /
+  **per-shard 各建一个 pacer（= shard 边界重置：24 个 Node 用例 + 2 个守卫变红）** /
+  baseline 绕过 pacer / 批次未满也强制冷却 / 冷却不取 `max(delayMs)` / 下限退回 10 秒。
+- 测试结果：collector node **92 passed**；collector guard **84 passed**；
+  Python sharded 编排 **31 passed**（未改）；
+  full backend **2 failed / 2204 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例，未修、未 skip、未删）；
+  `node --check` exit 0；`compileall` exit 0。
+- **数据来源**：⛔ **未发起任何真实请求**（30 秒 / 5+5min 取值来自负责人已完成的人工实测）；
+  ⛔ **未生成 / 未提交任何真实 Capture Bundle**；⛔ **未跑真实五校区全量采集**。
+- **本轮未做**：⛔ 未改 Capture Bundle format；⛔ 未改 Python；⛔ 未改 runtime /
+  `planning_runtime.py`；⛔ 未碰 PR #39；⛔ 未 push / 未开 PR / 未 merge。
+- 文档口径：**30 秒连续 7 次成功后第 8 次被风控，因此
+  "5-request batch + 5-minute cooldown" 是当前保守运营策略，⛔ 不是学校公开阈值。**
+- 下一步：等待 Architecture Review。
