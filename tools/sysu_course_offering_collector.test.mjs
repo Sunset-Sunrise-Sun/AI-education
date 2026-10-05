@@ -567,13 +567,15 @@ function defaultCampuses(rowCounts = SHARD_ROW_COUNTS) {
 
 /**
  * 在隔离 VM 里加载采集器，注入：
- *   - 假 `fetch`：按 `openingSchoolNumber` / `pageNo` 返回人造页；
+ *   - 假 `fetch`：按 `openingSchoolNumber` / `pageNo` 返回人造页
+ *     （可用 `http600: { campus, pageNo }` 复现真实证据的 HTTP 600）；
  *   - 假 `setTimeout`：立即 resolve，但记录请求的延迟（用于断言串行间隔）；
  *   - 可配置的 `window.confirm`。
  */
 function loadShardedCollector(options = {}) {
   const campuses = options.campuses || defaultCampuses();
   const baselineTotals = options.baselineTotals || [TOTAL_ROWS, TOTAL_ROWS];
+  const http600 = options.http600;
   const pageRows =
     options.pageRows ||
     ((rows, pageNo, pageSize) => rows.slice((pageNo - 1) * pageSize, pageNo * pageSize));
@@ -619,6 +621,16 @@ function loadShardedCollector(options = {}) {
         return fakeResponse({ code: 200, data: { total, rows: [] } });
       }
 
+      // 真实证据形态：短间隔连续请求稳定返回 HTTP 600 / code=50015000 / 系统异常
+      if (http600 && campus === http600.campus && body.pageNo === http600.pageNo) {
+        return {
+          status: 600,
+          ok: false,
+          headers: { get: () => "application/json;charset=UTF-8" },
+          json: async () => ({ code: 50015000, message: "系统异常" }),
+        };
+      }
+
       const rows = byNumber.get(campus);
       assert.ok(rows !== undefined, `假 fetch 收到未批准的校区号：${campus}`);
 
@@ -654,6 +666,25 @@ async function captureRejection(run) {
   throw new Error("本应整体失败，但调用成功了");
 }
 
+/**
+ * pacing 不变量：**同一 endpoint 的每一对相邻请求**之间必须恰好有一次 sleep，
+ * 且该 sleep 的毫秒数 >= 下限。
+ *
+ * ⚠️ 这比"逐条数 timer"更强：任何新增的请求路径若没有配套 sleep，
+ * `timers.length !== calls.length - 1` 会立刻变红 ——
+ * 也就直接锁住"不允许只在同 shard 页间 sleep"。
+ */
+function assertPacingInvariant(calls, timers, minimumMs = 10000) {
+  assert.equal(
+    timers.length,
+    Math.max(calls.length - 1, 0),
+    "每一对相邻学校请求之间必须恰好有一次 sleep（不允许只在同 shard 页间 sleep）",
+  );
+  for (const ms of timers) {
+    assert.ok(ms >= minimumMs, `相邻请求间隔必须 >= ${minimumMs}ms，实际 ${ms}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 1. 正常链路
 // ---------------------------------------------------------------------------
@@ -661,7 +692,7 @@ async function captureRejection(run) {
 test("五校区：baseline → 5 shard → baseline，产出 5 个裸 bundle + 1 个 diagnostics", async () => {
   const { collector, calls, timers } = loadShardedCollector();
 
-  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 10000 });
 
   // 请求顺序：baseline → 五个已批准校区（固定顺序）→ baseline
   assert.deepEqual(
@@ -712,7 +743,7 @@ test("五校区：baseline → 5 shard → baseline，产出 5 个裸 bundle + 1
 test("五校区：diagnostics 记录 baseline 与每个 shard 的结构计数", async () => {
   const { collector } = loadShardedCollector();
 
-  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 10000 });
   const diagnostics = result.diagnostics;
 
   assert.equal(diagnostics.baseline_before, TOTAL_ROWS);
@@ -736,21 +767,78 @@ test("五校区：diagnostics 记录 baseline 与每个 shard 的结构计数", 
 });
 
 test("五校区：串行且每个请求之间至少间隔 delayMs（含 shard 之间）", async () => {
-  const { collector, timers } = loadShardedCollector();
+  const { collector, calls, timers } = loadShardedCollector();
 
-  await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  await collector.collectSharded({ semester: SEMESTER, delayMs: 10000 });
 
-  // 5 个 shard 各一次 + baseline_after 一次；每个都是 MIN_DELAY_MS 以上
+  // 5 个 shard 各一次 + baseline_after 一次；每个都恰好是配置值（>= 下限）
   assert.equal(timers.length, 6);
   for (const ms of timers) {
-    assert.equal(ms, 1000);
+    assert.equal(ms, 10000);
   }
+
+  assertPacingInvariant(calls, timers);
+});
+
+test("五校区：四类相邻请求间隔全部受 10 秒下限约束", async () => {
+  // 东校园 205 行 ⇒ 2 页，保证四类间隔同时出现
+  const { collector, calls, timers } = loadShardedCollector({
+    campuses: defaultCampuses([205, 1, 4, 2, 3]),
+    baselineTotals: [215, 215],
+  });
+
+  await collector.collectSharded({ semester: SEMESTER, maxPages: 2, delayMs: 10000 });
+
+  assertPacingInvariant(calls, timers);
+
+  const gaps = [];
+  for (let index = 1; index < calls.length; index += 1) {
+    gaps.push([calls[index - 1], calls[index]]);
+  }
+  assert.equal(gaps.length, timers.length, "每个相邻请求对都要有一次 sleep");
+
+  const categories = {
+    "baseline→first shard": gaps.filter(
+      ([before, after]) => before.campus === undefined && after.campus !== undefined,
+    ).length,
+    "page→next page": gaps.filter(
+      ([before, after]) => before.campus !== undefined && before.campus === after.campus,
+    ).length,
+    "shard→next shard": gaps.filter(
+      ([before, after]) =>
+        before.campus !== undefined && after.campus !== undefined && before.campus !== after.campus,
+    ).length,
+    "last shard→baseline_after": gaps.filter(
+      ([before, after]) => before.campus !== undefined && after.campus === undefined,
+    ).length,
+  };
+
+  assert.deepEqual(categories, {
+    "baseline→first shard": 1,
+    "page→next page": 1,
+    "shard→next shard": 4,
+    "last shard→baseline_after": 1,
+  });
+  assert.equal(Object.values(categories).reduce((sum, n) => sum + n, 0), timers.length);
+});
+
+test("五校区：pacing 下限就是当前 conservative operational minimum（10000ms）", async () => {
+  const { collector } = loadShardedCollector();
+
+  assert.equal(collector.MIN_DELAY_MS, 10000);
+  assert.equal(collector.DEFAULT_DELAY_MS, 10000);
+
+  // 未显式传 delayMs 时用的就是下限值
+  const { collector: defaultCollector, calls, timers } = loadShardedCollector();
+  await defaultCollector.collectSharded({ semester: SEMESTER });
+
+  assertPacingInvariant(calls, timers, defaultCollector.MIN_DELAY_MS);
 });
 
 test("五校区：只弹一次确认框（不是每个 shard 各弹一次）", async () => {
   const { collector, confirms } = loadShardedCollector();
 
-  await collector.collectSharded({ semester: SEMESTER, maxPages: 3, delayMs: 1000 });
+  await collector.collectSharded({ semester: SEMESTER, maxPages: 3, delayMs: 10000 });
 
   assert.equal(confirms.length, 1);
   assert.ok(confirms[0].includes("五校区串行采集"), `确认文案应说明五校区，实际：${confirms[0]}`);
@@ -759,7 +847,7 @@ test("五校区：只弹一次确认框（不是每个 shard 各弹一次）", a
 test("五校区：默认 maxPages 下不弹确认框", async () => {
   const { collector, confirms } = loadShardedCollector();
 
-  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 10000 });
 
   assert.equal(confirms.length, 0);
   assert.equal(result.shards.length, 5);
@@ -776,7 +864,7 @@ test("多页 shard：累加到 expectedTotal 后 reached_total 停止", async ()
     baselineTotals: [215, 215],
   });
 
-  const result = await collector.collectSharded({ semester: SEMESTER, maxPages: 2, delayMs: 1000 });
+  const result = await collector.collectSharded({ semester: SEMESTER, maxPages: 2, delayMs: 10000 });
 
   const east = result.diagnostics.shards[0];
   assert.equal(east.expectedTotal, 205);
@@ -808,7 +896,7 @@ test("⛔ expected_pages 只作 diagnostics：页数与 ceil 不一致也必须�
     pageRows: (rows, pageNo) => rows.slice((pageNo - 1) * 100, pageNo * 100),
   });
 
-  const result = await collector.collectSharded({ semester: SEMESTER, maxPages: 3, delayMs: 1000 });
+  const result = await collector.collectSharded({ semester: SEMESTER, maxPages: 3, delayMs: 10000 });
 
   const east = result.diagnostics.shards[0];
   assert.equal(east.page_count, 3);
@@ -829,7 +917,7 @@ test("baseline 漂移（after 变大）：整体失败，且 diagnostics 记下�
   });
 
   const error = await captureRejection(() =>
-    collector.collectSharded({ semester: SEMESTER, delayMs: 1000 }),
+    collector.collectSharded({ semester: SEMESTER, delayMs: 10000 }),
   );
 
   assert.ok(error.message.includes("baseline_before"), `实际：${error.message}`);
@@ -845,7 +933,7 @@ test("baseline 漂移（after 变小）：同样整体失败", async () => {
   });
 
   const error = await captureRejection(() =>
-    collector.collectSharded({ semester: SEMESTER, delayMs: 1000 }),
+    collector.collectSharded({ semester: SEMESTER, delayMs: 10000 }),
   );
 
   assert.equal(error.diagnostics.baseline_before, TOTAL_ROWS);
@@ -859,7 +947,7 @@ test("shard 未取满：立即整体停止，⛔ 不再继续打其它校区", a
   });
 
   const error = await captureRejection(() =>
-    collector.collectSharded({ semester: SEMESTER, maxPages: 1, delayMs: 1000 }),
+    collector.collectSharded({ semester: SEMESTER, maxPages: 1, delayMs: 10000 }),
   );
 
   assert.ok(error.message.includes("东校园"), `实际：${error.message}`);
@@ -883,7 +971,7 @@ test("Σ shard total != baseline：baseline 稳定后报 coverage mismatch（aft
   });
 
   const error = await captureRejection(() =>
-    collector.collectSharded({ semester: SEMESTER, delayMs: 1000 }),
+    collector.collectSharded({ semester: SEMESTER, delayMs: 10000 }),
   );
 
   assert.ok(error.message.includes("shard coverage mismatch"), `实际：${error.message}`);
@@ -931,7 +1019,7 @@ test("顺序：before=6880, Σ shard=6881, after=6881 → snapshot window unstab
     collector.collectSharded({
       semester: SEMESTER,
       maxPages: REVIEW_SCENARIO_MAX_PAGES,
-      delayMs: 1000,
+      delayMs: 10000,
     }),
   );
 
@@ -968,7 +1056,7 @@ test("顺序：before=6880, Σ shard=6879, after=6880 → shard coverage mismatc
     collector.collectSharded({
       semester: SEMESTER,
       maxPages: REVIEW_SCENARIO_MAX_PAGES,
-      delayMs: 1000,
+      delayMs: 10000,
     }),
   );
 
@@ -992,7 +1080,7 @@ test("顺序：只要求 shard 失败才可跳过 baseline_after（否则必须�
   });
 
   await captureRejection(() =>
-    collector.collectSharded({ semester: SEMESTER, maxPages: 1, delayMs: 1000 }),
+    collector.collectSharded({ semester: SEMESTER, maxPages: 1, delayMs: 10000 }),
   );
 
   assert.deepEqual(
@@ -1008,13 +1096,46 @@ test("取消确认：不发出任何请求，也不产出 bundle / diagnostics",
   const result = await collector.collectSharded({
     semester: SEMESTER,
     maxPages: 3,
-    delayMs: 1000,
+    delayMs: 10000,
   });
 
   assert.equal(result.cancelled, true);
   assert.equal(result.shards.length, 0);
   assert.equal(result.diagnostics, null);
   assert.equal(calls.length, 0);
+});
+
+test("HTTP 600（真实证据）：fail closed，不重试 / 不跳页 / 不续采 / 不产出 bundle", async () => {
+  const { collector, calls, timers } = loadShardedCollector({
+    campuses: defaultCampuses([205, 1, 4, 2, 3]),
+    baselineTotals: [215, 215],
+    http600: { campus: "5063559", pageNo: 2 }, // 东校园第 2 页
+  });
+
+  const error = await captureRejection(() =>
+    collector.collectSharded({ semester: SEMESTER, maxPages: 2, delayMs: 10000 }),
+  );
+
+  assert.ok(error.message.includes("东校园"), `实际：${error.message}`);
+  assert.ok(error.message.includes("600"), `实际：${error.message}`);
+
+  // ⛔ 不重试 / 不 backoff 重试：失败的那一页**只请求过一次**
+  const eastPages = calls.filter((call) => call.campus === "5063559").map((call) => call.pageNo);
+  assert.deepEqual(eastPages, [1, 2]);
+
+  // ⛔ 不跳页 / 不续采：不再请求其它校区，也不请求 baseline_after
+  assert.deepEqual(
+    calls.map((call) => call.campus),
+    [undefined, "5063559", "5063559"],
+  );
+  assert.equal(error.diagnostics.baseline_after, null);
+
+  // ⛔ 不产出任何 bundle / 该 shard 没有任何诊断记录
+  assert.equal(error.diagnostics.shard_count, 0);
+  assert.equal(error.diagnostics.shards.length, 0);
+
+  // pacing 在失败之前同样成立
+  assertPacingInvariant(calls, timers);
 });
 
 // ---------------------------------------------------------------------------
@@ -1043,14 +1164,38 @@ for (const [label, options] of [
   });
 }
 
-test("五校区：delayMs 低于下限被拒绝，且不发请求", async () => {
-  const { collector, calls } = loadShardedCollector();
+for (const tooFast of [0, 1, 999, 1500, 9999]) {
+  test(`五校区：delayMs=${tooFast}（< 10000）被拒绝，且不发请求`, async () => {
+    const { collector, calls } = loadShardedCollector();
 
-  await captureRejection(() =>
-    collector.collectSharded({ semester: SEMESTER, delayMs: 999 }),
-  );
+    const error = await captureRejection(() =>
+      collector.collectSharded({ semester: SEMESTER, delayMs: tooFast }),
+    );
 
-  assert.equal(calls.length, 0);
+    assert.equal(calls.length, 0, "⛔ 低于下限时不得发出任何请求");
+    assert.ok(error.message.includes("10000"), `错误信息应说明下限，实际：${error.message}`);
+  });
+}
+
+test("五校区：delayMs=10000（下限）被接受，且实际按 10000ms pacing", async () => {
+  const { collector, calls, timers } = loadShardedCollector();
+
+  await collector.collectSharded({ semester: SEMESTER, delayMs: 10000 });
+
+  assert.equal(calls.length, 7);
+  assertPacingInvariant(calls, timers, 10000);
+});
+
+test("五校区：delayMs 只允许调大，调大后仍按该值 pacing", async () => {
+  const { collector, calls, timers } = loadShardedCollector();
+
+  await collector.collectSharded({ semester: SEMESTER, delayMs: 20000 });
+
+  assert.equal(calls.length, 7);
+  assertPacingInvariant(calls, timers, 20000);
+  for (const ms of timers) {
+    assert.equal(ms, 20000);
+  }
 });
 
 test("五校区：semester 缺失 / 为空被拒绝", async () => {
@@ -1070,7 +1215,7 @@ test("五校区：semester 缺失 / 为空被拒绝", async () => {
 test("五校区：toShardJson 输出裸 bundle，toDiagnosticsJson 输出外层 diagnostics", async () => {
   const { collector } = loadShardedCollector();
 
-  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 10000 });
 
   const east = JSON.parse(collector.toShardJson(result, "东校园"));
   assert.equal(Object.keys(east).sort().join(","), [...BUNDLE_KEYS].sort().join(","));
@@ -1090,7 +1235,7 @@ test("五校区：toShardJson 输出裸 bundle，toDiagnosticsJson 输出外层 
 test("五校区：shardBundle 只接受已批准校区名，且不回显其它名字", async () => {
   const { collector } = loadShardedCollector();
 
-  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 10000 });
 
   for (const shard of SHARDS) {
     const bundle = collector.shardBundle(result, shard.shard_id);
@@ -1107,7 +1252,7 @@ test("五校区：shardBundle 只接受已批准校区名，且不回显其它�
 test("五校区：toJson() 拒绝五校区结果（它不是单个裸 bundle）", async () => {
   const { collector } = loadShardedCollector();
 
-  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 10000 });
 
   await assert.rejects(async () => collector.toJson(result), /伪 bundle/);
 });
@@ -1118,7 +1263,7 @@ test("五校区：取消结果无法被任何序列化入口使用", async () =>
   const result = await collector.collectSharded({
     semester: SEMESTER,
     maxPages: 3,
-    delayMs: 1000,
+    delayMs: 10000,
   });
 
   await assert.rejects(async () => collector.shardBundle(result, "东校园"));
@@ -1137,7 +1282,7 @@ test("五校区：某个 shard 内解析失败 → 带 shard 名、单一前缀�
   const { collector, calls } = loadShardedCollector({ campuses });
 
   const error = await captureRejection(() =>
-    collector.collectSharded({ semester: SEMESTER, delayMs: 1000 }),
+    collector.collectSharded({ semester: SEMESTER, delayMs: 10000 }),
   );
 
   assert.ok(error.message.includes("北校园"), `实际：${error.message}`);
@@ -1171,7 +1316,7 @@ test("五校区：shard bundle 内的 teacher 仍被脱敏", async () => {
 
   const { collector } = loadShardedCollector({ campuses });
 
-  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 10000 });
   const rows = result.shards[2].bundle.pages[0].response.data.rows;
 
   const redacted = rows.find((row) => row.classNumber === "SYN3-PRIVACY");
@@ -1187,7 +1332,7 @@ test("五校区：shard bundle 内的 teacher 仍被脱敏", async () => {
 test("五校区：diagnostics 只有结构化计数，没有任何 row / 课程取值", async () => {
   const { collector } = loadShardedCollector();
 
-  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 1000 });
+  const result = await collector.collectSharded({ semester: SEMESTER, delayMs: 10000 });
 
   const serialized = JSON.stringify(result.diagnostics);
 

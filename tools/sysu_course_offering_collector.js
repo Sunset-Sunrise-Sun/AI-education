@@ -93,9 +93,19 @@
   /** SYSU 已验证：pageSize=200 请求成功。 */
   var DEFAULT_PAGE_SIZE = 200;
 
-  /** 串行请求间隔：默认 1500ms，下限 1000ms。 */
-  var DEFAULT_DELAY_MS = 1500;
-  var MIN_DELAY_MS = 1000;
+  /**
+   * 串行请求间隔（**同一 endpoint 的所有连续请求**都必须满足）。
+   *
+   * ⚠️ **10 秒是当前的 conservative operational minimum**，来源是**人工实测**：
+   * 同一 endpoint 短间隔连续请求会稳定出现
+   * `HTTP 600 / code=50015000 / 系统异常`；而间隔 10 秒时
+   * （北校园 pageSize=50：page1 → 等 10 秒 → page2）两次都是 HTTP 200。
+   * ⛔ **不声称**这是学校官方公布的阈值，也不据此推断任何服务端限流实现。
+   *
+   * ⛔ 调用方**只能把它调大**（更慢、更保守），不能调小。
+   */
+  var DEFAULT_DELAY_MS = 10000;
+  var MIN_DELAY_MS = 10000;
 
   /** 默认只做 2 页 smoke test；50 是**客户端安全上限**，不是学校系统限制。 */
   var DEFAULT_MAX_PAGES = 2;
@@ -737,7 +747,11 @@
 
     var delayMs = opts.delayMs === undefined ? DEFAULT_DELAY_MS : opts.delayMs;
     if (!Number.isInteger(delayMs) || delayMs < MIN_DELAY_MS) {
-      fail("delayMs 不得小于 " + MIN_DELAY_MS + " 毫秒（串行、低频）。");
+      fail(
+        "delayMs 不得小于 " + MIN_DELAY_MS + " 毫秒" +
+          "（同一 endpoint 的 conservative operational minimum，来自人工实测；" +
+          "只能调大，不能调小）。"
+      );
     }
 
     return {
@@ -755,7 +769,11 @@
    * - 严格串行：一页一页取，中间 sleep；⛔ 不并发、⛔ 不预取、⛔ 不重试、⛔ 不跳页；
    * - `firstPageNo` 恒为 `FIRST_PAGE_NO`（1）：调用方**无法**改变起始页；
    * - `expectedTotal` 取**本次第一页**的 `data.total`；中途变化 → 整体失败；
-   * - `accumulatedRows === expectedTotal` → `reached_total` 并停止。
+   * - `accumulatedRows === expectedTotal` → `reached_total` 并停止；
+   * - **pacing**：本循环内的**每一对相邻请求**之间都 sleep `delayMs`
+   *   （`delayMs >= MIN_DELAY_MS`，由 `resolvePagingOptions()` 单点把关）。
+   *   ⚠️ 跨 shard / baseline 的相邻请求由 `collectSharded()` 负责 sleep，
+   *   但**用的是同一个下限**（见该函数的 pacing 说明）。
    *
    * ⚠️ `openingSchoolNumber === undefined` 时为 **baseline（全量）** 请求形态；
    * 传入已批准校区号时为**该 shard** 的请求形态。
@@ -950,6 +968,21 @@
    * baseline_after 并判稳定性；**只有** baseline 稳定之后才允许判覆盖性。
    * 否则会拿一个未确认的 snapshot window 去解释覆盖差异。
    *
+   * ⛔ **pacing（保守节流）**：`delayMs` 适用于**同一 endpoint 的所有连续请求**，
+   * 不只是同一 shard 的页间。四类间隔**全部**受同一个下限约束（默认 = 下限 = 10000ms）：
+   *
+   * ```text
+   * baseline_before → first shard   ：shard 循环顶部的 sleep
+   * shard page      → shard next page：collectPages() 内部的 sleep
+   * one shard       → next shard    ：shard 循环顶部的 sleep（含上一 shard 最后一页）
+   * last shard      → baseline_after：baseline_after 之前的显式 sleep
+   * ```
+   *
+   * ⛔ 10 秒是**人工实测**得到的 conservative operational minimum（短间隔连续请求会稳定
+   * `HTTP 600 / 系统异常`），⛔ 不声称是学校官方阈值。
+   * ⛔ `HTTP 600` 仍然只是 **fail closed**：⛔ 不重试、⛔ 不做 backoff 重试、
+   * ⛔ 不跳页、⛔ 不续采、⛔ 不做任何认证绕行。
+   *
    * ⛔ 严格白名单：只接受 `semester` / `maxPages` / `delayMs`。
    * ⛔ 不接受调用方传入 `pageSize` / `firstPageNo` / 自定义 shard 列表。
    */
@@ -1029,7 +1062,8 @@
     for (var shardIndex = 0; shardIndex < APPROVED_SHARDS.length; shardIndex += 1) {
       var shard = APPROVED_SHARDS[shardIndex];
 
-      // 每个 shard 的**第一个**请求也与前一个请求至少间隔 delayMs。
+      // pacing：本 shard 的**第一个**请求与前一个请求（baseline_before 或上一个 shard
+      // 的最后一页）之间同样至少间隔 delayMs。⛔ 不允许"只在同 shard 页间 sleep"。
       await sleep(resolved.delayMs);
 
       var core;
@@ -1095,6 +1129,7 @@
     // ⛔ 顺序是 Review 裁定的：先 baseline 稳定性，再 shard 覆盖性。
     //    覆盖性**不得**抢在 baseline_after 之前判定（那会拿一个未确认的
     //    snapshot window 去解释覆盖差异）。
+    // pacing：最后一个 shard 的最后一页 → baseline_after 同样至少间隔 delayMs。
     await sleep(resolved.delayMs);
     baselineAfter = await requestReportedTotal(resolved.semester);
     requests += 1;

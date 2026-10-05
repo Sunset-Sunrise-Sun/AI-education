@@ -1647,3 +1647,71 @@
   `backend/app/course_data/sharded_capture.py`）；⛔ 未改 runtime / `planning_runtime.py`；
   ⛔ 未碰 PR #39；⛔ 未 push / 未开 PR / 未 merge。
 - 下一步：等待 Architecture Review 复验。
+
+### 2026-10-05 - 保守节流（conservative pacing）：相邻请求下限 = 10000ms
+
+- 触发：**真实人工验证结果** —— 北校园 `pageSize=50`：
+  `page1 → HTTP 200` → **等待 10 秒** → `page2 → HTTP 200`；
+  而此前**短间隔连续请求多次稳定出现** `HTTP 600 / code=50015000 / message=系统异常`。
+  ⇒ Architecture 决定采用**保守节流策略**。
+- **本轮只改请求 pacing**：
+  - `DEFAULT_DELAY_MS = 10000`、`MIN_DELAY_MS = 10000`（原 1500 / 1000）；
+  - ⚠️ 文档只记录：**10 秒是当前 conservative operational minimum，来源是人工实测**；
+    ⛔ **不声称**是学校官方公布的阈值，也不据此推断任何服务端限流实现；
+  - `delayMs` **仍可由调用方配置，但只能调大**：`< 10000`（含 `0 / 1 / 999 / 1500 / 9999`）
+    在**发请求之前**被拒绝；⛔ 其它配置面未扩大（白名单仍是
+    `semester` / `maxPages` / `delayMs`）。
+- **间隔适用于同一 endpoint 的所有连续请求**（⛔ 不再允许"只在同 shard 页间 sleep"）：
+
+  ```text
+  baseline_before → first shard    ：shard 循环顶部 sleep
+  shard page      → shard next page：collectPages() 内部 sleep
+  one shard       → next shard     ：shard 循环顶部 sleep（含上一 shard 最后一页）
+  last shard      → baseline_after ：baseline_after 之前的显式 sleep
+  ```
+
+  实现上仍是**唯一**的分页核心 + shard 循环顶部 / baseline_after 之前的两处 sleep，
+  但三处 sleep **全部**取 `delayMs`（由 `resolvePagingOptions()` 单点下限把关），
+  且代码/JSDoc 明确写出四类间隔归属。
+- **保持不变**：`HTTP 600` → **fail closed**；⛔ 不重试；⛔ 不 backoff 重试；⛔ 不跳页；
+  ⛔ 不续采（no resume）；⛔ 不做任何认证绕行。判定顺序（baseline 稳定性 → shard 覆盖性）不变。
+- **新增 Node 用例 6 项**（`collector node` 73 → **82**）：
+  1. **pacing 不变量**：`timers.length === calls.length - 1` 且每个 timer `>= 10000`
+     （任何新增请求路径若没有配套 sleep 会立刻变红）；
+  2. **四类相邻间隔**同时存在且各自计数被锁死：
+     `baseline→first shard = 1` / `page→next page = 1` / `shard→next shard = 4` /
+     `last shard→baseline_after = 1`；
+  3. **下限即 10000**：暴露的 `MIN_DELAY_MS` / `DEFAULT_DELAY_MS` 均为 10000，
+     且不传 `delayMs` 时按 10000 pacing；
+  4. **低于下限被拒绝**：`0 / 1 / 999 / 1500 / 9999` 五个取值全部被拒且**零请求**；
+  5. **只允许调大**：`delayMs=20000` 被接受且按 20000 pacing；
+  6. **`HTTP 600` fail closed**：东校园第 2 页返回 `600 / code=50015000` →
+     整体失败；**该页只请求过一次**（证不重试 / 不 backoff）、
+     不再请求其它校区、不发 `baseline_after`、不产出任何 bundle。
+  ⛔ 全程零网络：假 `fetch`（新增 `http600` 形态复现真实证据）+ 假 `setTimeout`
+  （立即 resolve 但**记录延迟**，因此 10 秒间隔是被**断言**的而不是真的等 10 秒，
+  整套 82 项仍在 0.4 秒内跑完）。
+- **新增 / 更新静态守卫 3 项**（`collector guard` 79 → **81**）：
+  - `test_collector_enforces_minimum_delay`：下限/默认 = 10000，且旧值（1000 / 1500）不得残留；
+  - `test_collector_paces_every_consecutive_request`（新增）：恰好三处 `await sleep(`，
+    分别位于分页核心内部、shard 循环顶部、`baseline_after` 之前；
+    ⛔ `sleep` 不得传字面量（正则 `await sleep\(\s*[0-9]` 为 None）；
+  - `test_collector_does_not_add_retry_backoff_skip_or_resume`（新增）：
+    非注释代码里不得出现 `retry` / `backoff` / `resume` / `skip` / `attempt` / `setInterval`。
+- **non-vacuity（新增 3 个 mutation，累计 14）**：
+  - J12「下限退回 1 秒」→ Node 6 项红 + 守卫 `test_collector_enforces_minimum_delay` 红；
+  - J13「只在同 shard 页间 sleep」→ Node 6 项红 + 守卫
+    `test_collector_paces_every_consecutive_request` 红；
+  - J14「去掉 last shard→baseline_after 的 pacing」→ Node 5 项红 + 同一守卫红。
+  另旧 mutation J10（`sleep(0)`）现在同时使 2 个守卫变红。
+- 测试结果：collector node **82 passed**；collector guard **81 passed**；
+  Python sharded 编排 **31 passed**（未改）；targeted 合计 **336 passed**（改动前基线）；
+  full backend **2 failed / 2201 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例，未修、未 skip、未删）；
+  `node --check` exit 0；`compileall` exit 0。
+- **数据来源**：⛔ **未发起任何真实请求**（10 秒这一取值来自**负责人已完成的**人工实测记录，
+  本轮只是把该下限写进代码与测试）；⛔ **未生成 / 未提交任何真实 Capture Bundle**；
+  ⛔ **未跑真实五校区全量采集**。
+- **本轮未做**：⛔ 未改 Capture Bundle format；⛔ 未改 Python；
+  ⛔ 未改 runtime / `planning_runtime.py`；⛔ 未碰 PR #39；⛔ 未 push / 未开 PR / 未 merge。
+- 下一步：等待 Architecture Review 复验。

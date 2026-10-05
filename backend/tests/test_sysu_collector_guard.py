@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -117,9 +118,74 @@ def test_collector_enforces_page_size_upper_bound(collector_source: str) -> None
 
 
 def test_collector_enforces_minimum_delay(collector_source: str) -> None:
-    assert "MIN_DELAY_MS = 1000" in collector_source
-    assert "DEFAULT_DELAY_MS = 1500" in collector_source
+    """⛔ 同一 endpoint 的相邻请求下限 = **10000ms**（conservative operational minimum）。
+
+    来源是**人工实测**（短间隔连续请求稳定 `HTTP 600 / 系统异常`，
+    间隔 10 秒时北校园 pageSize=50 两页均 200）；⛔ 不声称是学校官方阈值。
+    """
+
+    assert "MIN_DELAY_MS = 10000" in collector_source
+    assert "DEFAULT_DELAY_MS = 10000" in collector_source
     assert "delayMs < MIN_DELAY_MS" in collector_source
+    # ⛔ 旧的 1 秒 / 1.5 秒取值不得残留
+    assert "MIN_DELAY_MS = 1000;" not in collector_source
+    assert "DEFAULT_DELAY_MS = 1500;" not in collector_source
+
+
+def test_collector_paces_every_consecutive_request(collector_source: str) -> None:
+    """⛔ pacing 必须覆盖**所有四类相邻请求**，不允许只在同 shard 页间 sleep：
+
+    ```text
+    baseline_before → first shard    ：shard 循环顶部 sleep
+    shard page      → shard next page：分页核心内部 sleep
+    one shard       → next shard     ：shard 循环顶部 sleep
+    last shard      → baseline_after ：baseline_after 之前的显式 sleep
+    ```
+
+    ⛔ 所有 `sleep()` 都必须传**变量 / 常量**，不得传字面量（否则会绕过下限）。
+    """
+
+    assert collector_source.count("await sleep(") == 3, (
+        "恰好三处 sleep：分页核心内、shard 循环顶部、baseline_after 之前"
+    )
+    assert "await sleep(delayMs);" in collector_source
+    assert collector_source.count("await sleep(resolved.delayMs);") == 2
+
+    # ⛔ 不得出现字面量间隔（sleep(0) / sleep(1000) …）
+    assert re.search(r"await sleep\(\s*[0-9]", collector_source) is None, (
+        "sleep 的间隔不得写成字面量"
+    )
+
+    # 分页核心的 sleep 在**第一页之后**（页间），shard 循环顶部的 sleep 在**取页之前**
+    core_start = collector_source.index("async function collectPages(")
+    core_end = collector_source.index("async function requestReportedTotal(")
+    core = collector_source[core_start:core_end]
+    assert "if (index > 0) {" in core
+    assert core.index("if (index > 0) {") < core.index("await requestPage(")
+
+    sharded = _collect_sharded_slice(collector_source)
+    assert sharded.index("await sleep(resolved.delayMs);") < sharded.index("await collectPages(")
+    assert sharded.index("baselineAfter = await requestReportedTotal(") > sharded.index(
+        "await sleep(resolved.delayMs);"
+    )
+
+
+def test_collector_does_not_add_retry_backoff_skip_or_resume(collector_source: str) -> None:
+    """⛔ `HTTP 600` 仍然只是 fail closed：⛔ 不重试、⛔ 不 backoff 重试、
+    ⛔ 不跳页、⛔ 不续采、⛔ 不做任何认证绕行。
+
+    ⚠️ 说明性文字里会出现"backoff"（"不做 backoff 重试"），
+    因此本断言只看**非注释代码行**。
+    """
+
+    code = "\n".join(
+        line
+        for line in collector_source.splitlines()
+        if not line.lstrip().startswith(("*", "//", "/*"))
+    )
+
+    for token in ("retry", "backoff", "resume", "skip", "attempt", "setInterval"):
+        assert token not in code, f"⛔ 不得出现重试 / 跳页 / 续采 / 定时轮询写法：{token}"
 
 
 def test_collector_limits_default_and_absolute_pages(collector_source: str) -> None:

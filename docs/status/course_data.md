@@ -320,7 +320,9 @@ Frontend / Mock + tests，且须经 Reviewer 验收）；**本轮未开始任何
 - ✅ **hostname guard**：`window.location.hostname` 必须是 `jwxt.sysu.edu.cn`，否则直接失败
 - ✅ **分页参数（SYSU 已验证）**：`firstPageNo` **锁定为 `1`**（传入其它起始页**在发请求之前**直接失败；
   通用多起始页能力留在 backend 分页核心，不在这里放开）、`pageSize=200`（单页上限 200，有校验）
-- ✅ **限速与安全阀**：`DEFAULT_DELAY_MS=1500` / `MIN_DELAY_MS=1000`；`DEFAULT_MAX_PAGES=2`、`ABSOLUTE_MAX_PAGES=50`
+- ✅ **限速与安全阀**：`DEFAULT_DELAY_MS=10000` / `MIN_DELAY_MS=10000`
+  （**同一 endpoint 的所有相邻请求**下限；见下方"保守节流"小节）；
+  `DEFAULT_MAX_PAGES=2`、`ABSOLUTE_MAX_PAGES=50`
   （50 是**客户端安全上限**，不是学校系统限制）；`maxPages > 2` 时必须 `window.confirm()` 确认，取消则 **0 个请求**
 - ✅ **严格串行**：一页一页取；⛔ 不并发、⛔ 不预取
 - ✅ **认证边界**：`credentials: "same-origin"`，认证状态完全交给浏览器；
@@ -853,23 +855,44 @@ baseline_before != baseline_after → 整体不得标 complete，fail closed
   **不得**参与任何 complete / 完整性判定 —— 判据只有 `accumulatedRows == expectedTotal`
   （静止断言 + 行为用例：学校返回"半页"导致 `page_count != expected_pages` 时**仍然必须成功**）；
 - **复用同一份分页实现**：五个 shard 与 baseline 都走同一个取页核心
-  （`pageNo` 从 1 起、`pageSize`、total 中途变化即失败、串行 sleep、最小 1000ms 间隔、
-  hostname guard、same-origin、不重试、不并发）；
-- 测试：`tools/sysu_course_offering_collector.test.mjs`（**73 个 `node:test` 用例**，
-  其中 28 个覆盖五校区：正常链路 / 请求顺序与形态 / 多页 shard / 半页 `expected_pages` /
+  （`pageNo` 从 1 起、`pageSize`、total 中途变化即失败、串行 sleep、hostname guard、
+  same-origin、⛔ 不重试、⛔ 不并发）；
+- **保守节流（conservative pacing）**：`delayMs` 下限 = 默认 = **10000ms**，
+  适用于**同一 endpoint 的所有连续请求**，⛔ 不允许"只在同 shard 页间 sleep"：
+
+  | 相邻请求 | 由谁 sleep |
+  |---|---|
+  | `baseline_before` → first shard | shard 循环顶部 |
+  | shard page → shard next page | 分页核心 `collectPages()` 内部 |
+  | one shard → next shard | shard 循环顶部（含上一 shard 最后一页） |
+  | last shard → `baseline_after` | `baseline_after` 之前的显式 sleep |
+
+  ⛔ 调用方只能把 `delayMs` **调大**，调小（< 10000，含 0 / 1 / 999 / 1500 / 9999）在
+  **发请求之前**被拒绝；
+  ⚠️ **10 秒是当前 conservative operational minimum，来源是人工实测**
+  （同一 endpoint 短间隔连续请求稳定 `HTTP 600 / code=50015000 / 系统异常`；
+  间隔 10 秒时北校园 `pageSize=50`：page1 → 等 10 秒 → page2 两次都 HTTP 200），
+  ⛔ **不声称**这是学校官方公布的阈值，也不据此推断任何服务端限流实现；
+  ⛔ `HTTP 600` 仍然只是 **fail closed**：⛔ 不重试、⛔ 不 backoff 重试、⛔ 不跳页、
+  ⛔ 不续采、⛔ 不做任何认证绕行（行为用例：第 2 页 600 → 该页**只请求过一次**、
+  不再请求其它校区、不发 `baseline_after`、不产出任何 bundle）；
+- 测试：`tools/sysu_course_offering_collector.test.mjs`（**82 个 `node:test` 用例**，
+  其中 37 个覆盖五校区：正常链路 / 请求顺序与形态 / 多页 shard / 半页 `expected_pages` /
   baseline 漂移两个方向 / 未取满 fail fast / 覆盖性 / **判定顺序三例**
   （`before=6880, Σ=6881, after=6881` → unstable 且确认 `baseline_after` 确实被请求；
   `before=6880, Σ=6879, after=6880` → coverage mismatch；
-  只有 shard 失败才允许跳过 `baseline_after`）/ 取消 / 白名单 / 限速 /
-  shard 内解析失败（单一前缀 + 附 diagnostics）/ 裸 bundle 与 diagnostics 分离 / 隐私）。
+  只有 shard 失败才允许跳过 `baseline_after`）/ 取消 / 白名单 /
+  **pacing 五例**（四类相邻间隔 / 下限即 10000 / 只允许调大 / 5 个低于下限的取值被拒绝 /
+  `HTTP 600` fail closed）/ shard 内解析失败（单一前缀 + 附 diagnostics）/
+  裸 bundle 与 diagnostics 分离 / 隐私）。
   ⛔ 全程零网络（假 `fetch` + 假 `setTimeout` 记录请求的延迟），
   ⛔ 所有 row 均为人工虚构；真实分片数字不进测试常量；
-- non-vacuity：**11** 个 mutation 逐一改坏一条行为（sandwich / 未取满 / 覆盖性 / 白名单 /
+- non-vacuity：**14** 个 mutation 逐一改坏一条行为（sandwich / 未取满 / 覆盖性 / 白名单 /
   `expected_pages` 变判据 / baseline 请求形态 / shard 名回显 / diagnostics 夹带 row /
-  取消语义 / 最小间隔 / **回退成旧判定顺序**）→ 每一个都**至少一个 Node 用例变红**
-  （旧顺序 mutation 另使静态守卫
-  `test_sharded_requests_baseline_after_before_any_coverage_judgement` 变红）；
-  其中 4 个同时被 `backend/tests/test_sysu_collector_guard.py` 的静态守卫抓到。
+  取消语义 / 最小间隔 / **回退成旧判定顺序** / **下限退回 1 秒** /
+  **只在同 shard 页间 sleep** / **去掉 last shard→baseline_after 的 pacing**）
+  → 每一个都**至少一个 Node 用例变红**；
+  其中 6 个同时被 `backend/tests/test_sysu_collector_guard.py` 的静态守卫抓到。
 
 ### 尚未实现（待 Review 通过后）
 
