@@ -1651,3 +1651,177 @@
 - 数据：仍为 Mock 展示通道；真实 empty-meeting 产品链路 rollout gate 尚未解除。
 - 下一步：项目 Architecture Reviewer 对远端真实分支做最终复验；通过后再进入 PR / merge 流程。
 
+---
+
+### 2026-10-06 - Frontend User Input Gate Phase 1（用户输入区 + Real API 预留）
+
+- 本次目标：在严格**不改 backend** 的前提下，为"只展示 Mock 数据"的前端增加真正的**用户输入区**，
+  并**不伪造**后端能力：本轮只组织输入，不解析成绩、不生成补修任务、不做冲突/可行性计算。
+- 分支：`feature/frontend-user-input-gate`，base = `main = 1a740b2d960bb4bb78771d56aa1ec9f0424a12e1`。
+- 已完成：
+  1. **用户输入区**（`UserInputPanel.vue`）：按产品顺序组织 ① 学生信息 ② 已修课程文件
+     ③ 当前课表 ④ 个性化偏好 ⑤ 生成规划；
+  2. **学生转专业上下文**（`StudentContextForm.vue`）：目标学期 `semester`、原专业、目标专业、转入学期；
+     专业来自**选项层** `MAJOR_OPTIONS`（`datalist` 候选 + 允许自由填写），
+     **不存在** `if (major === '网络空间安全')` 这类按专业名分叉的代码；
+     Case A（遥感科学与技术 → 网络空间安全、转入学期 2026-1）只作为**默认 Case context**，
+     页面明确标注这些信息**尚未影响后端 Planner**；
+  3. **可编辑 Preference**（`PreferenceForm.vue`）：`max_credit` / `avoid_cross_campus` /
+     `preferred_courses` / `avoid_times` / `notes`，**不新增字段**；
+     `avoid_times` 支持增删改，`preferred_courses` 支持加入 / 去重 / 删除；
+     ⛔ **未破坏** `PreferencePanel.vue` 的只读展示职责（该文件本轮未修改）；
+  4. **当前课表**（`CurrentScheduleInput.vue`）：从已加载教学班中勾选"我当前已选的班"，
+     输出严格为 `CourseOffering[]`（DG-03 语义）；允许为空；
+     ⛔ 不做冲突检测 / feasible / Path Repair；⛔ 不用 `avoid_times` 冒充当前课表；
+     对 `meetings = []` 沿用 DG-07D 中性文案"当前数据中无排课信息"；
+  5. **成绩文件选择门**：`<input type="file" accept=".xlsx">`，本轮**只保存 `File` 对象与文件名**，
+     ⛔ 不上传、不解析、不伪造分析结果；页面明确显示
+     "成绩文件上传分析将在真实 Curriculum User Input API 接入后启用"，
+     并声明本页**不会**在前端生成任何 `MakeupTask`；非 `.xlsx` 一律拒绝；
+  6. **Mock / Real 明确隔离**（`SubmissionActions.vue`）：页面显示**当前数据模式：Mock**；
+     Real Planning 按钮在 `VITE_PLAN_API_ENABLED !== 'true'` 时 **disabled**，
+     并且**绝不**把 Real 提交改调 Mock 接口；
+  7. **Real API 预留 client**（`api/plan.ts`）：固定 `POST /api/v1/plan`，
+     请求体**严格只有** `semester` / `current_schedule` / `preference`，响应按 `PlanResult` 处理；
+     失败时**如实抛错，不 fallback**（该文件不 import 任何 Mock 通道代码）；
+  8. **业务展示边界修正**：`App.vue` 中把"补修任务清单 / 识别补修任务"等会把**全部** MakeupTask
+     统称为"补修课"的表述改为中性"**历史培养要求评估**"，
+     并写明含"已满足 / 待课程认定 / 已确认需补修"等不同状态、以逐行判定列为准；
+     `MakeupTaskList.vue` 的"需要补修 (N)"筛选只统计 `status === 'required'`（本就正确，未改）。
+- **纯逻辑层抽离**：`src/state/userInput.ts` —— 字段规则、序列化、校验、请求组装全部为纯函数
+  （无 Vue / DOM / 网络），使交互测试与组件解耦。
+- 修改文件：
+  - 新增 `frontend/src/components/{UserInputPanel,StudentContextForm,PreferenceForm,CurrentScheduleInput,SubmissionActions}.vue`
+  - 新增 `frontend/src/state/userInput.ts`、`frontend/src/api/plan.ts`
+  - 新增 `frontend/vitest.config.ts`、`frontend/tests/{user-input,plan-api,user-input-panel}.spec.ts`
+  - 修改 `frontend/src/App.vue`、`frontend/src/config.ts`、`frontend/src/components/TopStatusBar.vue`、
+    `frontend/src/styles/base.css`、`frontend/package.json`、`frontend/package-lock.json`
+  - 修改 `docs/status/agent_frontend.md`、本文件（仅追加）
+- 测试（新增测试框架：Vitest 3 + @vue/test-utils + jsdom，**devDependencies**）：
+  - `cd frontend && npm test` → **55 passed / 55**（4 个文件；
+    其中 `tests/form-validation-gate.spec.ts` 11 项锁定"invalid 表单禁止提交 → fetch 0 次"）
+  - `cd frontend && npm run build`（`vue-tsc --noEmit && vite build`）→ **成功**
+  - `cd frontend && npm run test:scenarios`（既有 SSR 场景回归）→ **14 项全部通过**
+  - Real client 测试全部使用 **mocked fetch**，不依赖真实 backend；
+    并断言失败时请求地址**不含** `/mock/`（**不 fallback**）；
+    XLSX 用例断言选择文件后 `fetch` **零调用**，且页面不出现补修任务。
+- 使用数据：**Mock**（用户输入为人工录入；Real 通道仅预留，接口尚未合并）。
+- 公共接口是否变化：**否**（未改 `/schemas/`、`/docs/interfaces/`、Provider 签名；未改 backend）。
+- 是否修改 backend：**否**。
+- 已知问题：新增 3 个 devDependencies（含 `package-lock.json` 变更），
+  若项目不接受新增测试依赖，可用既有 SSR 场景脚本复核，但交互测试将无法覆盖。
+- 需要人工确认：新增前端测试依赖（Vitest / @vue/test-utils / jsdom）是否批准入库。
+- 下一步：等待 Architecture Review；待 `feature/real-plan-api` 合并后再接线并打开 `VITE_PLAN_API_ENABLED`。
+
+### 2026-10-06 - 缺陷修复：invalid 表单必须阻止提交（同分支）
+
+- 触发：Review 指出"当 `max_credit` 为负数 / 非数字、`semester` 非法、`avoid_times` 的
+  `end < start` 时，用户是否仍能触发 Real Planning 请求"。
+- **复现结论（修复前）**：
+  - `max_credit = -5` → `preference.maxCredit` 被归一化为 `null` → `isFormValid === true`
+    → 按钮**可点** → **会发请求**（缺陷成立）；
+  - `max_credit = abc` → 同上（缺陷成立）；
+  - `semester = 2026-9` → `isFormValid === false` → 按钮 disabled（正确）；
+  - `avoid_times` end < start → `isFormValid === false` → 按钮 disabled（正确）。
+- **根因（两层）**：
+  1. `PreferenceForm` 把非法 `max_credit` 归一化成 `null`（"不猜测"是对的），
+     但归一化后与"未触碰 / 主动留空"**无法区分**，而 `isFormValid` 只看归一化后的值
+     → 非法输入被当成"未设定" → 表单误判为 valid；
+  2. 提交入口只有按钮 `disabled` 一道防线，`submitRealPlan()` 内**没有**二次校验。
+- **修复（最小改动，仅前端；未改 backend）**：
+  - `src/state/userInput.ts`：新增 `invalidFields: InvalidatableField[]`（**不进入请求体**）
+    与 `normalizeMaxCreditInput(raw) -> { value, invalid }`；
+    `isFormValid()` 首条判断 `invalidFields.length > 0` → invalid；
+  - `src/components/PreferenceForm.vue`：改用 `normalizeMaxCreditInput`；
+    非法时把 `maxCredit` 记入 `invalidFields`（取值仍按 `null` 保留、不猜测），
+    修正后自动清除；`max_credit` 输入框 `type="number"` → `type="text" inputmode="decimal"`
+    （浏览器会对 number 静默丢弃非数字，校验必须由组件自己负责）；
+  - `src/App.vue` `submitRealPlan()`：新增**提交前守卫**，`!isFormValid` 时直接返回，
+    **一个请求也不发**。
+- **修复中同时修掉自身引入的回归**：`onMaxCreditInput` 原先分两次 emit
+  （`patchPreference` + `setFieldInvalid`），第二次展开**过期的 `props.form`**
+  把刚写入的取值覆盖回 `null`（表现为输入 `24` 后值变 `null`）；改为一次性发出同一新状态。
+- 新增测试：`frontend/tests/form-validation-gate.spec.ts`（11 项）——
+  逐条锁定"非法 → 禁止提交 → **fetch 0 次调用**"，含**程序化触发提交绕过 disabled 按钮**
+  仍被守卫拦截；反向锁定"untouched empty field 按 default 序列化且允许提交"。
+- 测试结果：`npm test` → **55 passed / 55**（4 文件）；`npm run build` → 成功；
+  `npm run test:scenarios` → 既有 14 项全部通过。
+- 修改文件：`frontend/src/state/userInput.ts`、`frontend/src/components/PreferenceForm.vue`、
+  `frontend/src/App.vue`、新增 `frontend/tests/form-validation-gate.spec.ts`、
+  `docs/status/agent_frontend.md`、本文件。
+- 是否修改 backend：**否**。公共接口是否变化：**否**。
+- 下一步：等待 Architecture Review（含新增测试依赖是否批准的确认）。
+
+### 2026-10-06 - 修复两个 provenance blocker（Real 结果未渲染 / Mock 课表可进 Real）
+
+- 触发：patch Review 发现两个 **provenance blocker**。
+- **Blocker 1：`realPlanResult` 只被赋值、从未渲染**。
+  - 现象：`POST /api/v1/plan` 成功后设置了 `dataMode = 'real'`，
+    但页面 4 号区块仍渲染 `data.plan_result`（来自 `GET /api/v1/mock/demo`）
+    → 出现"**Real 标签 + Mock 结果**"。
+  - 修复：新增 `planResultMode`（只看**规划结果**的来源）与 `displayedPlanResult`
+    （`realPlanResult ?? data.plan_result`），4 号区块与概览"规划结果状态"都改用 `displayedPlanResult`；
+    区块内新增 provenance 行「**基础演示数据：Mock · 规划结果：Mock/Real**」+ 说明文字；
+    `SubmissionActions` 的 Real 模式文案改为"**规划结果**已来自 `/api/v1/plan`；
+    培养要求评估 / 教学班 / 偏好仍为 Mock 演示数据"；页脚数据声明同步区分两种来源。
+  - ⚠️ 关键边界：`/api/v1/plan` 目前**只返回 `PlanResult`**，
+    因此**不得**把整页 MakeupTask / CourseOffering / Preference 标成 Real ——
+    已用测试断言这些区块仍为 Mock 且仍带 `Mock` 标记。
+- **Blocker 2：Mock `current_schedule` 可以进入 Real Planning**。
+  - 现象：`current_schedule` 的教学班来自 Mock Demo，但没有任何来源校验，
+    会把这些"演示用假教学班"当成学生真实已选课程提交给真实求解链路。
+  - 修复：新增 provenance 门禁 `hasMockSchedule()` / `isScheduleSubmittableToRealPlanning()`
+    （只看 `offering.data_source === 'mock'`，与界面模式无关）；
+    `evaluatePlanSubmission()` 把"输入完整性 + provenance"合成**唯一**提交守卫（纯函数，可直接测试）；
+    `App.submitRealPlan()` 改用该守卫；`UserInputPanel` 把门禁结果传给 `SubmissionActions`
+    并禁用按钮；页面给出明确提示"**当前课表来源为 Mock 教学班，不能提交到 Real Planning。**"
+  - ⚠️ **空 `current_schedule` 仍允许提交**（没有 provenance 不明的数据）；
+    全部为 real 教学班时也允许通过。
+- 修改文件：`frontend/src/App.vue`、`frontend/src/state/userInput.ts`、
+  `frontend/src/components/UserInputPanel.vue`、`frontend/src/components/SubmissionActions.vue`、
+  `frontend/src/styles/base.css`、`frontend/vitest.config.ts`（测试环境开启 `VITE_PLAN_API_ENABLED`）、
+  新增 `frontend/tests/{plan-result-provenance,app-provenance-guard,schedule-provenance-gate}.spec.ts`、
+  `docs/status/agent_frontend.md`、本文件。
+- 测试结果：`npm test` → **75 passed / 75**（7 文件）；`npm run build` → 成功；
+  `npm run test:scenarios` → 既有 14 项全部通过。
+- **测试有效性已验证（非空测试）**：
+  - 把 4 号区块改回渲染 `data.plan_result`（模拟修复前）→
+    `plan-result-provenance` 的"Real 成功 → 实际展示 realPlanResult"用例**失败**；
+  - 把 `evaluatePlanSubmission` 的 provenance 分支禁用 → 门禁用例**失败**（2 项）。
+  两者还原后全部通过，说明测试确实锁定了这两个 blocker。
+- 是否修改 backend：**否**。公共接口是否变化：**否**（未改 `schemas/`、`docs/interfaces/`）。
+- 下一步：等待 Architecture Review。
+
+### 2026-10-06 - provenance 收紧：Real 结果不用 Mock 课程名 / 门禁 fail closed / 文案与页脚修正
+
+- 触发：patch Review 第二轮反馈（4 项最小修改）。
+- **1. Real PlanResult 禁止使用 Mock `courseNameById`**：
+  - 新增 `planResultCourseNameById`，在 `planResultMode === 'real'` 时传 **空表 `{}`** 给 `PlanResultPanel`；
+  - 原因：`courseNameById` 由 Mock 教学班 / 补修任务构建，属**页面基础展示数据**，
+    若用于 Real 结果会把 Mock 课程名泄漏进 Real 结果区（provenance 污染）；
+  - 测试：`plan-result-provenance.spec.ts` 新增用例——
+    Mock 结果区**可以**显示 Mock 课程名，Real 结果区**不得**出现 Mock 课程名，只显示课程号本身。
+- **2. 全局式文案改为局部 provenance**：
+  - `DATA_MODE_LABEL`（"当前数据模式：Mock / Real"）→ `PLAN_RESULT_SOURCE_LABEL`
+    （"**规划结果来源：Mock / Real**"）；类型 `DataMode` → `PlanResultSource`；
+  - 理由：`POST /api/v1/plan` 只返回 `PlanResult`，不能用全局说法；
+  - 测试断言文案包含"规划结果来源："且**不含**"当前数据模式"。
+- **3. 页脚修正**：删除"Real 规划输入中的教学班仍是 Mock"这一**不准确**表述，
+  改为区分「**页面基础展示数据**（`GET /api/v1/mock/demo`）」与
+  「**规划结果**（`POST /api/v1/plan` 或 Mock 通道）」两类来源，并说明两者来源相互独立。
+- **4. 课表 provenance 门禁改为 fail closed**：
+  - 原实现 `!hasMockSchedule(form)` 是**fail open** 的（来源未知 → 放行）；
+  - 现改为 `form.currentSchedule.every(isRealSourceOffering)` —— **只放行**
+    "空课表"或"每一项都明确为 `real`"；含 Mock、real+mock 混合、缺 `data_source`、
+    取值异常（如 `"unknown"`）**一律拒绝**；
+  - 新增 `isRealSourceOffering()` 与 `scheduleProvenanceBlockReason()`（区分两类阻止原因），
+    `evaluatePlanSubmission()` 改用后者；`SubmissionActions` 按原因显示不同提示。
+- 修改文件：`frontend/src/App.vue`、`frontend/src/state/userInput.ts`、`frontend/src/config.ts`、
+  `frontend/src/components/UserInputPanel.vue`、`frontend/src/components/SubmissionActions.vue`、
+  `frontend/tests/{schedule-provenance-gate,plan-result-provenance,user-input-panel}.spec.ts`、
+  `docs/status/agent_frontend.md`、本文件。
+- 测试结果：`npm test` → **82 passed / 82**（7 文件）；`npm run build` → 成功；
+  `npm run test:scenarios` → 既有 14 项全部通过。
+- 是否修改 backend：**否**。公共接口是否变化：**否**。
+- 下一步：等待 Architecture Review。
+

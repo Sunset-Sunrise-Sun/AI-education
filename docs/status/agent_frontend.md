@@ -1,6 +1,13 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-05（**DG-07D Frontend Presentation Safety 已 IMPLEMENTED / REVIEWED 并 merge 到 main**：
+> 最后更新：2026-10-06（**Frontend User Input Gate Phase 1 已实现，待 Architecture Review**：
+> 前端新增真正的**用户输入区**（目标学期 / 转专业上下文 / 当前课表 / 可编辑 Preference / 成绩文件选择），
+> 并按 DG-03 语义输出 `current_schedule: CourseOffering[]`；
+> **Mock / Real 明确隔离**：页面显示**规划结果来源**（局部 provenance，非"整页数据模式"），Real Planning 在接口就绪前按钮 **disabled**，
+> **绝不**回退到 Mock；`POST /api/v1/plan` client 已预留且请求体只有
+> `semester` / `current_schedule` / `preference`；
+> ⛔ **未改 backend / Schema / Interface**；⛔ XLSX **只选择不解析**、前端**不生成**任何 `MakeupTask`。
+> 上一轮：DG-07D Frontend Presentation Safety 已 IMPLEMENTED / REVIEWED 并 merge 到 main）
 > 通用 UI 与 Demo 体验 Polish 保留；empty-meeting 中性展示“当前数据中无排课信息”已实施；
 > unresolved 展示覆盖 manual_confirmation / missing_data / schedule_unknown / selection_required 及通用未知 fallback；
 > 已删除前端自行推断的容量阈值、Preference 执行语义、risks=[] / changes=[] / feasible 过度结论；
@@ -725,10 +732,184 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   **`mock_service.py` 与 `/api/v1/mock/*` 未修改**。
   后端 **147 passed / 2 skipped**。
 
+## Frontend User Input Gate Phase 1 结果（用户输入区 + Real API 预留）
+
+**只做前端输入体验，不伪造后端能力**：⛔ 不改 backend；⛔ 不解析 XLSX；
+⛔ 不生成 `MakeupTask`；⛔ 不做冲突 / feasible / Path Repair 计算。
+
+分支 `feature/frontend-user-input-gate`，base = `main = 1a740b2d960bb4bb78771d56aa1ec9f0424a12e1`。
+
+| 产出 | 内容 |
+|---|---|
+| `frontend/src/components/UserInputPanel.vue` | 输入区容器，按产品顺序组织 ① 学生信息 ② 已修课程文件 ③ 当前课表 ④ 个性化偏好 ⑤ 生成规划 |
+| `frontend/src/components/StudentContextForm.vue` | 目标学期 `semester` + 转专业上下文（原专业 / 目标专业 / 转入学期） |
+| `frontend/src/components/PreferenceForm.vue` | **可编辑** Preference（与只读的 `PreferencePanel.vue` 分工，后者未修改） |
+| `frontend/src/components/CurrentScheduleInput.vue` | 从已加载教学班勾选"当前已选"，输出 `CourseOffering[]` |
+| `frontend/src/components/SubmissionActions.vue` | 规划结果来源显示 + Real Planning 提交（接口就绪前 **disabled**） |
+| `frontend/src/state/userInput.ts` | **纯逻辑层**：字段规则 / 序列化 / 校验 / 请求组装（无 Vue、无 DOM、无网络） |
+| `frontend/src/api/plan.ts` | Real client：`POST /api/v1/plan`，**不 fallback 到 Mock** |
+| `frontend/src/config.ts` | 新增 `PLAN_ENDPOINT` / `PLAN_API_ENABLED` / Case context / `MAJOR_OPTIONS` 选项层 / `PlanResultSource` |
+| `frontend/vitest.config.ts`、`frontend/tests/*.spec.ts` | 新增前端单元与交互测试（Vitest + @vue/test-utils + jsdom） |
+
+**关键边界（已落地并有测试锁定）**：
+
+- **专业信息只作为选项层**：专业名来自 `MAJOR_OPTIONS`（`datalist` 候选 + 允许自由填写），
+  ⛔ **不存在** `if (major === '网络空间安全')` 这类按专业名分叉的代码；
+  Case A（遥感科学与技术 → 网络空间安全、转入学期 2026-1）只作**默认 Case context**，
+  页面明确标注这些信息**尚未影响后端 Planner**；
+- **不写死学生身份**：⛔ 不含姓名 / 学号 / 成绩 / 课程认定结果；
+  `buildRealPlanRequest()` 的序列化断言请求体中**不出现**专业名；
+- **Preference 严格对齐公共 Schema**：只编辑 `max_credit` / `avoid_cross_campus` /
+  `preferred_courses` / `avoid_times` / `notes`，**不新增字段**；
+  空备注归一为 `null`，非法学分上限**不猜测**（按"未设定"处理）；
+  `avoid_times[]` 序列化时丢掉前端 `key`，只保留三个公共字段；
+- **`current_schedule` 严格是 `CourseOffering[]`**：只接受**来源列表内**的教学班（fail closed），
+  原样传递来源对象、不加工；**允许为空**；⛔ 不用 `avoid_times` 冒充当前课表（DG-03）；
+  对 `meetings = []` 的教学班沿用 DG-07D 中性文案，不推断无冲突；
+- **XLSX 只选择不解析**：`<input type="file" accept=".xlsx">`，只保存 `File` 对象与文件名，
+  ⛔ 不上传、不解析、不伪造分析结果；非 `.xlsx` 一律拒绝；
+  页面**必须**显示"成绩文件上传分析将在真实 Curriculum User Input API 接入后启用"，
+  并声明本页**不会**在前端生成任何补修任务（有测试断言选择文件后 `fetch` **零调用**）；
+- **Mock / Real 明确隔离**：页面显示"**规划结果来源：Mock / Real**"（**局部** provenance，不是整页数据模式）；
+  `VITE_PLAN_API_ENABLED !== 'true'` 时 Real Planning 按钮 **disabled**；
+  ⛔ 不在失败时回退到 `/api/v1/mock/demo`（有测试断言失败请求地址**不含** `/mock/`，
+  且 client 源码不 import Mock 通道）；
+- **Real 请求形状固定**：请求体**只有** `semester` / `current_schedule` / `preference`；
+  学生上下文本轮**不进请求**；
+- **业务展示中性化**：`App.vue` 把会把全部 MakeupTask 统称为"补修课"的表述改为
+  "**历史培养要求评估**"，并写明含"已满足 / 待课程认定 / 已确认需补修"，
+  以逐行判定列为准（`MakeupTaskList.vue` 的"需要补修 (N)"本就只统计 `required`，未改）；
+- **未重构**：`MakeupTaskList` / `CourseOfferingList` / `PlanResultPanel` / `PreferencePanel` / `SectionCard`
+  均未修改；`TopStatusBar` 仅改导航标签并新增一个锚点；
+- ⛔ **未实现**：XLSX 解析、Curriculum Diff、课程等价、Planner 冲突、Path Repair、real provider。
+
+**验证结果**：
+
+```text
+cd frontend && npm test              →  82 passed / 82（7 个测试文件）
+cd frontend && npm run build         →  成功（含 vue-tsc --noEmit 类型检查）
+cd frontend && npm run test:scenarios →  既有 14 项 SSR 场景全部通过（Mock 通道未回归）
+```
+
+⚠️ **新增 devDependencies**：`vitest` / `@vue/test-utils` / `jsdom`（`package-lock.json` 随之变更）。
+此前前端只有 `verify_all_scenarios.mjs`（SSR 渲染断言），**无法**覆盖表单交互
+（输入 / 勾选 / 增删行），因此为满足本轮测试要求引入标准 Vue 测试栈；**待人工确认**。
+
+## 缺陷修复：invalid 表单必须阻止提交（同分支 `feature/frontend-user-input-gate`）
+
+**Review 发现的真实缺陷（已复现、已修复、已加测试锁定）**：
+
+> 当 `max_credit` 被输入为**负数或非数字**时，表单**仍被判为合法**，Real Planning 按钮**可点**，
+> 请求会被发出。
+
+**根因（两层）**：
+
+1. `PreferenceForm` 把非法输入**归一化成 `null`**（"不猜测"这一半是对的），
+   但归一化后它与"**未触碰 / 主动留空**"**无法区分**，而 `isFormValid` 只看归一化后的
+   `form.preference.maxCredit` → 非法输入被当成"未设定" → 表单 valid；
+2. 提交入口只有按钮 `disabled` 一道防线，`submitRealPlan()` 内部**没有**二次校验。
+
+**修复（最小改动，仅前端）**：
+
+- `state/userInput.ts`：新增 `invalidFields: InvalidatableField[]`（**不是**公共 `Preference` 字段，
+  不进入请求体）与 `normalizeMaxCreditInput(raw) → { value, invalid }`；
+  `isFormValid()` **首条**即判断 `invalidFields.length > 0 → invalid`；
+- `components/PreferenceForm.vue`：用 `normalizeMaxCreditInput` 归一化；
+  非法时把 `maxCredit` 记入 `invalidFields`（取值仍不猜测，按 `null` 保留），
+  修正后自动清除该标记；`max_credit` 输入框由 `type="number"` 改为
+  `type="text" inputmode="decimal"` —— 浏览器会对 number 输入静默丢弃非数字，
+  校验必须由组件自己负责；
+- `App.vue` `submitRealPlan()`：新增**提交前守卫** `if (!isFormValid(...)) return`，
+  不满足时**一个请求也不发**（按钮 `disabled` 只作界面提示，不作为唯一防线）。
+
+**修复过程中同时发现并修掉一个自身引入的回归**：`onMaxCreditInput` 原先**分两次 emit**
+（先 `patchPreference` 再 `setFieldInvalid`），第二次展开的是**过期的 `props.form`**，
+会把刚写入的取值覆盖回 `null`（表现为输入 `24` 后值变 `null`）。
+现已改为**一次性发出同一个新状态**。
+
+**成功标准（逐条测试锁定，见 `tests/form-validation-gate.spec.ts`）**：
+
+| 场景 | 期望 | 结果 |
+|---|---|---|
+| untouched / 主动留空 | 按 `null` / default 序列化，**允许**提交 | ✅ |
+| `max_credit = -5` | invalid → 禁止提交 → **fetch 0 次** | ✅ |
+| `max_credit = abc` | invalid → 禁止提交 → **fetch 0 次** | ✅ |
+| `semester = 2026-9` | invalid → 禁止提交 → **fetch 0 次** | ✅ |
+| `avoid_times` end < start | invalid → 禁止提交 → **fetch 0 次** | ✅ |
+| **程序化触发提交（绕过 disabled 按钮）** | 守卫拦截 → **fetch 0 次** | ✅ |
+| 修正非法输入后 | 恢复可提交 | ✅ |
+
+**验证**：`npm test` → **55 passed / 55**（4 文件）；`npm run build` → 成功；
+`npm run test:scenarios` → 既有 14 项全部通过。
+
+## provenance 修复：Real 结果实际渲染 + Mock 课表禁止进入 Real（同分支）
+
+**Review 发现的第二个 blocker 组（已修复、已加测试）**：
+
+| # | 缺陷 | 修复 | 锁定测试 |
+|---|---|---|---|
+| **1** | `realPlanResult` 只被赋值、**从未渲染**：Real 提交成功后页面 4 号区块仍展示 `GET /api/v1/mock/demo` 的 `plan_result` → "**Real 标签 + Mock 结果**" | 新增 `planResultMode` / `displayedPlanResult`，4 号区块与概览状态改用后者；区块内新增 provenance 行「基础演示数据：Mock · 规划结果：Mock/Real」 | `tests/plan-result-provenance.spec.ts`（5 项） |
+| **2** | Mock `current_schedule` 可进入 Real Planning：勾选 Mock Demo 教学班即可提交，会把演示用假教学班当成真实已选课程 | 新增 provenance 门禁 `hasMockSchedule()` / `isScheduleSubmittableToRealPlanning()`，并由 `evaluatePlanSubmission()` 统一守卫；UI 禁用提交并明确提示 | `tests/schedule-provenance-gate.spec.ts`（13 项）、`tests/app-provenance-guard.spec.ts`（2 项） |
+
+**Blocker 1 — provenance 表达（精确到区块，不冒充整页）**：
+
+```text
+基础演示数据：Mock   ·   规划结果：Mock / Real
+```
+
+- ⚠️ `/api/v1/plan` 当前**只返回 `PlanResult`**，因此**不得**把整页
+  MakeupTask / CourseOffering / Preference 统一标成 Real；
+- 测试断言：Real 成功后 ① 实际渲染 Real 返回结果（`objective_summary` 可辨识）、
+  ② Mock 的 `plan_result` 不再被当作结果显示、
+  ③ 培养要求评估 / 教学班仍为 Mock 且仍带 `Mock` 标记、
+  ④ Real 失败时保持 Mock 结果与 Mock provenance（不回退、不冒充）。
+
+**Blocker 2 — provenance 门禁（只看数据自身来源，fail closed）**：
+
+- 判定依据是教学班自身的 `data_source`，与"页面当前处于哪个模式"**无关**；
+- **只放行两种情况**：**空课表**，或**每一项都明确为 `real`**；
+- 含 Mock、real 与 mock **混合**、或**来源未经确认**（缺 `data_source` / 取值异常）→ **一律阻止**；
+  ⛔ 不因"看起来像真实数据"而放行，必须**显式**确认为 `real`；
+- 阻止原因**区分**两类并给出不同提示：
+  含 Mock → "当前课表来源为 Mock 教学班，不能提交到 Real Planning。"；
+  来源未经确认 → "当前课表包含来源未经确认的教学班，不能提交到 Real Planning。"；
+- 阻止时 **`fetch` 0 次调用**；守卫是**纯函数**
+  `scheduleProvenanceBlockReason()` / `evaluatePlanSubmission(form) → { allowed, reason }`，
+  同时被 `App.submitRealPlan()` 与测试使用（避免"测试自造守卫"的空转断言）。
+
+**Blocker 3（patch Review 第二轮补充）— Real 结果区不得使用 Mock 课程名**：
+
+- `courseNameById` 来自 Mock 教学班 / 补修任务，属**页面基础展示数据**；
+- 当**规划结果来自 Real** 时，传给 `PlanResultPanel` 的映射表一律为空（`{}`），
+  否则会出现"Real 结果 + Mock 课程名"的 provenance 污染；
+- 测试断言：Real 成功后结果区**不再出现** Mock 课程名，只显示 Real 返回的课程号本身。
+
+**文案修正（同一轮）**：
+
+- 全局式"当前数据模式：Mock / Real" → 改为**局部** provenance
+  "**规划结果来源：Mock / Real**"（`PLAN_RESULT_SOURCE_LABEL`，`DataMode` 更名 `PlanResultSource`）；
+  理由：`POST /api/v1/plan` 只返回 `PlanResult`，不能用全局说法；
+- 页脚删除"Real 规划输入中的教学班仍是 Mock"这一**不准确**表述，
+  改为区分「**页面基础展示数据**（`GET /api/v1/mock/demo`）」与「**规划结果**（`POST /api/v1/plan` 或 Mock 通道）」
+  两类来源，并说明两者来源相互独立。
+
+**验证**：`npm test` → **82 passed / 82**（7 文件）；`npm run build` → 成功；
+`npm run test:scenarios` → 既有 14 项全部通过。
+**测试有效性已实测**：回退 4 号区块渲染 → 渲染用例失败；禁用 provenance 分支 → 门禁用例失败（2 项）。
+
 ## 当前接口
-- 读取：`MakeupTask[]`、`CourseOffering[]`（**含 `meetings[]`**）、`Preference`、`PlanResult`（当前来自 Mock）
-- 前端唯一数据来源：`GET /api/v1/mock/demo`
-- 业务接口统一前缀 `/api/v1`；全部响应带 `X-Data-Source: mock`
+- 读取：`MakeupTask[]`、`CourseOffering[]`（**含 `meetings[]`**）、`Preference`、`PlanResult`
+  （**规划结果**在 Real 成功前来自 Mock；成功后来自 `POST /api/v1/plan`）
+- 前端 Mock 数据来源：`GET /api/v1/mock/demo`（**永久保留**，本轮未修改）
+- **前端已预留 Real 接口 client（本轮）**：`POST /api/v1/plan`，
+  请求体**只有** `semester` / `current_schedule` / `preference`，响应按 `PlanResult` 处理；
+  ⚠️ 该 endpoint **由并行开发中的 `feature/real-plan-api` 提供，当前 main 上并不存在**；
+  `VITE_PLAN_API_ENABLED` 默认关闭 → Real 提交按钮 disabled，且**不 fallback 到 Mock**；
+  ⚠️ 该接口**只返回 `PlanResult`**（不含 MakeupTask / CourseOffering / Preference），
+  因此前端只把**规划结果**标为 Real，其余区块仍为 Mock（见上方 provenance 修复）；
+  ⚠️ 提交受 **课表 provenance 门禁**约束（**fail closed**）：只有**空课表**或**每项都明确为
+  `data_source = "real"`** 才放行；含 Mock、来源混合或来源未经确认时**禁止提交**（`fetch` 0 次）
+- 业务接口统一前缀 `/api/v1`；Mock 响应带 `X-Data-Source: mock`
 - **Integration 层（Phase 2B-1）**：`backend/app/integration/` 定义了
   `CurriculumProvider` / `CourseDataProvider` / `PlannerProvider` 三个 Protocol
   与 `PlanningOrchestrator`；**尚未暴露任何 API**，`main.py` 未修改。
@@ -748,6 +929,9 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   仓库内**不含完整课程表**，也**不含任何具体成绩 / GPA**，**不含教师姓名 / 内部长 ID / 完整逐行记录**
 - 这些来源为 **Authenticated Official**：**外部访问者无法通过公开 URL 独立复核**
 - 真实数据链路**已取得 D1–D5 全部五类样本**，但**尚未进入产品链路**
+- **本轮新增的是"用户输入"，不是真实数据**：目标学期 / 转专业上下文 / 当前课表 / 偏好
+  都是**用户自己录入**的输入；成绩文件**只选择、不解析、不上传**；
+  页面显示的数据模式在 Real 接口接通前**始终为 Mock**
 - 「当前功能仅使用 Mock 数据验证，尚未完成真实数据验证」
 
 ## 当前阻塞
@@ -782,6 +966,15 @@ C7 ✅  C8 ✅  C9 ✅  C10 ✅  C11 ✅      →  Data Gate PASSED / CLOSED
   登记为 **known deferred representation gap**（**不是"无证据"**）
 
 ## 下一步
+- **本轮产出等待 Architecture Review**：Frontend User Input Gate Phase 1
+  （输入区 / Mock-Real 隔离 / Real client 预留），以及**新增前端测试依赖**是否批准；
+- **等 `feature/real-plan-api` 合并后**再接线真实调用（届时打开 `VITE_PLAN_API_ENABLED`），
+  在此之前 Real 按钮保持 disabled，**不得**用 Mock 冒充 Real；
+- **下一步的候选工作**（需另行确认，本轮未做）：
+  ① 把预填的转专业上下文作为**显式请求字段**扩展进 `POST /api/v1/plan`（属**接口变更**，须走 `【接口变更请求】`）；
+  ② 已修课程 XLSX 的真实上传与 Curriculum User Input API 对接（依赖上游；
+  ⛔ 前端**不得**自行解析成绩或生成补修任务）；
+  ③ 展示层继续承接 PlanResult；
 - **不再等待 DG-07B / DG-07C / DG-07D**：DG-07A / B / C / D 已全部 IMPLEMENTED / REVIEWED / MERGED，
   Data Gate 已恢复 **PASSED / CLOSED**；
 - 前端继续保持展示层边界，不新增容量阈值、课程优先级、冲突推断或 Preference 执行推断；

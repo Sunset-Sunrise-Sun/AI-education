@@ -13,8 +13,95 @@ const rawBaseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
 /** 后端基地址；空字符串表示"同源，由 Vite 代理转发"。 */
 export const API_BASE_URL: string = rawBaseUrl.replace(/\/+$/, '')
 
-/** 本阶段唯一允许调用的后端接口。 */
+/** 本阶段的 Mock 演示接口。Mock 通道**永久保留**，不因 Real API 接入而删除。 */
 export const DEMO_ENDPOINT = `${API_BASE_URL}/api/v1/mock/demo`
+
+/**
+ * 目标 Real 接口：`POST /api/v1/plan`。
+ *
+ * ⚠️ 该 endpoint 由并行开发中的 `feature/real-plan-api` 提供，**当前 main 上并不存在**。
+ * 前端本轮只**预留调用代码与请求形状**，不在失败时回退到 Mock 通道。
+ */
+export const PLAN_ENDPOINT = `${API_BASE_URL}/api/v1/plan`
+
+/**
+ * Real Planning 通道开关。
+ *
+ * 默认 **关闭**：在 Real API 尚未合并进 main 之前，页面的 Real Planning 提交按钮
+ * 明确显示为不可用，并且**不会**偷偷改调 Mock 接口。
+ * 只有在确认后端已提供 `POST /api/v1/plan` 之后，才把它打开
+ * （`.env.local` 中设置 `VITE_PLAN_API_ENABLED=true`）。
+ */
+export const PLAN_API_ENABLED: boolean = import.meta.env.VITE_PLAN_API_ENABLED === 'true'
 
 export const APP_TITLE = '学航·转衔'
 export const APP_SUBTITLE = '面向转专业学生的 AI 学业路径重构 Agent'
+
+/**
+ * 比赛 MVP 的 Case context：中山大学 Case A。
+ *
+ * ⚠️ 边界（很重要）：
+ * - 这些值只是**默认展示与输入初值**，用于演示"用户如何录入自己的转专业上下文"；
+ * - 它们**不参与任何判断分支**：前端不存在 `if (major === '网络空间安全')` 这类专业名分支，
+ *   专业选项统一来自下面的 `MAJOR_OPTIONS` 选项层；
+ * - 它们**不会被悄悄送进后端 Planner**，也不代表 Planner 已经按这些信息产出结果；
+ * - 不包含任何学生姓名、学号、成绩或课程认定结果。
+ */
+export interface CaseContext {
+  /** 目标学期（转专业后要规划的那个学期）。 */
+  semester: string
+  /** 原专业（Case A：遥感科学与技术）。 */
+  originMajor: string
+  /** 目标专业（Case A：网络空间安全）。 */
+  targetMajor: string
+  /** 转入学期（Case A：2026-1）。 */
+  transferTerm: string
+}
+
+/** Case A 的默认上下文。 */
+export const CASE_A_CONTEXT: CaseContext = {
+  semester: '2026-1',
+  originMajor: '遥感科学与技术',
+  targetMajor: '网络空间安全',
+  transferTerm: '2026-1',
+}
+
+/**
+ * 专业选项层。
+ *
+ * 专业名只作为**下拉选项数据**存在（含一个 `label` 与 `value`），
+ * 供学生选择；组件与业务逻辑都不按专业名分叉。
+ */
+export interface MajorOption {
+  value: string
+  label: string
+}
+
+export const MAJOR_OPTIONS: readonly MajorOption[] = [
+  { value: '遥感科学与技术', label: '遥感科学与技术' },
+  { value: '网络空间安全', label: '网络空间安全' },
+  { value: '软件工程', label: '软件工程' },
+  { value: '计算机科学与技术', label: '计算机科学与技术' },
+  { value: '智能科学与技术', label: '智能科学与技术' },
+  { value: '人工智能', label: '人工智能' },
+]
+
+/**
+ * **规划结果**的来源。
+ *
+ * ⚠️ 这是**局部** provenance，不是"整页数据模式"：
+ * `POST /api/v1/plan` 只返回 `PlanResult`，页面基础展示数据
+ * （培养要求评估 / 教学班 / 偏好）仍全部来自 Mock Demo。
+ * Mock 与 Real 必须能明确区分，不允许混用或静默回退。
+ */
+export type PlanResultSource = 'mock' | 'real'
+
+/**
+ * 读取初始的规划结果来源。
+ *
+ * 在 Real API 合并进 main 之前恒为 `'mock'`；
+ * 只有**成功调用** `POST /api/v1/plan` 之后才会变成 `'real'`。
+ */
+export function initialDataMode(): PlanResultSource {
+  return 'mock'
+}
