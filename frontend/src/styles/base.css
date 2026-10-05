@@ -724,6 +724,13 @@ code.mono {
   font-weight: 600;
 }
 
+.tag--unresolved-selection {
+  background: #f5f3ff;
+  border-color: #a78bfa;
+  color: #5b21b6;
+  font-weight: 600;
+}
+
 .tag--unresolved-other {
   background: #f1f5f9;
   border-color: #94a3b8;
@@ -984,9 +991,6 @@ code.mono {
   font-size: 14px;
 }
 
-.capacity-remain--low {
-  color: #dc2626;
-}
 
 .capacity-total {
   font-size: 12px;
