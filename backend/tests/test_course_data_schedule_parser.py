@@ -1157,3 +1157,175 @@ def test_parser_error_messages_do_not_echo_sensitive_fields() -> None:
 
     message = str(excinfo.value)
     assert "机密" not in message
+
+
+# ---------------------------------------------------------------------------
+# sections suffix 白名单（Architecture Review 裁定；2026-1 east artifact 聚合证据：
+# `校内(户外)` × 173、`线上` × 11、`校外` × 1）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("token", "expected"),
+    [
+        ("第1-2节", (1, 2)),
+        ("第5-6节", (5, 6)),
+        ("第4-4节", (4, 4)),  # 单节仍合法
+        ("第5-8节校内(户外)", (5, 8)),
+        ("第5-6节校外", (5, 6)),
+        ("第5-6节线上", (5, 6)),
+    ],
+)
+def test_approved_sections_tokens_are_accepted(
+    token: str, expected: tuple[int, int]
+) -> None:
+    """已批准形态：`第N-M节` 与三个已批准 suffix（**精确命中**白名单）。"""
+
+    assert parse_sections(token) == expected
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "第5-6节校内(户外)X",  # 白名单值后还有内容
+        "第5-6节校",  # 白名单值的**前缀**
+        "第5-6节线上教学",  # 白名单值 + 额外内容
+        "第5-6节线上 教学",
+        "第5-6节未知",
+        "第5-6节医院",
+        "第5-6节实验实践环节",
+        "第5-6节校内(户外)x",
+        "第5-6节校外线上",
+        "第5-6节/第7-8节",  # 合法前缀 + 非白名单尾随内容 ⇒ 属于 suffix 分类
+    ],
+)
+def test_unknown_sections_suffix_fails_closed(token: str) -> None:
+    """⛔ 未知 suffix 一律 fail closed，且分类为 `unsupported_sections_suffix`。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_sections(token)
+
+    assert "unsupported_sections_suffix" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "第4节",  # 只有单节
+        "4-4节",  # 缺"第"
+        "第4－4节",  # 全角连字符
+        "第 4-4 节",  # 含空格
+        "第4~4节",
+        "",
+        "   ",
+    ],
+)
+def test_malformed_sections_shape_fails_closed(token: str) -> None:
+    """⛔ 形状本身不认识 → 分类为 `unsupported_sections_shape`。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_sections(token)
+
+    assert "unsupported_sections_shape" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "第0-4节",  # N = 0
+        "第0-0节",
+        "第6-3节",  # M < N
+        "第9-1节",
+        "第6-3节线上",  # 白名单 suffix 也要先过区间校验
+    ],
+)
+def test_invalid_sections_range_fails_closed(token: str) -> None:
+    """⛔ `N >= 1` 且 `M >= N`；违反 → `unsupported_sections_range`。"""
+
+    with pytest.raises(CourseDataNormalizationError) as excinfo:
+        parse_sections(token)
+
+    assert "unsupported_sections_range" in str(excinfo.value)
+
+
+def test_sections_errors_never_echo_the_raw_token() -> None:
+    """⛔ production 错误只给**安全分类**，不得回显原始 token（含未知 suffix 原文）。"""
+
+    rejected = [
+        "第5-6节校内(户外)X",
+        "第5-6节校",
+        "第5-6节线上教学",
+        "第5-6节未知",
+        "第5-6节医院",
+        "第4节",
+        "4-4节",
+        "第4－4节",
+        "第 4-4 节",
+        "第4~4节",
+        "第0-4节",
+        "第6-3节",
+        "第5-6节/第7-8节",
+    ]
+
+    for token in rejected:
+        with pytest.raises(CourseDataNormalizationError) as excinfo:
+            parse_sections(token)
+
+        message = str(excinfo.value)
+
+        assert token not in message, f"错误信息回显了原始 token：{token!r}"
+        assert token.strip() not in message
+        # suffix 原文同样不得回显
+        assert "未知" not in message
+        assert "医院" not in message
+        assert any(
+            code in message
+            for code in (
+                "unsupported_sections_suffix",
+                "unsupported_sections_shape",
+                "unsupported_sections_range",
+            )
+        ), f"缺少安全分类：{message}"
+
+
+def test_sections_suffix_is_validation_only() -> None:
+    """⚠️ suffix 只用于白名单校验：⛔ 不新增公共字段，⛔ 不进入内部 qualifier。"""
+
+    text = "/".join(
+        ["1-8周", "星期五", "第5-8节校内(户外)", "示例校区-示例教学楼-2108", ACTIVITY]
+    )
+
+    (segment,) = parse_teaching_time_place(text)
+
+    assert segment.meeting is not None
+    assert (segment.meeting.start_section, segment.meeting.end_section) == (5, 8)
+    assert segment.schedule_qualifier is None, "sections suffix ⛔ 不得存进内部 qualifier"
+    assert "qualifier" not in Meeting.model_fields, "⛔ 未新增公共字段"
+
+
+def test_sections_suffix_whitelist_does_not_widen_the_weeks_whitelist() -> None:
+    """⛔ `线上` 只被批准出现在 **sections** 字段上：weeks 白名单不得因此放宽。"""
+
+    for text in (
+        "12-19周线上/实验实践环节",  # 2 字段 non-concrete
+        "16-16周线上/示例教师A/实验实践环节",  # 3 字段 non-concrete
+    ):
+        with pytest.raises(CourseDataNormalizationError):
+            parse_teaching_time_place(text)
+
+
+def test_sections_suffix_accepts_only_the_exact_whitelist_literals() -> None:
+    """⛔ 不用 startswith / 通配：白名单值必须**整段**命中。"""
+
+    for token in ("第5-6节线上", "第5-6节校外", "第5-8节校内(户外)"):
+        parse_sections(token)  # 白名单值本身合法
+
+    for token in (
+        "第5-6节线",
+        "第5-6节线线上",
+        "第5-6节外",
+        "第5-6节校内",
+        "第5-6节校内(户外",
+    ):
+        with pytest.raises(CourseDataNormalizationError):
+            parse_sections(token)

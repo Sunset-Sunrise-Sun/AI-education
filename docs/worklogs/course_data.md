@@ -1925,3 +1925,65 @@
   `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend；
   ⛔ 未 push / 未开 PR / 未 merge。
 - 下一步：等待 Architecture Review。
+
+### 2026-10-05 - parser 窄扩展：sections suffix 白名单 + 安全错误分类（真实 artifact 验收）
+
+- 触发：Architecture Review 裁定（依据 east campus artifact 的只读聚合扫描：
+  `校内(户外)` × 173、`线上` × 11、`校外` × 1）。
+- **批准的窄扩展**（`backend/app/course_data/schedule_parser.py`）：
+
+  ```text
+  第N-M节
+  第N-M节校内(户外)
+  第N-M节校外
+  第N-M节线上
+  ```
+
+  - `N ≥ 1` 且 `M ≥ N`（`M == N` 仍合法）；
+  - ⛔ **不用 `startswith`**、⛔ **不用 `.*`**、⛔ **不把 `节` 后字符无条件 strip**：
+    实现是"白名单字面量逐个 `re.escape` + 整段锚定 `^...$`"的**单一正则**，
+    suffix 从不被抓出来做字符串比较；
+  - **sections suffix 是独立白名单**（`_KNOWN_SECTIONS_SUFFIXES`）：
+    ⛔ **weeks 白名单未放宽**（仍 `校外` / `校内(户外)`）——
+    `12-19周线上/...` 与 `16-16周线上/教师/活动` 仍 fail closed（有专项用例 +
+    mutation 锁）。
+- **qualifier 只做校验**：公共 `Meeting` 没有 qualifier 字段 ⇒ ⛔ 未新增公共字段、
+  ⛔ 未写进内部 `schedule_qualifier`（校验后丢弃）；`Meeting` Schema 未变。
+- **production 错误改为安全分类**（⛔ 不回显原始 token）：
+  `unsupported_sections_suffix` / `unsupported_sections_shape` /
+  `unsupported_sections_range`；区间非法时也**不再回显 start/end**。
+- 49 个 `other` 形态（`C-CAC-CAN` / `C` / `C-C-CAN`）**本轮按要求不处理**，仍 fail closed。
+- **新增 synthetic 用例 32 项**（parser 127 → **159**）：
+  已批准形态 6 例（strict ×3 + 三个 suffix）/ 未知 suffix 9 例 / 形状非法 8 例 /
+  区间非法 5 例 / **错误信息不回显 raw token**（13 个被拒 token 逐个断言 token 与 suffix
+  原文都不出现在 message，且必须带安全分类）/ suffix 仅校验不落库（含 `Meeting` 无
+  qualifier 字段）/ **weeks 白名单未被放宽** / 白名单必须整段命中。
+- **non-vacuity（mutation 5 项，脚本在 repo 外）：5/5 变红**
+  （回退成只接受 `第N-M节` → 6 红；suffix 改 `.*` 通配 → 12 红；
+  错误信息重新回显 token → 1 红；区间校验失效 → 8 红；
+  把 `线上` 塞进 weeks 白名单 → 3 红）。
+  ⚠️ **自查纠正**：第一次 sweep 只统计 `^FAILED `，而 P5 那个 mutation 因把常量写在定义之前
+  触发了 **import-time NameError**（pytest 报 collection error 而非 FAILED）⇒ 被误记为 0 红。
+  已把 mutation 改为字面量并让计数同时统计 `ERROR`，重跑后 5/5 红。
+- **对固定真实 artifact 重新验收**（`D:\webDownload\sysu-2026-1-east-campus.capture.json`，
+  SHA-256 `daafdb18…a31b` 实测一致；⛔ 未建 SQLite、⛔ 未跳过任何 row）：
+  - `load_capture_bundle` ✅（6 页 / 每页 total 1071 / rows 合计 1071）；
+  - `collect_captured_pages_snapshot` **仍然 fail closed，但 blocker 已换**：
+    sections 形态**全部通过**，新的失败是**另一条**既有校验
+    （`normalization.py`：`selectedNumber > limitNumber`）；
+  - **只读聚合复核**（对 3182 个 sections 位置 token 逐个调 `parse_sections`）：
+    **accepted 3133 / rejected 49**，且 49 个**全部**是 `unsupported_sections_shape`
+    （= 那三个未确证模板），对账 `3133 + 49 = 3182` ✅
+    ⇒ 扩展对该 artifact **完整且未越界**；⛔ 没有 `unsupported_sections_suffix`、
+    ⛔ 没有 `unclassified`。
+  - ⚠️ **新 blocker 细节 + 隐私缺口（需 Review 裁定）**：
+    该错误信息回显 **`class_id`（`classNumber`）** 与两个计数 —— 即**行级标识符**，
+    与刚裁定的"不回显 raw token"属同一类问题，但**不在本轮授权范围内**，
+    故⛔ **未擅自修改**；已按最小化结构信息上报（⛔ 未把该 classNumber 写入任何文件）。
+- 测试结果：parser **159 passed**；full backend **2 failed / 2297 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例，未修、未 skip、未删）。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未建 SQLite；⛔ 未改公共 Schema；
+  ⛔ 未改 collector / `captured_pages.py` / Capture Bundle format / `sharded_capture.py` /
+  `planning_runtime.py` / PR #39 / Planner / Curriculum / frontend / store。
+- 下一步：等待 Architecture Review 对(a)新 blocker `selectedNumber > limitNumber` 与
+  (b)该错误路径的 `class_id` 回显给出裁定。

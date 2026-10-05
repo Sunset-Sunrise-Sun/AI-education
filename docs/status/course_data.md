@@ -469,7 +469,29 @@ segment separator = ","      field separator = "/"
 - ⛔ 字段数只接受 **4 / 5 / 6**，其它（3、7+）fail closed；
 - **星期**：只接受 `星期一` … `星期日`；⛔ **`weekday` 一律来自 segment 自身**——
   样本显示 Raw `weekDay` 的顺序**不能安全假设**与 segment 一致，因此**完全不使用**它；
-- **节次**：`第N-M节`，要求 `N ≥ 1` 且 **`M ≥ N`**（允许 `M == N`，如 `第4-4节`）；
+- **节次**：`第N-M节` 或 `第N-M节` + **已批准 suffix**，要求 `N ≥ 1` 且 **`M ≥ N`**
+  （允许 `M == N`，如 `第4-4节`）：
+
+  ```text
+  已批准（Architecture Review 裁定，2026-1 east artifact 聚合证据）：
+    第N-M节
+    第N-M节校内(户外)     （east artifact 出现 173 次）
+    第N-M节校外           （1 次）
+    第N-M节线上           （11 次，**新确认**）
+  ```
+
+  - suffix 必须**精确命中**白名单字面量 + 整段锚定：⛔ 不用 `startswith`、⛔ 不用 `.*`、
+    ⛔ 不把 `节` 之后的字符无条件 strip（`第5-6节校` / `第5-6节线上教学` /
+    `第5-6节校内(户外)X` 一律拒绝）；
+  - **sections suffix 是独立白名单**：⛔ `线上` **只**被批准出现在 sections 字段上，
+    **weeks 字段的限定词白名单不被放宽**（仍只有 `校外` / `校内(户外)`）；
+  - ⚠️ suffix **只用于白名单校验**：公共 `Meeting` 没有 qualifier 字段，
+    因此⛔ 不新增公共字段、⛔ 也不存进内部 `schedule_qualifier`（校验后丢弃）；
+  - ⛔ **未确证的 sections 形状仍保持 fail closed**（east artifact 上聚合计数 **49**，
+    三个匿名模板 `C-CAC-CAN` × 30 / `C` × 10 / `C-C-CAN` × 9）；
+  - **production 错误只给安全分类**（⛔ 不回显原始 token）：
+    `unsupported_sections_suffix` / `unsupported_sections_shape` /
+    `unsupported_sections_range`；
 - **地点**：只按**第一个 `-`** 切 → `campus` = 第一段、`classroom` = 其余完整文本；
   ⛔ 不进一步猜 building / room；⛔ **`openingSchoolName` 不是 `campus` 的 fallback**；
 - **teacher / activity**：`ParsedScheduleSegment.teacher` 类型为 **`str | None`**

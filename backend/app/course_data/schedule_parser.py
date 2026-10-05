@@ -201,6 +201,32 @@ _KNOWN_SCHEDULE_QUALIFIERS = (
     SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR,
 )
 
+# ---------------------------------------------------------------------------
+# sections 字段的 suffix 白名单（Architecture Review 裁定，2026-1 真实 east artifact）
+# ---------------------------------------------------------------------------
+#
+# 真实证据：east campus artifact 的 sections 位置上出现 `第N-M节<suffix>`，
+# 其中 suffix 的聚合计数为 `校内(户外)` × 173、`线上` × 11、`校外` × 1。
+#
+# ⚠️ 这是**独立于** `_KNOWN_SCHEDULE_QUALIFIERS` 的**第二张**白名单：
+#    weeks 字段的限定词白名单当前仍只有 `校外` / `校内(户外)`，
+#    ⛔ **不因本裁定而被放宽**（`线上` 只被批准出现在 **sections** 字段上）。
+SCHEDULE_SECTIONS_SUFFIX_ON_CAMPUS_OUTDOOR = "校内(户外)"
+SCHEDULE_SECTIONS_SUFFIX_OFF_CAMPUS = "校外"
+SCHEDULE_SECTIONS_SUFFIX_ONLINE = "线上"
+
+#: sections suffix 白名单（**已批准**的完整取值，⛔ 不含任何前缀/通配）。
+_KNOWN_SECTIONS_SUFFIXES = (
+    SCHEDULE_SECTIONS_SUFFIX_ON_CAMPUS_OUTDOOR,
+    SCHEDULE_SECTIONS_SUFFIX_OFF_CAMPUS,
+    SCHEDULE_SECTIONS_SUFFIX_ONLINE,
+)
+
+#: production 错误的**安全分类**：⛔ 不回显原始 token，只给出类别。
+SECTIONS_ERROR_UNSUPPORTED_SUFFIX = "unsupported_sections_suffix"
+SECTIONS_ERROR_UNSUPPORTED_SHAPE = "unsupported_sections_shape"
+SECTIONS_ERROR_UNSUPPORTED_RANGE = "unsupported_sections_range"
+
 #: 普通周次 token：`N-M周`（`N >= 1`、`M >= N`）。
 _PLAIN_WEEKS_GRAMMAR = r"[0-9]+-[0-9]+周"
 
@@ -235,8 +261,24 @@ _WEEKDAY_BY_TOKEN: dict[str, int] = {
     "星期日": 7,
 }
 
-#: 节次 `第N-M节`（`N >= 1`，`M >= N`；**允许 `M == N`**，样本中 `第4-4节` 真实存在）。
-_SECTION_PATTERN = re.compile(r"^第([0-9]+)-([0-9]+)节$")
+#: 节次：`第N-M节` + **精确命中白名单**的可选 suffix
+#: （`N >= 1`、`M >= N`；**允许 `M == N`**，样本中 `第4-4节` 真实存在）。
+#:
+#: ⛔ 实现约束（Architecture Review 裁定）：
+#: - ⛔ **不用 `startswith`**；
+#: - ⛔ **不用 `.*`**（也不抓取 suffix 再做字符串比较）；
+#: - ⛔ **不把 `节` 之后的字符无条件 strip**；
+#: - suffix 的合法性由**白名单字面量**（逐个 `re.escape`）+ **整段锚定** `^...$` 保证，
+#:   因此 `第5-6节校内(户外)X` / `第5-6节校` / `第5-6节线上教学` 一律不接受。
+_SECTION_PATTERN = re.compile(
+    r"^第([0-9]+)-([0-9]+)节("
+    + "|".join(re.escape(suffix) for suffix in _KNOWN_SECTIONS_SUFFIXES)
+    + r")?$"
+)
+
+#: **仅用于错误分类**（⛔ 不用于接受）：`第N-M节` 前缀是否成立，
+#: 用来把"未知 suffix"与"形状本身不认识"分开，同时⛔ 不回显任何 token 内容。
+_SECTION_PREFIX_PATTERN = re.compile(r"^第[0-9]+-[0-9]+节")
 
 
 @dataclass(frozen=True)
@@ -300,10 +342,27 @@ def parse_weekday(token: str) -> int:
 
 
 def parse_sections(token: str) -> tuple[int, int]:
-    """解析 `第N-M节`，返回 `(start_section, end_section)`。
+    """解析 sections 字段，返回 `(start_section, end_section)`。
 
-    要求 `N >= 1` 且 `M >= N` —— **允许 `M == N`**（样本中 `第4-4节` 真实存在）。
+    已批准形态（**白名单**，Architecture Review 裁定）：
+
+    ```text
+    第N-M节
+    第N-M节校内(户外)
+    第N-M节校外
+    第N-M节线上
+    ```
+
+    要求 `N >= 1` 且 `M >= N` —— **允许 `M == N`**（样本中 `第4-4节` 真实存在）；
     ⛔ 不得写成 `end > start`。
+
+    ⚠️ suffix **只用于白名单校验**：公共 `Meeting` 没有 qualifier 字段，
+    因此⛔ **不新增公共字段**、⛔ 也不把它存进任何公共对象（校验后即丢弃）。
+
+    ⛔ 未批准的 suffix / 不认识的形状 / 非法区间一律 fail closed，
+    且异常信息**只给安全分类**（`unsupported_sections_suffix` /
+    `unsupported_sections_shape` / `unsupported_sections_range`），
+    ⛔ **不回显原始 token**。
     """
 
     if not isinstance(token, str):
@@ -314,16 +373,25 @@ def parse_sections(token: str) -> tuple[int, int]:
     candidate = token.strip()
     match = _SECTION_PATTERN.match(candidate)
     if match is None:
+        # ⛔ 只做分类，不回显 token / suffix / 任何 token 内容
+        reason = (
+            SECTIONS_ERROR_UNSUPPORTED_SUFFIX
+            if _SECTION_PREFIX_PATTERN.match(candidate) is not None
+            else SECTIONS_ERROR_UNSUPPORTED_SHAPE
+        )
         raise CourseDataNormalizationError(
-            f"无法识别的节次格式：{token!r}；只接受 `第N-M节`（N ≥ 1、M ≥ N）"
+            f"节次形态未确认（{reason}）：只接受 `第N-M节` 或 `第N-M节` + 已批准 suffix "
+            f"（{'、'.join(_KNOWN_SECTIONS_SUFFIXES)}）；N ≥ 1 且 M ≥ N。"
+            f"⛔ 本错误不回显原始 token"
         )
 
-    start, end = (int(group) for group in match.groups())
-    if start < 1:
-        raise CourseDataNormalizationError(f"节次起点必须 ≥1：{token!r}（start={start}）")
-    if end < start:
+    # ⚠️ 第 3 个捕获组是**已批准 suffix**（可能为 `None`）：
+    # 它只用于白名单校验，⛔ 不进入任何公共对象。
+    start, end = int(match.group(1)), int(match.group(2))
+    if start < 1 or end < start:
         raise CourseDataNormalizationError(
-            f"节次区间非法（结束早于开始）：{token!r}（start={start}, end={end}）"
+            f"节次区间非法（{SECTIONS_ERROR_UNSUPPORTED_RANGE}）：要求 N ≥ 1 且 M ≥ N。"
+            f"⛔ 本错误不回显原始 token"
         )
 
     return start, end
