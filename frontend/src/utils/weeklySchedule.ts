@@ -15,8 +15,8 @@
  * - `meetings = []` 表示"当前数据中无排课信息"，⛔ 不表示没有课、更不表示无冲突。
  */
 
-import type { CourseOffering, PlanResult } from '../types/contracts'
-import { EMPTY_MEETINGS_DATA_TEXT } from './labels'
+import type { CourseOffering, Meeting, PlanResult } from '../types/contracts'
+import { EMPTY_MEETINGS_DATA_TEXT, formatWeekday } from './labels'
 
 /** 一天的节次数量上界（用于绘制节次轴；仅排版用，⛔ 不代表真实作息表）。 */
 export const SECTION_AXIS_MAX = 13
@@ -173,3 +173,19 @@ export function weeklyScheduleIsEmpty(view: WeeklyScheduleView): boolean {
 
 /** 与既有教学班列表相同的中性文案（DG-07D）：`meetings=[]` 不等于没有课。 */
 export const NO_SCHEDULE_DATA_TEXT = EMPTY_MEETINGS_DATA_TEXT
+
+/**
+ * 当前课表行的**紧凑时间摘要**：`周一 3-4节；周四 5-6节`。
+ *
+ * 只压缩展示长度，⛔ 不合并 / 删除任何一段 meeting，也⛔ 不判断冲突。
+ * `meetings = []` 时返回中性文案（⛔ 不写"无课"）。
+ */
+export function compactMeetingSummary(meetings: readonly Meeting[]): string {
+  if (meetings.length === 0) return NO_SCHEDULE_DATA_TEXT
+  return meetings
+    .map(
+      (meeting) =>
+        `${formatWeekday(meeting.weekday)} ${meeting.start_section}-${meeting.end_section}节`,
+    )
+    .join('；')
+}

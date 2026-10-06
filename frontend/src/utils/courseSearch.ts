@@ -78,3 +78,64 @@ export function classesOfCourse(
 ): CourseOffering[] {
   return offerings.filter((offering) => offering.course_id === courseId)
 }
+
+/**
+ * 教学班搜索的全部可匹配文本（**只含真实字段**）。
+ *
+ * ⛔ 不加入同义词、拼音、embedding 或任何模型扩展：
+ * 能匹配到的必须是数据里真的出现过的字符串。
+ */
+export function searchableText(offering: CourseOffering): string {
+  return [offering.course_name, offering.course_id, offering.class_id, offering.teacher ?? '']
+    .join(' ')
+    .toLocaleLowerCase()
+}
+
+/**
+ * 空白分词匹配：**每个** 词都必须出现在可匹配文本里。
+ *
+ * 例如输入 `数据 结构` 可以命中 `数据结构`（两个词都字面命中课程名文本），
+ * 但 ⛔ 不会把"数据"扩展成"数据库"/"大数据"之类没有字面命中的课程。
+ *
+ * 空查询不命中任何记录（与"未输入不铺开结果"一致）。
+ */
+export function matchesSearchTokens(offering: CourseOffering, query: string): boolean {
+  const tokens = query.trim().toLocaleLowerCase().split(/\s+/).filter(Boolean)
+  if (tokens.length === 0) return false
+  const haystack = searchableText(offering)
+  return tokens.every((token) => haystack.includes(token))
+}
+
+/** 当前课表学分汇总（⛔ 不把缺失学分当 0）。 */
+export interface CreditSummary {
+  count: number
+  /** 全部条目都有可求和学分时为总学分；只要有任一条缺失就是 `null`。 */
+  total: number | null
+  /** 是否存在学分缺失的条目。 */
+  hasUnknownCredit: boolean
+  unknownCount: number
+}
+
+/**
+ * 汇总当前课表的门数与学分。
+ *
+ * ⚠️ 只要**有任何一条**缺学分，`total` 就返回 `null`：
+ * 把未知学分当 0 会把总学分算小，属于编造数据。
+ */
+export function summarizeCredits(offerings: readonly CourseOffering[]): CreditSummary {
+  let total = 0
+  let unknownCount = 0
+  for (const offering of offerings) {
+    if (typeof offering.credit === 'number' && Number.isFinite(offering.credit)) {
+      total += offering.credit
+    } else {
+      unknownCount += 1
+    }
+  }
+  return {
+    count: offerings.length,
+    total: unknownCount === 0 ? total : null,
+    hasUnknownCredit: unknownCount > 0,
+    unknownCount,
+  }
+}
