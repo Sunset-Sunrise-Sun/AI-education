@@ -9,14 +9,20 @@
  */
 
 import type { AvoidTime, CourseOffering, Preference } from '../types/contracts'
-import { CASE_A_CONTEXT, MANUAL_SCHEDULE_PROVENANCE } from '../config'
+import { CASE_A_CONTEXT } from '../config'
 import {
+  applyManualScheduleAttestation,
   buildOfferingFromManualEntry,
+  createManualScheduleAttestation,
   createManualScheduleEntry,
+  hasManualScheduleOffering,
+  invalidateManualScheduleAttestation,
+  isManualScheduleOffering,
+  type ManualScheduleAttestationState,
   type ManualScheduleEntry,
 } from './manualSchedule'
 
-export type { ManualScheduleEntry } from './manualSchedule'
+export type { ManualScheduleAttestationState, ManualScheduleEntry } from './manualSchedule'
 
 /** 学生转专业上下文（本轮只作为 Case context 展示与输入，不声称已影响后端 Planner）。 */
 export interface StudentContext {
@@ -155,6 +161,16 @@ export interface UserInputForm {
    */
   manualScheduleEntries: ManualScheduleEntry[]
   /**
+   * **手工课表的用户级确认（attestation）状态**。
+   *
+   * 默认 `attested: false` ⇒ 手工条目保持 `data_source="mock"`
+   * ⇒ 既有 provenance 门禁**阻断**提交 Real Planning。
+   *
+   * ⛔ 这是**用户**在 UI 上的显式确认，⛔ 不是构建期环境变量、⛔ 不是学校核验。
+   * ⛔ 不是公共契约的一部分，序列化时不会进入请求体。
+   */
+  manualAttestation: ManualScheduleAttestationState
+  /**
    * 当前处于"用户输入了非法值"状态的字段。
    *
    * ⚠️ 这是区分两种情况的**必要条件**：
@@ -185,6 +201,7 @@ export function createDefaultUserInputForm(): UserInputForm {
     },
     currentSchedule: [],
     manualScheduleEntries: [],
+    manualAttestation: createManualScheduleAttestation(),
     invalidFields: [],
   }
 }
@@ -373,13 +390,17 @@ export interface ManualScheduleAddResult {
  * - 同一 `(semester, course_id, class_id)` 已在课表中 ⇒ 明确报重复，课表不变
  *   （Planner 的输入契约要求 identity 唯一，前端不替它去重）。
  *
+ * ⚠️ 加入的条目 `data_source` **恒为 `mock`**：手工录入在用户显式确认之前
+ * ⛔ 不声称任何真实来源，因此**不可能**直接进入 Real Planning
+ * （见 `applyManualAttestation()`）。
+ *
  * ⚠️ 这里**不做**冲突检测、不判断可行性、不做 Path Repair。
  */
 export function addManualScheduleEntryToSchedule(
   current: readonly CourseOffering[],
   entry: ManualScheduleEntry,
 ): ManualScheduleAddResult {
-  const { offering, errors } = buildOfferingFromManualEntry(entry, MANUAL_SCHEDULE_PROVENANCE)
+  const { offering, errors } = buildOfferingFromManualEntry(entry)
 
   if (offering === null) {
     const detail = errors
@@ -430,6 +451,89 @@ export function removeCurrentScheduleOffering(
         item.class_id === offering.class_id
       ),
   )
+}
+
+/* -------------------------------------------------------------------------- */
+/* 手工课表：用户级确认（attestation）                                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 手工课表的确认状态说明（界面展示；⛔ 不含任何"学校已核验"含义）。
+ */
+export const MANUAL_SCHEDULE_ATTESTATION_NOTE =
+  '系统将基于你填写的当前课表进行规划；该课表由本人提供，未经学校系统核验，也不构成 Course Data 来源证明。'
+
+/** 门禁在"有手工条目但未确认"时给出的阻止原因。 */
+export const UNATTESTED_MANUAL_SCHEDULE_BLOCK_REASON =
+  '当前课表包含手工录入的教学班，但尚未确认「以上课表由本人填写」。' +
+  '手工录入不是学校系统来源，在确认之前不能提交到 Real Planning。'
+
+/**
+ * 应用一次**用户级确认**变更（唯一入口）。
+ *
+ * ```text
+ * attested = true   → 手工条目切到 real（学生自述）⇒ 允许进入 plan 请求
+ * attested = false  → 手工条目切回 mock ⇒ 门禁立即重新阻断
+ * ```
+ *
+ * ⛔ 只影响**手工录入**的条目；⛔ 不触碰其它来源的条目；
+ * ⛔ 不新增 / 不删除任何课表条目；⛔ 不写库、不发请求。
+ */
+export function applyManualAttestation(
+  form: UserInputForm,
+  attested: boolean,
+): UserInputForm {
+  const { schedule, attestation } = applyManualScheduleAttestation(
+    form.currentSchedule,
+    attested,
+  )
+  return { ...form, currentSchedule: schedule, manualAttestation: attestation }
+}
+
+/**
+ * **课表被改动**时作废既有确认（⛔ 旧确认不得覆盖被修改过的数据）。
+ *
+ * 返回 `{ form }`；`form.manualAttestation.invalidated` 是**持续**状态：
+ * 只要用户还没重新确认，界面就继续提示"需要重新确认"，
+ * ⛔ 不会因为用户继续编辑下一行而消失。
+ */
+export function invalidateManualAttestation(
+  form: UserInputForm,
+  nextSchedule?: readonly CourseOffering[],
+  nextEntries?: readonly ManualScheduleEntry[],
+): { form: UserInputForm; invalidated: boolean } {
+  const { schedule, attestation, invalidated } = invalidateManualScheduleAttestation(
+    nextSchedule ?? form.currentSchedule,
+    form.manualAttestation,
+  )
+  return {
+    form: {
+      ...form,
+      currentSchedule: schedule,
+      manualScheduleEntries: nextEntries ? [...nextEntries] : form.manualScheduleEntries,
+      manualAttestation: attestation,
+    },
+    invalidated,
+  }
+}
+
+/**
+ * 手工课表的 provenance **结构摘要**（供界面如实说明）。
+ *
+ * ⛔ 只返回枚举式描述，不含任何课程名 / 课程号 / 成绩。
+ */
+export function describeManualSchedule(
+  form: UserInputForm,
+): 'none' | 'unattested' | 'attested' {
+  if (!hasManualScheduleOffering(form.currentSchedule)) {
+    return 'none'
+  }
+  return form.manualAttestation.attested ? 'attested' : 'unattested'
+}
+
+/** 手工录入条目数量（只报数量，⛔ 不列课程）。 */
+export function manualScheduleOfferingCount(form: UserInputForm): number {
+  return form.currentSchedule.filter(isManualScheduleOffering).length
 }
 
 /**
@@ -591,10 +695,15 @@ export function isScheduleSubmittableToRealPlanning(form: UserInputForm): boolea
  * 课表 provenance 门禁的**具体原因**（用于给用户精确提示）。
  *
  * 返回 `null` 表示通过门禁。
+ *
+ * 提示优先级：**手工录入未确认**（本轮的 attestation 语义）> 含 Mock > 来源未经确认。
  */
 export function scheduleProvenanceBlockReason(form: UserInputForm): string | null {
   if (isScheduleSubmittableToRealPlanning(form)) {
     return null
+  }
+  if (!form.manualAttestation.attested && hasManualScheduleOffering(form.currentSchedule)) {
+    return UNATTESTED_MANUAL_SCHEDULE_BLOCK_REASON
   }
   return hasMockSchedule(form) ? MOCK_SCHEDULE_BLOCK_REASON : UNVERIFIED_SCHEDULE_BLOCK_REASON
 }
@@ -608,8 +717,12 @@ export function describeScheduleProvenance(form: UserInputForm): string {
   if (form.currentSchedule.length === 0) {
     return 'empty'
   }
+  const manual = describeManualSchedule(form)
+  if (manual === 'unattested') {
+    return 'manual unattested'
+  }
   if (isScheduleSubmittableToRealPlanning(form)) {
-    return 'all real'
+    return manual === 'attested' ? 'manual attested' : 'all real'
   }
   return hasMockSchedule(form) ? 'contains mock' : 'unverified'
 }

@@ -29,11 +29,14 @@ PlanResult
 | `full_semester` 五校区 acceptance | ✅ **未修改、未调用、未产出** |
 | 真实校区采集 | ⏳ 待负责人执行（操作手册见 `docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md`） |
 
-⚠️ **手工录入的 `data_source` 口径（⛔ 不得简化）**：
-手工录入**不是**学校系统的授权查询结果，默认记 `mock` ⇒ provenance 门禁
-**阻止**把它提交 Real Planning（**正确行为**）。只有负责人在 `.env.local` 显式设置
-`VITE_MANUAL_SCHEDULE_PROVENANCE=student_attested_real` 时才记 `real`。
-⛔ 默认放宽该门禁属于 provenance 语义变更，**需 Architecture Lead 裁定**（本分支未改）。
+⚠️ **手工录入的 `current_schedule` = 学生自述输入 + 用户级确认（attestation）**：
+手工录入**不是**学校系统来源，默认 `data_source = "mock"` ⇒ provenance 门禁
+**阻断**提交 Real Planning。只有在界面上**显式勾选确认**
+（"我确认以上当前课表由本人根据本学期已经选好的课程填写"）之后，
+手工条目才切换成 `real`（= 学生自述）并允许进入 `POST /api/v1/plan`；
+取消勾选立即重新阻断，课表被改动则确认自动作废。
+⛔ 不存在任何构建期环境变量旁路（旧的 `VITE_MANUAL_SCHEDULE_PROVENANCE` 已移除）；
+⛔ 确认状态不进入请求体；⛔ 手工录入不进入 Course Data 的 acceptance / store。
 
 ## ⚠️ 另一条路径的既有状态（原样保留）
 
