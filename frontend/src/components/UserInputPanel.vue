@@ -6,7 +6,7 @@ import type { E2EDebugInfo } from './E2EDebugPanel.vue'
 import PreferenceForm from './PreferenceForm.vue'
 import StudentContextForm from './StudentContextForm.vue'
 import SubmissionActions from './SubmissionActions.vue'
-import { MAJOR_OPTIONS, MANUAL_SCHEDULE_PROVENANCE_LABEL } from '../config'
+import { MAJOR_OPTIONS, MANUAL_SCHEDULE_ENTRY_LABEL } from '../config'
 import type { PlanResultSource } from '../config'
 import type { CourseOffering } from '../types/contracts'
 import type { ManualScheduleEntry, StudentContext, UserInputForm } from '../state/userInput'
@@ -14,8 +14,11 @@ import {
   GRADE_FILE_PENDING_NOTICE,
   XLSX_EXTENSION,
   addManualScheduleEntry,
+  applyManualAttestation,
+  invalidateManualAttestation,
   isSupportedGradeFile,
   isFormValid,
+  manualScheduleOfferingCount,
   removeCurrentScheduleOffering,
   toggleCurrentScheduleOffering,
 } from '../state/userInput'
@@ -82,6 +85,15 @@ const emit = defineEmits<{
 const gradeFile = ref<File | null>(null)
 const gradeFileError = ref('')
 
+/**
+ * 手工课表确认是否**已因课表改动而作废**（用于提示"需要重新确认"）。
+ *
+ * ⚠️ 真源是 `form.manualAttestation.invalidated`（**持续**状态）；
+ * 这里只做只读转发，⛔ 不参与任何业务判断 ——
+ * 门禁本身只看 `form.currentSchedule` 里条目的 `data_source`。
+ */
+const attestationInvalidated = computed(() => props.form.manualAttestation.invalidated)
+
 const gradeFileName = computed(() => gradeFile.value?.name ?? '')
 
 /** 表单是否可提交：只判断输入完整性，不判断学业/排课可行性。 */
@@ -105,18 +117,20 @@ function onContextUpdate(value: StudentContext): void {
 }
 
 function onToggleOffering(offering: CourseOffering): void {
-  emit('update:form', {
-    ...props.form,
-    currentSchedule: toggleCurrentScheduleOffering(
-      props.form.currentSchedule,
-      offering,
-      props.offerings,
-    ),
-  })
+  // 勾选 / 取消勾选也会改动课表 ⇒ 既有手工确认作废（⛔ 旧确认不得覆盖被改动过的课表）。
+  const nextSchedule = toggleCurrentScheduleOffering(
+    props.form.currentSchedule,
+    offering,
+    props.offerings,
+  )
+  const { form } = invalidateManualAttestation(props.form, nextSchedule)
+  emit('update:form', form)
 }
 
 function onUpdateManualEntries(entries: ManualScheduleEntry[]): void {
-  emit('update:form', { ...props.form, manualScheduleEntries: entries })
+  // 编辑录入行（可能改写将要加入课表的取值）⇒ 作废既有确认。
+  const { form } = invalidateManualAttestation(props.form, undefined, entries)
+  emit('update:form', form)
 }
 
 function onAddManualRow(semester: string): void {
@@ -132,25 +146,39 @@ function onAddManualRow(semester: string): void {
  * ⚠️ 两者必须在**同一个** `update:form` 里一起应用：分开两次 emit 会让第二次
  * 更新基于**旧**的 form 快照重建表单，从而把刚加入的课表条目丢掉。
  *
- * 这里只做"加入课表"这一件事：⛔ 不判断冲突、⛔ 不判断可行、
- * ⛔ 不重新构造对象（构造与校验都在 `state/manualSchedule.ts` 的纯函数里完成）。
+ * ⚠️ 新加入的手工条目 `data_source` 恒为 `mock` ⇒ 同时**作废**既有确认：
+ * 旧确认不得自动覆盖新加入的数据。
  */
 function onManualOfferingAdded(payload: {
   offering: CourseOffering
   entries: ManualScheduleEntry[]
 }): void {
-  emit('update:form', {
-    ...props.form,
-    currentSchedule: [...props.form.currentSchedule, payload.offering],
-    manualScheduleEntries: payload.entries,
-  })
+  const { form } = invalidateManualAttestation(
+    props.form,
+    [...props.form.currentSchedule, payload.offering],
+    payload.entries,
+  )
+  emit('update:form', form)
 }
 
 function onRemoveOffering(offering: CourseOffering): void {
-  emit('update:form', {
-    ...props.form,
-    currentSchedule: removeCurrentScheduleOffering(props.form.currentSchedule, offering),
-  })
+  // 移除条目 ⇒ 课表已变 ⇒ 作废既有确认。
+  const { form } = invalidateManualAttestation(
+    props.form,
+    removeCurrentScheduleOffering(props.form.currentSchedule, offering),
+  )
+  emit('update:form', form)
+}
+
+/**
+ * **用户级确认**：是否允许手工录入的当前课表进入 Real Planning。
+ *
+ * ⛔ 唯一入口就是这个勾选框；⛔ 没有任何构建期环境变量能绕过它。
+ * - 勾选 ⇒ 手工条目切到 `real`（学生自述输入）⇒ 门禁放行；
+ * - 取消 ⇒ 切回 `mock` ⇒ 门禁立即重新阻断。
+ */
+function onUpdateAttested(attested: boolean): void {
+  emit('update:form', applyManualAttestation(props.form, attested))
 }
 
 function onGradeFileChange(event: Event): void {
@@ -242,13 +270,17 @@ function clearGradeFile(): void {
         :selected="form.currentSchedule"
         :manual-entries="form.manualScheduleEntries"
         :semester="form.semester"
-        :manual-provenance-label="MANUAL_SCHEDULE_PROVENANCE_LABEL"
+        :manual-provenance-label="MANUAL_SCHEDULE_ENTRY_LABEL"
+        :manual-attested="form.manualAttestation.attested"
+        :manual-count="manualScheduleOfferingCount(form)"
+        :attestation-invalidated="attestationInvalidated"
         :data-source-label="dataSourceLabel"
         @toggle="onToggleOffering"
         @update:manual-entries="onUpdateManualEntries"
         @add-manual-row="onAddManualRow"
         @manual-add-confirmed="onManualOfferingAdded"
         @remove="onRemoveOffering"
+        @update:attested="onUpdateAttested"
       />
     </section>
 

@@ -18,21 +18,33 @@
  * - `meetings` 至少 1 段（用户确实知道自己的上课时间）；"排课信息未知"属于
  *   Course Data 侧的真实数据状态，⛔ 不由手工表单伪造。
  *
- * ## 关于 `data_source`（**重要，不得简化**）
+ * ## 关于 `data_source` 与**用户级 attestation**（⛔ 不得简化）
  *
- * 手工录入**不是**学校系统的授权查询结果，因此它**不能**默认声称 `data_source="real"`。
- * `data_source` 是**契约 / 来源声明**（`mock` 与 `real` 两种取值），不是 provenance 证明。
- * 所以：
+ * 手工录入**不是**学校系统的授权查询结果，因此它**不能**天然具有
+ * `data_source="real"`。`data_source` 是**契约 / 来源声明**（只有 `mock` / `real`
+ * 两个取值），⛔ 不是 provenance 证明。本模块的规则是：
  *
- * - 默认（`MANUAL_SCHEDULE_PROVENANCE = 'unverified'`）→ 记 `mock`：
- *   provenance 门禁会**阻止**把它提交到 Real Planning（这是**正确**行为）；
- * - 只有负责人**显式**在 `.env.local` 里设置
- *   `VITE_MANUAL_SCHEDULE_PROVENANCE=student_attested_real`
- *   （= 明确声明"这些条目由学生本人提供、代表其真实已选课程"）时才记 `real`。
- *   ⛔ 这**不是**静默 fallback：默认关闭、必须显式设置、且在页面上如实标注。
+ * ```text
+ * 录入 / 加入课表          → 一律 mock（⛔ 不声称学校来源）
+ * 用户在 UI 上**显式确认**  → 才把这批手工条目切换成 real（学生自述输入）
+ * 用户取消确认            → 立即切回 mock（门禁重新阻断）
+ * 手工课表被改动          → 确认作废（⛔ 旧确认不得覆盖被修改过的数据）
+ * ```
+ *
+ * ⛔ 这与"把手工录入冒充学校数据"是两件事：`source` 始终是
+ * `manual-entry://current-schedule`，页面也逐字说明"本人填写、未经学校系统核验"。
+ * ⛔ 唯一的解锁入口是**用户勾选**；⛔ 不存在任何构建期环境变量旁路。
  */
 
 import type { CourseOffering, DataSource, Meeting } from '../types/contracts'
+
+/**
+ * 手工录入条目在公共 `source` 字段上的**唯一**标记。
+ *
+ * ⚠️ 这是**真实**的来源标签（不是"学校来源"的伪装），因此可以用来识别
+ * "哪些 `current_schedule` 条目来自手工录入、需要用户确认"。
+ */
+export const MANUAL_SCHEDULE_SOURCE = 'manual-entry://current-schedule'
 
 /** 手工录入的一行（前端内部结构，⛔ 不进入公共契约）。 */
 export interface ManualScheduleEntry {
@@ -71,6 +83,116 @@ export interface ManualScheduleFieldError {
 export interface ManualScheduleResult {
   meeting: Meeting | null
   errors: ManualScheduleFieldError[]
+}
+
+/**
+ * **手工录入课表的 attestation 状态**（前端内部结构，⛔ 不进入任何请求体）。
+ *
+ * 语义（⛔ 与"学校核验"无关，不得混同）：
+ *
+ * - `attested === false`（**默认**）⇒ 手工条目保持 `data_source="mock"`
+ *   ⇒ 既有 provenance 门禁**阻断**提交到 Real Planning；
+ * - `attested === true` ⇒ 手工条目切换成 `data_source="real"`，
+ *   含义是**学生本人自述**"这些是我本学期已选的课"，⛔ 不是学校系统已核验。
+ */
+export interface ManualScheduleAttestationState {
+  /** 用户是否已**显式确认**本人填写的手工课表。 */
+  attested: boolean
+  /** 用户确认时点（ISO 文本；仅用于审计展示，⛔ 不进入请求体）。 */
+  confirmedAt: string | null
+  /**
+   * 确认是否**因课表被改动而作废**（⛔ 旧确认不得覆盖被修改过的数据）。
+   *
+   * ⚠️ 这是**持续**状态，不是一次性提示：只要用户还没重新确认，
+   * 界面就应该继续显示"需要重新确认"，⛔ 不因后续继续编辑而消失。
+   * 用户重新勾选确认时清零。
+   */
+  invalidated: boolean
+}
+
+/** 默认（**未确认**）状态：手工课表不可提交 Real Planning。 */
+export function createManualScheduleAttestation(): ManualScheduleAttestationState {
+  return { attested: false, confirmedAt: null, invalidated: false }
+}
+
+/**
+ * 该课表条目是否来自**手工录入**。
+ *
+ * 判据是公共 `source` 字段上的真实标记（⛔ 不是猜测、⛔ 不是学校来源伪装）。
+ */
+export function isManualScheduleOffering(offering: CourseOffering): boolean {
+  return offering.source === MANUAL_SCHEDULE_SOURCE
+}
+
+/** 课表里是否存在手工录入条目（用于决定是否需要展示确认控件）。 */
+export function hasManualScheduleOffering(schedule: readonly CourseOffering[]): boolean {
+  return schedule.some(isManualScheduleOffering)
+}
+
+/**
+ * 把 `current_schedule` 中的**手工录入条目**统一切换来源标记。
+ *
+ * - `dataSource = 'real'` ⇒ 用户已确认：这些条目进入 Real Planning 作为**学生自述**输入；
+ * - `dataSource = 'mock'` ⇒ 未确认 / 已撤销 / 已作废：门禁重新阻断；
+ *
+ * ⛔ 只改手工条目的 `data_source`：学校/其它来源的条目**原样保留**，
+ * ⛔ 不触碰 `meetings` / 课程身份 / 其它任何字段（除 `data_source` 外逐字段相同）。
+ */
+export function setManualScheduleProvenance(
+  schedule: readonly CourseOffering[],
+  dataSource: DataSource,
+): CourseOffering[] {
+  return schedule.map((item) =>
+    isManualScheduleOffering(item) && item.data_source !== dataSource
+      ? { ...item, data_source: dataSource }
+      : item,
+  )
+}
+
+/**
+ * 应用一次 attestation 变更（**唯一**的状态转移入口）。
+ *
+ * ```text
+ * attested = true   → 手工条目 data_source = real（允许提交），清除"已作废"标记
+ * attested = false  → 手工条目 data_source = mock（门禁阻断）
+ * ```
+ *
+ * ⛔ 该函数不校验表单、不发请求、不写库；它只做这一个确定性的标记切换。
+ */
+export function applyManualScheduleAttestation(
+  schedule: readonly CourseOffering[],
+  attested: boolean,
+  now: string | null = null,
+): { schedule: CourseOffering[]; attestation: ManualScheduleAttestationState } {
+  return {
+    schedule: setManualScheduleProvenance(schedule, attested ? 'real' : 'mock'),
+    attestation: {
+      attested,
+      confirmedAt: attested ? (now ?? new Date().toISOString()) : null,
+      invalidated: false,
+    },
+  }
+}
+
+/**
+ * 课表被改动 ⇒ 把既有确认标记为**已作废**（⛔ 不静默继续沿用旧确认）。
+ *
+ * - 原先已确认 ⇒ 手工条目切回 `mock`，并置 `invalidated = true`；
+ * - 原先未确认 ⇒ 状态不变（⛔ 不因为"编辑了一下"就产生一个假的"曾确认过"提示）。
+ */
+export function invalidateManualScheduleAttestation(
+  schedule: readonly CourseOffering[],
+  attestation: ManualScheduleAttestationState,
+): { schedule: CourseOffering[]; attestation: ManualScheduleAttestationState; invalidated: boolean } {
+  if (!attestation.attested) {
+    return { schedule: [...schedule], attestation, invalidated: false }
+  }
+
+  return {
+    schedule: setManualScheduleProvenance(schedule, 'mock'),
+    attestation: { attested: false, confirmedAt: null, invalidated: true },
+    invalidated: true,
+  }
 }
 
 /** 学期文本形式：与项目既有口径一致（`YYYY-1` / `YYYY-2`）。 */
@@ -152,12 +274,14 @@ export function parseWeeksInput(raw: string): number[] | null {
  *
  * 返回 `{ offering, errors }`：
  * - `errors` 非空 ⇒ `offering` 为 `null`，⛔ **不产出半个对象**、⛔ 不补默认值；
- * - 空白可选字段（campus / classroom）归一为 `null`（公共 Schema 允许 `null`）。
+ * - 空白可选字段（campus / classroom）归一为 `null`（公共 Schema 允许 `null`）；
+ * - `data_source` **恒为 `mock`**：未经用户显式确认的手工录入
+ *   ⛔ **不**声称任何真实来源；确认后由 `applyManualScheduleAttestation()` 统一切换。
  */
-export function buildOfferingFromManualEntry(
-  entry: ManualScheduleEntry,
-  provenance: DataSource,
-): { offering: CourseOffering | null; errors: ManualScheduleFieldError[] } {
+export function buildOfferingFromManualEntry(entry: ManualScheduleEntry): {
+  offering: CourseOffering | null
+  errors: ManualScheduleFieldError[]
+} {
   const errors: ManualScheduleFieldError[] = []
 
   const courseId = entry.courseId.trim()
@@ -228,9 +352,10 @@ export function buildOfferingFromManualEntry(
           classroom: classroom === '' ? null : classroom,
         },
       ],
-      // ⛔ 手工录入不声明任何"学校系统已查询"的含义；来源由调用方显式决定。
-      source: 'manual-entry://current-schedule',
-      data_source: provenance,
+      // ⛔ 这里刻意**不**声称学校来源：`source` 如实标明是手工录入，
+      //    `data_source` 在用户显式确认之前恒为 `mock`。
+      source: MANUAL_SCHEDULE_SOURCE,
+      data_source: 'mock',
     },
     errors: [],
   }

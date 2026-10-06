@@ -1884,6 +1884,28 @@ code.mono {
   border-radius: var(--radius-sm);
 }
 
+/* 用户级确认（attestation）：默认未勾选，门禁阻断提交 */
+.uig-manual-attestation {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn, #d08700);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.uig-manual-attestation__row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+
 .uig-empty {
   padding: 12px;
   font-size: 12px;

@@ -32,8 +32,14 @@ const props = withDefaults(
     manualEntries?: ManualScheduleEntry[]
     /** 表单当前学期（手工录入新增行时带入）。 */
     semester: string
-    /** 手工录入的来源说明（⛔ 逐字可见）。 */
+    /** 未确认时的来源说明（⛔ 逐字可见）。 */
     manualProvenanceLabel: string
+    /** 用户是否已显式确认手工课表由本人填写。 */
+    manualAttested?: boolean
+    /** 课表里手工录入条目的数量。 */
+    manualCount?: number
+    /** 确认是否刚因课表改动而作废。 */
+    attestationInvalidated?: boolean
     /** 数据来源标记，用于如实说明当前是 Mock 还是 Real。 */
     dataSourceLabel?: string | null
   }>(),
@@ -41,6 +47,9 @@ const props = withDefaults(
     manualEntries: () => [],
     dataSourceLabel: null,
     manualProvenanceLabel: '',
+    manualAttested: false,
+    manualCount: 0,
+    attestationInvalidated: false,
   },
 )
 
@@ -50,6 +59,7 @@ const emit = defineEmits<{
   (event: 'add-manual-row', semester: string): void
   (event: 'manual-add-confirmed', payload: { offering: CourseOffering; entries: ManualScheduleEntry[] }): void
   (event: 'remove', offering: CourseOffering): void
+  (event: 'update:attested', value: boolean): void
 }>()
 
 function keyOf(offering: CourseOffering): string {
@@ -116,10 +126,14 @@ function firstMeetingText(offering: CourseOffering): string {
       :semester="semester"
       :current-semester="semester"
       :provenance-label="manualProvenanceLabel"
+      :attested="manualAttested"
+      :manual-count="manualCount"
+      :attestation-invalidated="attestationInvalidated"
       @update:entries="emit('update:manualEntries', $event)"
       @add-row="emit('add-manual-row', $event)"
       @add-confirmed="emit('manual-add-confirmed', $event)"
       @remove="emit('remove', $event)"
+      @update:attested="emit('update:attested', $event)"
     />
   </div>
 </template>

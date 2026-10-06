@@ -16,20 +16,26 @@ import type { CourseOffering } from '../types/contracts'
  * - 只做"结构化字段 → 公共 `CourseOffering`"，⛔ **不要求用户写裸 JSON**；
  * - ⛔ **不做**冲突检测、⛔ 不判断 feasible、⛔ 不做 Path Repair、⛔ 不计算学分；
  * - ⛔ 不猜测缺失取值：字段缺失 / 非法 ⇒ 明确报错且**不修改**课表（全有或全无）；
- * - `data_source` 由 `config.ts` 的 `MANUAL_SCHEDULE_PROVENANCE` 决定，
- *   默认 `mock` ⇒ provenance 门禁会阻止提交 Real Planning（**正确**行为）。
+ * - 手工条目加入时 `data_source` **恒为 `mock`**；只有在用户**显式勾选确认**
+ *   （`attested`）后才切换成 `real`（学生自述输入），⛔ 不存在构建期旁路。
  */
 const props = defineProps<{
   /** 手工录入行（表单真源由页面持有）。 */
   entries: ManualScheduleEntry[]
-  /** 当前已确认的课表，用于查重与"同一课程只能有一个已选班"。 */
+  /** 当前课表（含手工录入条目），用于查重与"同一课程只能有一个已选班"。 */
   selected: CourseOffering[]
   /** 学期默认值（新增行时带入）。 */
   semester: string
   /** 页面当前学期（用于 detect 学期是否与表单一致）。 */
   currentSemester: string
-  /** 手工录入来源说明（⛔ 逐字可见）。 */
+  /** 未确认时的来源说明（⛔ 逐字可见，不得隐藏）。 */
   provenanceLabel: string
+  /** 用户是否已**显式确认**手工课表由本人填写（用户级 attestation）。 */
+  attested: boolean
+  /** 课表里手工条目的数量（用于提示确认控件何时出现）。 */
+  manualCount: number
+  /** 确认是否因课表被改动而刚刚作废（界面提示"需要重新确认"）。 */
+  attestationInvalidated: boolean
 }>()
 
 const emit = defineEmits<{
@@ -37,6 +43,7 @@ const emit = defineEmits<{
   (event: 'add-row', semester: string): void
   (event: 'add-confirmed', payload: { offering: CourseOffering; entries: ManualScheduleEntry[] }): void
   (event: 'remove', offering: CourseOffering): void
+  (event: 'update:attested', value: boolean): void
 }>()
 
 /** 每条录入行自己的错误提示（只在用户点过"加入"之后显示）。 */
@@ -80,9 +87,10 @@ function onAdd(entry: ManualScheduleEntry): void {
   const added = result.currentSchedule[result.currentSchedule.length - 1]
   lastAdded.value = `${added.course_name}（${added.course_id} · ${added.class_id}）`
 
-  // ⚠️ 两个状态（课表 + 录入行）必须由**父组件在同一个更新里**一起应用：
-  //    若先 emit 'add' 再 emit 'update:entries'，第二次更新会基于**旧**的 form
-  //    快照重建表单，从而把刚加入的课表条目丢掉。
+  // ⚠️ 两个状态（课表 + 录入行清空）必须由**父组件在同一个更新里**一起应用：
+  //    若先 emit 'add-confirmed' 再 emit 'update:entries'，第二次更新会基于
+  //    **旧**的 form 快照重建表单，从而把刚加入的课表条目（以及"确认作废"的提示）丢掉。
+  //    因此这里**只发一个**事件，录入行的清空随事件一起带给父组件。
   emit('add-confirmed', {
     offering: added,
     entries: updateManualScheduleEntry(props.entries, entry.key, {
@@ -295,7 +303,7 @@ function onRemove(entry: ManualScheduleEntry): void {
 
     <div class="uig-manual-selected" data-testid="manual-schedule-selected">
       <p class="uig-field__hint">
-        当前课表共 {{ scheduledCount }} 个教学班。可逐个移除：
+        当前课表共 {{ scheduledCount }} 个教学班（其中手工录入 {{ manualCount }} 个）。可逐个移除：
       </p>
       <ul v-if="scheduledCount > 0" class="uig-manual-selected__list">
         <li v-for="item in selected" :key="`${item.semester}::${item.course_id}::${item.class_id}`">
@@ -313,6 +321,53 @@ function onRemove(entry: ManualScheduleEntry): void {
           </button>
         </li>
       </ul>
+    </div>
+
+    <!--
+      用户级确认（attestation）——本轮唯一的解锁入口。
+
+      ⛔ 默认不勾选：手工条目保持 data_source = mock，provenance 门禁阻断提交。
+      ⛔ 文案不得出现"学校已核验 / 教务系统已确认"等含义。
+    -->
+    <div class="uig-manual-attestation" data-testid="manual-attestation">
+      <label class="uig-manual-attestation__row">
+        <input
+          type="checkbox"
+          data-testid="manual-attestation-checkbox"
+          :checked="attested"
+          @change="emit('update:attested', ($event.target as HTMLInputElement).checked)"
+        />
+        <span>
+          我确认以上当前课表由<strong>本人</strong>根据本学期已经选好的课程填写，系统将基于此进行规划。
+        </span>
+      </label>
+
+      <p class="uig-field__hint" data-testid="manual-attestation-note">
+        该课表<strong>由本人提供，未经学校系统核验</strong>；它不是 Course Data 来源证明，
+        也不代表学校已完成选课或审批。未勾选时，手工录入的课表<strong>不会</strong>提交到 Real Planning。
+      </p>
+
+      <p
+        v-if="attestationInvalidated"
+        class="uig-field__error"
+        data-testid="manual-attestation-invalidated"
+        role="alert"
+      >
+        当前课表在上次确认之后被改动，之前的确认已作废；请重新确认后再提交 Real Planning。
+      </p>
+
+      <p
+        v-if="manualCount > 0"
+        class="uig-field__hint"
+        :data-testid="attested ? 'manual-attestation-state-on' : 'manual-attestation-state-off'"
+      >
+        <template v-if="attested">
+          状态：<strong>已确认</strong>（手工录入 {{ manualCount }} 个教学班可作为本人自述输入进入规划）。
+        </template>
+        <template v-else>
+          状态：<strong>未确认</strong>（手工录入 {{ manualCount }} 个教学班会被 provenance 门禁阻止提交）。
+        </template>
+      </p>
     </div>
   </div>
 </template>

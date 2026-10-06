@@ -16,6 +16,7 @@ import { DEMO_ENDPOINT, PLAN_API_ENABLED, PLAN_ENDPOINT, initialDataMode } from 
 import {
   buildRealPlanRequest,
   createDefaultUserInputForm,
+  describeManualSchedule,
   describeScheduleProvenance,
   evaluatePlanSubmission,
   isPreferencePresent,
@@ -181,6 +182,7 @@ const e2eDebugInfo = computed<E2EDebugInfo>(() => ({
   semester: userInput.value.semester,
   scheduleCount: userInput.value.currentSchedule.length,
   scheduleProvenance: describeScheduleProvenance(userInput.value),
+  manualAttestation: describeManualSchedule(userInput.value),
   preferencePresent: isPreferencePresent(userInput.value),
   planApiEnabled: PLAN_API_ENABLED,
   lastHttpStatus: lastHttpStatus.value,

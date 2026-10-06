@@ -18,6 +18,12 @@ export interface E2EDebugInfo {
   scheduleCount: number
   /** `current_schedule` 的来源构成：空 / 全部 real / 含 mock / 来源未经确认。 */
   scheduleProvenance: string
+  /**
+   * 手工课表的**用户级确认**状态：none / unattested / attested。
+   *
+   * ⛔ 只报枚举，不含任何课程信息。
+   */
+  manualAttestation: string
   /** `preference` 是否已填写（**只报布尔**）。 */
   preferencePresent: boolean
   /** Real 提交开关是否开放。 */
@@ -56,6 +62,10 @@ defineProps<{
       <div class="uig-debug__item">
         <dt>current_schedule provenance</dt>
         <dd class="mono" data-testid="debug-schedule-provenance">{{ info.scheduleProvenance }}</dd>
+      </div>
+      <div class="uig-debug__item">
+        <dt>manual attestation</dt>
+        <dd class="mono" data-testid="debug-manual-attestation">{{ info.manualAttestation }}</dd>
       </div>
       <div class="uig-debug__item">
         <dt>preference present</dt>

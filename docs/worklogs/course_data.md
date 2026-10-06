@@ -49,9 +49,10 @@
     - 同一 identity 重复 / 同一课程第二个教学班 ⇒ 明确拒绝（⛔ 不静默去重、⛔ 不静默取一个）；
     - 周次解析 `1-16` / `1-16,18` / `1,3,5-7`（含中文标点与"周"字）；
       ⛔ 不解释单双周等未确认写法；
-    - `data_source` **默认 `mock`** ⇒ provenance 门禁仍**阻止**提交 Real Planning
-      （⛔ 手工录入不冒充学校系统来源）；只有负责人显式设置
-      `VITE_MANUAL_SCHEDULE_PROVENANCE=student_attested_real` 时才记 `real`。
+    - `data_source` **默认 `mock`** ⇒ provenance 门禁仍**阻止**提交 Real Planning；
+      只有用户在 UI 上**显式勾选确认**后才切到 `real`（学生自述输入）。
+      ⛔ 旧的构建期环境变量 `VITE_MANUAL_SCHEDULE_PROVENANCE` 已**移除**
+      （Codex review must-fix：编码/构建期 opt-in 不等于用户级 attestation）。
   - **Phase 6 Planner 连通性 smoke**：`tools/case_a_course_data.py smoke`
     —— Case A scoped offerings + 手工 `current_schedule` + Preference
     → **既有** `RestrictedPlannerProvider`（⛔ 未改 Planner）。
