@@ -277,3 +277,56 @@
   声明撒谎但实际超限 ⇒ 413），并对关键用例同时走**真实 endpoint** 与**裸 ASGI**。
 - 边界：⛔ 未扩 API（同一 endpoint、同一错误模型，只是把解析变严格）；
   ⛔ 未改 public Schema / frozen Provider contract；⛔ 未触碰 Gate E 与已合并 runtime/store stack。
+
+### 2026-10-07 - 成绩单 PDF → CompletedCourse → 既有 Case A Curriculum 分析
+- 本次目标：让**真实中山大学本科成绩单 PDF**成为 Case A 的已完成课程输入，
+  并且证明解析结果**真的**喂进既有匹配 / 投影逻辑（⛔ 不是"只解析成功"）。
+- 已完成：
+  - 新增 `backend/app/curriculum/pdf_reader.py`：解析**当前已核验**的成绩单版面
+    （四列一组横向平铺、两行表头、`2025-2026学年 第X学期` 学期行、换行课程名、
+    整数/一位小数学分、0–100 与 `P`/`NP` 成绩、多学期、重复表头），
+    输出 `term` / `course_name` / `credits` / `grade` / `course_attribute`。
+  - **fail closed**：非 PDF、空文件、损坏 PDF、缺标题、缺表格、版面不符、
+    超页数/超条数上限一律抛错；学期行、每学期末 `学分 …`/`绩点 …` 汇总行、
+    页脚毕业学分/实得学分/平均绩点/评分体系/审核人行⛔ 绝不进入结果。
+  - **⛔ 不发明课程号**：成绩单没有官方课程号，因此全部记录为
+    `CourseIdStatus.PENDING` + `course_id=None` + `id_match_source=None`。
+  - **隐私**：表头以上的姓名/学号/学院/专业区块整体丢弃；错误文案只含固定通用描述
+    （⛔ 不含课程名、成绩、学号、姓名、路径、堆栈）；解析器告警被抑制；⛔ 不落盘。
+  - **最小化接入改动**：`case.py` 的 `completed` 增加第三个互斥键 `pdf`
+    （与 `records` / `xlsx` 三选一），解析结果走**同一个**
+    `build_curriculum_diff` / `project_makeup_tasks`。
+  - 新增窄接口 `POST /api/v1/completed-courses/import-pdf`（原始字节 + 显式
+    `Content-Length`，`source_id` = 内容摘要），错误码与 XLSX 入口分离；
+    XLSX 入口保持原样（兼容的次要路径）。
+  - 新增文档 `docs/curriculum/PDF_TRANSCRIPT_INPUT.md`（支持范围 + 明确不支持的边界）。
+- 修改文件：
+  `backend/app/curriculum/pdf_reader.py`（新）、
+  `backend/app/services/completed_courses_pdf_ingest.py`（新）、
+  `backend/app/api/completed_courses_pdf.py`（新）、
+  `backend/app/curriculum/case.py`、`backend/app/curriculum/__init__.py`、
+  `backend/app/main.py`、`backend/requirements.txt`（新增 `pymupdf>=1.24`）、
+  `backend/tests/pdf_fixtures.py`（新）、`backend/tests/test_curriculum_pdf_reader.py`（新）、
+  `backend/tests/test_curriculum_pdf_case_a_integration.py`（新）、
+  `backend/tests/test_completed_courses_pdf_import_api.py`（新）、
+  `backend/tests/test_integration_orchestrator.py`（白名单登记新路由）、
+  `docs/status/curriculum.md`、`docs/worklogs/curriculum.md`。
+- 测试：`tests/test_curriculum_pdf_reader.py` **18 passed**；
+  `tests/test_curriculum_pdf_case_a_integration.py` **9 passed**；
+  `tests/test_completed_courses_pdf_import_api.py` **25 passed**；全量回归见 status。
+  ⚠️ 既有套件中 2 项 Windows 环境性失败（ZIP 成员名字面反斜杠、含 `\x00` 的路径）
+  在本次改动**之前**就存在，与 PDF 路径无关。
+- 使用数据：解析器测试与集成测试全部使用**自建虚构 fixture**（`pdf_fixtures.py`）；
+  真实成绩单 PDF 仅在本机做**一次性**口径校核，**不入库**、不写逐行记录。
+- 已知问题：
+  - PDF 只支持**已核验版面**：⛔ 不支持扫描件 / 图片型 PDF（无 OCR）、
+    ⛔ 不支持其它学校、⛔ 不支持其它版本或其它语言的中大成绩单；
+  - 成绩单没有课程号 ⇒ 同名课程仍是 `possibly_equivalent` / `manual_confirmation`，
+    要变成"已抵认"仍需人工在官方来源侧（如"成绩转换"页面）补全课程号；
+  - `pymupdf` 是新增运行期依赖（本地纯解析，不联网）。
+- 需要人工确认：PDF 解析口径（哪些表头/页脚行必须丢弃）是否符合负责人手上的成绩单实物；
+  `course_id` 的补全流程（官方来源侧 + 人工认定）尚未定义。
+- 对其他模块影响：⛔ 公共 Schema 零改动；⛔ Provider 签名未改；⛔ `matching.py` 未改；
+  Plane/Integration/Frontend 既不需要感知，也不应把本接口当作已冻结 Case A runtime 的入口。
+- 下一步：Architecture 决定 PDF 版面的**版本化**策略；负责人提供课程号补全依据后，
+  再把 `pending` 记录升级为已确认身份；前端接入成绩单上传（本轮只做后端 + 接口）。

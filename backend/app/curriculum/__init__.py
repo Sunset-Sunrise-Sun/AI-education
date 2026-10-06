@@ -55,6 +55,13 @@ from app.curriculum.docx_reader import (
     DocxImportResult,
     load_curriculum_docx,
 )
+from app.curriculum.pdf_reader import (
+    TranscriptParse,
+    TranscriptRecord,
+    load_completed_courses_pdf,
+    parse_transcript_pdf,
+    parse_transcript_pdf_bytes,
+)
 
 __all__ = [
     "CompletedCourse",
@@ -98,4 +105,9 @@ __all__ = [
     "DocxImportIssue",
     "DocxImportResult",
     "load_curriculum_docx",
+    "TranscriptParse",
+    "TranscriptRecord",
+    "load_completed_courses_pdf",
+    "parse_transcript_pdf",
+    "parse_transcript_pdf_bytes",
 ]

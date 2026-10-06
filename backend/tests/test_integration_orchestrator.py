@@ -492,6 +492,10 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
     Gate F 只新增了一条：通用已修课程 XLSX 摄取入口
     `POST /api/v1/completed-courses/import`（见 `docs/data/XLSX_COMPLETED_COURSES_IMPORT.md`），
     它⛔ 不改 `/api/v1/plan` 契约，也⛔ 不接入 Case A fixed-case runtime。
+    成绩单 PDF 主路径再新增一条：
+    `POST /api/v1/completed-courses/import-pdf`（见 `docs/curriculum/PDF_TRANSCRIPT_INPUT.md`），
+    同样⛔ 不改 `/api/v1/plan` 契约、⛔ 不接入 Case A fixed-case runtime；
+    XLSX 入口保持原样，仍是兼容的次要路径。
     """
 
     paths = set(client.get("/openapi.json").json()["paths"])
@@ -510,4 +514,6 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         "/api/v1/plan",
         # Gate F（已授权的新增入口）：通用 XLSX 摄取，⛔ 不是 integration 数据通道。
         "/api/v1/completed-courses/import",
+        # 成绩单 PDF 摄取（Case A 主路径），⛔ 不是 integration 数据通道。
+        "/api/v1/completed-courses/import-pdf",
     }

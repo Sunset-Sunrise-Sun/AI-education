@@ -178,9 +178,11 @@ def _normalize_case(payload: object, *, directory: Path | None = None) -> Curric
         raise CurriculumNormalizationError("data_source: expected mock or real") from None
     old, new = _version(record["old"], directory=directory), _version(record["new"], directory=directory)
     completed = _object(record["completed"], required={"source_id"},
-                        optional={"complete", "completeness_evidence", "records", "xlsx"}, label="completed")
-    if ("records" in completed) == ("xlsx" in completed):
-        raise CurriculumNormalizationError("completed: provide records or xlsx exclusively")
+                        optional={"complete", "completeness_evidence", "records", "xlsx", "pdf"},
+                        label="completed")
+    # `records` / `xlsx` / `pdf` 三者互斥：⛔ 不允许"给两个、悄悄挑一个"。
+    if sum(key in completed for key in ("records", "xlsx", "pdf")) != 1:
+        raise CurriculumNormalizationError("completed: provide records, xlsx or pdf exclusively")
     if "xlsx" in completed:
         if directory is None:
             raise CurriculumNormalizationError("completed: file inputs require load_curriculum_case")
@@ -190,6 +192,18 @@ def _normalize_case(payload: object, *, directory: Path | None = None) -> Curric
         rows = load_completed_courses_xlsx(
             resolve_local_input(workbook["path"], directory=directory, label="xlsx input"),
             source_id=completed["source_id"], sheet_name=workbook.get("sheet_name", "已修课程_脱敏"),
+        )
+    elif "pdf" in completed:
+        if directory is None:
+            raise CurriculumNormalizationError("completed: file inputs require load_curriculum_case")
+        from app.curriculum.pdf_reader import load_completed_courses_pdf
+
+        # 成绩单 PDF（Case A 主路径）：解析结果**直接**是既有的 CompletedCourse 元组，
+        # ⛔ 不新增中间模型、⛔ 不做课程认定；成绩单没有课程号，因此一律 pending。
+        document = _object(completed["pdf"], required={"path"}, optional=set(), label="pdf input")
+        rows = load_completed_courses_pdf(
+            resolve_local_input(document["path"], directory=directory, label="pdf input"),
+            source_id=completed["source_id"],
         )
     else:
         rows = normalize_completed_courses(completed["records"], source_id=completed["source_id"])
