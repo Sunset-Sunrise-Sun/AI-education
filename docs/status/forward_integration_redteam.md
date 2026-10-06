@@ -75,3 +75,12 @@ Provider ef910e3fd3c68b10d9d9ed42a39698f5e8a21f36；Runtime a67ba96；E2E f8675e
 - 指定targeted1054 passed；full backend2823 passed/2 skipped；compileall通过。
 - Runtime/E2E可进入formal PR review；Gate E/F/G可恢复各自准备与验收，不代表它们PASS。
 - LEVEL1 synthetic wiring only；Formal Real E2E仍LEVEL0。未merge、未改production、未访问学校。
+
+## PR-level final review — Draft #42/#43/#44/#45
+
+`reviewer/full_semester/PR_STACK_FINAL_REVIEW.md`：四PR Architecture PASS；cross-stack PASS。
+GitHub公开页面base/head/Draft与指定stack一致，Git pull refs+ancestry确认；API Forbidden。
+每层diff边界通过，#43显式typed503 handler属已文档化Provider适配，无隐藏装配依赖。
+#42 full2628/2skip；#43 full2721/2skip；#44 runtime/API98；top targeted1103、full2823/2skip。
+compileall与diff检查通过。不重复旧HEAD sweep。merge readiness ready，顺序42→43→44→45。
+四份评论稿独立保存pr_comments/；发布尝试Forbidden，未发表。未merge、未改production。

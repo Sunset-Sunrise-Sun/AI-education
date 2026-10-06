@@ -78,3 +78,15 @@ stale campus非member不入Planner，课表/Preference exact，UNKNOWN/manual_co
 传播版本Runtime+E2E61 passed。指定targeted1054 passed；full backend2823 passed/2 skipped；
 compileall exit0。报告RUNTIME_E2E_FINAL_CLOSURE.md记录命令、HEAD、局限和Gate E/F/G边界。
 仅tests/docs更改，未merge、未访问学校，Formal Real E2E仍LEVEL0。
+
+## 2026-10-06 PR-level final architecture review
+
+按上传的新任务只审Draft42→43→44→45各层最终diff。API reads Forbidden，但public PR
+HTML可读，独立解析baseBranch/headBranch/headSha+Draft并与Git pull/head refs交叉确认。
+每层ancestry正确、公共Schema/Protocol无diff、无真实artifact新增，后层无隐藏前层覆盖。
+#43 main.py handler明确记录并只做Provider typed503适配，不是隐性runtime装配。
+#42/#43逐层完整backend2628/2721 passed各2skip，#44 runtime/API98 passed；各层compileall。
+Top指定CourseData/Provider/snapshot/acceptanceCLI/runtime/API/synthetic1103 passed，
+full backend2823 passed/2skip，compileall和diffcheck通过。四PR及cross-stack PASS，
+ready，推荐merge order42→43→44→45。尝试gh pr comment42 Forbidden；四独立comment稿保存。
+没有merge/production编辑/学校访问；Formal Real E2E仍LEVEL0。
