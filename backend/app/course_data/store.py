@@ -139,6 +139,7 @@ __all__ = [
     "load_course_data_acceptances",
     "load_course_data_provenance",
     "load_course_offerings",
+    "load_course_offerings_for_acceptance",
 ]
 
 #: 教学班表（identity 是主键：⛔ 不允许按 `course_id` 覆盖不同教学班）。
@@ -1204,6 +1205,38 @@ def load_accepted_offerings(
         offerings=tuple(offerings),
         member_count=len(members),
     )
+
+
+def load_course_offerings_for_acceptance(
+    path: str | Path,
+    *,
+    semester: str,
+    acceptance_sha256: str,
+) -> list[CourseOffering]:
+    """按**行级 provenance（声明平面）**筛选属于某次 full_semester 导入的行。
+
+    ⚠️ **这不是权威读取路径**（Forward Red-Team BLOCK B3）：
+    它只按 `(semester, scope_kind=full_semester, scope_id=semester, artifact_sha256)`
+    过滤行级 provenance，**不核对内容**，因此无法发现"同数量 / 同身份的替换"。
+    权威读取是 `load_accepted_offerings()`（content-bound 平面 + membership +
+    逐行内容指纹 + 整批 digest）；本函数仅保留给诊断 / 兼容用途。
+
+    - 返回顺序确定：`ORDER BY course_id, class_id`；
+    - ⛔ 只读；⛔ 不写库、⛔ 不判断完整性、⛔ 不 fallback 到整学期查询。
+    """
+
+    target_semester = _require_semester(semester)
+    digest = _require_sha256(acceptance_sha256)
+
+    with _open_store(path, must_exist=True, ensure_schema=False) as connection:
+        rows = connection.execute(
+            f"SELECT {', '.join(_LOAD_COLUMNS)} FROM {COURSE_OFFERING_TABLE} "
+            "WHERE semester = ? AND scope_kind = ? AND scope_id = ? "
+            "AND artifact_sha256 = ? ORDER BY course_id, class_id",
+            (target_semester, SCOPE_KIND_FULL_SEMESTER, target_semester, digest),
+        ).fetchall()
+
+    return [_row_to_offering(row) for row in rows]
 
 
 def load_course_data_provenance(

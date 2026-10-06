@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from app import __version__
 from app.api import health, mock, plan
 from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
+from app.course_data import CourseDataAcceptanceError
 from app.services.mock_service import MockDataError
 from app.services.planning_runtime import PlanningRuntimeNotConfigured
 
@@ -61,6 +62,33 @@ async def planning_runtime_not_configured_handler(
             "detail": {
                 "error": "real_pipeline_not_configured",
                 "message": str(exc),
+            }
+        },
+    )
+
+
+@app.exception_handler(CourseDataAcceptanceError)
+async def course_data_acceptance_error_handler(
+    request: Request, exc: CourseDataAcceptanceError
+) -> JSONResponse:
+    """把**请求期间**发现的 acceptance 失效映射成同一个 503 readiness 契约。
+
+    语义：Course Data 的 full_semester acceptance 在请求过程中不再有效
+    （被删除 / 被改写 / 内容被替换 / 行数不符）。这是**就绪性失败**，不是调用方错误，
+    也⛔ 不是 Mock fallback 的理由 —— 因此与"未装配"共用 503 +
+    `real_pipeline_not_configured`。
+
+    ⛔ 其它未预期异常（例如 SQLite 损坏）**不在这里捕获**，仍然保持 500。
+    """
+
+    return JSONResponse(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        content={
+            "detail": {
+                "error": "real_pipeline_not_configured",
+                "message": (
+                    "真实规划链路当前不可用：Course Data acceptance 已失效或不再匹配。"
+                ),
             }
         },
     )

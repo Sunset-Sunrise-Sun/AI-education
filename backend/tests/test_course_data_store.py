@@ -42,6 +42,7 @@ from app.course_data import (
     load_course_data_acceptances,
     load_course_data_provenance,
     load_course_offerings,
+    load_course_offerings_for_acceptance,
     offering_set_sha256,
 )
 from app.models.contracts import CourseOffering, DataSource, Meeting
@@ -1368,3 +1369,97 @@ def test_empty_acceptance_is_rejected_by_the_read_path(store_path: Path) -> None
         load_accepted_offerings(
             store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
         )
+
+
+# ---------------------------------------------------------------------------
+# 9. acceptance-bound read-back（Gate B：`load_course_offerings_for_acceptance`）
+# ---------------------------------------------------------------------------
+
+
+def test_acceptance_bound_query_returns_only_that_acceptance(store_path: Path) -> None:
+    """`load_course_offerings(semester)` 与按 acceptance 读回**语义不同**。"""
+
+    _import(
+        store_path,
+        _snapshot([_offering(course_id="SYN-CAMPUS", class_id="campus-000")]),
+        artifact_sha256=ARTIFACT,
+        scope=CAMPUS_SCOPE,
+    )
+    _import(
+        store_path,
+        _snapshot([_offering(course_id="SYN-FULL", class_id="full-000")]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+
+    assert len(load_course_offerings(store_path, SEMESTER)) == 2
+
+    bound = load_course_offerings_for_acceptance(
+        store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+    )
+    assert [offering.course_id for offering in bound] == ["SYN-FULL"]
+    assert [offering.data_source for offering in bound] == [DataSource.REAL]
+
+
+def test_acceptance_bound_query_requires_the_full_semester_scope(store_path: Path) -> None:
+    """同一份 artifact 若以 **campus** scope 声明，则不属于任何 full_semester acceptance。"""
+
+    _import(
+        store_path,
+        _snapshot([_offering()]),
+        artifact_sha256=ARTIFACT,
+        scope=CAMPUS_SCOPE,
+    )
+
+    assert (
+        load_course_offerings_for_acceptance(
+            store_path, semester=SEMESTER, acceptance_sha256=ARTIFACT
+        )
+        == []
+    )
+
+
+def test_acceptance_bound_query_is_semester_isolated(store_path: Path) -> None:
+    _import(
+        store_path,
+        _snapshot([_offering(class_id="full-000")]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+    _import(
+        store_path,
+        _snapshot(
+            [_offering(semester=OTHER_SEMESTER, class_id="other-000")],
+            semester=OTHER_SEMESTER,
+        ),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=OTHER_FULL_SCOPE,
+    )
+
+    bound = load_course_offerings_for_acceptance(
+        store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+    )
+    assert [offering.semester for offering in bound] == [SEMESTER]
+
+
+def test_acceptance_bound_query_rejects_invalid_arguments(store_path: Path) -> None:
+    with pytest.raises(CourseDataStoreError):
+        load_course_offerings_for_acceptance(
+            store_path, semester=SEMESTER, acceptance_sha256="not-a-digest"
+        )
+    with pytest.raises(CourseDataStoreError):
+        load_course_offerings_for_acceptance(
+            store_path, semester="   ", acceptance_sha256=OTHER_ARTIFACT
+        )
+
+
+def test_acceptance_bound_query_orders_by_sql() -> None:
+    """⛔ 顺序必须是 SQL 显式保证的（源码级断言，同 `load_order_is_guaranteed`）。"""
+
+    source = Path(__file__).resolve().parents[1] / "app" / "course_data" / "store.py"
+    text = source.read_text(encoding="utf-8")
+
+    assert (
+        "AND artifact_sha256 = ? ORDER BY course_id, class_id" in text
+    )
+    assert "WHERE semester = ? AND scope_kind = ? AND scope_id = ? " in text

@@ -119,6 +119,10 @@ from app.course_data.captured_pages import (
     validate_capture_bundle,
 )
 from app.course_data.errors import CourseDataNormalizationError
+from app.course_data.store_provider import (
+    CourseDataAcceptanceError,
+    StoreBackedCourseDataProvider,
+)
 from app.course_data.full_semester_acceptance import (
     APPROVED_FULL_SEMESTER_SHARDS,
     CAPTURE_INVENTORY_FORMAT,
@@ -196,6 +200,7 @@ from app.course_data.store import (
     load_course_data_acceptances,
     load_course_data_provenance,
     load_course_offerings,
+    load_course_offerings_for_acceptance,
 )
 
 __all__ = [
@@ -211,6 +216,7 @@ __all__ = [
     "CaptureInventory",
     "CapturedPagesFetcher",
     "CourseDataAcceptance",
+    "CourseDataAcceptanceError",
     "CourseDataImport",
     "CourseDataNormalizationError",
     "CourseDataProvenance",
@@ -235,6 +241,7 @@ __all__ = [
     "ShardSource",
     "SnapshotCourseDataProvider",
     "SnapshotScope",
+    "StoreBackedCourseDataProvider",
     "accept_full_semester_capture_set",
     "build_capture_inventory",
     "build_course_offering",
@@ -262,6 +269,7 @@ __all__ = [
     "load_course_data_acceptances",
     "load_course_data_provenance",
     "load_course_offerings",
+    "load_course_offerings_for_acceptance",
     "merge_offering_snapshots",
     "offering_identity",
     "offering_payload_sha256",

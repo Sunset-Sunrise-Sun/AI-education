@@ -3060,3 +3060,22 @@
   `REAL_CAPTURE_OPERATION_PACK.md`（§E2 两步流程 + 草稿 inventory）；
 - **边界**：⛔ 未 merge main、⛔ 未改 PR #39 / public Schema / frozen Provider contract、
   ⛔ 未处理真实 artifact、⛔ 未发真实网络请求；formal Real E2E 继续 **LEVEL0**。
+
+### 2026-10-06 - BLOCK B4：Provider 每次读取都重新验证 acceptance
+
+- **分支**：基于 BLOCK B1/B2/B3 修复 tip（`fix/full-semester-acceptance-blocks`
+  @ `831c0e3`）新建 `fix/store-provider-continuous-verification`
+  （⛔ 未 rebase 旧 branch、⛔ 未 merge main）；
+- **Provider 重写**：删除"构造时缓存 metadata + 只重读 rows"的模型；
+  每次调用 `store.load_accepted_offerings()`（同一读事务内核对两个平面 /
+  scope / 计数 / membership / 逐行内容指纹 / 整批 digest / 行级 provenance）；
+- **错误映射**：`app/main.py` 新增 `CourseDataAcceptanceError` 异常处理器 ⇒
+  `503 real_pipeline_not_configured`（请求期间失效同样是就绪性失败）；
+  ⛔ 其它异常不映射（仍 500）；
+- **降级非权威路径**：`load_course_offerings_for_acceptance()` 保留但明确标注
+  "不核对内容、仅供诊断"；
+- **测试**：`test_course_data_store_provider.py` **51 passed**
+  （reviewer probe 修复版 + 构造后删除 / 篡改 + 同数量替换 + 陈旧行 + 不缓存）；
+  store **83 passed**（含 Gate B 的声明平面查询用例）；
+- **边界**：⛔ 未改 frozen Provider contract / public Schema、⛔ 未处理真实 artifact、
+  ⛔ 未 merge main；formal Real E2E 继续 **LEVEL0**。
