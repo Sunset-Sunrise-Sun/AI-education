@@ -19,18 +19,19 @@ export const DEMO_ENDPOINT = `${API_BASE_URL}/api/v1/mock/demo`
 /**
  * 目标 Real 接口：`POST /api/v1/plan`。
  *
- * ⚠️ 该 endpoint 由并行开发中的 `feature/real-plan-api` 提供，**当前 main 上并不存在**。
- * 前端本轮只**预留调用代码与请求形状**，不在失败时回退到 Mock 通道。
+ * ✅ 该 endpoint **已经在 main 上实现**（后端 runtime wiring 已合并）；未装配时
+ * 明确返回 `503 real_pipeline_not_configured`，前端按**当前正确状态**如实展示该错误，
+ * ⛔ 不把它当成"接口不存在"，也⛔ **绝不**在失败时回退到 Mock 通道。
  */
 export const PLAN_ENDPOINT = `${API_BASE_URL}/api/v1/plan`
 
 /**
  * Real Planning 通道开关。
  *
- * 默认 **关闭**：在 Real API 尚未合并进 main 之前，页面的 Real Planning 提交按钮
- * 明确显示为不可用，并且**不会**偷偷改调 Mock 接口。
- * 只有在确认后端已提供 `POST /api/v1/plan` 之后，才把它打开
- * （`.env.local` 中设置 `VITE_PLAN_API_ENABLED=true`）。
+ * 默认 **关闭**：这只是**演示默认值**（比赛演示不依赖后端已装配的真实输入），
+ * 页面的 Real Planning 提交按钮明确显示为不可用，并且**不会**偷偷改调 Mock 接口。
+ * 后端 `POST /api/v1/plan` 已存在；把它打开只需在 `.env.local` 中设置
+ * `VITE_PLAN_API_ENABLED=true`（真实链路是否可用仍由后端 readiness 决定：未装配 ⇒ 503）。
  */
 export const PLAN_API_ENABLED: boolean = import.meta.env.VITE_PLAN_API_ENABLED === 'true'
 

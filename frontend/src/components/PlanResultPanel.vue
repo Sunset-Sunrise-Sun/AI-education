@@ -220,7 +220,9 @@ function courseLabel(courseId: string): string {
           <p class="unresolved-card__message">{{ item.message }}</p>
         </article>
       </div>
-      <p v-else class="empty-state text-success">所有待决事项均已解决，无遗留问题。</p>
+      <p v-else class="empty-state">
+        本次返回的未决事项为空（仅表示<strong>没有未决条目</strong>，不构成可执行性或排课结论）。
+      </p>
     </section>
   </div>
 </template>

@@ -1888,3 +1888,40 @@
   新增这两类测试与分类矩阵断言；非空验证：回退为"该 code 无论状态码都算未装配"后**失败 4 项**。
 - 下一步：等待 Architecture Review；等 Codex runtime 可用后执行第一轮真实联调。
 
+### 2026-10-06 - Gate E：Frontend Real-path Readiness（恢复 parked spec + 3 处展示修复）
+
+- 触发：Core MVP Autonomous Run 恢复被 parked 的 Gate E（此前因 Provider BLOCK 暂停，
+  parked 记录见 workspace `GATE_E_PARKED.md`）；分支
+  `feature/frontend-real-path-readiness-final`，base = `feature/synthetic-production-e2e @ 8fc18b9`。
+- **恢复 parked readiness spec**：`real-path-readiness.spec.ts`（15 用例）恢复到
+  `frontend/tests/real-path-readiness.spec.ts`；恢复后 14/15 通过，
+  唯一失败正是"parked 期间被丢弃的第 3 处展示修复"（`PlanResultPanel` 空未决文案）。
+- **重做 3 处展示修复（纯展示 / 接线，⛔ 不改任何业务规则）**：
+  1. `src/config.ts`：`feature/real-plan-api`"当前 main 上并不存在"→
+     "✅ endpoint 已经在 main 上实现；未装配时明确返回 503 `real_pipeline_not_configured`，
+     前端按当前正确状态展示；开关默认关闭只是**演示默认值**，⛔ 不 fallback 到 Mock"；
+  2. `src/components/SubmissionActions.vue`：disabled 提示改为
+     "接口 `POST /api/v1/plan` **已存在于后端**；当前演示环境未开启 `VITE_PLAN_API_ENABLED`
+     （默认关闭）；未装配时后端返回 503，属**当前正确状态**；⛔ 不回退 Mock"；
+  3. `src/components/PlanResultPanel.vue`：空未决文案
+     "所有待决事项均已解决，无遗留问题。" →
+     "本次返回的未决事项为空（仅表示**没有未决条目**，不构成可执行性或排课结论）。"
+     （同时移除 `text-success` 类：⛔ 不用"成功色"暗示可执行性）。
+- **新增 6 个 readiness 用例（mandate 的 6 / 9 / 10 / 12 项此前未被锁定）**：
+  缺地点 → "当前数据中无地点信息"（并有地点时不出现该文案）；
+  `meetings=[]` 使用同一个中性常量 `EMPTY_MEETINGS_DATA_TEXT`；
+  `changes` / `risks` / `unresolved` 空数组只表示"无记录"（⛔ 无"无风险 / 无需调整"）；
+  Preference ⛔ 不声称已被求解器执行（"以 PlanResult 输出为准"）；
+  容量只展示原始比例（4 / 90 也不出现"余量紧张 / 即将满员 / 阈值"）；
+  静态守卫 ⛔ 无 `capacityThreshold` / `preferenceSatisfied` 等实现与文案。
+- 测试结果：`npm test` → **134 passed / 134**（9 文件，含 readiness **21** 用例）；
+  `npm run typecheck`（`vue-tsc --noEmit`）→ **exit 0**；`npm run build` → **exit 0**
+  （dist 产物 127.87 kB JS / 24.75 kB CSS）。
+- 文档：`docs/status/agent_frontend.md` 修正过时表述（"endpoint 当前 main 上并不存在"
+  已不成立）并新增 Gate E 15 项要求 ↔ 证据矩阵；本文件追加本条。
+- 是否修改 backend：**否**。公共接口是否变化：**否**
+  （未改 `/schemas/`、`/docs/interfaces/`、Provider 签名、API contract）。
+- ⚠️ 仍未变更的接口面事实：真实 `POST /api/v1/plan` 不返回 `X-Data-Source` 头
+  （属接口面变更，本 Gate 未擅自扩 API）。
+- 下一步：Gate F（XLSX backend pipeline）。
+
