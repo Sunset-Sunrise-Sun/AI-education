@@ -1,4 +1,6 @@
 import { CASE_A_DEMO_OFFERINGS_ENDPOINT, CASE_A_DEMO_PLAN_ENDPOINT } from '../config'
+// ⚠️ roadmap 是**前端集成类型**（见 caseAPlanning.ts），⛔ 不是公共契约。
+import type { FutureRoadmap } from '../types/caseAPlanning'
 import type { CourseOffering, MakeupTask, PlanResult, Preference } from '../types/contracts'
 
 export interface CaseADemoResponse {
@@ -22,6 +24,13 @@ export interface CaseADemoResponse {
     planner: string
     is_full_semester: boolean
   }
+  /**
+   * 未来学期修读路径（**可选**）。
+   *
+   * ⚠️ 后端当前**不返回**该字段。前端只在它真的存在且含学期数据时渲染，
+   * ⛔ 缺省时整块不渲染、⛔ 不补任何假数据。
+   */
+  roadmap?: FutureRoadmap | null
 }
 
 async function checkedJson<T>(response: Response): Promise<T> {
