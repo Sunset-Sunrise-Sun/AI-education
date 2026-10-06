@@ -1778,29 +1778,67 @@
   // ⛔ 多个字段同时命中 → **全部保留**（⛔ 不自行裁定哪一个才是答案）。
   // ---------------------------------------------------------------------
 
-  /** Architecture Review 明确排除 + 已知内部 ID 字段（⛔ 不进入命中统计）。 */
+  /**
+   * 明确排除的字段名（Architecture Review 清单 + collector 既有字段）。
+   *
+   * ⛔ 这些是**精确**字段名，不参与 f3 命中统计。
+   */
   var LAYOUT_B_F3_MATCH_EXCLUDED_FIELDS = [
+    // 非 ID 但同样不参与（体积大 / 无诊断价值 / 属排课原文）
     "courseNum",
     "classNumber",
     "teachingTimePlaceStr",
-    // collector 既有的 structural-only 字段（内部 ID）
+    // Architecture Review 明确列出的内部 ID 字段
+    "courseId",
+    "class_ID",
+    "sumClassesID",
+    "outLineId",
     "timePlaceId"
   ];
 
   /**
-   * 内部 ID **形状**的字段名（**机械**规则，⛔ 不猜业务语义）：以 `Id` / `ID` 结尾。
+   * 内部 ID 字段名的**词法边界**判定（**机械**规则，⛔ 不猜业务语义）。
    *
-   * ⚠️ 这是字段**名**的形状规则（`timePlaceId` / `someInternalId` / `internalID` …），
-   * ⛔ **不是**对字段**取值**的模糊匹配。
+   * ```text
+   * id     / ID / Id / iD  （整个字段名就是 id，忽略大小写）
+   * xxxId  （驼峰）
+   * xxxID  （全大写后缀）
+   * xxx_id / xxx_ID / xxx_Id …（下划线 + id，忽略大小写）
+   * ```
+   *
+   * ⛔ **不再**使用"任意以 `id` 两个字符结尾"的规则：
+   * `valid` / `invalid` / `hybrid` 这类**普通单词**必须**参与**统计
+   * （过度排除会造成 false negative，降低诊断证明力）。
+   *
+   * ⚠️ 按裁定的**词法边界**要求，全小写且无分隔符的 `xxxid`（如 `courseid`）
+   * **没有** ID 边界 ⇒ **不**排除；若要覆盖该形态，需要 Review 给出明确规则。
    */
-  var LAYOUT_B_F3_MATCH_EXCLUDED_FIELD_PATTERN = /[Ii][Dd]$/;
+  var LAYOUT_B_F3_MATCH_ID_SUFFIXES = ["Id", "ID"];
 
-  /** 该字段名是否被排除在 f3 命中统计之外。 */
+  /** `_id` / `_ID` / `_Id` …（下划线 + id，忽略大小写）。 */
+  var LAYOUT_B_F3_MATCH_ID_UNDERSCORE_PATTERN = /_id$/i;
+
+  /** 字段名是否具有内部 ID 的**词法形状**（⛔ 必须有边界）。 */
+  function hasInternalIdShape(fieldName) {
+    if (fieldName.toLowerCase() === "id") {
+      return true;
+    }
+
+    for (var index = 0; index < LAYOUT_B_F3_MATCH_ID_SUFFIXES.length; index += 1) {
+      if (fieldName.endsWith(LAYOUT_B_F3_MATCH_ID_SUFFIXES[index])) {
+        return true;
+      }
+    }
+
+    return LAYOUT_B_F3_MATCH_ID_UNDERSCORE_PATTERN.test(fieldName);
+  }
+
+  /** 该字段名是否被排除在 f3 命中统计之外（精确清单 + ID 词法形状）。 */
   function isExcludedMatchFieldName(fieldName) {
     if (LAYOUT_B_F3_MATCH_EXCLUDED_FIELDS.indexOf(fieldName) !== -1) {
       return true;
     }
-    return LAYOUT_B_F3_MATCH_EXCLUDED_FIELD_PATTERN.test(fieldName);
+    return hasInternalIdShape(fieldName);
   }
 
   /** 多重集中命中集合的出现次数合计。 */

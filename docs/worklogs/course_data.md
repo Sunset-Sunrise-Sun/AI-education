@@ -2387,6 +2387,8 @@
   - **排除**：`courseNum` / `classNumber` / `teachingTimePlaceStr`（字面量）
     + **内部 ID**：具名 `timePlaceId` 与**形状规则** `/[Ii][Dd]$/`（字段**名**的机械规则，
     ⛔ **不是**对取值的模糊匹配）；
+    ⚠️ **该形状规则随后被 Architecture Review 判为过宽（Blocker），已在下一轮收紧为
+    "必须有 ID 词法边界" —— 见本文件后面的 Blocker 修复条目；此处保留当时的历史记录。**
   - ⛔ **只输出字段名**与计数（映射里不写入任何 raw 取值；`row[fieldName]` 在代码中
     只出现两次：类型判定 + 严格相等）；⛔ 多个字段同时命中 → **全部保留**（不自行裁定）；
   - ⚠️ 字段名按**码点排序**输出（结果稳定）；用 `Object.fromEntries` 构造映射
@@ -2441,6 +2443,8 @@
 - **排除用例扩充**：新增裸 `id` 字段与**保守过度排除**用例 `valid`（以 `id` 结尾 →
   按机械形状规则一并排除，已在测试注释中写明"宁可少报"），
   排除用例总数 5 → **7**。
+  ⚠️ **该"保守过度排除"随后被 Architecture Review 判为不可接受（false negative），
+  已在下一轮收紧为词法边界并改为"`valid` 必须命中"的正向用例。**
 - **新增 2 个变异**（`mutate_layout_b_diagnostic.py`：34 → **36 个变异，36/36 全部变红**）：
   `N22` 命中统计改成比较 **f4**（⛔ f4 不得参与）；`P15` 去掉**内部 ID 形状规则**。
 - **验收矩阵（逐条）**：单字段 10/10 ✅ / 多字段同时命中 ✅ / 部分命中 ✅ / 无字段命中 ✅ /
@@ -2457,3 +2461,44 @@
   frontend；⛔ 真实材料未入 Git；**真实请求数 0**。
 - 下一步：等负责人明天跑一次真实诊断并回传 `fieldName -> count`；
   ⛔ 在此之前不裁定 `f3` 角色、不改 parser、不做 redaction、不重抓。
+
+### 2026-10-05 - Blocker 修复：内部 ID 字段判定收紧为**词法边界**
+
+- **Architecture Review 裁定（真实运行前的 Blocker）**：`/[Ii][Dd]$/` 对内部 ID 字段的排除
+  **过宽** —— 会把普通字段名（`valid` / `invalid` / `hybrid`）当成 ID 排除，
+  造成 **false negative、降低诊断证明力**；不接受"保守过度排除"。
+- **修复**（`tools/sysu_course_offering_collector.js`；⛔ 只改这一处判定）：
+  - **精确字段名排除**（继续排除）：`courseNum` / `classNumber` / `teachingTimePlaceStr` +
+    Review 清单 `courseId` / `class_ID` / `sumClassesID` / `outLineId` / `timePlaceId`；
+  - **ID 词法形状**（必须有边界）：`fieldName.toLowerCase() === "id"`（裸 `id`，忽略大小写）、
+    `endsWith("Id")`、`endsWith("ID")`、`/_id$/i`（下划线 + id）；
+  - ⛔ **删除** `/[Ii][Dd]$/` 这条过宽规则（守卫断言其**不得**再出现）；
+  - ⚠️ 由此 `valid` / `invalid` / `hybrid` **重新参与**统计；
+    全小写无分隔符的 `xxxid`（如 `courseid`）按词法边界要求**不排除**
+    （已在文档与测试中写明：若要覆盖需 Review 给出明确规则）；
+  - ⚠️ **唯一** `toLowerCase` 出现在**字段名**规则处；取值 / 候选 grammar 仍**零大小写折叠**
+    （守卫改为精确断言：全 section 只有 1 处 `toLowerCase`，且不得出现在
+    `row[fieldName]` / `thirdField` / `fourthField` 上）。
+- **测试**（`sysu_course_offering_collector.test.mjs`：122 → **124**）：
+  排除清单用例扩充为 10 个候选（`courseNum` / `classNumber` / `id` / `timePlaceId` /
+  `someInternalId` / `internalID` / `courseId` / `class_ID` / `sumClassesID` / `outLineId`）；
+  新增"**词法边界正例**"用例（`id` / `lessonId` / `lessonID` / `lesson_id` / `lesson_ID` /
+  裸 `ID` 全部排除）；新增"**普通单词必须命中**"用例
+  （`valid` / `invalid` / `hybrid` / 无边界 `courseid` → 映射为
+  `{ courseid: 1, hybrid: 1, invalid: 1, valid: 1 }`）。
+- **守卫**（`test_sysu_collector_guard.py`：仍 **102 passed**，断言内容更新）：
+  精确清单九名 + 词法形状四条（裸 `id` 大小写无关 / `Id` / `ID` / `_id` 忽略大小写）+
+  调用点；⛔ `[Ii][Dd]$` 与旧常量**不得**再出现；`toLowerCase` 仅字段名规则处 1 次。
+- **变异**（`mutate_layout_b_diagnostic.py`：36 → **39 个变异，39/39 全部变红**，
+  采集器 SHA-256 前后一致、文件已字节级还原）：新增
+  `N23` 回到过宽 ID 规则（被"`valid` 必须命中"用例抓住）、`N24` 不再判定 ID 后缀、
+  `P15` 去掉下划线规则、`P16` 回到过宽规则、`P17` 去掉后缀判定、`P18` 去掉裸 `id` 判定。
+- **测试结果**：`node --check` exit 0；collector node **124 passed**；守卫 **102 passed**；
+  targeted（parser+normalization+importer+pagination+guard，`-W error::SyntaxWarning`）
+  **592 passed**；full backend **2 failed / 2411 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例）；`compileall app` exit 0。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未改 Layout B parser / collector production path /
+  4 字段 redaction / Capture Bundle format / 公共 Schema / store / runtime wiring /
+  Planner / Curriculum / frontend；⛔ 真实材料未入 Git；**真实请求数 0**。
+- 下一步：真实运行前的 Blocker 已清除 ⇒ 等负责人明天跑那条唯一真实命令并回传
+  `f3_matching_raw_fields`。

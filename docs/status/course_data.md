@@ -600,18 +600,36 @@ weeks | weekday | location | REDACTED | activity
   ```
 
   - ⛔ **只输出字段名**与计数（⛔ 不输出 raw value / f3 原文 / teacher name / 课程与教学班标识）；
-  - ⛔ **只做严格字符串相等**：⛔ 无模糊匹配、⛔ 无 substring、⛔ 无分词、⛔ 无大小写折叠；
-  - **排除字段**：`courseNum` / `classNumber` / `teachingTimePlaceStr` /
-    **内部 ID 字段**（具名字段 `timePlaceId` + **形状规则**：字段名以 `Id` / `ID` 结尾）；
+  - ⛔ **只做严格字符串相等**：⛔ 无模糊匹配、⛔ 无 substring、⛔ 无分词、⛔ 无大小写折叠
+    （⚠️ 唯一例外：**字段名**的内部 ID 规则里对**裸 `id`** 做大小写无关比较，
+    ⛔ 与**取值**匹配无关）；
+  - **排除字段**（Architecture Review 清单；⛔ 不参与统计）：
+
+    ```text
+    精确字段名：courseNum / classNumber / teachingTimePlaceStr
+                courseId / class_ID / sumClassesID / outLineId / timePlaceId
+    内部 ID 词法形状（**必须有 ID 词法边界**）：
+      id / ID / Id …（整个字段名就是 id，忽略大小写）
+      xxxId   （驼峰后缀）
+      xxxID   （全大写后缀）
+      xxx_id / xxx_ID / xxx_Id …（下划线 + id，忽略大小写）
+    ```
+
+  - ⛔ **不再使用"任意以 `id` 两个字符结尾"的过宽规则**（它会错误排除普通单词，
+    造成 false negative、降低诊断证明力）：`valid` / `invalid` / `hybrid` 这类普通字段名
+    **必须参与**统计；
+    ⚠️ 按词法边界要求，全小写无分隔符的 `xxxid`（如 `courseid`）**没有** ID 边界 ⇒ 不排除
+    （若要覆盖该形态，需要 Architecture Review 给出明确规则）；
   - ⚠️ 多个字段同时命中 → **全部保留计数**（⛔ 不自行裁定哪一个才是答案）；
   - ⚠️ 字段名按码点**排序**输出（结果稳定）；映射用 `Object.fromEntries` 构造
     （⛔ 字段名 `__proto__` 不会污染原型）；
-  - ⚠️ **内部 ID 形状规则是机械规则、会保守过度排除**：字段名以 `Id` / `ID` 结尾者
-    一律排除（例如字段名 `valid` 也会被排除）—— 宁可少报，也不让 ID 形状字段进入证据；
   - ✅ **合成验收矩阵**（node 测试）：单字段 10/10、多字段同时命中、部分命中、无字段命中、
-    excluded fields 不参与（含裸 `id` 与保守过度排除）、non-string fields 不参与、
-    只看 f3（f4 不参与 / 候选自身不污染证据）、跨页累计（页序不影响）、
-    返回值与序列化中不出现任何输入**取值**（字段名作为映射键按裁定允许）。
+    excluded fields 不参与（`courseNum` / `classNumber` / `courseId` / `class_ID` /
+    `sumClassesID` / `outLineId` / `timePlaceId` / `id` / `xxxId` / `xxxID` /
+    `xxx_id` 逐个覆盖）、`valid` / `invalid` / `hybrid` **必须命中**、
+    non-string fields 不参与、只看 f3（f4 不参与 / 候选自身不污染证据）、
+    跨页累计（页序不影响）、返回值与序列化中不出现任何输入**取值**
+    （字段名作为映射键按裁定允许）。
 
 - **输出**（单位 = 候选 segment；⛔ 无 rows / 无标识 / 无任何取值）：
 

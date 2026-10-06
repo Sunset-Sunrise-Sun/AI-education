@@ -1852,11 +1852,22 @@ test("Layout B 诊断：f3 命中统计严格排除 courseNum / classNumber / �
     classNumber: "SYN-LB-ID4",
     id: "裸ID值",
   });
-  // ⚠️ 保守**过度排除**：`valid` 以 `id` 结尾 → 按机械形状规则也被排除
-  //    （宁可少报，也不让任何 ID 形状字段进入证据）
-  const overExcludedRow = Object.assign(rawRow(`1-8周/${LOCATION}/保守排除值/${ACTIVITY}`), {
+  // Architecture Review 清单里的内部 ID 字段
+  const courseIdRow = Object.assign(rawRow(`1-8周/${LOCATION}/课程ID值/${ACTIVITY}`), {
     classNumber: "SYN-LB-ID5",
-    valid: "保守排除值",
+    courseId: "课程ID值",
+  });
+  const classUnderscoreIdRow = Object.assign(rawRow(`1-8周/${LOCATION}/下划线ID值/${ACTIVITY}`), {
+    classNumber: "SYN-LB-ID6",
+    class_ID: "下划线ID值",
+  });
+  const sumClassesIdRow = Object.assign(rawRow(`1-8周/${LOCATION}/汇总ID值/${ACTIVITY}`), {
+    classNumber: "SYN-LB-ID7",
+    sumClassesID: "汇总ID值",
+  });
+  const outLineIdRow = Object.assign(rawRow(`1-8周/${LOCATION}/大纲ID值/${ACTIVITY}`), {
+    classNumber: "SYN-LB-ID8",
+    outLineId: "大纲ID值",
   });
 
   const rows = [
@@ -1874,14 +1885,91 @@ test("Layout B 诊断：f3 命中统计严格排除 courseNum / classNumber / �
     internalIdRow,
     upperIdRow,
     bareIdRow,
-    overExcludedRow,
+    courseIdRow,
+    classUnderscoreIdRow,
+    sumClassesIdRow,
+    outLineIdRow,
     minimalProviderRow(),
   ];
 
   const { result } = await runLayoutBDiagnostic(rows);
 
-  assert.equal(result.candidate_count, 7);
+  assert.equal(result.candidate_count, 10);
   assert.deepEqual({ ...result.f3_matching_raw_fields }, {}, "⛔ 被排除的字段名不得出现");
+});
+
+test("Layout B 诊断：内部 ID 判定必须有词法边界（valid / invalid / hybrid 必须命中）", async () => {
+  // ⚠️ 本轮裁定：⛔ 不得用"任意以 id 两个字符结尾"的规则；
+  //    `valid` / `invalid` / `hybrid` 只是普通单词 → 必须参与统计。
+  const rows = [
+    Object.assign(rawRow(`1-8周/${LOCATION}/普通词valid/${ACTIVITY}`), {
+      classNumber: "SYN-LB-WORD-1",
+      valid: "普通词valid",
+    }),
+    Object.assign(rawRow(`1-8周/${LOCATION}/普通词invalid/${ACTIVITY}`), {
+      classNumber: "SYN-LB-WORD-2",
+      invalid: "普通词invalid",
+    }),
+    Object.assign(rawRow(`1-8周/${LOCATION}/普通词hybrid/${ACTIVITY}`), {
+      classNumber: "SYN-LB-WORD-3",
+      hybrid: "普通词hybrid",
+    }),
+    // ⚠️ 按词法边界要求：全小写、无分隔符的 `courseid` **没有** ID 边界 ⇒ 不排除
+    //    （若 Review 要覆盖该形态，需要给出明确规则）
+    Object.assign(rawRow(`1-8周/${LOCATION}/无边界小写/${ACTIVITY}`), {
+      classNumber: "SYN-LB-WORD-4",
+      courseid: "无边界小写",
+    }),
+    minimalProviderRow(),
+  ];
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(result.candidate_count, 4);
+  assert.deepEqual(
+    { ...result.f3_matching_raw_fields },
+    { courseid: 1, hybrid: 1, invalid: 1, valid: 1 },
+    "⛔ 普通单词结尾的 id 不得被当成内部 ID 排除",
+  );
+});
+
+test("Layout B 诊断：内部 ID 词法边界的正例（id / xxxId / xxxID / xxx_id 都要排除）", async () => {
+  const rows = [
+    Object.assign(rawRow(`1-8周/${LOCATION}/只有id/${ACTIVITY}`), {
+      classNumber: "SYN-LB-BND-1",
+      id: "只有id",
+    }),
+    Object.assign(rawRow(`1-8周/${LOCATION}/驼峰Id/${ACTIVITY}`), {
+      classNumber: "SYN-LB-BND-2",
+      lessonId: "驼峰Id",
+    }),
+    Object.assign(rawRow(`1-8周/${LOCATION}/全大写ID/${ACTIVITY}`), {
+      classNumber: "SYN-LB-BND-3",
+      lessonID: "全大写ID",
+    }),
+    Object.assign(rawRow(`1-8周/${LOCATION}/下划线id/${ACTIVITY}`), {
+      classNumber: "SYN-LB-BND-4",
+      lesson_id: "下划线id",
+    }),
+    Object.assign(rawRow(`1-8周/${LOCATION}/下划线上档ID/${ACTIVITY}`), {
+      classNumber: "SYN-LB-BND-5",
+      lesson_ID: "下划线上档ID",
+    }),
+    Object.assign(rawRow(`1-8周/${LOCATION}/整名ID大写/${ACTIVITY}`), {
+      classNumber: "SYN-LB-BND-6",
+      ID: "整名ID大写",
+    }),
+    minimalProviderRow(),
+  ];
+
+  const { result } = await runLayoutBDiagnostic(rows);
+
+  assert.equal(result.candidate_count, 6);
+  assert.deepEqual(
+    { ...result.f3_matching_raw_fields },
+    {},
+    "⛔ 具有 ID 词法边界的字段名必须排除",
+  );
 });
 
 test("Layout B 诊断：f3 命中统计只做严格相等（⛔ 无 substring / 无分词）", async () => {

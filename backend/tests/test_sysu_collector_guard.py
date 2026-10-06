@@ -1966,12 +1966,18 @@ def test_layout_b_candidate_grammar_is_anchored_and_whitelisted(
     ):
         assert pattern in code, f"缺少已批准 pattern：{pattern}"
 
-    # ⛔ 无通配、无前缀匹配、无大小写折叠、无字段数量通配
+    # ⛔ 无通配、无前缀匹配、无字段数量通配
     assert ".*" not in code
     assert "startswith" not in code
     assert "startsWith" not in code
-    assert "toLowerCase" not in code
     assert "includes(" not in code
+    # ⛔ **取值 / 候选 grammar** 一律不做大小写折叠：
+    #    `toLowerCase` 只允许出现在**字段名**的内部 ID 规则里（`fieldName.toLowerCase() === "id"`）。
+    assert code.count("toLowerCase") == 1
+    assert 'fieldName.toLowerCase() === "id"' in code
+    assert "row[fieldName].toLowerCase" not in code
+    assert "thirdField.toLowerCase" not in code
+    assert "fourthField.toLowerCase" not in code
     # location 判别必须复用既有判别器（>= 3 个非空 '-' 分段）
     assert "countNonEmptyDashSegments(fields[1].trim()) < MIN_LOCATION_SEGMENTS" in code
 
@@ -2211,11 +2217,33 @@ def test_layout_b_f3_match_histogram_excludes_ids_and_never_echoes_values(
     start = code.index("LAYOUT_B_F3_MATCH_EXCLUDED_FIELDS = [")
     end = code.index("];", start)
     excluded = code[start:end]
-    for name in ("courseNum", "classNumber", "teachingTimePlaceStr", "timePlaceId"):
+    for name in (
+        "courseNum",
+        "classNumber",
+        "teachingTimePlaceStr",
+        # Architecture Review 清单里的内部 ID 字段
+        "courseId",
+        "class_ID",
+        "sumClassesID",
+        "outLineId",
+        "timePlaceId",
+    ):
         assert f'"{name}"' in excluded, f"排除清单缺少：{name}"
 
-    # 内部 ID **形状**规则（机械名称规则，⛔ 不是对取值的模糊匹配）
-    assert "LAYOUT_B_F3_MATCH_EXCLUDED_FIELD_PATTERN = /[Ii][Dd]$/" in code
+    # 内部 ID **词法边界**规则（机械名称规则，⛔ 不是对取值的模糊匹配）
+    assert 'var LAYOUT_B_F3_MATCH_ID_SUFFIXES = ["Id", "ID"];' in code
+    assert "var LAYOUT_B_F3_MATCH_ID_UNDERSCORE_PATTERN = /_id$/i;" in code
+    assert 'fieldName.toLowerCase() === "id"' in code
+    assert "fieldName.endsWith(LAYOUT_B_F3_MATCH_ID_SUFFIXES[index])" in code
+    assert "LAYOUT_B_F3_MATCH_ID_UNDERSCORE_PATTERN.test(fieldName)" in code
+    assert "function hasInternalIdShape(" in code
+    assert "return hasInternalIdShape(fieldName);" in code
+
+    # ⛔ **不得**再出现"任意以 id 两个字符结尾"的过宽规则
+    #    （它会错误排除 `valid` / `invalid` / `hybrid` 这类普通单词）
+    assert "[Ii][Dd]$" not in code
+    assert "LAYOUT_B_F3_MATCH_EXCLUDED_FIELD_PATTERN" not in code
+
     assert "function isExcludedMatchFieldName(" in code
     # ⚠️ 断言必须包含 `if (`：只断言函数名会被"函数定义处"满足（曾造成 P11 假绿灯）
     assert "if (isExcludedMatchFieldName(fieldName)) {" in code
