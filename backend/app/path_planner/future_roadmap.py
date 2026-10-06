@@ -54,6 +54,7 @@ from app.curriculum.requirements import (
     CurriculumVersion,
     RequirementKind,
 )
+from app.models.contracts import MakeupStatus, MakeupTask
 
 __all__ = [
     "AcademicRoadmap",
@@ -118,6 +119,7 @@ class SemesterPlan:
     semester_index: int
     semester_label: str
     courses: tuple[SemesterCoursePlan, ...]
+    curriculum_semester: int
     warnings: tuple[str, ...] = ()
 
     @property
@@ -151,10 +153,38 @@ class SemesterPlan:
 
 @dataclass(frozen=True, slots=True)
 class FutureSemester:
-    """调用方声明的学期（标签 + 位置）；`semester_index` 从 1 开始。"""
+    """调用方声明的**未来**学期，含显式的**培养方案学期号**。
+
+    ⚠️ 关键语义（⛔ 不得回退）：`recommended_semester` / `deadline_semester` 是
+    **培养方案相对学期号**（例如某专业第 3 学期 = `2026-1`），**不是**本次未来学期
+    列表里的第几项。因此本模型同时携带：
+
+    - `semester_label` —— 人类可读学期标签（如 `2026-2`）；
+    - `curriculum_semester` —— 该标签对应的**培养方案学期号**（由调用方显式给出）。
+
+    ⛔ 允许学期号不连续/不从 1 开始（例如只规划第 4、6 学期）；
+    ⛔ 但**不允许**缺失或与标签不一致的映射。
+    """
 
     semester_label: str
+    curriculum_semester: int
     semester_index: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.semester_label, str) or not self.semester_label.strip():
+            raise RoadmapInputError("semester_label 必须是非空字符串。")
+        if (
+            isinstance(self.curriculum_semester, bool)
+            or not isinstance(self.curriculum_semester, int)
+            or self.curriculum_semester < 1
+        ):
+            raise RoadmapInputError("curriculum_semester 必须是 ≥1 的整数。")
+        if (
+            isinstance(self.semester_index, bool)
+            or not isinstance(self.semester_index, int)
+            or self.semester_index < 1
+        ):
+            raise RoadmapInputError("semester_index 必须是 ≥1 的整数。")
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,6 +196,7 @@ class AcademicRoadmap:
     future_semesters: tuple[SemesterPlan, ...]
     elective_requirement_credit: float | None
     elective_completed_credit: float | None
+    elective_current_semester_credit: float
     elective_planned_credit: float
     elective_remaining_credit: float | None
     unresolved: tuple[str, ...]
@@ -183,11 +214,20 @@ class AcademicRoadmap:
     def total_future_credit(self) -> float:
         return _round_credit(sum(item.total_credit for item in self.future_semesters))
 
+    @property
+    def curriculum_semester_map(self) -> tuple[tuple[str, int], ...]:
+        """`(semester_label, curriculum_semester)` 的显式映射（供审计 / 前端展示）。"""
+
+        return tuple(
+            (item.semester_label, item.curriculum_semester)
+            for item in self.future_semesters
+        )
+
 
 @dataclass
 class _Placement:
     course: CurriculumCourse
-    semester_index: int
+    semester_label: str
     reason: PlacementReason
     note: str = ""
 
@@ -196,18 +236,113 @@ def _round_credit(value: float) -> float:
     return round(float(value), 6)
 
 
-def _require_semesters(semesters: Sequence[str]) -> tuple[str, ...]:
+def _require_semesters(
+    semesters: Sequence[str] | Sequence[FutureSemester] | Mapping[str, int],
+) -> tuple[FutureSemester, ...]:
+    """把调用方声明的未来学期规范化成显式 `(label, curriculum_semester)` 映射。
+
+    接受三种显式声明形式（⛔ 都必须**显式**给出培养方案学期号）：
+
+    ```text
+    1) Mapping[str, int]              {"2026-2": 4, "2027-1": 5, "2027-2": 6}
+    2) Sequence[FutureSemester]       [FutureSemester(...), ...]
+    3) Sequence[str] + 显式编号参数    → 由 build_academic_roadmap 的
+                                       from_curriculum_semester= 补全
+    ```
+
+    ⛔ 绝不把"未来学期列表的第 N 项"当成培养方案第 N 学期：
+    调用方不给出映射（既不是 Mapping，也没有 `from_curriculum_semester`）⇒ fail closed。
+    """
+
+    if isinstance(semesters, Mapping):
+        if not semesters:
+            raise RoadmapInputError("semesters 映射不能为空。")
+        entries: list[tuple[str, int]] = []
+        for label, number in semesters.items():
+            if not isinstance(label, str) or not label.strip():
+                raise RoadmapInputError("学期标签必须是非空字符串。")
+            if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+                raise RoadmapInputError(
+                    "培养方案学期号必须是 ≥1 的整数（⛔ 不接受省略或推断）。"
+                )
+            entries.append((label.strip(), number))
+        labels = [item[0] for item in entries]
+        if len(set(labels)) != len(labels):
+            raise RoadmapInputError("semesters 存在重复学期标签。")
+        if len({item[1] for item in entries}) != len(entries):
+            raise RoadmapInputError("semesters 存在重复的培养方案学期号。")
+        return tuple(
+            FutureSemester(semester_label=label, curriculum_semester=number, semester_index=index)
+            for index, (label, number) in enumerate(entries, start=1)
+        )
+
     if isinstance(semesters, (str, bytes)) or not isinstance(semesters, Sequence):
-        raise RoadmapInputError("semesters 必须是非空的学期标签序列。")
+        raise RoadmapInputError(
+            "semesters 必须是 学期标签 -> 培养方案学期号 的映射，"
+            "或 FutureSemester 序列，或学期标签序列 + from_curriculum_semester。"
+        )
     material = tuple(semesters)
     if not material:
         raise RoadmapInputError("semesters 不能为空：未来学期顺序必须由调用方显式声明。")
+
+    if all(isinstance(item, FutureSemester) for item in material):
+        labels = [item.semester_label for item in material]
+        if len(set(labels)) != len(labels):
+            raise RoadmapInputError("semesters 存在重复学期标签。")
+        numbers = [item.curriculum_semester for item in material]
+        if len(set(numbers)) != len(numbers):
+            raise RoadmapInputError("semesters 存在重复的培养方案学期号。")
+        return tuple(
+            FutureSemester(
+                semester_label=item.semester_label,
+                curriculum_semester=item.curriculum_semester,
+                semester_index=index,
+            )
+            for index, item in enumerate(material, start=1)
+        )
+
+    for item in material:
+        if not isinstance(item, str) or not item.strip():
+            raise RoadmapInputError(
+                "semesters 必须是纯学期标签序列（培养方案学期号须由调用方显式提供）。"
+            )
+    if len(set(material)) != len(material):
+        raise RoadmapInputError("semesters 存在重复学期标签。")
+    # ⛔ 纯标签序列在这里**不能**自行编号：必须由调用方给出显式映射。
+    raise RoadmapInputError(
+        "仅给出学期标签不足以确定培养方案学期号（⛔ 不会默认从 1 开始编号）："
+        "请传入 学期标签 -> 培养方案学期号 的映射、FutureSemester 序列，"
+        "或额外显式提供 from_curriculum_semester。"
+    )
+
+
+def _sequential_semesters(
+    labels: Sequence[str], *, from_curriculum_semester: int
+) -> tuple[FutureSemester, ...]:
+    """由调用方显式给出的**起始培养方案学期号**顺序编号（4,5,6,...）。"""
+
+    if (
+        isinstance(from_curriculum_semester, bool)
+        or not isinstance(from_curriculum_semester, int)
+        or from_curriculum_semester < 1
+    ):
+        raise RoadmapInputError("from_curriculum_semester 必须是 ≥1 的整数。")
+    material = tuple(labels)
+    if not material:
+        raise RoadmapInputError("semesters 不能为空。")
     for item in material:
         if not isinstance(item, str) or not item.strip():
             raise RoadmapInputError("semesters 中的学期标签必须是非空字符串。")
     if len(set(material)) != len(material):
         raise RoadmapInputError("semesters 存在重复学期标签。")
-    return tuple(item.strip() for item in material)
+    return tuple(
+        FutureSemester(
+            semester_label=item.strip(),
+            curriculum_semester=from_curriculum_semester + offset,
+            semester_index=offset + 1,
+        )
+        for offset, item in enumerate(material)
+    )
 
 
 def _require_credits(
@@ -235,11 +370,15 @@ def build_academic_roadmap(
     *,
     version: CurriculumVersion,
     completed: Sequence[CompletedCourse] = (),
-    semesters: Sequence[str],
+    semesters: Sequence[str] | Sequence[FutureSemester] | Mapping[str, int],
+    from_curriculum_semester: int | None = None,
+    confirmed_satisfied_course_ids: Sequence[str] = (),
+    makeup_tasks: Sequence[MakeupTask] = (),
     current_semester: str | None = None,
     current_semester_courses: Sequence[CurriculumCourse] = (),
     elective_group_id: str | None = None,
     elective_completed_course_ids: Sequence[str] | None = None,
+    elective_current_semester_course_ids: Sequence[str] | None = None,
     per_semester_credit_budget: Mapping[str, float] | None = None,
 ) -> AcademicRoadmap:
     """生成**课程级**未来学期路线图（只依赖培养方案事实）。
@@ -247,21 +386,77 @@ def build_academic_roadmap(
     参数：
 
     - `version` —— 目标培养方案（`CurriculumCourse` / `CurriculumGroup` 事实）；
-    - `completed` —— 已修课程事实（用于识别"已修过 / 已通过的 target 课程"）；
-    - `semesters` —— **未来**学期顺序（调用方显式声明；`semester_index` = 1..N）；
+    - `semesters` —— **未来**学期声明，**必须显式给出培养方案学期号**，三种形式：
+      `{标签: 培养方案学期号}` 映射 / `FutureSemester` 序列 /
+      纯标签序列 **+** `from_curriculum_semester`。
+      ⛔ 绝不把"列表第 N 项"当成培养方案第 N 学期；
+    - `from_curriculum_semester` —— 第一项未来的培养方案学期号（如 4 ⇒ 4,5,6...）；
+      仅在 `semesters` 为纯标签序列时使用，用来**显式**顺序编号；
+    - `confirmed_satisfied_course_ids` —— **Curriculum 层已确认满足**的目标课程号
+      （例如 `MakeupTask.status == satisfied`）。⛔ 本模块不做任何识别：
+      不按课程名匹配、不从成绩单推断、不做等价判定；
+    - `makeup_tasks` —— 可选的 Curriculum 事实；本模块**只**采纳
+      `status == satisfied` 的条目，⛔ `manual_confirmation` /
+      `possibly_equivalent` **绝不**被提升为"已满足"；
+    - `completed` —— 原始已修事实。⚠️ 其 `course_id` **不是**唯一机制：
+      真实成绩单 PDF 不提供官方课程号，因此已满足事实要主要由
+      `confirmed_satisfied_course_ids` / `makeup_tasks` 提供；
     - `current_semester` / `current_semester_courses` —— 当前学期**摘要**：
       ⛔ 本模块**不**重新生成当前学期教学班选择，只把它当作"不要再排一遍"的输入；
     - `elective_group_id` —— 需要满足最低学分的选修组；
-    - `elective_completed_course_ids` —— **调用方确认**已归属该选修组的课程号；
+    - `elective_completed_course_ids` —— **调用方确认**已归属该选修组的**已修**课程号；
       ⛔ `None`（缺省）表示**证据不足**：此时不猜，`elective_completed_credit`
       与 `elective_remaining_credit` 报 `None`，并写入 `unresolved`；
+    - `elective_current_semester_course_ids` —— **调用方确认**本学期已选、且归属该
+      选修组的课程号；这些学分**计入**选修组最低学分（见 `elective_current_semester_credit`）；
     - `per_semester_credit_budget` —— 每学期学分上限（可选）；缺省表示不设上限，
       并在 `warnings` 中如实说明。
     """
 
     if not isinstance(version, CurriculumVersion):
         raise RoadmapInputError("version 必须是 CurriculumVersion。")
-    labels = _require_semesters(semesters)
+
+    # ---- 未来学期：显式 (标签, 培养方案学期号) 映射（⛔ 不从 1 隐式编号） ----------
+    if isinstance(semesters, Mapping):
+        declared = _require_semesters(semesters)
+        if from_curriculum_semester is not None:
+            raise RoadmapInputError(
+                "semesters 已自带培养方案学期号；⛔ 不得同时再传 from_curriculum_semester"
+                "（两套编号来源会互相矛盾）。"
+            )
+    elif isinstance(semesters, Sequence) and not isinstance(semesters, (str, bytes)) and all(
+        isinstance(item, FutureSemester) for item in semesters
+    ):
+        declared = _require_semesters(semesters)
+        if from_curriculum_semester is not None:
+            raise RoadmapInputError(
+                "semesters 已自带培养方案学期号；⛔ 不得同时再传 from_curriculum_semester"
+                "（两套编号来源会互相矛盾）。"
+            )
+    else:
+        if from_curriculum_semester is None:
+            # ⛔ 纯标签序列无法确定培养方案学期号 ⇒ fail closed（不默认从 1 开始）。
+            raise RoadmapInputError(
+                "仅给出学期标签不足以确定培养方案学期号（⛔ 不会默认从 1 开始编号）："
+                "请传入 学期标签 -> 培养方案学期号 的映射、FutureSemester 序列，"
+                "或额外显式提供 from_curriculum_semester。"
+            )
+        declared = _sequential_semesters(
+            semesters, from_curriculum_semester=from_curriculum_semester
+        )
+
+    labels = tuple(item.semester_label for item in declared)
+    #: 未来学期在列表中的位置（1..N，仅用于**时间先后**与排序）
+    position_of: dict[str, int] = {
+        item.semester_label: item.semester_index for item in declared
+    }
+    #: 显式的 培养方案学期号 → 列表位置 映射（⛔ 唯一允许的学期号解释方式）
+    position_by_curriculum_semester: dict[int, int] = {
+        item.curriculum_semester: item.semester_index for item in declared
+    }
+    curriculum_semester_of: dict[str, int] = {
+        item.semester_label: item.curriculum_semester for item in declared
+    }
     budget = _require_credits(per_semester_credit_budget)
 
     if current_semester is not None:
@@ -289,13 +484,44 @@ def build_academic_roadmap(
             )
         group = matches[0]
 
+    # ---- 已满足事实（Curriculum 层确认，⛔ 本模块不做任何识别） ------------------
+    satisfied_ids: set[str] = set()
+    if isinstance(confirmed_satisfied_course_ids, (str, bytes)) or not isinstance(
+        confirmed_satisfied_course_ids, Sequence
+    ):
+        raise RoadmapInputError("confirmed_satisfied_course_ids 必须是课程号序列。")
+    for item in confirmed_satisfied_course_ids:
+        if not isinstance(item, str) or not item.strip():
+            raise RoadmapInputError(
+                "confirmed_satisfied_course_ids 中的课程号必须是非空字符串。"
+            )
+        satisfied_ids.add(item.strip())
+
+    # ⛔ 只有 satisfied 被采纳；manual_confirmation / possibly_equivalent 一律不提升。
+    for task in makeup_tasks:
+        if not isinstance(task, MakeupTask):
+            raise RoadmapInputError("makeup_tasks 中混入了非 MakeupTask 对象。")
+        if task.status is MakeupStatus.SATISFIED:
+            satisfied_ids.add(task.course_id)
+        elif task.status in (MakeupStatus.MANUAL_CONFIRMATION, MakeupStatus.POSSIBLY_EQUIVALENT):
+            warnings.append(
+                f"课程 {task.course_id} 的补修状态为 {task.status.value}："
+                f"⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。"
+            )
+
     # ---- 已修 / 当前学期事实 ----------------------------------------------------
+    # ⚠️ 原始 CompletedCourse.course_id 只是**次要**来源：真实成绩单 PDF 不提供官方
+    #    课程号，因此已满足事实主要由 confirmed_satisfied_course_ids / makeup_tasks 提供。
     completed_ids: set[str] = set()
     for item in completed:
         if not isinstance(item, CompletedCourse):
             raise RoadmapInputError("completed 中混入了非 CompletedCourse 对象。")
+        # ⛔ 只有"已通过 + 身份已确认（course_id 非空）"才计入；
+        #    pending（course_id=None）绝不被当成已满足。
         if item.course_id is not None and item.passed:
             completed_ids.add(item.course_id)
+
+    satisfied_all = completed_ids | satisfied_ids
 
     current_course_ids: set[str] = set()
     for item in current_semester_courses:
@@ -305,17 +531,18 @@ def build_academic_roadmap(
             )
         current_course_ids.add(item.course_id)
 
-    # 已修 / 本学期已覆盖的课不再排入未来学期（⛔ 不重复安排同一门课）。
+    # 已满足 / 本学期已覆盖的课不再排入未来学期（⛔ 不重复安排同一门课）。
     planned_pool = [
         course
         for course in version.courses
-        if course.course_id not in completed_ids
+        if course.course_id not in satisfied_all
         and course.course_id not in current_course_ids
     ]
 
     # ---- 选修学分账 -------------------------------------------------------------
     elective_requirement = group.minimum_credit if group is not None else None
     elective_completed: float | None = None
+    elective_current: float = 0.0
     elective_remaining: float | None = None
     elective_planned = 0.0
 
@@ -358,7 +585,58 @@ def build_academic_roadmap(
         elective_completed = _round_credit(
             sum(credit_by_id[item] for item in confirmed if item in credit_by_id)
         )
-        elective_remaining = _round_credit(max(elective_requirement - elective_completed, 0.0))
+        # ⛔ 已计入"已完成选修学分"的课**不得**再被规划一次：把它们从课程池移除，
+        #    否则同一门课既被算作已修学分、又被排进未来学期。
+        #    （`planned_pool` 已由 satisfied_all 过滤，但调用方通过
+        #      `elective_completed_course_ids` 声明的课程不一定出现在 satisfied_all 中。）
+        credited_ids = {item for item in confirmed if item in credit_by_id}
+        if credited_ids:
+            planned_pool = [
+                course
+                for course in planned_pool
+                if course.course_id not in credited_ids
+            ]
+
+        # 本学期已选选修学分**计入**选修组最低学分（否则会把已在读的选修重复规划）。
+        if elective_current_semester_course_ids is None:
+            unresolved.append(
+                f"选修组 {group.group_id} 的**本学期选修学分证据不足**"
+                f"（调用方未确认本学期已选课程是否归属该组）；⛔ 不计入，"
+                f"因此本次选修缺口可能被高估，留待人工确认。"
+            )
+        else:
+            if isinstance(elective_current_semester_course_ids, (str, bytes)) or not isinstance(
+                elective_current_semester_course_ids, Sequence
+            ):
+                raise RoadmapInputError(
+                    "elective_current_semester_course_ids 必须是课程号序列。"
+                )
+            current_group_ids = {
+                course.course_id for course in current_semester_courses if _is_member(course, group)
+            }
+            declared_current = {
+                str(item).strip()
+                for item in elective_current_semester_course_ids
+                if isinstance(item, str) and item.strip()
+            }
+            unknown_current = sorted(declared_current - current_group_ids)
+            if unknown_current:
+                unresolved.append(
+                    f"调用方声明的本学期选修课程中有 {len(unknown_current)} 门"
+                    f"**不是**选修组 {group.group_id} 的培养方案成员（或不是本学期确认课程）；"
+                    f"⛔ 不计入选修学分，需人工确认。"
+                )
+            elective_current = _round_credit(
+                sum(
+                    float(course.credit)
+                    for course in current_semester_courses
+                    if _is_member(course, group) and course.course_id in declared_current
+                )
+            )
+
+        elective_remaining = _round_credit(
+            max(elective_requirement - elective_completed - elective_current, 0.0)
+        )
 
     # ---- 先修关系（只使用已给出的先修事实） --------------------------------------
     pool_by_id: dict[str, CurriculumCourse] = {}
@@ -420,48 +698,67 @@ def build_academic_roadmap(
     ]
 
     placements: list[_Placement] = []
-    placed_index: dict[str, int] = {}
+    #: 已放置课程 → 其**培养方案学期号**（先修先后与截止比较都用它，⛔ 不用列表位置）
+    placed_curriculum_semester: dict[str, int] = {}
     used_credit: dict[str, float] = {label: 0.0 for label in labels}
 
     # ---- 1) 必修课：先修顺序 → 截止学期（硬）→ 建议学期（偏好）→ 学分预算 --------
     for course in required_queue:
         placement = _place_required(
             course,
-            labels=labels,
+            curriculum_semesters=tuple(
+                item.curriculum_semester for item in declared
+            ),
+            position_by_curriculum_semester=position_by_curriculum_semester,
+            curriculum_semester_of=curriculum_semester_of,
             budget=budget,
             used_credit=used_credit,
             prerequisite_edges=prerequisite_edges,
-            placed_index=placed_index,
+            placed_curriculum_semester=placed_curriculum_semester,
             unresolved=unresolved,
         )
         if placement is None:
             continue
         placements.append(placement)
-        placed_index[course.course_id] = placement.semester_index
-        used_credit[labels[placement.semester_index - 1]] += float(course.credit)
+        placed_curriculum_semester[course.course_id] = curriculum_semester_of[
+            placement.semester_label
+        ]
+        used_credit[placement.semester_label] += float(course.credit)
 
     # ---- 2) 选修：只选**足够满足 group 最低学分**的学分 --------------------------
     if group is not None and elective_requirement is not None and elective_remaining is not None:
-        remaining = elective_remaining
+        #: 规划前仍缺的学分（缺口）。
+        gap = elective_remaining
+        remaining = gap
         for course in elective_pool:
             if remaining <= 0:
                 break
+            if float(course.credit) > remaining:
+                # ⛔ 不超额规划：只选"装得进缺口"的课程，避免为凑学分多修整门课。
+                #    （缺口可能因此无法被精确填满，届时如实报 unresolved。）
+                continue
             placement = _place_elective(
                 course,
-                labels=labels,
+                curriculum_semesters=tuple(item.curriculum_semester for item in declared),
+                position_by_curriculum_semester=position_by_curriculum_semester,
+                curriculum_semester_of=curriculum_semester_of,
                 budget=budget,
                 used_credit=used_credit,
                 prerequisite_edges=prerequisite_edges,
-                placed_index=placed_index,
+                placed_curriculum_semester=placed_curriculum_semester,
                 unresolved=unresolved,
             )
             if placement is None:
                 continue
             placements.append(placement)
-            placed_index[course.course_id] = placement.semester_index
-            used_credit[labels[placement.semester_index - 1]] += float(course.credit)
+            placed_curriculum_semester[course.course_id] = curriculum_semester_of[
+                placement.semester_label
+            ]
+            used_credit[placement.semester_label] += float(course.credit)
             remaining = _round_credit(remaining - float(course.credit))
-        elective_planned = _round_credit(elective_remaining - max(remaining, 0.0))
+        elective_planned = _round_credit(gap - max(remaining, 0.0))
+        # `elective_remaining_credit` 语义 = **规划之后**仍缺的学分。
+        elective_remaining = _round_credit(max(remaining, 0.0))
         if remaining > 0:
             unresolved.append(
                 f"选修组 {group.group_id} 仍缺 {remaining} 学分：当前培养方案成员不足以满足"
@@ -469,16 +766,20 @@ def build_academic_roadmap(
             )
 
     # ---- 组装学期计划 -----------------------------------------------------------
-    by_semester: dict[int, list[_Placement]] = {index: [] for index in range(1, len(labels) + 1)}
+    by_semester: dict[int, list[_Placement]] = {
+        item.semester_index: [] for item in declared
+    }
     for placement in placements:
-        by_semester[placement.semester_index].append(placement)
+        by_semester[position_of[placement.semester_label]].append(placement)
 
     future: list[SemesterPlan] = []
-    for index, label in enumerate(labels, start=1):
-        items = sorted(by_semester[index], key=lambda item: item.course.course_id)
+    for item in declared:
+        label = item.semester_label
+        index = item.semester_index
+        items = sorted(by_semester[index], key=lambda entry: entry.course.course_id)
         semester_warnings: list[str] = []
         cap = budget.get(label)
-        total = _round_credit(sum(float(item.course.credit) for item in items))
+        total = _round_credit(sum(float(entry.course.credit) for entry in items))
         if cap is not None and total > cap:
             # 结构上不可达（放置时已检查预算）；保留为纵深防御。
             semester_warnings.append(
@@ -490,6 +791,7 @@ def build_academic_roadmap(
             SemesterPlan(
                 semester_index=index,
                 semester_label=label,
+                curriculum_semester=item.curriculum_semester,
                 courses=tuple(
                     SemesterCoursePlan(
                         course_id=item.course.course_id,
@@ -517,6 +819,7 @@ def build_academic_roadmap(
         future_semesters=tuple(future),
         elective_requirement_credit=elective_requirement,
         elective_completed_credit=elective_completed,
+        elective_current_semester_credit=elective_current,
         elective_planned_credit=elective_planned,
         elective_remaining_credit=elective_remaining,
         unresolved=tuple(unresolved),
@@ -560,41 +863,96 @@ def _prerequisite_floor(
     course: CurriculumCourse,
     *,
     edges: Mapping[str, tuple[str, ...]],
-    placed_index: Mapping[str, int],
-) -> int:
-    """先修约束下的最早 semester_index（floor）。
+    placed_curriculum_semester: Mapping[str, int],
+    curriculum_semesters: Sequence[int],
+) -> int | None:
+    """先修约束下的最早**培养方案学期号**（floor）。
 
-    调用方保证课程按先修拓扑序处理，因此此处每个先修**必然**已处理：
-    要么已落位（取其下标 + 1），要么已被报告为不可安排（此时本课也不可安排，
-    由调用方在 `placed_index` 缺失时拒绝）。
+    ⚠️ 先修先后使用的是**培养方案学期号**（同一个学期轴），
+    ⛔ 不是未来学期在列表中的位置；因此列表顺序变化不影响先修判断。
+
+    调用方保证课程按先修拓扑序处理，因此每个先修**必然**已处理：
+    要么已落位（取其学期号 + 1），要么不可落位（返回 `None` ⇒ 本课也不可落位）。
     """
 
-    floor = 1
+    if not curriculum_semesters:
+        return None
+    floor = min(curriculum_semesters)
     for prereq in edges.get(course.course_id, ()):
-        placed = placed_index.get(prereq)
+        placed = placed_curriculum_semester.get(prereq)
         if placed is None:
-            # 先修未能落位 ⇒ 本课同样不可落位（由调用方检查）。
-            return 0
+            return None
         floor = max(floor, placed + 1)
     return floor
 
 
-def _candidate_positions(
+def _normalize_floor(
+    floor: int | None, curriculum_semesters: Sequence[int]
+) -> int | None:
+    """把先修 floor **对齐到实际提供的学期号**上。
+
+    先修 floor 可能落在一个**没有未来学期**的学期号上（例如先修排在培养方案第 4 学期，
+    于是 floor=5，但本次只规划第 4、5 学期 —— 5 是存在的；若只规划第 4 学期，floor=5
+    就落空了）。此时把它抬升到**最小的 ≥ floor 的已提供学期号**，
+    仍然严格满足"晚于先修"；若不存在这样的学期 ⇒ `None`（fail closed，⛔ 不压缩先修）。
+    """
+
+    if floor is None:
+        return None
+    reachable = sorted(item for item in curriculum_semesters if item >= floor)
+    return reachable[0] if reachable else None
+
+
+def _candidate_labels(
     course: CurriculumCourse,
     *,
-    labels: Sequence[str],
-    floor: int,
+    declared: Sequence[FutureSemester],
+    floor: int | None,
     deadline: int | None,
-) -> list[int]:
-    """候选学期顺序：建议学期优先，其次是 floor..limit 的升序。"""
+    prefer_latest: bool,
+) -> list[str]:
+    """候选学期标签顺序（⛔ 全部按**培养方案学期号**判断，与列表位置无关）。
 
-    limit = deadline if deadline is not None else len(labels)
+    - `prefer_latest=True`（必修课）：优先**建议学期**；没有可行的建议学期时退到
+      **截止学期**（在截止前完成即可，不提前占用学期）；都没有才用最早可行学期。
+    - `prefer_latest=False`（选修填充）：优先**建议学期**，否则用最早可行学期
+      （尽早补足选修缺口）。
+
+    候选一律被裁剪到 `[floor, deadline]` 之内：
+    先修先后（floor）与截止学期（deadline）都是**硬约束**。
+    """
+
+    floor_value = floor if floor is not None else -1
+    limit = deadline if deadline is not None else 10**6
+    eligible = sorted(
+        (
+            item
+            for item in declared
+            if floor_value <= item.curriculum_semester <= limit
+        ),
+        key=lambda item: item.curriculum_semester,
+    )
+    if not eligible:
+        return []
+
     preference = course.recommended_semester
-    order: list[int] = []
-    if preference is not None and 1 <= preference <= len(labels):
-        order.append(preference)
-    order.extend(position for position in range(floor, limit + 1) if position not in order)
-    return [position for position in order if floor <= position <= limit]
+    preferred = [
+        item
+        for item in eligible
+        if preference is not None and item.curriculum_semester == preference
+    ]
+
+    if prefer_latest:
+        tail = [eligible[-1]] if deadline is not None else []
+    else:
+        tail = []
+
+    ordered: list[FutureSemester] = []
+    for group in (preferred, tail, eligible):
+        for item in group:
+            if item not in ordered:
+                ordered.append(item)
+    return [item.semester_label for item in ordered]
 
 
 def _fits_budget(
@@ -613,60 +971,67 @@ def _fits_budget(
 def _place_required(
     course: CurriculumCourse,
     *,
-    labels: Sequence[str],
+    curriculum_semesters: Sequence[int],
+    position_by_curriculum_semester: Mapping[int, int],
+    curriculum_semester_of: Mapping[str, int],
     budget: Mapping[str, float],
     used_credit: dict[str, float],
     prerequisite_edges: Mapping[str, tuple[str, ...]],
-    placed_index: Mapping[str, int],
+    placed_curriculum_semester: Mapping[str, int],
     unresolved: list[str],
 ) -> _Placement | None:
-    """必修课落位：截止学期是**硬约束**，建议学期是**偏好**。"""
+    """必修课落位：截止学期是**硬约束**，建议学期是**偏好**。
 
+    ⚠️ `recommended_semester` / `deadline_semester` 是**培养方案学期号**，
+    与 `future_semesters[].curriculum_semester` 直接比较；⛔ 不与列表位置比较。
+    """
+
+    declared = _declared_from_maps(
+        position_by_curriculum_semester, curriculum_semester_of
+    )
     deadline = course.deadline_semester
-    if deadline is not None and not (1 <= deadline <= len(labels)):
+    if deadline is not None and deadline not in position_by_curriculum_semester:
         unresolved.append(
-            f"课程 {course.course_id} 的 deadline_semester={deadline} 落在本次提供的学期范围"
-            f"（1..{len(labels)}）之外；⛔ 不猜测该学期，未排入路线图。"
+            f"课程 {course.course_id} 的 deadline_semester={deadline}（培养方案学期号）"
+            f"不在本次提供的学期映射 {list(curriculum_semesters)} 中；"
+            f"⛔ 不猜测该学期，未排入路线图。"
         )
         return None
 
     floor = _prerequisite_floor(
-        course, edges=prerequisite_edges, placed_index=placed_index
+        course,
+        edges=prerequisite_edges,
+        placed_curriculum_semester=placed_curriculum_semester,
+        curriculum_semesters=curriculum_semesters,
     )
-    if floor == 0:
+    floor = _normalize_floor(floor, curriculum_semesters)
+    if floor is None:
         unresolved.append(
             f"课程 {course.course_id} 的先修课程未能排入本次学期范围；"
             f"⛔ 不压缩先修顺序，未排入路线图。"
         )
         return None
-    if floor > len(labels):
-        unresolved.append(
-            f"课程 {course.course_id} 的先修顺序要求最早已是第 {floor} 个学期，"
-            f"而本次只提供 {len(labels)} 个学期；⛔ 不压缩先修顺序，未排入路线图。"
-        )
-        return None
 
     recommended = course.recommended_semester
-    if recommended is not None and not (1 <= recommended <= len(labels)):
+    if recommended is not None and recommended not in position_by_curriculum_semester:
         unresolved.append(
-            f"课程 {course.course_id} 的 recommended_semester={recommended} 落在本次提供的"
-            f"学期范围（1..{len(labels)}）之外；仅按截止学期与先修顺序安排。"
+            f"课程 {course.course_id} 的 recommended_semester={recommended}（培养方案学期号）"
+            f"不在本次提供的学期映射中；仅按截止学期与先修顺序安排。"
         )
 
-    for position in _candidate_positions(
-        course, labels=labels, floor=floor, deadline=deadline
+    for label in _candidate_labels(
+        course, declared=declared, floor=floor, deadline=deadline, prefer_latest=True
     ):
-        label = labels[position - 1]
         if not _fits_budget(
             float(course.credit), label, budget=budget, used_credit=used_credit
         ):
             continue
         return _Placement(
             course,
-            position,
+            label,
             *_required_reason(
                 course,
-                position,
+                curriculum_semester_of[label],
                 floor=floor,
                 deadline=deadline,
             ),
@@ -674,8 +1039,8 @@ def _place_required(
 
     if deadline is not None:
         unresolved.append(
-            f"课程 {course.course_id} 无法在不晚于第 {deadline} 个学期、且满足先修与学分预算的"
-            f"前提下安排；⛔ 不违反截止学期，未排入路线图。"
+            f"课程 {course.course_id} 无法在不晚于培养方案第 {deadline} 学期、"
+            f"且满足先修与学分预算的前提下安排；⛔ 不违反截止学期，未排入路线图。"
         )
     else:
         unresolved.append(
@@ -685,79 +1050,103 @@ def _place_required(
     return None
 
 
+def _declared_from_maps(
+    position_by_curriculum_semester: Mapping[int, int],
+    curriculum_semester_of: Mapping[str, int],
+) -> list[FutureSemester]:
+    """由既有映射重建 `FutureSemester` 列表（仅供候选顺序计算，⛔ 不引入新事实）。"""
+
+    rebuilt = [
+        FutureSemester(
+            semester_label=label,
+            curriculum_semester=number,
+            semester_index=position_by_curriculum_semester[number],
+        )
+        for label, number in curriculum_semester_of.items()
+    ]
+    return sorted(rebuilt, key=lambda item: item.semester_index)
+
+
 def _required_reason(
     course: CurriculumCourse,
-    position: int,
+    curriculum_semester: int,
     *,
-    floor: int,
+    floor: int | None,
     deadline: int | None,
 ) -> tuple[PlacementReason, str]:
-    """返回 `(placement, reason)`（原因分类 + 人类可读说明）。"""
+    """返回 `(placement, reason)`（原因分类 + 人类可读说明）。
 
-    if floor > 1 and position == floor:
-        return (
-            PlacementReason.PREREQUISITE_ORDER,
-            f"课程 {course.course_id}（{course.course_name}）的先修课程须先完成，"
-            f"因此排在第 {position} 个学期。",
-        )
-    if course.recommended_semester == position:
+    ⚠️ 文案里的"第 N 学期"指**培养方案学期号**，与 `recommended_semester` /
+    `deadline_semester` 同一口径（⛔ 不是未来学期列表位置）。
+    """
+
+    if course.recommended_semester == curriculum_semester:
         return (
             PlacementReason.REQUIRED_BY_RECOMMENDED_TERM,
             f"课程 {course.course_id}（{course.course_name}）为培养方案要求课程，"
-            f"按其建议学期排在第 {position} 个学期。",
+            f"按其建议学期（培养方案第 {curriculum_semester} 学期）安排。",
         )
-    if deadline is not None and position < deadline:
+    if floor is not None and curriculum_semester == floor:
+        return (
+            PlacementReason.PREREQUISITE_ORDER,
+            f"课程 {course.course_id}（{course.course_name}）的先修课程须先完成，"
+            f"因此排在培养方案第 {curriculum_semester} 学期。",
+        )
+    if deadline is not None and curriculum_semester < deadline:
         return (
             PlacementReason.REQUIRED_BEFORE_DEADLINE,
-            f"课程 {course.course_id}（{course.course_name}）须在第 {deadline} 个学期前完成，"
-            f"排在第 {position} 个学期。",
+            f"课程 {course.course_id}（{course.course_name}）须在培养方案第 {deadline} 学期前完成，"
+            f"排在第 {curriculum_semester} 学期。",
         )
     if deadline is not None:
         return (
             PlacementReason.DEFERRED_FOR_CREDIT_BUDGET,
             f"课程 {course.course_id}（{course.course_name}）受先修或学分预算影响，"
-            f"排在第 {position} 个学期（仍不晚于截止学期 {deadline}）。",
+            f"排在培养方案第 {curriculum_semester} 学期（仍不晚于截止学期 {deadline}）。",
         )
     return (
         PlacementReason.DEFERRED_FOR_CREDIT_BUDGET,
         f"课程 {course.course_id}（{course.course_name}）受先修或学分预算影响，"
-        f"排在第 {position} 个学期。",
+        f"排在培养方案第 {curriculum_semester} 学期。",
     )
 
 
 def _place_elective(
     course: CurriculumCourse,
     *,
-    labels: Sequence[str],
+    curriculum_semesters: Sequence[int],
+    position_by_curriculum_semester: Mapping[int, int],
+    curriculum_semester_of: Mapping[str, int],
     budget: Mapping[str, float],
     used_credit: dict[str, float],
     prerequisite_edges: Mapping[str, tuple[str, ...]],
-    placed_index: Mapping[str, int],
+    placed_curriculum_semester: Mapping[str, int],
     unresolved: list[str],
 ) -> _Placement | None:
     """选修课落位：只为满足 group 最低学分而选，受先修与预算约束。"""
 
+    declared = _declared_from_maps(
+        position_by_curriculum_semester, curriculum_semester_of
+    )
     deadline = course.deadline_semester
-    if deadline is not None and not (1 <= deadline <= len(labels)):
+    if deadline is not None and deadline not in position_by_curriculum_semester:
         unresolved.append(
-            f"选修课程 {course.course_id} 的 deadline_semester={deadline} 落在本次提供的学期"
-            f"范围之外；⛔ 不猜测该学期，未排入路线图。"
+            f"选修课程 {course.course_id} 的 deadline_semester={deadline}（培养方案学期号）"
+            f"不在本次提供的学期映射中；⛔ 不猜测该学期，未排入路线图。"
         )
         return None
 
     floor = _prerequisite_floor(
-        course, edges=prerequisite_edges, placed_index=placed_index
+        course,
+        edges=prerequisite_edges,
+        placed_curriculum_semester=placed_curriculum_semester,
+        curriculum_semesters=curriculum_semesters,
     )
-    if floor == 0:
+    floor = _normalize_floor(floor, curriculum_semesters)
+    if floor is None:
         unresolved.append(
             f"选修课程 {course.course_id} 的先修课程未能排入本次学期范围；"
             f"⛔ 不压缩先修顺序，未排入路线图。"
-        )
-        return None
-    if floor > len(labels):
-        unresolved.append(
-            f"选修课程 {course.course_id} 的先修顺序要求最早已是第 {floor} 个学期，"
-            f"而本次只提供 {len(labels)} 个学期；未排入路线图。"
         )
         return None
     if deadline is not None and deadline < floor:
@@ -767,20 +1156,20 @@ def _place_elective(
         )
         return None
 
-    for position in _candidate_positions(
-        course, labels=labels, floor=floor, deadline=deadline
+    for label in _candidate_labels(
+        course, declared=declared, floor=floor, deadline=deadline, prefer_latest=False
     ):
-        label = labels[position - 1]
         if not _fits_budget(
             float(course.credit), label, budget=budget, used_credit=used_credit
         ):
             continue
         return _Placement(
             course,
-            position,
+            label,
             PlacementReason.ELECTIVE_TO_MEET_GROUP_MINIMUM,
             f"选修课程 {course.course_id}（{course.course_name}）用于满足专业选修组最低学分，"
-            f"排在第 {position} 个学期；⛔ 选修组内并非每门课都必须修读。",
+            f"排在培养方案第 {curriculum_semester_of[label]} 学期；"
+            f"⛔ 选修组内并非每门课都必须修读。",
         )
     unresolved.append(
         f"选修课程 {course.course_id} 在本次学期范围的先修与学分预算内无法安排；"

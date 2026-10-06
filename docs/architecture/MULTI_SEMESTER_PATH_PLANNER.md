@@ -88,6 +88,67 @@ RepairApplicationResult（新 schedule + changes + 重校验）
 
 位置：`app/path_planner/future_roadmap.py`
 
+### 4.0 学期号映射（⛔ 关键，不得回退）
+
+`recommended_semester` / `deadline_semester` 是**培养方案相对学期号**
+（某专业第 3 学期 = `2026-1`），**不是**本次未来学期列表里的第几项。
+因此调用方必须**显式**给出映射，三种形式皆可：
+
+```python
+# ① 映射（推荐）
+semesters={"2026-2": 4, "2027-1": 5, "2027-2": 6}
+
+# ② 显式对象
+semesters=[FutureSemester("2026-2", 4, 1), FutureSemester("2027-1", 5, 2)]
+
+# ③ 纯标签 + 显式起始学期号
+semesters=("2026-2", "2027-1", "2027-2"), from_curriculum_semester=4
+```
+
+```text
+当前真实学期 2026-1 == 培养方案第 3 学期
+未来：2026-2 -> 4   2027-1 -> 5   2027-2 -> 6
+
+recommended_semester = 4  ⇒  2026-2（第一个未来学期）
+                            ⛔ 不是"列表第 4 项"
+```
+
+- ⛔ **不存在"未来学期一律从 1 重新编号"** 的隐式语义；
+- ⛔ 只给学期标签而不给映射 ⇒ **fail closed**；
+- ⛔ 同时给出映射与 `from_curriculum_semester`（两套编号来源）⇒ 拒绝；
+- 先修先后按**培养方案学期号**（同一条时间轴）判断，列表顺序不影响结论。
+
+### 4.0.1 已满足事实的来源（⛔ 不得只依赖原始 `course_id`）
+
+真实成绩单 PDF **不提供官方课程号**，因此已满足事实主要由 Curriculum 层给出：
+
+```text
+confirmed_satisfied_course_ids   ← Curriculum 已确认满足的目标课程号
+makeup_tasks                     ← 只采纳 status == "satisfied"
+completed                        ← 次要来源（原始已修事实，course_id 可为 None）
+```
+
+- ⛔ 本模块**不做任何识别**：不按课程名匹配、不从成绩单推断、不做等价判定；
+- ⛔ `manual_confirmation` / `possibly_equivalent` **绝不**被提升为"已满足"
+  （会被列入 `warnings` 并按"未满足"处理）；
+- ⛔ `course_id=None`（pending）的已修记录**不得**被当成已满足；
+- 已满足的课程**绝不**再出现在 `future_course_ids` 中。
+
+### 4.0.2 选修学分账（含本学期）
+
+```text
+elective_requirement_credit        读自 CurriculumGroup.minimum_credit（⛔ 无硬编码）
+− elective_completed_credit        已确认完成的选修学分
+− elective_current_semester_credit 本学期已确认的选修学分（必须归属该组）
+= 规划前缺口
+        ↓ 只选"装得进缺口"的课程（⛔ 不超额规划）
+elective_planned_credit + elective_remaining_credit = 规划前缺口
+```
+
+- 只有**确认**归属该选修组的本学期课程才计入；证据不足 ⇒ `0.0` + `unresolved`；
+- 不属于该组的课程声明 ⇒ ⛔ 不计入，并如实报告；
+- 已计入"已完成学分"的课程**不会**再被规划一次。
+
 ### 4.1 输出模型
 
 ```text
@@ -97,8 +158,9 @@ AcademicRoadmap
   future_semesters: SemesterPlan[]
   elective_requirement_credit            选修组最低学分（读自 CurriculumGroup）
   elective_completed_credit              已确认完成的选修学分（证据不足则 null）
+  elective_current_semester_credit       本学期已确认的选修学分
   elective_planned_credit                本次规划的选修学分
-  elective_remaining_credit              仍缺学分（证据不足则 null）
+  elective_remaining_credit              规划**之后**仍缺学分（证据不足则 null）
   unresolved[] / warnings[]              如实报告，⛔ 不猜测
 
 SemesterPlan
@@ -122,12 +184,16 @@ SemesterCoursePlan                 ← ⛔ 字段集刻意最小
 1. 必修课优先于选修填充
 2. 先修顺序：拓扑序（同层按 deadline → recommended → course_id），⛔ 不破环、不猜环
 3. deadline_semester 是**硬约束**（宁可留 unresolved，⛔ 也不违反）
-4. recommended_semester 是**排课偏好**（可被先修 / 预算推迟）
+4. recommended_semester 是**排课偏好**：优先建议学期；没有可行的建议学期时
+   退到**截止学期**（在截止前完成即可）；两者都没有才用最早可行学期
 5. per_semester_credit_budget 生效；缺省则不设上限并在 warnings 中如实说明
-6. 选修学分按 group 最低学分**补足即止**
+6. 选修学分按 group 最低学分**补足即止**（⛔ 不超额规划）
 7. ⛔ 不编造先修；先修不在方案事实中 ⇒ 报 unresolved
 8. ⛔ 不用本学期开课情况推断未来是否有教学班
 ```
+
+⛔ 学期号一律按 `curriculum_semester` 比较（见 §4.0），
+⛔ 不按未来学期列表位置比较。
 
 ⛔ 这里**不是** CP-SAT / ILP 全局最优求解，也⛔ 没有评分权重：
 它是一条**确定性启发式**，只保证上述约束与可复现性。
