@@ -33,3 +33,70 @@
 - 显式 `mock` 被拒绝；缺失 `data_source` 时公共模型会采用默认值 `mock`，随后同样由 Real API 边界返回 422。
 - 校验只约束 Real HTTP 输入，不修改 Planner 算法、frozen Provider contract 或公共 Schema。
 - 验证：targeted **55 passed**；全量 backend **2048 passed / 2 skipped / 2 failed**。两项失败仍为既有 Curriculum Windows 环境问题。
+
+### 2026-10-06 - Gate C：Case A runtime wiring（PR #39 successor）
+
+- **分支**：基于 Gate B tip 新建 `feature/case-a-runtime-wiring-store`（stacked；
+  ⛔ 未 merge main、⛔ 未 merge PR #39 —— 旧分支只 fetch 作参考）；
+- **取代 PR #39 的装载模型**：single Capture Bundle + raw bytes digest + 内存快照
+  → SQLite + **显式 full_semester acceptance 绑定**
+  （`campus complete != full semester complete`，单 bundle 会静默不完整）；
+  ⛔ PR #39 = FROZEN / DO NOT MERGE，只在文档中标记 **superseded**；
+- **环境契约（五个变量）**：`APP_REAL_CASE_A_ENABLED` /
+  `APP_CASE_A_CURRICULUM_CASE_PATH` / `APP_COURSE_DATA_SQLITE_PATH` /
+  `APP_COURSE_DATA_SEMESTER` / `APP_COURSE_DATA_ACCEPTANCE_SHA256`；
+  ⛔ 不存在单 bundle 的旧变量名，⛔ 无 campus / Mock / "有行就启动" 退化路径；
+- **装配**：`build_planning_runtime(environment)` 返回
+  `PlanningRuntimeInspection(orchestrator, reason)`；reason ∈
+  `runtime_disabled` / `invalid_runtime_configuration` / `curriculum_not_ready` /
+  `course_data_not_ready` / `ready`（⛔ 不含路径与配置取值）；
+  Curriculum 侧沿用同一套受控校验（real / case-a-new / as_of_term=2025-2 /
+  已批准决策集合 / 构造期 projection 成功）；
+  Course Data 侧全部交由 `StoreBackedCourseDataProvider` 构造期 fail closed；
+- **每请求重新装配**（不缓存 orchestrator）⇒ 启动之后被改写的库会被发现并 fail closed；
+- **API 行为不变**：未装配 ⇒ `503 real_pipeline_not_configured` 且不带 `X-Data-Source`；
+  已装配 ⇒ 200 + `PlanResult`（公共 Schema 通过）；上抛异常仍不被吞；
+  ⛔ 未给真实 API 增加 `X-Data-Source: real`（接口面变更仍需裁定）；
+- **测试**：`test_planning_runtime.py` **47 passed**（synthetic / zero-network，含
+  开关值矩阵、缺配置、非法 digest、大写 digest、case 四类受控校验的**逐个隔离**用例、
+  库缺失 / 非 Course Data 库 / campus-only 库 / 错 digest / 错 semester、
+  ready 装配、planner 收到恰好绑定行、启动后库被改写 ⇒ fail closed、
+  真实 endpoint 503 与 200、mock 通道仍标记、源码级无 Mock / 无快照 Provider / 无网络 import）；
+  相关回归（real plan api + mock api + orchestrator + planner provider + runtime）**307 passed**；
+- **mutation sweep**（workspace-only `mutate_planning_runtime.py`，17 处唯一锚点、
+  按字节还原核对）：**16 killed / 1 可证等价 / 0 survived**；
+  等价项 = "版本必须等于 Case A 目标版本"，冗余性由测试证明
+  （已批准决策绑定在 `case-a-new`，换版本后 Curriculum 层自身拒绝）；
+- **边界**：⛔ 未改 frozen Provider Protocol / public Schema / `PlanningOrchestrator`、
+  ⛔ 未 merge main 或 PR #39、⛔ 未真实登录、⛔ 未发真实教务请求、⛔ 未处理真实 artifact；
+  formal Real E2E 继续 **LEVEL0**。
+
+### 2026-10-06 - Runtime BLOCK：异常边界收窄（只有显式领域失败才是 503）
+
+- **BLOCK（Codex 独立 probe）**：构造期无关 `ValueError` 被
+  `build_planning_runtime()` 的 `except (CourseDataStoreError, OSError, ValueError)` /
+  `except (CurriculumNormalizationError, OSError, ValueError, _RuntimeSourceUnavailable)`
+  吞掉 ⇒ 变成 `503 real_pipeline_not_configured`（程序缺陷伪装成"未配置"）；
+- **修复**：Curriculum 侧只捕 `(CurriculumNormalizationError, _RuntimeSourceUnavailable)`，
+  Course Data 侧只捕 `CourseDataStoreError`（含 `CourseDataAcceptanceError` /
+  `ImmutableAcceptanceConflictError`）；理由：case loader / store 各自**已经**在自己
+  的边界内把 `OSError` / `ValueError` / `RuntimeError` 规范化成领域异常，
+  这里再捕泛型只会吞掉缺陷；⛔ 不捕 `Exception` / `RuntimeError` / 裸 `except:`；
+  ⛔ 未改 public Schema / frozen Provider contract / `PlanningOrchestrator`；
+- **11 个 probe（真实 dependency + 真实 endpoint + 真实 HTTP 状态码）**：
+  ①缺库 ②缺 acceptance ③错 SHA ④campus-only ⑤显式 `CourseDataAcceptanceError`
+  ⇒ **503**；⑥Provider 构造器无关 `ValueError` ⑦无关 `RuntimeError`
+  ⑧构造链程序缺陷（planner factory / orchestrator / curriculum factory）
+  ⇒ **500**；⑨正常链路 ⇒ **200**；⑩构造成功后 acceptance 被删 ⇒ 请求期 **503**；
+  ⑪请求期无关内部异常（provider / planner）⇒ **500**；
+- **精确分类证明**：`ValueError` / `RuntimeError` / `KeyError` / `AttributeError` /
+  `TypeError` / `OSError` / `ZeroDivisionError` 在两个构造边界上**逐类型**
+  `pytest.raises` 冒泡；`CourseDataStoreError` / `CourseDataAcceptanceError` /
+  `ImmutableAcceptanceConflictError` ⇒ `course_data_not_ready`；
+  `CurriculumNormalizationError` ⇒ `curriculum_not_ready`；
+  结构层 AST 断言模块内每个 `except` 目标 ∈ 显式白名单（4 个名字）；
+- **修复前复现**（`eb135a8`）：`test_probe_06…` ⇒ 实际响应
+  `503 {"detail":{"error":"real_pipeline_not_configured"}}`，
+  `6 failed / 76 passed`；修复后同文件 **82 passed**；
+- **边界**：⛔ 未 merge main、⛔ 未改 Provider store 语义（PROVIDER GATE: PASS）、
+  ⛔ 未处理真实 artifact；Gate E / F / G 继续 parked。
