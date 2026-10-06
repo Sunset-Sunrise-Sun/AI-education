@@ -148,3 +148,85 @@ E2E 矩阵（Reviewer §7）逐条覆盖见
   frozen Provider contract；**PR #39 = frozen**；formal Real E2E = **LEVEL0**；
 - ⛔ 本工具**无法**证明某个 inventory 真的经过人工批准：它只能保证
   "正式 acceptance 必须消费一个 inventory 产物，且与字节 / campus acceptance 逐项一致"。
+
+
+## 5. BLOCK B5（第二轮审计）：immutable acceptance identity
+
+第二个 Codex 对 Provider HEAD `fix/store-provider-continuous-verification` =
+`cb585c1` 做了独立 adversarial reproduction，判定仍 **BLOCK**：
+
+```text
+acceptance_sha = X + Dataset A → import
+acceptance_sha = X + Dataset B（同数量 / 同 identity、payload 不同）→ re-import
+        ⇒ store 刷新 acceptance / membership digest
+        ⇒ **旧 Provider 随后返回 Dataset B**
+```
+
+即：`acceptance_sha256` 并没有**不可变地**绑定一份 canonical acceptance ——
+只比较"数据库自己派生出来的 digest"不够，因为 DB record 与 digest 可以**一起**被 rewrite。
+
+### 复现（旧代码，archive `cb585c1`）
+
+```text
+$ PYTHONPATH=<archive>/backend python probe_immutable_acceptance_cb585c1.py
+after A: DATASET_A
+old provider after B: DATASET_B_TAMPERED
+stored offering_set_sha256: 71acfad0a6ff5d0c…
+HAZARD REPRODUCED
+```
+
+### 修复后的 invariant
+
+```text
+canonical_manifest_bytes(manifest) → SHA256 == acceptance_sha256
+```
+
+并且该 canonical manifest 一旦以 SHA `X` 落库，`X` **永久**绑定：
+`semester` / `full_semester` scope / `baseline_before|after` /
+每个 shard 的 acceptance identity 与 raw digest / `offering_set_sha256` /
+counts / membership（identity + 逐行 `offering_payload_sha256`）。
+
+### 修复内容
+
+| 项 | 机制 |
+| --- | --- |
+| **持久化 canonical manifest** | `course_data_acceptance.canonical_manifest_json`（canonical 序列化，与 rows 同事务落库） |
+| **禁止 semantic UPSERT** | 同 SHA 已存在 ⇒ 逐项比较（source / completeness / counts / `offering_set_sha256` / manifest 字节 / membership）；完全相同 ⇒ 幂等 no-op，任一不同 ⇒ `ImmutableAcceptanceConflictError`（`immutable_acceptance_conflict`） |
+| **membership 不可变** | 逐 identity 比较 `offering_payload_sha256`；+1 / -1 / 替换 / 内容变化全部 reject（⛔ 不再"先删后插"） |
+| **membership 按 scope 限定** | member 主键与查询都含 `(scope_kind, scope_id)`：同一批字节可以在不同 scope 下各自留一条 acceptance（修复旧 PK 冲突） |
+| **Provider trust chain（每次读取）** | configured SHA → stored canonical manifest → 重算 SHA == configured → manifest 语义字段 == 列式 metadata → `manifest.merged_offering_set_sha256` → membership 精确集合 → 逐行 payload digest → 重算整批 digest → 一致才返回 |
+| **没有 manifest 的 full_semester 不接受服务** | ⛔ 无 canonical manifest ⇒ 无法重算 identity ⇒ 拒绝装配（campus acceptance 不受此限：它的 identity 是 raw artifact 字节 digest） |
+
+### 攻击关闭（修复后复现）
+
+```text
+$ python probe_immutable_acceptance_fixed.py
+provider after A: DATASET_A
+identity X: 22368689428871b0
+① rejected: canonical manifest 的 merged_offering_set_sha256 与快照内容不一致
+② rejected: canonical manifest 的 SHA-256 与 acceptance identity 不一致
+old provider after attacks: DATASET_A
+③ rejected: 本地库与所配置的 full_semester acceptance 不一致或已失效
+ATTACK CLOSED
+```
+
+### 测试（store 103 → 109、provider 51 → 57）
+
+```text
+same SHA + 完全相同内容                      → 幂等 no-op（acceptance 行含 imported_at 不变）
+same SHA + 同数量同 identity + 改 course_name/teacher/meetings/credit → reject
+membership +1 / -1                          → reject
+只互换两行 member payload digest（set digest 与行数都不变） → reject
+stored canonical manifest 被 rewrite（digest 列不变） → 读取 reject
+stored manifest 非 canonical 形式            → 读取 reject
+列式 metadata 被改写（manifest 未动）        → 读取 reject
+manifest SHA ≠ acceptance identity           → reject
+manifest 语义字段不一致（semester/scope/counts/set digest/baseline） → reject
+manifest 缺字段 / 未知字段 / 非 canonical     → reject
+manifest baseline_before != baseline_after   → reject
+没有 canonical manifest 的 full_semester acceptance → Provider 拒绝装配
+acceptance 被删除 / 行被篡改 / 陈旧非成员行   → 下一次读取 reject / 不返回
+```
+
+mutation sweep（`mutate_immutable_acceptance.py`，store + CLI + 三个测试文件）：
+**13 killed / 1 可证等价 / 0 survived**（等价项 = complete/计数自洽由构造保证，已在代码内注明）。

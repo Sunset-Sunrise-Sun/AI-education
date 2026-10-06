@@ -3079,3 +3079,21 @@
   store **83 passed**（含 Gate B 的声明平面查询用例）；
 - **边界**：⛔ 未改 frozen Provider contract / public Schema、⛔ 未处理真实 artifact、
   ⛔ 未 merge main；formal Real E2E 继续 **LEVEL0**。
+
+### 2026-10-06 - BLOCK B5：immutable acceptance identity（第二轮 Red-Team）
+
+- **先复现**：把审计 HEAD `cb585c1` 归档后用 `probe_immutable_acceptance_cb585c1.py`
+  复现攻击（同 SHA：A 落库 → Provider 构造 → B 用同一 SHA 再导入 →
+  旧 Provider 返回 `DATASET_B_TAMPERED`）⇒ **HAZARD REPRODUCED**；
+- **修复**：①`canonical_manifest_json` 持久化 + `SHA256(canonical) == acceptance_sha256`、
+  ②同 SHA 重复提交逐项比较（幂等或 `immutable_acceptance_conflict`，⛔ 无 semantic upsert）、
+  ③membership 不可变且按 `(scope_kind, scope_id)` 限定、
+  ④读取侧 trust chain、⑤无 canonical manifest 的 full_semester acceptance 拒绝服务、
+  ⑥CLI 传 manifest 并核对 `provenance_canonical_manifest_sha256`；
+- **攻击关闭**：`probe_immutable_acceptance_fixed.py` ⇒ 三条路径全部被拒，
+  旧 Provider 仍返回 `DATASET_A` ⇒ **ATTACK CLOSED**；
+- **测试**：store **106 passed**、provider **57 passed**、
+  full backend **2780 passed**（2 个既有 Windows-only Curriculum failure，⛔ 未修未 skip）；
+  mutation sweep **13 killed / 1 可证等价 / 0 survived**；
+- **边界**：⛔ 未 merge main、⛔ 未改 public Schema / frozen Provider contract、
+  ⛔ 未处理真实 artifact；formal Real E2E 继续 **LEVEL0**。

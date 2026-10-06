@@ -231,3 +231,20 @@ North 当前 `allowlisted` 但 `operationally suspended`（HTTP 600 未解决）
 - ⛔ 尚未处理任何真实 artifact（全部测试为 synthetic / zero-network）；
 - **North 未解决 ⇒ 真实 full-semester acceptance 仍不可产出**；
 - PR #39 = **frozen / do not merge**；formal Real E2E = **LEVEL0**。
+
+
+## immutable acceptance identity（第二轮 Red-Team BLOCK 的修复）
+
+```text
+SHA256(canonical_manifest_bytes(manifest)) == manifest_sha256 == acceptance_sha256
+```
+
+- CLI 把 `acceptance.manifest` 作为 `canonical_manifest` 交给 store，
+  在**同一个事务**里与 rows / membership 一起落库
+  （`course_data_acceptance.canonical_manifest_json`）；
+- 同一个 acceptance SHA **只允许完全相同的重复提交**（幂等 no-op）；
+  语义内容或 membership 任一不同 ⇒ `immutable_acceptance_conflict`（fail closed）；
+- ⛔ 没有 canonical manifest 的 `full_semester` acceptance **不会被 Provider 服务**
+  （无法重算 identity ⇒ 无法建立 trust chain）；
+- 回读时除原有逐项核对之外，还核对
+  `provenance_canonical_manifest_sha256 == manifest_sha256`。

@@ -104,3 +104,30 @@ Provider 只提供"**已接受且内容一致**的那批行"；
   当前机制是 **membership + 内容指纹 + 任何篡改即 fail closed**，
   真正的不可变存储属**后续 Architecture Decision**；
 - ⛔ 不改 public Schema / frozen Provider contract；⛔ 不联网；formal Real E2E = **LEVEL0**。
+
+
+## immutable acceptance identity（第二轮 Red-Team BLOCK 的修复）
+
+trust chain 多了一层（在原有 7 条之前）：
+
+```text
+ 0. configured SHA
+      → 已持久化的 canonical_manifest_json（canonical 形式，strict 校验）
+      → SHA256(canonical bytes) == configured SHA        （可重算，⛔ 不靠 DB 自报）
+      → manifest 语义字段 == 列式 metadata（semester / scope / counts /
+        offering_set_sha256 / baseline）
+    ⛔ full_semester acceptance 没有 canonical manifest ⇒ 拒绝服务
+    （campus acceptance 的 identity 是 raw artifact 字节 digest，不要求 manifest）
+```
+
+写入侧：
+
+- `import_offering_snapshot(..., canonical_manifest=manifest)`：
+  manifest 的 SHA 必须**就是** `artifact_sha256`，语义字段必须与快照一致；
+- 同一 acceptance identity 已存在时**逐项比较**（含 manifest 字节与 membership），
+  完全相同 ⇒ 幂等 no-op，任一不同 ⇒ `ImmutableAcceptanceConflictError`
+  （⛔ 不再 `ON CONFLICT DO UPDATE`、⛔ 不再"先删成员再插入"）；
+- membership 主键含 `(scope_kind, scope_id)`：同一批字节可在不同 scope 下各自留记录。
+
+因此"同一个 SHA + Dataset B"这条攻击路径在语义上**不可表达**；
+即使绕过 API 直接 rewrite DB，重算 `SHA256(canonical stored manifest)` 也对不上。

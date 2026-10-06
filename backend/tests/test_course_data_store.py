@@ -33,9 +33,12 @@ from app.course_data import (
     SCOPE_KIND_FULL_SEMESTER,
     CourseDataNormalizationError,
     CourseDataStoreError,
+    ImmutableAcceptanceConflictError,
     OfferingSnapshot,
     SnapshotScope,
+    canonical_manifest_bytes,
     compute_artifact_sha256,
+    compute_manifest_sha256,
     import_offering_snapshot,
     initialize_course_data_store,
     load_accepted_offerings,
@@ -145,6 +148,7 @@ def _import(
     *,
     artifact_sha256: str,
     scope: SnapshotScope = CAMPUS_SCOPE,
+    canonical_manifest: dict[str, object] | None = None,
 ):
     """便捷包装：本文件多数用例只关心 upsert / 查询，scope 固定为 campus。
 
@@ -153,8 +157,81 @@ def _import(
     """
 
     return import_offering_snapshot(
-        path, snapshot, artifact_sha256=artifact_sha256, scope=scope
+        path,
+        snapshot,
+        artifact_sha256=artifact_sha256,
+        scope=scope,
+        canonical_manifest=canonical_manifest,
     )
+
+
+def _full_manifest(
+    snapshot: OfferingSnapshot,
+    *,
+    semester: str = SEMESTER,
+    inventory_sha256: str | None = None,
+) -> dict[str, object]:
+    """为一份 **full_semester** 快照构造 canonical manifest（immutable identity）。
+
+    ⚠️ acceptance identity 现在**必须**能由 canonical manifest 重算出来
+    （`SHA256(canonical manifest) == artifact_sha256`），因此本 helper 返回
+    manifest，由调用方用 `compute_manifest_sha256(manifest)` 得到 digest。
+    """
+
+    offerings = snapshot.offerings
+    total = len(offerings)
+
+    return {
+        "format": "sysu-course-data-full-semester-acceptance-v1",
+        "manifest_version": 2,
+        "tool": "tests/synthetic",
+        "semester": semester,
+        "scope_kind": SCOPE_KIND_FULL_SEMESTER,
+        "scope_id": semester,
+        "source": f"capture://sysu/{semester}/full-semester/{semester}",
+        "inventory_sha256": inventory_sha256 or ("a" * 64),
+        "baseline_before": total,
+        "baseline_after": total,
+        "merged_offering_count": total,
+        "merged_offering_set_sha256": offering_set_sha256(offerings),
+        "shards": [
+            {
+                "shard_id": "east-campus",
+                "openingSchoolNumber": "5063559",
+                "raw_bundle_sha256": "b" * 64,
+                "campus_acceptance_sha256": "b" * 64,
+                "campus_source": f"capture://sysu/{semester}/campus/5063559",
+                "campus_offering_set_sha256": offering_set_sha256(offerings),
+                "page_count": 1,
+                "loaded_count": total,
+                "reported_total": total,
+            }
+        ],
+    }
+
+
+def _import_full(
+    path: Path,
+    snapshot: OfferingSnapshot,
+    *,
+    semester: str = SEMESTER,
+    inventory_sha256: str | None = None,
+    scope: SnapshotScope = FULL_SCOPE,
+):
+    """以 **manifest-bound** identity 导入一份 full_semester 快照；返回 digest。"""
+
+    manifest = _full_manifest(
+        snapshot, semester=semester, inventory_sha256=inventory_sha256
+    )
+    digest = compute_manifest_sha256(manifest)
+    import_offering_snapshot(
+        path,
+        snapshot,
+        artifact_sha256=digest,
+        scope=scope,
+        canonical_manifest=manifest,
+    )
+    return digest
 
 
 def _raw_rows(path: Path) -> list[sqlite3.Row]:
@@ -554,11 +631,11 @@ def test_nullable_public_fields_round_trip(store_path: Path) -> None:
 
 
 def test_import_record_keeps_the_first_import_of_an_artifact(store_path: Path) -> None:
-    """同一 `(artifact_sha256, semester)` **只记首次导入**，后续导入不改写该记录。
+    """同一 acceptance identity 的重复导入**只记首次**，且不同内容必须被拒绝。
 
-    ⚠️ 这是"artifact 记录幂等"的语义锁：即使第二次导入带来了不同的 `source` /
-    行数（正常情况不该发生：同一个 hash 就应代表同一份字节），
-    审计记录也**不**被改写（⛔ 不覆盖原始导入事实）。
+    ⚠️ 语义更新（immutable acceptance identity）：以前"第二次导入带来不同行数"
+    只保留首条审计记录；现在**整个第二次导入被拒绝**，
+    审计记录与 acceptance 平面都**不被改写**（⛔ 不覆盖原始导入事实）。
     """
 
     first = _import(
@@ -567,29 +644,33 @@ def test_import_record_keeps_the_first_import_of_an_artifact(store_path: Path) -
         artifact_sha256=ARTIFACT,
     )
     first_record = load_course_data_provenance(store_path)[0]
+    first_acceptance = load_course_data_acceptances(store_path)[0]
 
-    second = _import(
-        store_path,
-        _snapshot(
-            [
-                _offering(course_id="SYN-1", source="source-b"),
-                _offering(course_id="SYN-2", source="source-b"),
-            ]
-        ),
-        artifact_sha256=ARTIFACT,
-    )
+    with pytest.raises(ImmutableAcceptanceConflictError) as conflict:
+        _import(
+            store_path,
+            _snapshot(
+                [
+                    _offering(course_id="SYN-1", source="source-b"),
+                    _offering(course_id="SYN-2", source="source-b"),
+                ]
+            ),
+            artifact_sha256=ARTIFACT,
+        )
+
+    assert "immutable" in str(conflict.value)
 
     records = load_course_data_provenance(store_path)
-
-    assert second.already_imported is True
+    assert first.already_imported is False
     assert len(records) == 1, "同一 artifact + semester 只能有一条导入记录"
     assert records[0] == first_record
     assert records[0].source == "source-a"
     assert records[0].loaded_count == 1
     assert records[0].imported_at == first.imported_at
-
-    # ⛔ 但教学班行按 identity 正常 upsert（记录不改写 ≠ 数据不更新）
-    assert len(load_course_offerings(store_path, SEMESTER)) == 2
+    # ⛔ acceptance / membership 都没有被第二次导入改写。
+    assert load_course_data_acceptances(store_path)[0] == first_acceptance
+    # ⛔ 行也没有被第二次导入改写（整个事务被拒绝）。
+    assert len(load_course_offerings(store_path, SEMESTER)) == 1
 
 
 def test_mixed_source_snapshot_records_no_single_source(store_path: Path) -> None:
@@ -1092,18 +1173,20 @@ def test_import_writes_the_content_bound_acceptance_plane(store_path: Path) -> N
     ]
     snapshot = _full_snapshot(offerings)
 
-    _import(store_path, snapshot, artifact_sha256=OTHER_ARTIFACT, scope=FULL_SCOPE)
+    digest = _import_full(store_path, snapshot)
 
     records = load_course_data_acceptances(store_path, semester=SEMESTER)
     assert len(records) == 1
-    assert records[0].artifact_sha256 == OTHER_ARTIFACT
+    assert records[0].artifact_sha256 == digest
     assert records[0].scope_kind == SCOPE_KIND_FULL_SEMESTER
     assert records[0].scope_id == SEMESTER
     assert records[0].offering_count == 2
     assert records[0].offering_set_sha256 == offering_set_sha256(snapshot.offerings)
+    # ⛔ immutable acceptance identity：持久化的 canonical manifest 必须能重算出同一个 SHA。
+    assert records[0].canonical_manifest_sha256 == digest
 
     dataset = load_accepted_offerings(
-        store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        store_path, semester=SEMESTER, acceptance_sha256=digest
     )
     assert dataset.member_count == 2
     assert [offering.course_id for offering in dataset.offerings] == ["SYN-A", "SYN-B"]
@@ -1111,21 +1194,18 @@ def test_import_writes_the_content_bound_acceptance_plane(store_path: Path) -> N
 
 
 def test_accepted_read_requires_both_planes(store_path: Path) -> None:
-    _import(
-        store_path,
-        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
-        artifact_sha256=OTHER_ARTIFACT,
-        scope=FULL_SCOPE,
+    digest = _import_full(
+        store_path, _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
     )
 
     connection = sqlite3.connect(str(store_path))
-    connection.execute("DELETE FROM course_data_import WHERE artifact_sha256 = ?", (OTHER_ARTIFACT,))
+    connection.execute("DELETE FROM course_data_import WHERE artifact_sha256 = ?", (digest,))
     connection.commit()
     connection.close()
 
     with pytest.raises(CourseDataStoreError) as missing_provenance:
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+            store_path, semester=SEMESTER, acceptance_sha256=digest
         )
     assert "两个平面" in str(missing_provenance.value) or "导入记录" in str(
         missing_provenance.value
@@ -1135,23 +1215,20 @@ def test_accepted_read_requires_both_planes(store_path: Path) -> None:
 def test_accepted_read_requires_the_acceptance_record(store_path: Path) -> None:
     """B4：acceptance 记录被删除 ⇒ 下一次读取必须 fail closed（⛔ 不靠缓存）。"""
 
-    _import(
-        store_path,
-        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
-        artifact_sha256=OTHER_ARTIFACT,
-        scope=FULL_SCOPE,
+    digest = _import_full(
+        store_path, _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
     )
 
     connection = sqlite3.connect(str(store_path))
     connection.execute(
-        "DELETE FROM course_data_acceptance WHERE artifact_sha256 = ?", (OTHER_ARTIFACT,)
+        "DELETE FROM course_data_acceptance WHERE artifact_sha256 = ?", (digest,)
     )
     connection.commit()
     connection.close()
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+            store_path, semester=SEMESTER, acceptance_sha256=digest
         )
 
 
@@ -1171,11 +1248,8 @@ def test_same_count_content_substitution_is_detected(
 ) -> None:
     """B3：同数量 / 同身份下的**内容替换**必须被读路径发现。"""
 
-    _import(
-        store_path,
-        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
-        artifact_sha256=OTHER_ARTIFACT,
-        scope=FULL_SCOPE,
+    digest = _import_full(
+        store_path, _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
     )
 
     connection = sqlite3.connect(str(store_path))
@@ -1185,7 +1259,7 @@ def test_same_count_content_substitution_is_detected(
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+            store_path, semester=SEMESTER, acceptance_sha256=digest
         )
 
 
@@ -1194,12 +1268,7 @@ def test_deleted_or_extra_member_is_detected(store_path: Path) -> None:
         _offering(course_id="SYN-A", class_id="A-01"),
         _offering(course_id="SYN-B", class_id="B-01"),
     ]
-    _import(
-        store_path,
-        _full_snapshot(offerings),
-        artifact_sha256=OTHER_ARTIFACT,
-        scope=FULL_SCOPE,
-    )
+    digest = _import_full(store_path, _full_snapshot(offerings))
 
     connection = sqlite3.connect(str(store_path))
     connection.execute("DELETE FROM course_offering WHERE class_id = ?", ("B-01",))
@@ -1208,7 +1277,7 @@ def test_deleted_or_extra_member_is_detected(store_path: Path) -> None:
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+            store_path, semester=SEMESTER, acceptance_sha256=digest
         )
 
 
@@ -1219,24 +1288,21 @@ def test_stale_rows_and_other_semesters_are_never_returned(store_path: Path) -> 
         artifact_sha256=ARTIFACT,
         scope=CAMPUS_SCOPE,
     )
-    _import(
+    _import_full(
         store_path,
         _snapshot(
             [_offering(semester=OTHER_SEMESTER, class_id="OTHER-01")],
             semester=OTHER_SEMESTER,
         ),
-        artifact_sha256=OTHER_ARTIFACT,
+        semester=OTHER_SEMESTER,
         scope=OTHER_FULL_SCOPE,
     )
-    _import(
-        store_path,
-        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
-        artifact_sha256=OTHER_ARTIFACT,
-        scope=FULL_SCOPE,
+    digest = _import_full(
+        store_path, _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
     )
 
     dataset = load_accepted_offerings(
-        store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        store_path, semester=SEMESTER, acceptance_sha256=digest
     )
     assert [offering.course_id for offering in dataset.offerings] == ["SYN-A"]
     # 整学期查询仍然能看到陈旧行 ⇒ 两者语义确实不同。
@@ -1244,11 +1310,8 @@ def test_stale_rows_and_other_semesters_are_never_returned(store_path: Path) -> 
 
 
 def test_later_campus_overwrite_invalidates_the_full_acceptance(store_path: Path) -> None:
-    _import(
-        store_path,
-        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
-        artifact_sha256=OTHER_ARTIFACT,
-        scope=FULL_SCOPE,
+    digest = _import_full(
+        store_path, _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
     )
     # 后来的 campus import 覆盖同一行的 provenance（内容相同也不行）。
     _import(
@@ -1260,7 +1323,7 @@ def test_later_campus_overwrite_invalidates_the_full_acceptance(store_path: Path
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+            store_path, semester=SEMESTER, acceptance_sha256=digest
         )
 
 
@@ -1290,37 +1353,72 @@ def test_accepted_read_is_scope_parameterized(store_path: Path) -> None:
 def test_reimport_with_different_content_under_one_identity_fails_closed(
     store_path: Path,
 ) -> None:
-    """同一 acceptance identity 被以**不同内容**重复导入 ⇒ 两个平面不一致 ⇒ 拒绝。"""
+    """同一 acceptance identity 被以**不同内容**重复导入 ⇒ fail closed。
 
-    _import(
+    本轮（immutable acceptance identity）之后，manifest-bound 的 full_semester
+    identity 让这条路径**在语义上不可表达**：
+
+    ```text
+    Dataset A + manifest_A → digest = SHA256(manifest_A) = X
+    Dataset B + manifest_A → manifest ↔ snapshot 内容不一致       ⇒ reject
+    Dataset B + manifest_B → SHA256(manifest_B) = Y ≠ X          ⇒ reject（另一个 identity）
+    ```
+
+    两条路径都必须 fail closed，且**旧 Provider 只能继续返回 A 或失败**。
+    """
+
+    snapshot_a = _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
+    manifest_a = _full_manifest(snapshot_a)
+    digest = compute_manifest_sha256(manifest_a)
+    import_offering_snapshot(
         store_path,
-        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
-        artifact_sha256=OTHER_ARTIFACT,
+        snapshot_a,
+        artifact_sha256=digest,
         scope=FULL_SCOPE,
+        canonical_manifest=manifest_a,
     )
+
     first = load_accepted_offerings(
-        store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        store_path, semester=SEMESTER, acceptance_sha256=digest
     )
     assert first.member_count == 1
 
-    _import(
-        store_path,
-        _full_snapshot(
-            [
-                _offering(course_id="SYN-A", class_id="A-01"),
-                _offering(course_id="SYN-B", class_id="B-01"),
-            ]
-        ),
-        artifact_sha256=OTHER_ARTIFACT,
-        scope=FULL_SCOPE,
+    snapshot_b = _full_snapshot(
+        [
+            _offering(course_id="SYN-A", class_id="A-01"),
+            _offering(course_id="SYN-B", class_id="B-01"),
+        ]
     )
 
-    # 历史审计记录保留**首次**导入的计数（声明平面），content-bound 平面记录最新内容
-    # ⇒ 两者不一致 ⇒ fail closed（⛔ 不会悄悄采用其中一边）。
+    # (a) 同一 SHA + 旧 manifest（内容已变）⇒ reject
     with pytest.raises(CourseDataStoreError):
-        load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        import_offering_snapshot(
+            store_path,
+            snapshot_b,
+            artifact_sha256=digest,
+            scope=FULL_SCOPE,
+            canonical_manifest=manifest_a,
         )
+
+    # (b) 同一 SHA + 新 manifest（其 SHA 是另一个 identity）⇒ reject
+    manifest_b = _full_manifest(snapshot_b)
+    with pytest.raises(CourseDataStoreError):
+        import_offering_snapshot(
+            store_path,
+            snapshot_b,
+            artifact_sha256=digest,
+            scope=FULL_SCOPE,
+            canonical_manifest=manifest_b,
+        )
+
+    # 旧 acceptance 仍然是 A 的内容（⛔ 没有被 B 改写）。
+    after = load_accepted_offerings(
+        store_path, semester=SEMESTER, acceptance_sha256=digest
+    )
+    assert [offering.course_id for offering in after.offerings] == ["SYN-A"]
+    assert after.acceptance.offering_set_sha256 == offering_set_sha256(
+        snapshot_a.offerings
+    )
 
 
 def test_identical_reimport_keeps_the_acceptance_readable(store_path: Path) -> None:
@@ -1328,24 +1426,28 @@ def test_identical_reimport_keeps_the_acceptance_readable(store_path: Path) -> N
         _offering(course_id="SYN-A", class_id="A-01"),
         _offering(course_id="SYN-B", class_id="B-01"),
     ]
+    snapshot = _full_snapshot(offerings)
+    manifest = _full_manifest(snapshot)
+    digest = compute_manifest_sha256(manifest)
+
     for _ in range(2):
-        _import(
+        import_offering_snapshot(
             store_path,
-            _full_snapshot(offerings),
-            artifact_sha256=OTHER_ARTIFACT,
+            snapshot,
+            artifact_sha256=digest,
             scope=FULL_SCOPE,
+            canonical_manifest=manifest,
         )
 
     dataset = load_accepted_offerings(
-        store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        store_path, semester=SEMESTER, acceptance_sha256=digest
     )
     assert dataset.member_count == 2
     assert len(load_course_data_provenance(store_path, semester=SEMESTER)) == 1
 
 
 def test_accepted_read_rejects_unreadable_store(store_path: Path) -> None:
-    with pytest.raises(CourseDataStoreError):
-        load_accepted_offerings(
+    with pytest.raises(CourseDataStoreError):        load_accepted_offerings(
             store_path, semester=SEMESTER, acceptance_sha256="not-a-digest"
         )
 
@@ -1463,3 +1565,397 @@ def test_acceptance_bound_query_orders_by_sql() -> None:
         "AND artifact_sha256 = ? ORDER BY course_id, class_id" in text
     )
     assert "WHERE semester = ? AND scope_kind = ? AND scope_id = ? " in text
+
+
+# ---------------------------------------------------------------------------
+# 11. immutable acceptance identity（Forward Red-Team BLOCK）
+# ---------------------------------------------------------------------------
+
+
+def test_store_and_acceptance_module_agree_on_canonical_manifest_sha() -> None:
+    """⛔ 两个模块的 canonical 序列化必须**字节一致**（否则 trust chain 无法成立）。"""
+
+    from app.course_data import compute_manifest_sha256 as acceptance_side
+
+    manifest = {
+        "format": "sysu-course-data-full-semester-acceptance-v1",
+        "manifest_version": 2,
+        "semester": SEMESTER,
+        "scope_kind": SCOPE_KIND_FULL_SEMESTER,
+        "scope_id": SEMESTER,
+        "inventory_sha256": "a" * 64,
+        "baseline_before": 3,
+        "baseline_after": 3,
+        "merged_offering_count": 3,
+        "merged_offering_set_sha256": "b" * 64,
+        "shards": [],
+        "中文键": "值",
+    }
+
+    assert compute_manifest_sha256(manifest) == acceptance_side(manifest)
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("course_name", "被替换的课程名"),
+        ("teacher", "被替换的教师"),
+        ("meetings_json", "[]"),
+        ("credit", 9.0),
+    ],
+)
+def test_immutable_identity_rejects_changed_payload(
+    store_path: Path, column: str, value: object
+) -> None:
+    """same SHA + same identities/count + changed payload ⇒ reject（⛔ 不改写既有 acceptance）。"""
+
+    before_offerings = [_offering(course_id="SYN-A", class_id="A-01")]
+    _import(store_path, _snapshot(before_offerings), artifact_sha256=ARTIFACT)
+    before_acceptance = load_course_data_acceptances(store_path)[0]
+    before_set_digest = offering_set_sha256(before_offerings)
+
+    changed = [_offering(course_id="SYN-A", class_id="A-01")]
+    if column == "course_name":
+        changed[0] = changed[0].model_copy(update={"course_name": value})
+    elif column == "teacher":
+        changed[0] = changed[0].model_copy(update={"teacher": value})
+    elif column == "meetings_json":
+        changed[0] = changed[0].model_copy(update={"meetings": []})
+    else:
+        changed[0] = changed[0].model_copy(update={"credit": value})
+
+    assert offering_set_sha256(changed) != before_set_digest
+
+    with pytest.raises(ImmutableAcceptanceConflictError):
+        _import(store_path, _snapshot(changed), artifact_sha256=ARTIFACT)
+
+    assert load_course_data_acceptances(store_path)[0] == before_acceptance
+    assert [offering.course_name for offering in load_course_offerings(store_path, SEMESTER)] == [
+        before_offerings[0].course_name
+    ]
+
+
+@pytest.mark.parametrize("delta", [1, -1])
+def test_immutable_identity_rejects_membership_change(
+    store_path: Path, delta: int
+) -> None:
+    """membership +1 / -1 都必须被拒绝（同 SHA 的成员集合不可变）。"""
+
+    base = [
+        _offering(course_id="SYN-A", class_id="A-01"),
+        _offering(course_id="SYN-B", class_id="B-01"),
+    ]
+    _import(store_path, _snapshot(base), artifact_sha256=ARTIFACT)
+    before = load_course_data_acceptances(store_path)[0]
+
+    if delta == 1:
+        changed = [*base, _offering(course_id="SYN-C", class_id="C-01")]
+    else:
+        changed = base[:1]
+
+    with pytest.raises(ImmutableAcceptanceConflictError):
+        _import(store_path, _snapshot(changed), artifact_sha256=ARTIFACT)
+
+    assert load_course_data_acceptances(store_path)[0] == before
+
+
+def test_immutable_identity_exact_reimport_is_a_noop(store_path: Path) -> None:
+    """完全相同的重复提交是幂等 no-op：acceptance 行（含 imported_at）不被改写。"""
+
+    snapshot = _snapshot([_offering(course_id="SYN-A", class_id="A-01")])
+    first = _import(store_path, snapshot, artifact_sha256=ARTIFACT)
+    before = load_course_data_acceptances(store_path)[0]
+
+    second = _import(store_path, snapshot, artifact_sha256=ARTIFACT)
+
+    after = load_course_data_acceptances(store_path)[0]
+    assert second.already_imported is True
+    assert second.inserted == 0
+    assert after == before
+    assert after.imported_at == first.imported_at
+
+
+def test_manifest_identity_must_equal_the_canonical_manifest_sha(store_path: Path) -> None:
+    """manifest 的 SHA 必须**就是** acceptance identity（⛔ 不接受"另一个 X"）。"""
+
+    snapshot = _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
+    manifest = _full_manifest(snapshot)
+
+    with pytest.raises(CourseDataStoreError) as error:
+        import_offering_snapshot(
+            store_path,
+            snapshot,
+            artifact_sha256=OTHER_ARTIFACT,
+            scope=FULL_SCOPE,
+            canonical_manifest=manifest,
+        )
+
+    assert "SHA-256" in str(error.value) or "identity" in str(error.value)
+    assert load_course_data_acceptances(store_path) == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("semester", OTHER_SEMESTER),
+        ("scope_id", OTHER_SEMESTER),
+        ("merged_offering_count", 99),
+        ("merged_offering_set_sha256", "f" * 64),
+        ("baseline_before", 99),
+    ],
+)
+def test_manifest_semantic_mismatch_is_rejected(
+    store_path: Path, field: str, value: object
+) -> None:
+    """manifest 语义字段必须与快照 / scope / 计数一致。"""
+
+    snapshot = _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
+    manifest = _full_manifest(snapshot)
+    manifest[field] = value
+    digest = compute_manifest_sha256(manifest)
+
+    with pytest.raises(CourseDataStoreError):
+        import_offering_snapshot(
+            store_path,
+            snapshot,
+            artifact_sha256=digest,
+            scope=FULL_SCOPE,
+            canonical_manifest=manifest,
+        )
+
+    assert load_course_data_acceptances(store_path) == []
+
+
+def test_manifest_with_unknown_field_is_rejected(store_path: Path) -> None:
+    snapshot = _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
+    manifest = _full_manifest(snapshot)
+    manifest["student_name"] = "should-not-be-here"
+    digest = compute_manifest_sha256(manifest)
+
+    with pytest.raises(CourseDataStoreError) as error:
+        import_offering_snapshot(
+            store_path,
+            snapshot,
+            artifact_sha256=digest,
+            scope=FULL_SCOPE,
+            canonical_manifest=manifest,
+        )
+
+    assert "未知字段" in str(error.value)
+
+
+def test_stored_canonical_manifest_mutation_is_detected_on_read(store_path: Path) -> None:
+    """DB 里把 canonical manifest 换成另一份（digest 列不变）⇒ 读取必须拒绝。"""
+
+    snapshot = _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
+    manifest = _full_manifest(snapshot)
+    digest = compute_manifest_sha256(manifest)
+    import_offering_snapshot(
+        store_path,
+        snapshot,
+        artifact_sha256=digest,
+        scope=FULL_SCOPE,
+        canonical_manifest=manifest,
+    )
+
+    replacement = dict(manifest)
+    replacement["inventory_sha256"] = "c" * 64
+    replacement_json = canonical_manifest_bytes(replacement).decode("utf-8")
+
+    connection = sqlite3.connect(str(store_path))
+    connection.execute(
+        "UPDATE course_data_acceptance SET canonical_manifest_json = ? WHERE artifact_sha256 = ?",
+        (replacement_json, digest),
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(CourseDataStoreError) as error:
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=digest
+        )
+
+    assert "重算" in str(error.value) or "rewrite" in str(error.value)
+
+
+def test_stored_acceptance_metadata_mutation_is_detected_on_read(store_path: Path) -> None:
+    """DB 里改列式 metadata（manifest 未动）⇒ 语义交叉核对必须拒绝。"""
+
+    snapshot = _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
+    manifest = _full_manifest(snapshot)
+    digest = compute_manifest_sha256(manifest)
+    import_offering_snapshot(
+        store_path,
+        snapshot,
+        artifact_sha256=digest,
+        scope=FULL_SCOPE,
+        canonical_manifest=manifest,
+    )
+
+    connection = sqlite3.connect(str(store_path))
+    connection.execute(
+        "UPDATE course_data_acceptance SET offering_count = 2, loaded_count = 2, "
+        "reported_total = 2 WHERE artifact_sha256 = ?",
+        (digest,),
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(CourseDataStoreError):
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=digest
+        )
+
+
+def test_stored_manifest_must_be_canonical(store_path: Path) -> None:
+    """⛔ 存储的 canonical manifest 必须已经是 canonical 形式（否则重算不可信）。"""
+
+    snapshot = _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
+    manifest = _full_manifest(snapshot)
+    digest = compute_manifest_sha256(manifest)
+    import_offering_snapshot(
+        store_path,
+        snapshot,
+        artifact_sha256=digest,
+        scope=FULL_SCOPE,
+        canonical_manifest=manifest,
+    )
+
+    canon = canonical_manifest_bytes(manifest).decode("utf-8")
+    pretty = json.dumps(manifest, ensure_ascii=False, indent=2)
+
+    connection = sqlite3.connect(str(store_path))
+    connection.execute(
+        "UPDATE course_data_acceptance SET canonical_manifest_json = ? "
+        "WHERE artifact_sha256 = ?",
+        (pretty, digest),
+    )
+    connection.commit()
+    connection.close()
+
+    assert pretty != canon
+    with pytest.raises(CourseDataStoreError) as error:
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=digest
+        )
+
+    assert "canonical" in str(error.value)
+
+
+def test_manifest_with_missing_required_field_is_rejected(store_path: Path) -> None:
+    """manifest 缺必填字段 ⇒ reject（⛔ 不靠后续 KeyError 兜底）。"""
+
+    snapshot = _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
+    manifest = _full_manifest(snapshot)
+    del manifest["inventory_sha256"]
+    digest = compute_manifest_sha256(manifest)
+
+    with pytest.raises(CourseDataStoreError) as error:
+        import_offering_snapshot(
+            store_path,
+            snapshot,
+            artifact_sha256=digest,
+            scope=FULL_SCOPE,
+            canonical_manifest=manifest,
+        )
+
+    assert "缺少字段" in str(error.value)
+
+
+def test_manifest_with_unstable_baseline_window_is_rejected(store_path: Path) -> None:
+    """manifest 自身声明 baseline_before != baseline_after ⇒ reject。
+
+    ⚠️ 这条**不能**只靠"baseline == reported_total"兜底：
+    `baseline_after` 没有别的比较对象，必须单独拒绝。
+    """
+
+    snapshot = _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")])
+    manifest = _full_manifest(snapshot)
+    manifest["baseline_after"] = manifest["baseline_before"] + 1  # type: ignore[operator]
+    digest = compute_manifest_sha256(manifest)
+
+    with pytest.raises(CourseDataStoreError) as error:
+        import_offering_snapshot(
+            store_path,
+            snapshot,
+            artifact_sha256=digest,
+            scope=FULL_SCOPE,
+            canonical_manifest=manifest,
+        )
+
+    assert "baseline" in str(error.value)
+
+
+def test_membership_payload_digest_swap_is_rejected(store_path: Path) -> None:
+    """成员集合与数量不变、只把两行的**内容指纹互换** ⇒ 幂等重入必须失败。
+
+    ⚠️ 这是 membership 逐行比较**不可省**的原因：整批 set digest 与行数都不会变化。
+    """
+
+    offerings = [
+        _offering(course_id="SYN-A", class_id="A-01"),
+        _offering(course_id="SYN-B", class_id="B-01"),
+    ]
+    snapshot = _snapshot(offerings)
+    _import(store_path, snapshot, artifact_sha256=ARTIFACT)
+
+    connection = sqlite3.connect(str(store_path))
+    rows = connection.execute(
+        "SELECT course_id, class_id, offering_payload_sha256 "
+        "FROM course_data_acceptance_member ORDER BY course_id, class_id"
+    ).fetchall()
+    assert len(rows) == 2
+    connection.execute(
+        "UPDATE course_data_acceptance_member SET offering_payload_sha256 = ? "
+        "WHERE course_id = ? AND class_id = ?",
+        (rows[1][2], rows[0][0], rows[0][1]),
+    )
+    connection.execute(
+        "UPDATE course_data_acceptance_member SET offering_payload_sha256 = ? "
+        "WHERE course_id = ? AND class_id = ?",
+        (rows[0][2], rows[1][0], rows[1][1]),
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(ImmutableAcceptanceConflictError) as conflict:
+        _import(store_path, snapshot, artifact_sha256=ARTIFACT)
+
+    assert "membership" in str(conflict.value)
+
+
+def test_full_semester_acceptance_without_manifest_is_not_servable(store_path: Path) -> None:
+    """⛔ 没有 canonical manifest 的 full_semester acceptance 不得被服务。
+
+    （campus acceptance 不受此限：它的 identity 是 raw artifact 字节 digest。）
+    """
+
+    _import(
+        store_path,
+        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+
+    with pytest.raises(CourseDataStoreError) as error:
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        )
+
+    assert "canonical manifest" in str(error.value)
+
+
+def test_campus_acceptance_is_servable_without_a_manifest(store_path: Path) -> None:
+    _import(
+        store_path,
+        _snapshot([_offering(course_id="SYN-C", class_id="C-01")]),
+        artifact_sha256=ARTIFACT,
+        scope=CAMPUS_SCOPE,
+    )
+
+    dataset = load_accepted_offerings(
+        store_path, semester=SEMESTER, acceptance_sha256=ARTIFACT, scope=CAMPUS_SCOPE
+    )
+
+    assert [offering.course_id for offering in dataset.offerings] == ["SYN-C"]
+    assert dataset.acceptance.canonical_manifest_sha256 is None

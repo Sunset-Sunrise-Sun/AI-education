@@ -100,7 +100,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -233,16 +233,21 @@ CREATE TABLE IF NOT EXISTS {ACCEPTANCE_TABLE} (
     reported_total       INTEGER,
     offering_count       INTEGER NOT NULL,
     offering_set_sha256  TEXT    NOT NULL,
+    canonical_manifest_json TEXT,
     PRIMARY KEY (artifact_sha256, semester, scope_kind, scope_id)
 );
 
 CREATE TABLE IF NOT EXISTS {ACCEPTANCE_MEMBER_TABLE} (
     artifact_sha256          TEXT NOT NULL,
     semester                 TEXT NOT NULL,
+    scope_kind               TEXT NOT NULL,
+    scope_id                 TEXT NOT NULL,
     course_id                TEXT NOT NULL,
     class_id                 TEXT NOT NULL,
     offering_payload_sha256  TEXT NOT NULL,
-    PRIMARY KEY (artifact_sha256, semester, course_id, class_id)
+    PRIMARY KEY (
+        artifact_sha256, semester, scope_kind, scope_id, course_id, class_id
+    )
 );
 """
 
@@ -296,10 +301,13 @@ _EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
         "reported_total",
         "offering_count",
         "offering_set_sha256",
+        "canonical_manifest_json",
     ),
     ACCEPTANCE_MEMBER_TABLE: (
         "artifact_sha256",
         "semester",
+        "scope_kind",
+        "scope_id",
         "course_id",
         "class_id",
         "offering_payload_sha256",
@@ -309,6 +317,185 @@ _EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
 
 class CourseDataStoreError(CourseDataNormalizationError):
     """本地 Course Data 库读写失败（继承统一错误类型，便于调用方一处捕获）。"""
+
+
+class ImmutableAcceptanceConflictError(CourseDataStoreError):
+    """同一个 acceptance identity（SHA）被以**不同语义内容**再次提交。
+
+    ```text
+    acceptance_sha256 X 一旦落库，就永久绑定：
+      semester / scope / baseline / shard acceptance identities / raw shard digests /
+      offering_set_sha256 / counts / membership（identity + 逐行内容指纹）
+    ```
+
+    ⛔ 因此**不存在**"用同一个 X 再导入一次 Dataset B"这条路径：
+    语义内容不同一律 fail closed（`immutable_acceptance_conflict`），
+    ⛔ 绝不刷新既有 acceptance / membership 的 digest。
+    """
+
+
+#: `course_data_acceptance` 的 canonical manifest 列允许的最小字段集。
+#: ⛔ 这些字段必须与列式 metadata 完全一致（见 `_require_manifest_matches_metadata`）。
+_MANIFEST_REQUIRED_KEYS = (
+    "format",
+    "manifest_version",
+    "semester",
+    "scope_kind",
+    "scope_id",
+    "inventory_sha256",
+    "baseline_before",
+    "baseline_after",
+    "merged_offering_count",
+    "merged_offering_set_sha256",
+    "shards",
+)
+
+#: canonical manifest 允许出现的**全部**字段（⛔ 未知字段一律拒绝）。
+_MANIFEST_ALLOWED_KEYS = frozenset(
+    {
+        *_MANIFEST_REQUIRED_KEYS,
+        "tool",
+        "source",
+        "manifest_sha256_semantics",
+        "raw_bundle_sha256_semantics",
+        "offering_set_sha256_semantics",
+        "campus_acceptance_semantics",
+        "source_semantics",
+        "baseline_semantics",
+        "completeness_semantics",
+        "page_count_semantics",
+    }
+)
+
+
+def canonical_manifest_bytes(manifest: Mapping[str, object]) -> bytes:
+    """canonical manifest 序列化（⛔ 与 acceptance 层必须**字节一致**）。
+
+    口径固定：`sort_keys=True` + `ensure_ascii=False` + `separators=(",", ":")`
+    + `allow_nan=False` + UTF-8。因此
+
+    ```text
+    SHA256(canonical_manifest_bytes(manifest)) == acceptance_sha256
+    ```
+
+    是一个**可重算**的不变量，而不是"数据库自己派生出来的数字"。
+    """
+
+    if not isinstance(manifest, Mapping):
+        raise CourseDataStoreError(
+            f"canonical manifest 必须是对象，实际是 {type(manifest).__name__}"
+        )
+
+    try:
+        return json.dumps(
+            dict(manifest),
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise CourseDataStoreError(
+            "canonical manifest 无法序列化（可能存在 NaN / Infinity 或非 JSON 值）"
+        ) from exc
+
+
+def compute_manifest_sha256(manifest: Mapping[str, object]) -> str:
+    """canonical manifest 字节的 SHA-256（= acceptance identity）。"""
+
+    return hashlib.sha256(canonical_manifest_bytes(manifest)).hexdigest()
+
+
+def _require_stored_manifest_shape(manifest: object) -> Mapping[str, object]:
+    """严格校验 manifest 形状（⛔ 未知字段 / 缺字段 / 类型错误一律拒绝）。"""
+
+    if not isinstance(manifest, Mapping):
+        raise CourseDataStoreError(
+            f"stored canonical manifest 必须是对象，实际是 {type(manifest).__name__}"
+        )
+
+    missing = [key for key in _MANIFEST_REQUIRED_KEYS if key not in manifest]
+    if missing:
+        raise CourseDataStoreError(f"stored canonical manifest 缺少字段：{missing}")
+
+    unknown = sorted(set(manifest) - _MANIFEST_ALLOWED_KEYS)
+    if unknown:
+        raise CourseDataStoreError(f"stored canonical manifest 出现未知字段：{unknown}")
+
+    for name in (
+        "baseline_before",
+        "baseline_after",
+        "merged_offering_count",
+    ):
+        value = manifest[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise CourseDataStoreError(
+                f"stored canonical manifest 的 {name} 必须是非负整数"
+            )
+
+    for name in ("inventory_sha256", "merged_offering_set_sha256"):
+        value = manifest[name]
+        if not isinstance(value, str) or ARTIFACT_SHA256_PATTERN.match(value) is None:
+            raise CourseDataStoreError(
+                f"stored canonical manifest 的 {name} 必须是 64 位十六进制摘要"
+            )
+
+    shards = manifest["shards"]
+    if not isinstance(shards, list) or not shards:
+        raise CourseDataStoreError("stored canonical manifest 的 shards 必须是非空数组")
+
+    return dict(manifest)
+
+
+def _require_manifest_matches_metadata(
+    manifest: Mapping[str, object],
+    *,
+    digest: str,
+    semester: str,
+    scope: SnapshotScope,
+    completeness: str,
+    loaded_count: int,
+    reported_total: int | None,
+    offering_count: int,
+    set_digest: str,
+) -> None:
+    """canonical manifest 的语义字段必须与列式 metadata / 本次快照**完全一致**。"""
+
+    # 1) identity：SHA256(canonical manifest) 必须等于本次 acceptance SHA。
+    if compute_manifest_sha256(manifest) != digest:
+        raise CourseDataStoreError(
+            "canonical manifest 的 SHA-256 与 acceptance identity（artifact_sha256）不一致；"
+            "⛔ 拒绝把一份 manifest 声明成另一个 identity"
+        )
+
+    # 2) 语义字段逐项一致。
+    if manifest["semester"] != semester:
+        raise CourseDataStoreError("canonical manifest 的 semester 与本次导入不一致")
+    if manifest["scope_kind"] != scope.scope_kind or manifest["scope_id"] != scope.scope_id:
+        raise CourseDataStoreError("canonical manifest 的 scope 与本次导入不一致")
+    if manifest["merged_offering_count"] != offering_count:
+        raise CourseDataStoreError(
+            "canonical manifest 的 merged_offering_count 与快照不一致"
+        )
+    if manifest["merged_offering_set_sha256"] != set_digest:
+        raise CourseDataStoreError(
+            "canonical manifest 的 merged_offering_set_sha256 与快照内容不一致"
+        )
+    if manifest["baseline_before"] != manifest["baseline_after"]:
+        raise CourseDataStoreError(
+            "canonical manifest 的 baseline_before != baseline_after"
+        )
+    if manifest["baseline_before"] != reported_total:
+        raise CourseDataStoreError(
+            "canonical manifest 的 baseline 与快照 reported_total 不一致"
+        )
+    if completeness != "complete" or loaded_count != offering_count:
+        # ⚠️ 由构造不可达（import 已拒绝非 complete 快照；`OfferingSnapshot` 保证
+        #    complete ⇒ reported_total == loaded_count == len(offerings)）：
+        #    保留为纵深防御，⛔ 不删除。
+        raise CourseDataStoreError(
+            "canonical manifest 只能绑定 complete 且计数自洽的快照"
+        )
 
 
 @dataclass(frozen=True)
@@ -419,6 +606,7 @@ class CourseDataAcceptance:
     reported_total: int | None
     offering_count: int
     offering_set_sha256: str
+    canonical_manifest_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -603,7 +791,8 @@ def _require_schema(connection: sqlite3.Connection) -> None:
         if COURSE_OFFERING_TABLE in existing:
             raise CourseDataStoreError(
                 f"本地库缺少 acceptance 表：{missing}；该库由更早的版本建立"
-                f"（尚没有 content-bound acceptance 平面，可能也缺少 scope 列）。"
+                f"（尚没有 content-bound acceptance 平面，可能也缺少 scope 列 /"
+                f" canonical manifest 列）。"
                 f"⛔ 本层不自动迁移，请重建本地库后重新导入"
             )
         raise CourseDataStoreError(
@@ -666,6 +855,7 @@ def import_offering_snapshot(
     *,
     artifact_sha256: str,
     scope: SnapshotScope,
+    canonical_manifest: Mapping[str, object] | None = None,
 ) -> CourseDataImport:
     """把一份**已判定 complete（在其声明 scope 内）**的 `OfferingSnapshot` upsert 进本地库。
 
@@ -695,6 +885,31 @@ def import_offering_snapshot(
 
     `artifact_sha256` 由调用方显式给出（可用 `compute_artifact_sha256()`
     对原始 artifact 字节计算）；⛔ 本层不去读 Capture Bundle。
+
+    ## acceptance identity 是**不可变**的（⛔ 不存在语义 upsert）
+
+    `canonical_manifest`（可选的内部 canonical manifest）：
+
+    - 给出时必须满足 `SHA256(canonical_manifest_bytes(manifest)) == artifact_sha256`
+      且语义字段与本次快照 / scope / 计数 / 内容 digest 完全一致；
+    - 给出时会被**原样持久化**（`canonical_manifest_json`），
+      使 Provider 可以在**每次读取**时重算
+      `SHA256(canonical stored manifest) == acceptance_sha256`；
+    - ⛔ 没有 canonical manifest 的 `full_semester` acceptance 只能作为原始导入记录存在，
+      **Provider 会拒绝服务它**（无法重算 identity ⇒ 无法建立 trust chain）。
+
+    同一个 `(artifact_sha256, semester, scope)` 再次导入时：
+
+    ```text
+    语义内容 + membership（identity + 逐行内容指纹）完全一致 → 幂等 no-op
+    任一不同（manifest / counts / source / offering_set_sha256 / member 集合 / 逐行指纹）
+        → ImmutableAcceptanceConflictError（immutable_acceptance_conflict，fail closed）
+    ```
+
+    ⛔ **绝不**用 `ON CONFLICT DO UPDATE` 刷新 semantic content，
+    ⛔ **绝不**用"先删成员再插入"的方式改写 membership：
+    那会让"同一个 acceptance SHA 指向不同 Dataset"成为可能
+    （Forward Red-Team：immutable acceptance identity blocker）。
 
     ⚠️ 口径不变：`SHA-256 = artifact identity/integrity ≠ acquisition provenance proof`。
     """
@@ -728,12 +943,30 @@ def import_offering_snapshot(
         (
             digest,
             semester,
+            declared_scope.scope_kind,
+            declared_scope.scope_id,
             offering.course_id,
             offering.class_id,
             offering_payload_sha256(offering),
         )
         for offering in snapshot.offerings
     ]
+
+    manifest_json: str | None = None
+    if canonical_manifest is not None:
+        manifest = _require_stored_manifest_shape(canonical_manifest)
+        _require_manifest_matches_metadata(
+            manifest,
+            digest=digest,
+            semester=semester,
+            scope=declared_scope,
+            completeness=snapshot.completeness,
+            loaded_count=snapshot.loaded_count,
+            reported_total=snapshot.reported_total,
+            offering_count=len(snapshot.offerings),
+            set_digest=set_digest,
+        )
+        manifest_json = canonical_manifest_bytes(manifest).decode("utf-8")
 
     inserted = 0
     updated = 0
@@ -818,52 +1051,66 @@ def import_offering_snapshot(
         )
 
         # ---- content-bound acceptance 平面（与 rows 同一事务） -----------------
-        # ⚠️ 与上面的历史审计记录不同：这里**重复导入会刷新**（membership 必须反映
-        #    最近一次以该 identity 写入的内容），否则 digest 与实际 rows 会脱钩。
-        connection.execute(
-            f"""
-            INSERT INTO {ACCEPTANCE_TABLE} (
-                artifact_sha256, semester, scope_kind, scope_id, source, imported_at,
-                completeness, loaded_count, reported_total, offering_count,
-                offering_set_sha256
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT (artifact_sha256, semester, scope_kind, scope_id) DO UPDATE SET
-                source = excluded.source,
-                imported_at = excluded.imported_at,
-                completeness = excluded.completeness,
-                loaded_count = excluded.loaded_count,
-                reported_total = excluded.reported_total,
-                offering_count = excluded.offering_count,
-                offering_set_sha256 = excluded.offering_set_sha256
-            """,
-            (
-                digest,
-                semester,
-                declared_scope.scope_kind,
-                declared_scope.scope_id,
-                record_source,
-                imported_at,
-                snapshot.completeness,
-                snapshot.loaded_count,
-                snapshot.reported_total,
-                len(snapshot.offerings),
-                set_digest,
-            ),
-        )
+        # ⛔ **不可变**：同一个 acceptance identity 只允许"完全相同"的重复提交。
+        #    语义内容或 membership 任一不同 ⇒ ImmutableAcceptanceConflictError。
+        existing_acceptance = connection.execute(
+            f"SELECT scope_kind, scope_id, source, completeness, loaded_count, "
+            f"reported_total, offering_count, offering_set_sha256, canonical_manifest_json "
+            f"FROM {ACCEPTANCE_TABLE} WHERE artifact_sha256 = ? AND semester = ? "
+            "AND scope_kind = ? AND scope_id = ?",
+            (digest, semester, declared_scope.scope_kind, declared_scope.scope_id),
+        ).fetchone()
 
-        connection.execute(
-            f"DELETE FROM {ACCEPTANCE_MEMBER_TABLE} "
-            "WHERE artifact_sha256 = ? AND semester = ?",
-            (digest, semester),
-        )
-        connection.executemany(
-            f"""
-            INSERT INTO {ACCEPTANCE_MEMBER_TABLE} (
-                artifact_sha256, semester, course_id, class_id, offering_payload_sha256
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            member_digests,
-        )
+        if existing_acceptance is None:
+            connection.execute(
+                f"""
+                INSERT INTO {ACCEPTANCE_TABLE} (
+                    artifact_sha256, semester, scope_kind, scope_id, source, imported_at,
+                    completeness, loaded_count, reported_total, offering_count,
+                    offering_set_sha256, canonical_manifest_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    digest,
+                    semester,
+                    declared_scope.scope_kind,
+                    declared_scope.scope_id,
+                    record_source,
+                    imported_at,
+                    snapshot.completeness,
+                    snapshot.loaded_count,
+                    snapshot.reported_total,
+                    len(snapshot.offerings),
+                    set_digest,
+                    manifest_json,
+                ),
+            )
+
+            connection.executemany(
+                f"""
+                INSERT INTO {ACCEPTANCE_MEMBER_TABLE} (
+                    artifact_sha256, semester, scope_kind, scope_id,
+                    course_id, class_id, offering_payload_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                member_digests,
+            )
+        else:
+            _require_identical_acceptance(
+                connection,
+                existing=existing_acceptance,
+                digest=digest,
+                semester=semester,
+                scope=declared_scope,
+                source=record_source,
+                completeness=snapshot.completeness,
+                loaded_count=snapshot.loaded_count,
+                reported_total=snapshot.reported_total,
+                offering_count=len(snapshot.offerings),
+                set_digest=set_digest,
+                manifest_json=manifest_json,
+                member_digests=member_digests,
+            )
 
     return CourseDataImport(
         artifact_sha256=digest,
@@ -876,6 +1123,150 @@ def import_offering_snapshot(
         unchanged=unchanged,
         already_imported=already_imported,
     )
+
+
+def _require_identical_acceptance(
+    connection: sqlite3.Connection,
+    *,
+    existing: sqlite3.Row,
+    digest: str,
+    semester: str,
+    scope: SnapshotScope,
+    source: str | None,
+    completeness: str,
+    loaded_count: int,
+    reported_total: int | None,
+    offering_count: int,
+    set_digest: str,
+    manifest_json: str | None,
+    member_digests: list[tuple[str, str, str, str, str, str, str]],
+) -> None:
+    """同一 acceptance identity 的重复提交**必须完全相同**（否则 fail closed）。
+
+    比较项（⛔ 任一不同即 `ImmutableAcceptanceConflictError`）：
+
+    ```text
+    列式 metadata：scope（已由查询条件固定）/ source / completeness /
+                   loaded_count / reported_total / offering_count / offering_set_sha256
+    canonical manifest：已持久化的 canonical_manifest_json 必须与本次**字节相同**
+                        （⛔ 不允许"同一个 SHA 换一份 manifest"）
+    membership：identity 集合 + 逐行 offering_payload_sha256（+1 / -1 / 替换 / 内容变化全拒绝）
+    ```
+
+    ⛔ 本函数**只读**：不写库、不清空、不刷新任何 digest。
+    """
+
+    conflicts: list[str] = []
+
+    if existing["source"] != source:
+        conflicts.append("source")
+    if existing["completeness"] != completeness:
+        conflicts.append("completeness")
+    if existing["loaded_count"] != loaded_count:
+        conflicts.append("loaded_count")
+    if existing["reported_total"] != reported_total:
+        conflicts.append("reported_total")
+    if existing["offering_count"] != offering_count:
+        conflicts.append("offering_count")
+    if existing["offering_set_sha256"] != set_digest:
+        conflicts.append("offering_set_sha256")
+    if existing["canonical_manifest_json"] != manifest_json:
+        conflicts.append("canonical_manifest_json")
+
+    stored_members = connection.execute(
+        "SELECT course_id, class_id, offering_payload_sha256 "
+        f"FROM {ACCEPTANCE_MEMBER_TABLE} WHERE artifact_sha256 = ? AND semester = ? "
+        "AND scope_kind = ? AND scope_id = ? ORDER BY course_id, class_id",
+        (digest, semester, scope.scope_kind, scope.scope_id),
+    ).fetchall()
+
+    stored_pairs = [
+        (row["course_id"], row["class_id"], row["offering_payload_sha256"])
+        for row in stored_members
+    ]
+    incoming_pairs = sorted(
+        (course_id, class_id, payload_sha256)
+        for _digest, _semester, _kind, _scope_id, course_id, class_id, payload_sha256
+        in member_digests
+    )
+
+    if stored_pairs != incoming_pairs:
+        conflicts.append("membership")
+
+    if conflicts:
+        raise ImmutableAcceptanceConflictError(
+            f"acceptance identity {digest[:12]}… 已存在且**不可变**，"
+            f"但本次提交的 {sorted(set(conflicts))} 与之不同；"
+            f"⛔ 拒绝用同一个 acceptance SHA 改写语义内容 / membership"
+            f"（immutable_acceptance_conflict）"
+        )
+
+
+def _require_manifest_trust_chain(
+    raw_manifest: object,
+    *,
+    digest: str,
+    semester: str,
+    scope: SnapshotScope,
+    completeness: str,
+    loaded_count: int,
+    reported_total: int | None,
+    offering_count: int,
+    set_digest: str,
+) -> str:
+    """重算并核对**已持久化**的 canonical manifest（⛔ 不信任 DB 自报的 digest）。
+
+    返回重算出的 `SHA256(canonical stored manifest)`。
+
+    ```text
+    stored bytes → strict parse（未知字段 / 缺字段 / 类型错误一律拒绝）
+                 → SHA256(canonical bytes) 必须 == configured acceptance SHA
+                 → 语义字段必须 == 列式 metadata
+    ```
+
+    ⚠️ 攻击场景：DB 里的 acceptance 记录与 digest 被**一起** rewrite 时，
+    列式 metadata 自洽但 `SHA256(canonical stored manifest)` 不再等于
+    configured SHA ⇒ 这里 fail closed。
+    """
+
+    if not isinstance(raw_manifest, str):
+        raise CourseDataStoreError("stored canonical manifest 必须是 JSON 文本")
+
+    try:
+        manifest = json.loads(raw_manifest)
+    except json.JSONDecodeError as exc:
+        raise CourseDataStoreError(
+            f"stored canonical manifest 不是合法 JSON（第 {exc.lineno} 行）"
+        ) from exc
+
+    validated = _require_stored_manifest_shape(manifest)
+
+    # canonical 形式必须稳定：字节 → 对象 → 字节 必须完全相同。
+    if canonical_manifest_bytes(validated).decode("utf-8") != raw_manifest:
+        raise CourseDataStoreError(
+            "stored canonical manifest 不是 canonical 形式（键顺序 / 空白不同）"
+        )
+
+    recomputed = compute_manifest_sha256(validated)
+    if recomputed != digest:
+        raise CourseDataStoreError(
+            "重算的 SHA256(canonical stored manifest) 与 configured acceptance identity 不一致；"
+            "⛔ 该 acceptance 记录（含 digest）可能被整体 rewrite 过"
+        )
+
+    _require_manifest_matches_metadata(
+        validated,
+        digest=digest,
+        semester=semester,
+        scope=scope,
+        completeness=completeness,
+        loaded_count=loaded_count,
+        reported_total=reported_total,
+        offering_count=offering_count,
+        set_digest=set_digest,
+    )
+
+    return recomputed
 
 
 def _row_to_offering(row: sqlite3.Row) -> CourseOffering:
@@ -1000,8 +1391,8 @@ def load_course_data_acceptances(
     with _open_store(path, must_exist=True, ensure_schema=False) as connection:
         rows = connection.execute(
             "SELECT artifact_sha256, semester, scope_kind, scope_id, source, imported_at, "
-            "completeness, loaded_count, reported_total, offering_count, offering_set_sha256 "
-            f"FROM {ACCEPTANCE_TABLE} {where} "
+            "completeness, loaded_count, reported_total, offering_count, offering_set_sha256, "
+            f"canonical_manifest_json FROM {ACCEPTANCE_TABLE} {where} "
             "ORDER BY imported_at, artifact_sha256, scope_kind, scope_id",
             parameters,
         ).fetchall()
@@ -1019,6 +1410,13 @@ def load_course_data_acceptances(
             reported_total=row["reported_total"],
             offering_count=row["offering_count"],
             offering_set_sha256=row["offering_set_sha256"],
+            canonical_manifest_sha256=(
+                hashlib.sha256(
+                    str(row["canonical_manifest_json"]).encode("utf-8")
+                ).hexdigest()
+                if row["canonical_manifest_json"] is not None
+                else None
+            ),
         )
         for row in rows
     ]
@@ -1039,6 +1437,14 @@ def load_accepted_offerings(
     校验（任一不满足 ⇒ `CourseDataStoreError`，fail closed）：
 
     ```text
+     0. **immutable acceptance identity trust chain**（本轮 BLOCK 的修复点）：
+        configured SHA
+          → 已持久化的 canonical_manifest_json
+          → SHA256(canonical bytes) == configured SHA      （可重算，⛔ 不靠 DB 自报）
+          → manifest 语义字段 == 列式 metadata（semester / scope / counts /
+            offering_set_sha256 / baseline）
+        ⇒ full_semester acceptance 没有 canonical manifest 时**拒绝服务**
+          （没有它就无法重算 identity）；campus acceptance 不要求 manifest。
      1. acceptance 元数据行存在，且 (semester, scope_kind, scope_id, artifact_sha256)
         精确匹配
      2. 与历史审计记录（course_data_import）**同时存在且计数一致**
@@ -1053,9 +1459,10 @@ def load_accepted_offerings(
         （declaration 平面与内容平面必须一致）
     ```
 
-    ⚠️ 第 5/6/7 条才是 BLOCK B3 的修复点：**同数量 / 同身份的"内容替换"
-    无法逃过**；第 1/2 条是 BLOCK B4 的修复点：acceptance 被删除 / 改写后
-    **每一次读取都会重新失败**，⛔ 不依赖构造期缓存。
+    ⚠️ 第 5/6/7 条是 BLOCK B3 的修复点：**同数量 / 同身份的"内容替换"无法逃过**；
+    第 1/2 条是 BLOCK B4 的修复点：acceptance 被删除 / 改写后**每一次读取都会重新失败**；
+    第 0 条是 **immutable acceptance identity** 的修复点：即使记录与 digest 一起被
+    rewrite，重算 `SHA256(canonical stored manifest)` 也**对不上** configured SHA。
 
     - 只读、一次性事务；⛔ 不写库、⛔ 不建表、⛔ 不联网；
     - 返回顺序确定：`ORDER BY course_id, class_id`。
@@ -1078,8 +1485,9 @@ def load_accepted_offerings(
     with _open_store(path, must_exist=True, ensure_schema=False) as connection:
         acceptance_row = connection.execute(
             "SELECT artifact_sha256, semester, scope_kind, scope_id, source, imported_at, "
-            "completeness, loaded_count, reported_total, offering_count, offering_set_sha256 "
-            f"FROM {ACCEPTANCE_TABLE} WHERE artifact_sha256 = ? AND semester = ? "
+            "completeness, loaded_count, reported_total, offering_count, offering_set_sha256, "
+            f"canonical_manifest_json FROM {ACCEPTANCE_TABLE} "
+            "WHERE artifact_sha256 = ? AND semester = ? "
             "AND scope_kind = ? AND scope_id = ?",
             (digest, target_semester, wanted_scope.scope_kind, wanted_scope.scope_id),
         ).fetchone()
@@ -1089,6 +1497,28 @@ def load_accepted_offerings(
                 "本地库中没有与该 acceptance identity 对应的 content-bound 记录；"
                 "⛔ 拒绝退化为『该学期任意行』"
             )
+
+        # ---- 0. immutable acceptance identity trust chain -------------------
+        manifest_sha256: str | None = None
+        raw_manifest = acceptance_row["canonical_manifest_json"]
+        if raw_manifest is not None:
+            manifest_sha256 = _require_manifest_trust_chain(
+                raw_manifest,
+                digest=digest,
+                semester=target_semester,
+                scope=wanted_scope,
+                completeness=acceptance_row["completeness"],
+                loaded_count=acceptance_row["loaded_count"],
+                reported_total=acceptance_row["reported_total"],
+                offering_count=acceptance_row["offering_count"],
+                set_digest=acceptance_row["offering_set_sha256"],
+            )
+        elif wanted_scope.scope_kind == SCOPE_KIND_FULL_SEMESTER:
+            raise CourseDataStoreError(
+                "该 full_semester acceptance 没有持久化的 canonical manifest；"
+                "⛔ 无法重算 acceptance identity ⇒ 拒绝服务（campus acceptance 不受此限）"
+            )
+
         provenance_row = connection.execute(
             "SELECT offering_count, completeness, loaded_count, reported_total "
             f"FROM {IMPORT_RECORD_TABLE} WHERE artifact_sha256 = ? AND semester = ? "
@@ -1113,6 +1543,7 @@ def load_accepted_offerings(
             reported_total=acceptance_row["reported_total"],
             offering_count=acceptance_row["offering_count"],
             offering_set_sha256=acceptance_row["offering_set_sha256"],
+            canonical_manifest_sha256=manifest_sha256,
         )
 
         if (
@@ -1152,8 +1583,13 @@ def load_accepted_offerings(
         members = connection.execute(
             "SELECT course_id, class_id, offering_payload_sha256 "
             f"FROM {ACCEPTANCE_MEMBER_TABLE} WHERE artifact_sha256 = ? AND semester = ? "
-            "ORDER BY course_id, class_id",
-            (digest, target_semester),
+            "AND scope_kind = ? AND scope_id = ? ORDER BY course_id, class_id",
+            (
+                digest,
+                target_semester,
+                wanted_scope.scope_kind,
+                wanted_scope.scope_id,
+            ),
         ).fetchall()
 
         if len(members) != acceptance.offering_count:

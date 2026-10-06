@@ -1730,3 +1730,27 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
   构造后内容 / membership 篡改、两个平面不一致、6 种同数量内容替换、
   陈旧行不泄漏、不缓存 rows）+ store **83 passed**；
 - ⛔ 仍未声称 physical immutability；⛔ 未改 public Schema / frozen Provider contract。
+
+## BLOCK B5：immutable acceptance identity（✅ 已修）
+
+第二个 Codex 对 Provider HEAD `cb585c1` 的独立复现：**同一个 acceptance SHA**
+可以被第二次导入改写（A → B），旧 Provider 随后返回 B —— 即 acceptance SHA
+**没有不可变地绑定**一份 canonical acceptance。
+
+- **持久化 canonical manifest**：`course_data_acceptance.canonical_manifest_json`
+  （与 rows 同事务落库）；不变量：
+  `SHA256(canonical manifest bytes) == acceptance_sha256`（可重算，⛔ 不靠 DB 自报）；
+- **禁止 semantic UPSERT**：同 SHA 已存在 ⇒ 逐项比较（source / completeness /
+  counts / `offering_set_sha256` / manifest 字节 / membership）；
+  完全相同 ⇒ 幂等 no-op，任一不同 ⇒ `ImmutableAcceptanceConflictError`；
+- **membership 不可变**：逐 identity 比较 `offering_payload_sha256`，
+  +1 / -1 / 替换 / 内容变化全部 reject；member 主键补上 `(scope_kind, scope_id)`；
+- **Provider trust chain（每次读取）**：configured SHA → stored canonical manifest →
+  重算 SHA == configured → manifest 语义字段 == 列式 metadata →
+  `merged_offering_set_sha256` → membership 精确集合 → 逐行 payload digest →
+  重算整批 digest → 一致才返回；⛔ 没有 canonical manifest 的 `full_semester`
+  acceptance 拒绝装配；
+- 复现证据：旧 `cb585c1` archive 上 `HAZARD REPRODUCED`；修复后 `ATTACK CLOSED`；
+- 测试：store **106 passed**、provider **57 passed**；mutation sweep
+  **13 killed / 1 可证等价 / 0 survived**；
+- ⛔ 未改 public Schema / frozen Provider contract、⛔ 未 merge main。

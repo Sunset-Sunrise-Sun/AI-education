@@ -19,10 +19,13 @@ from app.course_data import (
     AcceptedDataset,
     CourseDataAcceptanceError,
     CourseDataStoreError,
+    ImmutableAcceptanceConflictError,
     OfferingSnapshot,
     SnapshotScope,
     StoreBackedCourseDataProvider,
+    canonical_manifest_bytes,
     compute_artifact_sha256,
+    compute_manifest_sha256,
     import_offering_snapshot,
     initialize_course_data_store,
     load_accepted_offerings,
@@ -30,6 +33,7 @@ from app.course_data import (
     load_course_data_provenance,
     load_course_offerings,
     load_course_offerings_for_acceptance,
+    offering_set_sha256,
 )
 from app.integration import PlanningOrchestrator
 from app.integration.ports import CourseDataProvider
@@ -89,13 +93,60 @@ def _snapshot(
     )
 
 
+def _manifest_for(
+    offerings: list[CourseOffering],
+    *,
+    semester: str = SEMESTER,
+    inventory_sha256: str | None = None,
+) -> dict[str, object]:
+    """为一份 full_semester 快照构造 canonical manifest（immutable identity）。"""
+
+    total = len(offerings)
+
+    return {
+        "format": "sysu-course-data-full-semester-acceptance-v1",
+        "manifest_version": 2,
+        "tool": "tests/synthetic",
+        "semester": semester,
+        "scope_kind": SCOPE_KIND_FULL_SEMESTER,
+        "scope_id": semester,
+        "source": f"capture://sysu/{semester}/full-semester/{semester}",
+        "inventory_sha256": inventory_sha256 or ("a" * 64),
+        "baseline_before": total,
+        "baseline_after": total,
+        "merged_offering_count": total,
+        "merged_offering_set_sha256": offering_set_sha256(offerings),
+        "shards": [
+            {
+                "shard_id": "east-campus",
+                "openingSchoolNumber": "5063559",
+                "raw_bundle_sha256": "b" * 64,
+                "campus_acceptance_sha256": "b" * 64,
+                "campus_source": f"capture://sysu/{semester}/campus/5063559",
+                "campus_offering_set_sha256": offering_set_sha256(offerings),
+                "page_count": 1,
+                "loaded_count": total,
+                "reported_total": total,
+            }
+        ],
+    }
+
+
 def _accepted_store(
     tmp_path: Path,
     *,
     offerings: list[CourseOffering] | None = None,
-    digest: str = ACCEPTANCE,
+    digest: str | None = None,
     scope: SnapshotScope = FULL_SCOPE,
+    semester: str = SEMESTER,
 ) -> tuple[Path, str]:
+    """导入一份 acceptance 并返回 `(store, acceptance_sha)`。
+
+    ⚠️ `full_semester` 的 identity **必须**由 canonical manifest 重算出来
+    （immutable acceptance identity），因此本 helper 会构造 manifest；
+    `campus` scope 沿用调用方给出的 raw artifact digest（无 manifest）。
+    """
+
     store = tmp_path / "course-data.sqlite3"
     resolved = (
         offerings
@@ -106,10 +157,25 @@ def _accepted_store(
             _offering("SYN-C", "C-01"),
         ]
     )
+    snapshot = _snapshot(resolved, semester=semester)
+
+    if scope.scope_kind == SCOPE_KIND_FULL_SEMESTER:
+        manifest = _manifest_for(resolved, semester=semester)
+        resolved_digest = compute_manifest_sha256(manifest)
+        import_offering_snapshot(
+            store,
+            snapshot,
+            artifact_sha256=resolved_digest,
+            scope=scope,
+            canonical_manifest=manifest,
+        )
+        return store, resolved_digest
+
+    resolved_digest = digest or CAMPUS_ACCEPTANCE
     import_offering_snapshot(
-        store, _snapshot(resolved), artifact_sha256=digest, scope=scope
+        store, snapshot, artifact_sha256=resolved_digest, scope=scope
     )
-    return store, digest
+    return store, resolved_digest
 
 
 def _provider(path: Path, digest: str = ACCEPTANCE) -> StoreBackedCourseDataProvider:
@@ -134,7 +200,7 @@ def _tamper(path: Path, statement: str, parameters: tuple[object, ...]) -> None:
 
 def test_valid_full_semester_store_returns_the_bound_rows(tmp_path: Path) -> None:
     store, digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    provider = _provider(store, digest)
 
     assert provider.semester == SEMESTER
     assert provider.acceptance_sha256 == digest
@@ -148,8 +214,8 @@ def test_valid_full_semester_store_returns_the_bound_rows(tmp_path: Path) -> Non
 
 
 def test_provider_structurally_satisfies_the_frozen_protocol(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
 
     assert isinstance(provider, CourseDataProvider)
     assert list(
@@ -161,7 +227,7 @@ def test_provider_structurally_satisfies_the_frozen_protocol(tmp_path: Path) -> 
 
 
 def test_provider_ordering_is_deterministic(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(
+    store, digest = _accepted_store(
         tmp_path,
         offerings=[
             _offering("SYN-Z", "Z-01"),
@@ -169,7 +235,7 @@ def test_provider_ordering_is_deterministic(tmp_path: Path) -> None:
             _offering("SYN-M", "M-01"),
         ],
     )
-    provider = _provider(store)
+    provider = _provider(store, digest)
 
     keys = [
         (offering.course_id, offering.class_id)
@@ -179,8 +245,8 @@ def test_provider_ordering_is_deterministic(tmp_path: Path) -> None:
 
 
 def test_provider_is_read_only_for_the_store(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
 
     before = load_course_data_provenance(store, semester=SEMESTER)
     provider.get_course_offerings(SEMESTER)
@@ -192,8 +258,8 @@ def test_provider_is_read_only_for_the_store(tmp_path: Path) -> None:
 
 
 def test_orchestrator_receives_the_bound_offerings(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
 
     seen: dict[str, object] = {}
 
@@ -234,11 +300,11 @@ def test_store_acceptance_missing_is_not_ready(tmp_path: Path) -> None:
     initialize_course_data_store(store)
 
     with pytest.raises(CourseDataAcceptanceError):
-        _provider(store)
+        _provider(store, ACCEPTANCE)
 
 
 def test_campus_only_store_is_rejected(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(
+    store, digest = _accepted_store(
         tmp_path,
         offerings=[_offering("SYN-CAMPUS", "C-01")],
         digest=CAMPUS_ACCEPTANCE,
@@ -252,39 +318,39 @@ def test_campus_only_store_is_rejected(tmp_path: Path) -> None:
 
 
 def test_wrong_acceptance_sha256_is_rejected(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
 
     with pytest.raises(CourseDataAcceptanceError):
         _provider(store, OTHER_ACCEPTANCE)
 
 
 def test_wrong_scope_kind_is_rejected(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
     _tamper(
         store, "UPDATE course_data_acceptance SET scope_kind = ?", (SCOPE_KIND_CAMPUS,)
     )
     _tamper(store, "UPDATE course_data_import SET scope_kind = ?", (SCOPE_KIND_CAMPUS,))
 
     with pytest.raises(CourseDataAcceptanceError):
-        _provider(store)
+        _provider(store, digest)
 
 
 def test_wrong_scope_id_is_rejected(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
     _tamper(store, "UPDATE course_data_acceptance SET scope_id = ?", (OTHER_SEMESTER,))
     _tamper(store, "UPDATE course_data_import SET scope_id = ?", (OTHER_SEMESTER,))
 
     with pytest.raises(CourseDataAcceptanceError):
-        _provider(store)
+        _provider(store, digest)
 
 
 def test_incomplete_provenance_is_rejected(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
     _tamper(store, "UPDATE course_data_acceptance SET completeness = ?", ("partial",))
     _tamper(store, "UPDATE course_data_import SET completeness = ?", ("partial",))
 
     with pytest.raises(CourseDataAcceptanceError):
-        _provider(store)
+        _provider(store, digest)
 
 
 @pytest.mark.parametrize(
@@ -300,33 +366,27 @@ def test_incomplete_provenance_is_rejected(tmp_path: Path) -> None:
 def test_store_with_inconsistent_counts_is_not_ready(
     tmp_path: Path, column: str, value: object
 ) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
     _tamper(store, f"UPDATE course_data_acceptance SET {column} = ?", (value,))
     _tamper(store, f"UPDATE course_data_import SET {column} = ?", (value,))
 
     with pytest.raises(CourseDataAcceptanceError):
-        _provider(store)
+        _provider(store, digest)
 
 
 def test_store_with_zero_rows_is_not_ready(tmp_path: Path) -> None:
-    store = tmp_path / "course-data.sqlite3"
-    import_offering_snapshot(
-        store,
-        _snapshot([]),
-        artifact_sha256=ACCEPTANCE,
-        scope=FULL_SCOPE,
-    )
+    store, digest = _accepted_store(tmp_path, offerings=[])
 
     with pytest.raises(CourseDataAcceptanceError):
-        _provider(store)
+        _provider(store, digest)
 
 
 def test_two_planes_must_agree(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
     _tamper(store, "DELETE FROM course_data_import", ())
 
     with pytest.raises(CourseDataAcceptanceError):
-        _provider(store)
+        _provider(store, digest)
 
 
 @pytest.mark.parametrize(
@@ -343,7 +403,7 @@ def test_two_planes_must_agree(tmp_path: Path) -> None:
 def test_store_with_tampered_content_is_not_ready(
     tmp_path: Path, column: str, value: object
 ) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
     _tamper(
         store,
         f"UPDATE course_offering SET {column} = ? WHERE class_id = ?",
@@ -351,11 +411,11 @@ def test_store_with_tampered_content_is_not_ready(
     )
 
     with pytest.raises(CourseDataAcceptanceError):
-        _provider(store)
+        _provider(store, digest)
 
 
 def test_store_with_tampered_membership_is_not_ready(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
     _tamper(
         store,
         "DELETE FROM course_data_acceptance_member WHERE class_id = ?",
@@ -363,11 +423,11 @@ def test_store_with_tampered_membership_is_not_ready(tmp_path: Path) -> None:
     )
 
     with pytest.raises(CourseDataAcceptanceError):
-        _provider(store)
+        _provider(store, digest)
 
 
 def test_deleted_row_is_rejected(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
     _tamper(store, "DELETE FROM course_offering WHERE class_id = ?", ("A-01",))
     _tamper(
         store,
@@ -376,7 +436,7 @@ def test_deleted_row_is_rejected(tmp_path: Path) -> None:
     )
 
     with pytest.raises(CourseDataAcceptanceError):
-        _provider(store)
+        _provider(store, digest)
 
 
 def test_foreign_sqlite_file_is_rejected(tmp_path: Path) -> None:
@@ -397,7 +457,7 @@ def test_missing_sqlite_file_is_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("semester", ["", "   ", None, 5])
 def test_invalid_semester_is_rejected(tmp_path: Path, semester: object) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
 
     with pytest.raises(CourseDataStoreError):
         StoreBackedCourseDataProvider(
@@ -409,7 +469,7 @@ def test_invalid_semester_is_rejected(tmp_path: Path, semester: object) -> None:
 
 @pytest.mark.parametrize("digest", ["", "not-a-digest", "a" * 63, "z" * 64, None])
 def test_invalid_acceptance_digest_is_rejected(tmp_path: Path, digest: object) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, _acceptance = _accepted_store(tmp_path)
 
     with pytest.raises(CourseDataStoreError):
         StoreBackedCourseDataProvider(
@@ -434,7 +494,7 @@ def test_non_path_sqlite_argument_is_rejected() -> None:
 
 
 def test_stale_campus_rows_are_not_served(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
     # 塞一条只有 campus provenance 的陈旧行（不属于本 acceptance）。
     import_offering_snapshot(
         store,
@@ -443,7 +503,7 @@ def test_stale_campus_rows_are_not_served(tmp_path: Path) -> None:
         scope=CAMPUS_SCOPE,
     )
 
-    provider = _provider(store)
+    provider = _provider(store, digest)
     offerings = provider.get_course_offerings(SEMESTER)
 
     assert len(offerings) == 3
@@ -453,7 +513,7 @@ def test_stale_campus_rows_are_not_served(tmp_path: Path) -> None:
 
 
 def test_other_semester_rows_are_not_served(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
+    store, digest = _accepted_store(tmp_path)
     import_offering_snapshot(
         store,
         _snapshot(
@@ -466,15 +526,15 @@ def test_other_semester_rows_are_not_served(tmp_path: Path) -> None:
         ),
     )
 
-    provider = _provider(store)
+    provider = _provider(store, digest)
     offerings = provider.get_course_offerings(SEMESTER)
 
     assert {offering.semester for offering in offerings} == {SEMESTER}
 
 
 def test_requesting_another_semester_fails_closed(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
 
     with pytest.raises(CourseDataAcceptanceError):
         provider.get_course_offerings(OTHER_SEMESTER)
@@ -496,8 +556,8 @@ def test_acceptance_record_removed_after_construction_fails_closed(
 ) -> None:
     """Reviewer probe：构造成功 → 删除 acceptance → **下一次读取必须失败**。"""
 
-    store, _digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
     assert len(provider.get_course_offerings(SEMESTER)) == 3
 
     _tamper(store, "DELETE FROM course_data_acceptance", ())
@@ -507,8 +567,8 @@ def test_acceptance_record_removed_after_construction_fails_closed(
 
 
 def test_import_record_removed_after_construction_fails_closed(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
 
     _tamper(store, "DELETE FROM course_data_import", ())
 
@@ -517,8 +577,8 @@ def test_import_record_removed_after_construction_fails_closed(tmp_path: Path) -
 
 
 def test_content_change_after_construction_fails_closed(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
 
     _tamper(
         store,
@@ -531,8 +591,8 @@ def test_content_change_after_construction_fails_closed(tmp_path: Path) -> None:
 
 
 def test_membership_change_after_construction_fails_closed(tmp_path: Path) -> None:
-    store, _digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
 
     _tamper(
         store,
@@ -548,8 +608,8 @@ def test_membership_change_after_construction_fails_closed(tmp_path: Path) -> No
 def test_new_stale_row_after_construction_does_not_leak(tmp_path: Path) -> None:
     """构造之后塞入陈旧 campus 行 ⇒ 读取仍然只返回被接受的那批行。"""
 
-    store, _digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
 
     import_offering_snapshot(
         store,
@@ -566,8 +626,8 @@ def test_new_stale_row_after_construction_does_not_leak(tmp_path: Path) -> None:
 def test_provider_re_reads_instead_of_caching_rows(tmp_path: Path) -> None:
     """⛔ 不缓存 rows：每次调用都从库里重新物化。"""
 
-    store, _digest = _accepted_store(tmp_path)
-    provider = _provider(store)
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
 
     first = provider.get_course_offerings(SEMESTER)
     second = provider.get_course_offerings(SEMESTER)
@@ -631,3 +691,177 @@ def test_provider_module_has_no_network_imports() -> None:
     for forbidden in ("requests", "httpx", "urllib", "socket", "aiohttp", "http.client"):
         assert f"import {forbidden}" not in source
         assert f"from {forbidden}" not in source
+
+
+# --------------------------------------------------------------------------- #
+# BLOCK: immutable acceptance identity（Codex 复现的攻击 → 回归）
+# --------------------------------------------------------------------------- #
+
+
+def test_same_sha_reimport_with_dataset_b_cannot_replace_dataset_a(tmp_path: Path) -> None:
+    """Codex 攻击的回归：同一个 acceptance SHA 不得被第二次导入改写为 Dataset B。
+
+    攻击（旧 `cb585c1`）：A 落库 → Provider 构造 → 用**同一个 SHA** 导入同数量 /
+    同身份但 payload 不同的 B → store 刷新 acceptance / membership digest
+    → **旧 Provider 返回 B**。
+
+    修复后：
+    ```text
+    B + A 的 manifest（内容不符）      ⇒ reject
+    B + B 的 manifest 但声称 SHA = X  ⇒ reject（manifest SHA ≠ identity）
+    旧 Provider 下一次读取            ⇒ 仍然只能返回 A（或 fail closed）
+    ```
+    """
+
+    snapshot_a = _snapshot([_offering("SYN-A", "A-01", course_name="DATASET_A")])
+    manifest_a = _manifest_for(list(snapshot_a.offerings))
+    digest_a = compute_manifest_sha256(manifest_a)
+
+    store = tmp_path / "course-data.sqlite3"
+    import_offering_snapshot(
+        store,
+        snapshot_a,
+        artifact_sha256=digest_a,
+        scope=FULL_SCOPE,
+        canonical_manifest=manifest_a,
+    )
+
+    provider = _provider(store, digest_a)
+    assert [offering.course_name for offering in provider.get_course_offerings(SEMESTER)] == [
+        "DATASET_A"
+    ]
+
+    # Dataset B：同数量 / 同 identity，仅 payload 不同。
+    snapshot_b = _snapshot(
+        [_offering("SYN-A", "A-01", course_name="DATASET_B_TAMPERED")]
+    )
+    manifest_b = _manifest_for(list(snapshot_b.offerings))
+
+    # (a) 同一个 SHA + A 的 manifest ⇒ reject
+    with pytest.raises(CourseDataStoreError):
+        import_offering_snapshot(
+            store,
+            snapshot_b,
+            artifact_sha256=digest_a,
+            scope=FULL_SCOPE,
+            canonical_manifest=manifest_a,
+        )
+
+    # (b) 同一个 SHA + B 自己的 manifest ⇒ reject（manifest SHA 是另一个 identity）
+    assert compute_manifest_sha256(manifest_b) != digest_a
+    with pytest.raises(CourseDataStoreError):
+        import_offering_snapshot(
+            store,
+            snapshot_b,
+            artifact_sha256=digest_a,
+            scope=FULL_SCOPE,
+            canonical_manifest=manifest_b,
+        )
+
+    # 旧 Provider 仍然只能返回 A。
+    assert [offering.course_name for offering in provider.get_course_offerings(SEMESTER)] == [
+        "DATASET_A"
+    ]
+    assert "DATASET_B_TAMPERED" not in {
+        offering.course_name for offering in provider.get_course_offerings(SEMESTER)
+    }
+
+    # 新构造的 Provider 同样如此。
+    fresh = _provider(store, digest_a)
+    assert [offering.course_name for offering in fresh.get_course_offerings(SEMESTER)] == [
+        "DATASET_A"
+    ]
+
+
+def test_campus_scope_same_sha_reimport_is_rejected(tmp_path: Path) -> None:
+    """没有 manifest 的 campus acceptance 由 immutability 兜底（同 SHA 不同内容 ⇒ reject）。"""
+
+    store, digest = _accepted_store(
+        tmp_path,
+        offerings=[_offering("SYN-CAMPUS", "C-01", course_name="DATASET_A")],
+        digest=CAMPUS_ACCEPTANCE,
+        scope=CAMPUS_SCOPE,
+    )
+
+    with pytest.raises(ImmutableAcceptanceConflictError):
+        import_offering_snapshot(
+            store,
+            _snapshot([_offering("SYN-CAMPUS", "C-01", course_name="DATASET_B")]),
+            artifact_sha256=digest,
+            scope=CAMPUS_SCOPE,
+        )
+
+    dataset = load_accepted_offerings(
+        store, semester=SEMESTER, acceptance_sha256=digest, scope=CAMPUS_SCOPE
+    )
+    assert [offering.course_name for offering in dataset.offerings] == ["DATASET_A"]
+
+
+def test_stored_manifest_rewrite_after_construction_fails_closed(tmp_path: Path) -> None:
+    """DB 里把 canonical manifest 与 digest 一起 rewrite ⇒ 重算对不上 ⇒ 读取失败。"""
+
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
+    assert len(provider.get_course_offerings(SEMESTER)) == 3
+
+    manifest = _manifest_for(
+        [_offering("SYN-A", "A-01"), _offering("SYN-B", "B-01"), _offering("SYN-C", "C-01")]
+    )
+    rewritten = dict(manifest)
+    rewritten["inventory_sha256"] = "c" * 64
+    rewritten_json = canonical_manifest_bytes(rewritten).decode("utf-8")
+
+    connection = sqlite3.connect(str(store))
+    connection.execute(
+        "UPDATE course_data_acceptance SET canonical_manifest_json = ? "
+        "WHERE artifact_sha256 = ?",
+        (rewritten_json, digest),
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(CourseDataAcceptanceError):
+        provider.get_course_offerings(SEMESTER)
+
+
+def test_full_semester_acceptance_without_manifest_is_not_servable(tmp_path: Path) -> None:
+    """⛔ 没有 canonical manifest 的 full_semester acceptance 不得装配 Provider。"""
+
+    store = tmp_path / "course-data.sqlite3"
+    import_offering_snapshot(
+        store,
+        _snapshot([_offering("SYN-A", "A-01")]),
+        artifact_sha256=ACCEPTANCE,
+        scope=FULL_SCOPE,
+    )
+
+    with pytest.raises(CourseDataAcceptanceError):
+        _provider(store, ACCEPTANCE)
+
+
+def test_accepted_read_exposes_the_manifest_identity(tmp_path: Path) -> None:
+    store, digest = _accepted_store(tmp_path)
+
+    dataset = load_accepted_offerings(
+        store, semester=SEMESTER, acceptance_sha256=digest
+    )
+
+    assert dataset.acceptance.canonical_manifest_sha256 == digest
+
+
+def test_acceptance_metadata_mutation_after_construction_fails_closed(tmp_path: Path) -> None:
+    """列式 metadata 被改写（manifest 未动）⇒ 语义交叉核对失败。"""
+
+    store, digest = _accepted_store(tmp_path)
+    provider = _provider(store, digest)
+
+    connection = sqlite3.connect(str(store))
+    connection.execute(
+        "UPDATE course_data_acceptance SET offering_count = 2 WHERE artifact_sha256 = ?",
+        (digest,),
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(CourseDataAcceptanceError):
+        provider.get_course_offerings(SEMESTER)
