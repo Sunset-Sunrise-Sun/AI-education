@@ -516,4 +516,7 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         "/api/v1/completed-courses/import",
         # 成绩单 PDF 摄取（Case A 主路径），⛔ 不是 integration 数据通道。
         "/api/v1/completed-courses/import-pdf",
+        # Distinct Case A demo path; it never changes production /api/v1/plan.
+        "/api/v1/case-a-demo/offerings",
+        "/api/v1/case-a-demo/plan",
     }

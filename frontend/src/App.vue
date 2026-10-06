@@ -9,8 +9,9 @@ import PreferencePanel from './components/PreferencePanel.vue'
 import SectionCard from './components/SectionCard.vue'
 import TopStatusBar from './components/TopStatusBar.vue'
 import UserInputPanel from './components/UserInputPanel.vue'
+import CaseADemoView from './components/CaseADemoView.vue'
 import { useDemoData } from './composables/useDemoData'
-import { DEMO_ENDPOINT, PLAN_API_ENABLED, PLAN_ENDPOINT, initialDataMode } from './config'
+import { CASE_A_DEMO_ENABLED, DEMO_ENDPOINT, PLAN_API_ENABLED, PLAN_ENDPOINT, initialDataMode } from './config'
 import {
   buildRealPlanRequest,
   createDefaultUserInputForm,
@@ -198,7 +199,8 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
+  <CaseADemoView v-if="CASE_A_DEMO_ENABLED" />
+  <div v-else class="page">
     <TopStatusBar :data-source="dataSource" />
 
     <!-- 业务数据流转全景步骤示意（极佳的参赛 Demo 讲解引导条） -->

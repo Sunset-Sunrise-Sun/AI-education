@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api import completed_courses, completed_courses_pdf, health, mock, plan
+from app.api import case_a_demo, completed_courses, completed_courses_pdf, health, mock, plan
 from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
 from app.course_data import CourseDataAcceptanceError
 from app.services.mock_service import MockDataError
@@ -119,3 +119,6 @@ app.include_router(completed_courses.router, prefix=API_V1_PREFIX)
 # 成绩单 PDF 摄取入口（Case A 主路径）：
 # XLSX 入口保持不变、继续作为次要兼容路径；两个入口的错误码彼此独立。
 app.include_router(completed_courses_pdf.router, prefix=API_V1_PREFIX)
+
+# Distinct Case A competition/demo path. It never changes or falls back from production /plan.
+app.include_router(case_a_demo.router, prefix=API_V1_PREFIX)

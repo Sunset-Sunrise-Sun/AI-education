@@ -100,3 +100,17 @@
   `6 failed / 76 passed`；修复后同文件 **82 passed**；
 - **边界**：⛔ 未 merge main、⛔ 未改 Provider store 语义（PROVIDER GATE: PASS）、
   ⛔ 未处理真实 artifact；Gate E / F / G 继续 parked。
+
+### 2026-10-07 - Case A nightly scoped closed-loop integration
+
+- 从 `main@c75b6da` 集成已 Review 的 PDF transcript 与 Case A 南+深圳 scoped provider，
+  新增与 production `/api/v1/plan` 完全分离的 `/api/v1/case-a-demo/*`；
+- combined plan 请求携带 PDF bytes（Base64）、current_schedule、manual attestation 与
+  Preference；服务端重新验证 accepted offering 或明确 student-attested manual source；
+- PDF 内容摘要成为新的 completed source；旧 XLSX source-bound rules / recognition /
+  missing decisions 全部清空，不发明 `pdf:N` 映射；scope/elective/priority case facts保留；
+- Course Data 必须由显式 SQLite、semester、South/SZ exact acceptance SHA 配置构造；
+  缺任一项即 503，不 fallback Mock/Synthetic；公开 provenance 为
+  `case-scoped:south+shenzhen` 且 `is_full_semester=false`；
+- synthetic E2E 覆盖完整编排、pending course IDs、manual attestation、DG-07 UNKNOWN、
+  selected_classes recommendation 与无 Mock fallback；前端独立页面只渲染同一次运行上下文。

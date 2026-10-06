@@ -5,6 +5,8 @@ interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string
   /** 可选：Real Planning 通道开关（`'true'` 才启用）。 */
   readonly VITE_PLAN_API_ENABLED?: string
+  /** Explicitly select the separate Case A closed-loop demo UI. */
+  readonly VITE_CASE_A_DEMO_ENABLED?: string
 }
 
 interface ImportMeta {

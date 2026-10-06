@@ -75,6 +75,20 @@
 
 ## 当前边界
 
+### Case A scoped closed-loop demo（独立于 production runtime）
+
+- 新增私有演示入口：`GET /api/v1/case-a-demo/offerings` 与
+  `POST /api/v1/case-a-demo/plan`；后者把用户上传 PDF、当前课表与 Preference
+  绑定在同一个无状态请求中，不保存学生身份信息；
+- 装配为 PDF `CompletedCourse[]` → 动态 `CurriculumCaseProvider` →
+  `CaseAScopedCourseDataProvider`（南+深圳 campus acceptance）→
+  `RestrictedPlannerProvider`；旧 XLSX source-bound rules / recognitions / missing decisions
+  不会自动重映射到 `pdf:N`；
+- 来源明确标记 `case-scoped:south+shenzhen`，`is_full_semester=false`；
+  ⛔ 不修改 production `build_course_data_provider()`，⛔ 不升级 formal Real E2E LEVEL0；
+- 前端只有显式 `VITE_CASE_A_DEMO_ENABLED=true` 才进入独立页面；同一响应同时渲染
+  MakeupTask、CourseOffering、Preference 与 PlanResult，不与 Mock 上半页混用。
+
 - 未修改 `/schemas/`、frozen Provider contract 或 `PlanningOrchestrator`；
 - 未实现 Curriculum、Course Data 或 Planner 业务算法；
 - 未接入真实教务网络、XLSX 上传或学生身份信息；

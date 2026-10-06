@@ -25,6 +25,10 @@ export const DEMO_ENDPOINT = `${API_BASE_URL}/api/v1/mock/demo`
  */
 export const PLAN_ENDPOINT = `${API_BASE_URL}/api/v1/plan`
 
+export const CASE_A_DEMO_ENABLED: boolean = import.meta.env.VITE_CASE_A_DEMO_ENABLED === 'true'
+export const CASE_A_DEMO_OFFERINGS_ENDPOINT = `${API_BASE_URL}/api/v1/case-a-demo/offerings`
+export const CASE_A_DEMO_PLAN_ENDPOINT = `${API_BASE_URL}/api/v1/case-a-demo/plan`
+
 /**
  * Real Planning 通道开关。
  *
