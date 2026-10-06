@@ -17,3 +17,8 @@ Builder 88 tests passed；diagnostic 5 passed；服务 GET health/mock/frontend/
 POST production plan 503 real_pipeline_not_configured。没有真实学校请求、数据、凭据处理。
 GitHub Git read 正常；gh PR API 返回 Forbidden，无评论权限可用，不索取 token。
 安装/startup draft 保存不等于执行、应用、发布或新任务 restoration 验证。
+
+首次 push 收尾发现 Store Provider branch `13c5556`，继续审查，不修改其实现。
+独立 archive 下 102 Provider/Store existing tests passed；新增 5 probes 验证 stale 隔离
+并复现同数量 identity substitution、valid payload mutation、假 full 声明和 cached record deletion。
+REVIEW.md 追加 B3/B4 finding、复现与最小修复方向。总 probes 10 passed。

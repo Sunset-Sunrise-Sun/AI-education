@@ -12,5 +12,12 @@
 - Formal Real E2E LEVEL0，North operationally suspended；successor synthetic LEVEL1 E2E 是设计，未执行。
 - GitHub PR API Forbidden；未发表 PR 评论，未 merge main。
 
+收尾追加 focused review：Store-backed Builder `13c5556e02c845429c3ff2320a7e07a51e07630f`。
+102 existing tests passed；5 additional probes passed（含 4 风险复现）。
+PASS：排除 stale campus extras、后续 provenance overwrite 导致缺行时拒绝。
+BLOCK B3：same-count identity / valid payload mutation 被接受。
+BLOCK B4：构造后删除 acceptance record，旧 Provider 仍返回 rows。
+总 reviewer probes 10 passed，含诊断复现，不代表正式 gate PASS。
+
 环境使用 `/workspace/.venvs/ai-education`，额外 synthetic document 依赖 python-docx / openpyxl；
 前端使用 workspace npm cache。安装和启动说明已保存为云环境 draft，未发布新环境。

@@ -229,3 +229,42 @@ manifest key排序/whitespace等价 NON-BLOCKING；North suspended remains exter
 3. successor：实现 exact accepted set/content gate、事务一致读取与 mismatch->503，不能使用 semester loader。
 4. CLI import success 不应被 runtime 当 readiness；readback acceptance metadata 不能替代 row validation。
 5. 合并前完成本报告 runtime/E2E matrix；North 未恢复不生成正式 full acceptance。
+
+## Focused follow-up: Store-backed Builder branch
+
+收尾发现并继续审查 `feature/store-backed-course-data-provider`，HEAD
+`13c5556e02c845429c3ff2320a7e07a51e07630f`（main 尚未包含）。
+现有 Provider + Store suites：**102 tests executed / passed**（36 Provider + 66 Store）。
+新增 `test_provider_probes.py`，**5 diagnostic probes passed**；其中 1 验证安全行为，4 复现漏洞。
+运行：`PYTHONPATH=/tmp/ai-education-provider-review/backend /workspace/.venvs/ai-education/bin/python -m pytest /workspace/AI-education/reviewer/full_semester/test_provider_probes.py -q`。
+
+PASS：`load_course_offerings_for_acceptance()` SQL filters semester/full scope/digest，
+旧 campus 差集被排除；后续 campus overwrite 使 count 减少时 `get_course_offerings()` 拒绝。
+requested semester mismatch 不返回 []。低层 R1 semester-union 风险在该 branch 已解决，不能继续
+将这个旧风险当作其现有 bug。
+
+**BLOCK B3：同 cardinality 的 identity/payload mutation 无法被检测。**
+`backend/app/course_data/store_provider.py:231` 开始重读 rows；:237 只比较 len。
+复现 D={accepted}；构造 Provider 后 `UPDATE course_offering SET course_id='substituted'`，
+其余 provenance 不变。现有 Provider 和重新构造的 Provider 都返回 substituted。
+相同 identity 下改合法 course_name 也被接受。SHA pinned 并没有 bind normalized rows。
+最小修复：在可信 acceptance 验证过程中创建 content/membership binding，并按该 binding 校验
+所有身份和公共 payload；可以重放 pinned raw artifacts，也可以 immutable dedicated snapshot。
+不能只把构造时读到的已被替换 rows hash 当作可信预期值。
+
+**BLOCK B4：请求期间 acceptance 失效未被复核。**
+`store_provider.py:193-195` 缓存 record/count；:218-244 后续仅重新读 bound rows。
+复现构造后 `DELETE FROM course_data_import`：旧 Provider 仍返回 rows，新构造立即失败。
+若 runtime 使用长存 Provider，它在 acceptance 不存在时继续服务，违反 exact gate。
+最小修复：metadata+rows 在每次 consistent read transaction 中一起验证，或运行时采用
+已完整验证且 immutable 的 acceptance snapshot 并明确生命周期；不能一半 cached metadata 一半 live rows。
+后续 runtime 不应指望 uncaught `CourseDataAcceptanceError` 自动变 503；需显式映射现有 readiness error。
+
+额外 probe：只调用 current Store 声明 campus-only snapshot 为 full scope 后，这个 Provider 也能
+成功构造。明确批准的 manifest SHA 与可信 acceptance issuance 是必要上游；Provider 本身只验证
+声明记录，并不重新证明 exact five shards。此事实支持 B2/外部 approval gate，不重复算新独立漏洞。
+
+本次总 reviewer probes **10 passed** = Store 3 + full acceptance 2 + Provider 5。
+全套探针的通过不能汇总成 production acceptance PASS。
+最终 BLOCK：B1/B2 acceptance；B3/B4 Store Provider。无 runtime successor branch 可审；
+PR #39 继续 frozen。对应 PR API 被拒绝，评论未发表；修复要求已 push reviewer branch。
