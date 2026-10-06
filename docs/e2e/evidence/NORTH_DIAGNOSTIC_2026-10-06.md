@@ -84,3 +84,45 @@ This evidence intentionally excludes:
 - student personal information.
 
 Only non-sensitive diagnostic metadata is retained.
+
+
+## Fresh-session follow-up
+
+A later fresh authorized session closed the remaining page-1 evidence gap.
+
+### North page 1
+
+- openingSchoolNumber: `5062202`
+- pageNo: `1`
+- pageSize: `200`
+- HTTP: `200`
+- response code: `200`
+- reported total: `405`
+
+### North page 2
+
+- openingSchoolNumber: `5062202`
+- pageNo: `2`
+- pageSize: `200`
+- HTTP: `600`
+- response code: `50015000`
+- reported total: unavailable
+- message: `系统异常`
+
+The diagnostic stopped immediately after page 2 failed.
+
+## Updated conclusion
+
+North page 1 is reachable and reports a current filtered total of `405`, while page 2 fails immediately with HTTP 600 / application code 50015000 in a fresh authorized session.
+
+The supported classification is therefore:
+
+- North first page: available;
+- North filtered pagination beyond the first page: blocked at `pageNo=2` for `pageSize=200`;
+- root cause: unknown;
+- this is **not** classified as rate limiting;
+- North remains **suspended**;
+- no real full-semester acceptance can be produced from the current five-shard path;
+- Formal Real E2E remains **LEVEL 0**.
+
+No further North probing is required to establish this operational classification.
