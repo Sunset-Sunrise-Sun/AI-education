@@ -692,7 +692,8 @@ weeks | location | REDACTED_OPAQUE | activity
   （多页请求 ⇒ **必须**受同一批次冷却约束）；✅ 参数严格白名单
   `semester` / `openingSchoolNumber` / `maxPages`；
 - ⛔ **不参与生产链路**：`collect()` / `collectSharded()` 都不调用它；
-- ⛔ **Layout B parser / 4 字段 redaction / East 重抓仍未获批准**（`f3` 角色未定）；
+- ⚠️ **本诊断保留为 development-only，且不再是前置条件**：Layout B 的字段语义已按裁定
+  确认为 `weeks | location | opaque | activity`（见上文），诊断只在将来需要复核字段来源时使用；
 - ⚠️ **真实 east-campus 诊断必须由负责人在其授权登录会话中手动执行**（Builder 不代跑）；
 - ⚠️ **解释边界（必须与 Review 一起读）**：集合是从**本次扫描的语料**里枚举出来的，
   因此 `*_in_confirmed_activity_set_count = 0` 只表示"该 token 没有出现在本次已确认的
@@ -809,7 +810,8 @@ weeks | location | REDACTED_OPAQUE | activity
   空映射只表示"本次允许比较的 raw string fields 中没有严格相等的取值"，
   ⛔ **不**表示"f3 不来自任何 raw 字段"。
 - ⛔ **仍不支持**：分段式接口**不含** activity-membership 计数（方案 D 的明确取舍）；
-  ⛔ Layout B parser / 4 字段 redaction / East 重抓仍未获批准。
+  ⚠️ 两个诊断**都已保留为 development-only**，且**不再是采集 / 导入的前置条件**
+  （Layout B 语义已裁定为 `weeks | location | opaque | activity`）。
 
 **2 字段（无 teacher）**：
 
