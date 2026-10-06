@@ -291,6 +291,38 @@ python ../tools/case_a_course_data.py smoke \
   runtime Curriculum 装配；两条路都不通 ⇒ **直接失败**（⛔ 没有 Mock fallback）；
 - 输出只含结构性信息：scope 标签、计数、`plan_status`、`changes`、`unresolved[]`。
 
+### 5.4 已实测的真实 CLI 输出（synthetic 数据集，仅供参考形状）
+
+Builder 用**纯 synthetic** 的两校区库实跑过 `verify` / `smoke` / `export`，
+确认三个子命令均可端到端执行（exit 0）。关键形状：
+
+```text
+verify
+  "scope_kind": "case_scoped"
+  "scope_label": "case-a-scoped:south+shenzhen"
+  "is_full_semester": false
+  "openingSchoolNumbers": ["5062201", "333291143"]
+  "duplicate_identity_deduped": 0
+  "provider_is_full_semester": false
+
+smoke
+  "current_schedule_count": 1
+  "plan_status": "partially_feasible"
+  "selected_classes": [ {当前已选班}, {本次可加入的 CLEAR 班} ]
+  "changes": [ {新增 required 任务：唯一 CLEAR 班} ]
+  "unresolved": [ {manual_confirmation: 该任务缺推荐/截止学期},
+                 {manual_confirmation: Preference 字段 max_credit / avoid_cross_campus
+                  的硬软分类或执行口径尚未完整确认} ]
+```
+
+⚠️ 读 `smoke` 输出时必须守住既有口径（⛔ 不得简化）：
+
+- `selected_classes` 是 **建议**课表（含学生当前已选班与本次可加入的 CLEAR 班），
+  ⛔ **不是**已完成选课 / 已注册；
+- Planner 是**受限确定性规划**，⛔ 不是全局最优、⛔ 不是 CP-SAT/ILP、⛔ 不自动注册；
+- **Preference 未被完全执行时会如实出现在 `unresolved`**（上例中的 `max_credit` /
+  `avoid_cross_campus`），⛔ 不得声称每一项偏好都已被执行。
+
 ---
 
 ## 6. 可选：授权页面的「已选课程 / 我的课表」侦察清单（负责人本人执行）
