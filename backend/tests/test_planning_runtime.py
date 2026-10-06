@@ -27,6 +27,7 @@ from app.course_data import (
     SCOPE_KIND_FULL_SEMESTER,
     CourseDataAcceptanceError,
     CourseDataStoreError,
+    ImmutableAcceptanceConflictError,
     ShardArtifact,
     SnapshotScope,
     StoreBackedCourseDataProvider,
@@ -913,3 +914,376 @@ def test_runtime_uses_the_full_semester_scope_constant() -> None:
     # scope 口径只来自 store 的常量，⛔ runtime 不自己造 scope。
     assert SCOPE_KIND_FULL_SEMESTER == "full_semester"
     assert SCOPE_KIND_CAMPUS == "campus"
+
+
+# --------------------------------------------------------------------------- #
+# 异常边界（Codex 11 个 probe）：只有**显式领域失败**才是 503
+#
+# 全部走**真实 dependency**（进程环境 + get_planning_orchestrator + 真实
+# /api/v1/plan），只 monkeypatch **精确的构造 / 调用边界**，并断言**真实 HTTP 状态码**
+# （⛔ 不断言内部 reason code 就当作通过）。
+# --------------------------------------------------------------------------- #
+
+#: 非领域异常（程序缺陷 / 内部错误）：⛔ 必须原样冒出 ⇒ API 500。
+_FOREIGN_EXCEPTION_TYPES = (
+    ValueError,
+    RuntimeError,
+    KeyError,
+    AttributeError,
+    TypeError,
+    OSError,
+    ZeroDivisionError,
+)
+
+
+def _post_plan(
+    monkeypatch: pytest.MonkeyPatch, environment: dict[str, str]
+):
+    """按**进程环境**装配（真实 dependency）并 POST 真实 endpoint。"""
+
+    _install_environment(monkeypatch, environment)
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        return test_client.post(PLAN_PATH, json=_request_payload())
+
+
+def _assert_503(response) -> None:
+    """就绪性失败：503 + `real_pipeline_not_configured`，⛔ 不带 Mock 通道标记。"""
+
+    assert response.status_code == 503, response.text
+    assert response.json()["detail"]["error"] == "real_pipeline_not_configured"
+    assert MOCK_DATA_SOURCE_HEADER not in response.headers
+    assert MOCK_DATA_SOURCE_VALUE not in response.text
+
+
+def _assert_500(response) -> None:
+    """未预期内部错误：500，⛔ 不得伪装成"未装配"。"""
+
+    assert response.status_code == 500, response.text
+    assert "real_pipeline_not_configured" not in response.text
+    assert MOCK_DATA_SOURCE_VALUE not in response.text
+    assert MOCK_DATA_SOURCE_HEADER not in response.headers
+
+
+def _delete_acceptance(environment: dict[str, str]) -> None:
+    sqlite_path = Path(environment["APP_COURSE_DATA_SQLITE_PATH"])
+    digest = environment["APP_COURSE_DATA_ACCEPTANCE_SHA256"]
+    connection = sqlite3.connect(str(sqlite_path))
+    try:
+        connection.execute(
+            "DELETE FROM course_data_acceptance WHERE artifact_sha256 = ?", (digest,)
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+def test_probe_01_missing_db_is_503(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """probe 1：库文件不存在 ⇒ 503。"""
+
+    environment = _environment(tmp_path, sqlite_path=tmp_path / "absent.sqlite3")
+
+    _assert_503(_post_plan(monkeypatch, environment))
+
+
+def test_probe_02_missing_acceptance_is_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe 2：库存在但没有该 acceptance 记录 ⇒ 503。"""
+
+    environment = _environment(tmp_path)
+    # 先证明这份配置本来是 ready 的（否则"503"是空泛结论）。
+    assert build_planning_runtime(environment).ready is True
+    _delete_acceptance(environment)
+
+    _assert_503(_post_plan(monkeypatch, environment))
+
+
+def test_probe_03_wrong_acceptance_sha_is_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe 3：digest 形态合法但不对应库中任何 acceptance ⇒ 503。"""
+
+    environment = _environment(tmp_path)
+    environment["APP_COURSE_DATA_ACCEPTANCE_SHA256"] = "b" * 64
+
+    _assert_503(_post_plan(monkeypatch, environment))
+
+
+def test_probe_04_campus_only_acceptance_is_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe 4：campus-only 库（无 full_semester acceptance）⇒ 503，⛔ 不降级。"""
+
+    campus_store = _campus_only_store(tmp_path)
+    environment = _environment(tmp_path, sqlite_path=campus_store, digest="c" * 64)
+
+    _assert_503(_post_plan(monkeypatch, environment))
+
+
+def test_probe_05_expected_domain_failure_is_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe 5：构造期抛出**显式领域异常** `CourseDataAcceptanceError` ⇒ 503。"""
+
+    environment = _environment(tmp_path)
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        raise CourseDataAcceptanceError("synthetic readiness failure")
+
+    monkeypatch.setattr(planning_runtime, "build_course_data_provider", _explode)
+
+    _assert_503(_post_plan(monkeypatch, environment))
+
+
+def test_probe_06_unrelated_value_error_in_provider_constructor_is_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe 6（BLOCK 本体）：Provider **构造器**抛出无关 `ValueError` ⇒ 500。"""
+
+    environment = _environment(tmp_path)
+
+    def _explode(self: object, **kwargs: object) -> None:
+        raise ValueError("synthetic unrelated ValueError from the provider constructor")
+
+    monkeypatch.setattr(StoreBackedCourseDataProvider, "__init__", _explode)
+
+    _assert_500(_post_plan(monkeypatch, environment))
+
+
+def test_probe_07_unrelated_runtime_error_in_provider_constructor_is_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe 7：Provider 构造器抛出无关 `RuntimeError` ⇒ 500。"""
+
+    environment = _environment(tmp_path)
+
+    def _explode(self: object, **kwargs: object) -> None:
+        raise RuntimeError("synthetic unrelated RuntimeError")
+
+    monkeypatch.setattr(StoreBackedCourseDataProvider, "__init__", _explode)
+
+    _assert_500(_post_plan(monkeypatch, environment))
+
+
+@pytest.mark.parametrize(
+    ("boundary", "exception_type"),
+    [
+        ("planner_factory", AttributeError),
+        ("orchestrator", KeyError),
+        ("curriculum_factory", TypeError),
+    ],
+)
+def test_probe_08_unrelated_programming_error_in_runtime_construction_is_500(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+    exception_type: type[Exception],
+) -> None:
+    """probe 8：构造链上任意一处程序缺陷 ⇒ 500（⛔ 不翻译成"未配置"）。"""
+
+    environment = _environment(tmp_path)
+    message = f"synthetic {exception_type.__name__} in {boundary}"
+
+    if boundary == "planner_factory":
+
+        def _boom(*args: object, **kwargs: object) -> object:
+            raise exception_type(message)
+
+        monkeypatch.setattr(planning_runtime, "build_planner_provider", _boom)
+    elif boundary == "orchestrator":
+
+        class _BoomOrchestrator:
+            def __init__(self, **kwargs: object) -> None:
+                raise exception_type(message)
+
+        monkeypatch.setattr(planning_runtime, "PlanningOrchestrator", _BoomOrchestrator)
+    else:
+
+        def _boom(*args: object, **kwargs: object) -> object:
+            raise exception_type(message)
+
+        monkeypatch.setattr(planning_runtime, "build_curriculum_provider", _boom)
+
+    _assert_500(_post_plan(monkeypatch, environment))
+
+
+def test_probe_09_valid_runtime_still_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe 9：收窄异常边界之后，正常链路仍然成功（⛔ 没有误伤 503/200）。"""
+
+    response = _post_plan(monkeypatch, _environment(tmp_path))
+
+    assert response.status_code == 200, response.text
+    assert "selected_classes" in response.json()
+    assert MOCK_DATA_SOURCE_HEADER not in response.headers
+
+
+def test_probe_10_request_time_acceptance_failure_after_construction_is_503(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """probe 10：runtime **已经构造成功**之后 acceptance 失效 ⇒ 请求期 503。"""
+
+    environment = _environment(tmp_path)
+    _install_environment(monkeypatch, environment)
+
+    orchestrator = get_planning_orchestrator()
+    assert orchestrator is not None
+
+    # 构造之后才删（模拟请求期间库被改写）；dependency 仍然返回**已构造**的 runtime。
+    _delete_acceptance(environment)
+
+    app.dependency_overrides[get_planning_orchestrator] = lambda: orchestrator
+    try:
+        with TestClient(app, raise_server_exceptions=False) as test_client:
+            response = test_client.post(PLAN_PATH, json=_request_payload())
+    finally:
+        app.dependency_overrides.pop(get_planning_orchestrator, None)
+
+    _assert_503(response)
+
+
+@pytest.mark.parametrize("boundary", ["course_data", "planner"])
+def test_probe_11_request_time_unrelated_internal_error_is_500(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    """probe 11：请求期无关内部异常 ⇒ 500（⛔ 不映射成 503）。"""
+
+    environment = _environment(tmp_path)
+    _install_environment(monkeypatch, environment)
+
+    orchestrator = get_planning_orchestrator()
+    assert orchestrator is not None
+
+    def _boom(*args: object, **kwargs: object) -> object:
+        raise ValueError(f"synthetic request-time internal failure in {boundary}")
+
+    if boundary == "course_data":
+        monkeypatch.setattr(StoreBackedCourseDataProvider, "get_course_offerings", _boom)
+    else:
+        monkeypatch.setattr(RestrictedPlannerProvider, "plan", _boom)
+
+    app.dependency_overrides[get_planning_orchestrator] = lambda: orchestrator
+    try:
+        with TestClient(app, raise_server_exceptions=False) as test_client:
+            response = test_client.post(PLAN_PATH, json=_request_payload())
+    finally:
+        app.dependency_overrides.pop(get_planning_orchestrator, None)
+
+    _assert_500(response)
+
+
+# --------------------------------------------------------------------------- #
+# 精确分类证明（非空泛）：领域失败 → 分类；非领域失败 → 原样冒出
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("exception_type", _FOREIGN_EXCEPTION_TYPES)
+def test_foreign_exceptions_from_provider_construction_propagate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exception_type: type[Exception]
+) -> None:
+    """course data 侧：`ValueError` / `RuntimeError` / `OSError` … ⛔ 一律不捕获。"""
+
+    environment = _environment(tmp_path)
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        raise exception_type("synthetic foreign failure")
+
+    monkeypatch.setattr(planning_runtime, "build_course_data_provider", _explode)
+
+    with pytest.raises(exception_type):
+        build_planning_runtime(environment)
+
+
+@pytest.mark.parametrize("exception_type", _FOREIGN_EXCEPTION_TYPES)
+def test_foreign_exceptions_from_curriculum_construction_propagate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, exception_type: type[Exception]
+) -> None:
+    """curriculum 侧：同样只认 `CurriculumNormalizationError` / 内部显式类型。"""
+
+    environment = _environment(tmp_path)
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        raise exception_type("synthetic foreign failure")
+
+    monkeypatch.setattr(planning_runtime, "build_curriculum_provider", _explode)
+
+    with pytest.raises(exception_type):
+        build_planning_runtime(environment)
+
+
+@pytest.mark.parametrize(
+    "domain_error",
+    [CourseDataStoreError, CourseDataAcceptanceError, ImmutableAcceptanceConflictError],
+)
+def test_domain_failures_are_classified_instead_of_propagating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, domain_error: type[Exception]
+) -> None:
+    """显式领域失败（含 acceptance 冲突）⇒ 分类成 `course_data_not_ready`，⛔ 不 500。"""
+
+    environment = _environment(tmp_path)
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        raise domain_error("synthetic domain failure")
+
+    monkeypatch.setattr(planning_runtime, "build_course_data_provider", _explode)
+
+    inspection = build_planning_runtime(environment)
+
+    assert inspection.orchestrator is None
+    assert inspection.reason == "course_data_not_ready"
+
+
+def test_curriculum_domain_failure_is_classified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`CurriculumNormalizationError`（loader 已完成规范化的领域异常）⇒ 分类，⛔ 不 500。"""
+
+    environment = _environment(tmp_path)
+
+    def _explode(*args: object, **kwargs: object) -> None:
+        raise CurriculumNormalizationError("synthetic curriculum domain failure")
+
+    monkeypatch.setattr(planning_runtime, "build_curriculum_provider", _explode)
+
+    inspection = build_planning_runtime(environment)
+
+    assert inspection.orchestrator is None
+    assert inspection.reason == "curriculum_not_ready"
+
+
+def test_runtime_module_only_catches_explicit_domain_exceptions() -> None:
+    """结构层（AST）：runtime 模块里**每一个** `except` 目标都在显式白名单内。
+
+    ⛔ 不允许 `except Exception` / `ValueError` / `RuntimeError` / `OSError` /
+    `BaseException` / 裸 `except:` —— 一旦出现，程序缺陷就会伪装成"未装配"。
+    """
+
+    module_path = REPOSITORY_ROOT / "backend" / "app" / "services" / "planning_runtime.py"
+    tree = ast.parse(module_path.read_text(encoding="utf-8"))
+
+    allowed = {
+        "CurriculumNormalizationError",
+        "_RuntimeSourceUnavailable",
+        "CourseDataStoreError",
+        "_RuntimeConfigurationInvalid",
+    }
+
+    def _names(node: ast.expr | None) -> set[str]:
+        if node is None:  # 裸 except:
+            return {"<bare>"}
+        if isinstance(node, ast.Tuple):
+            return {name for element in node.elts for name in _names(element)}
+        if isinstance(node, ast.Name):
+            return {node.id}
+        if isinstance(node, ast.Attribute):
+            return {node.attr}
+        return {ast.dump(node)}
+
+    handlers = [
+        node for node in ast.walk(tree) if isinstance(node, ast.ExceptHandler)
+    ]
+    assert handlers, "expected the module to have explicit except handlers"
+
+    caught = {name for handler in handlers for name in _names(handler.type)}
+    assert caught <= allowed, f"runtime catches non-domain exceptions: {caught - allowed}"

@@ -70,3 +70,33 @@
 - **边界**：⛔ 未改 frozen Provider Protocol / public Schema / `PlanningOrchestrator`、
   ⛔ 未 merge main 或 PR #39、⛔ 未真实登录、⛔ 未发真实教务请求、⛔ 未处理真实 artifact；
   formal Real E2E 继续 **LEVEL0**。
+
+### 2026-10-06 - Runtime BLOCK：异常边界收窄（只有显式领域失败才是 503）
+
+- **BLOCK（Codex 独立 probe）**：构造期无关 `ValueError` 被
+  `build_planning_runtime()` 的 `except (CourseDataStoreError, OSError, ValueError)` /
+  `except (CurriculumNormalizationError, OSError, ValueError, _RuntimeSourceUnavailable)`
+  吞掉 ⇒ 变成 `503 real_pipeline_not_configured`（程序缺陷伪装成"未配置"）；
+- **修复**：Curriculum 侧只捕 `(CurriculumNormalizationError, _RuntimeSourceUnavailable)`，
+  Course Data 侧只捕 `CourseDataStoreError`（含 `CourseDataAcceptanceError` /
+  `ImmutableAcceptanceConflictError`）；理由：case loader / store 各自**已经**在自己
+  的边界内把 `OSError` / `ValueError` / `RuntimeError` 规范化成领域异常，
+  这里再捕泛型只会吞掉缺陷；⛔ 不捕 `Exception` / `RuntimeError` / 裸 `except:`；
+  ⛔ 未改 public Schema / frozen Provider contract / `PlanningOrchestrator`；
+- **11 个 probe（真实 dependency + 真实 endpoint + 真实 HTTP 状态码）**：
+  ①缺库 ②缺 acceptance ③错 SHA ④campus-only ⑤显式 `CourseDataAcceptanceError`
+  ⇒ **503**；⑥Provider 构造器无关 `ValueError` ⑦无关 `RuntimeError`
+  ⑧构造链程序缺陷（planner factory / orchestrator / curriculum factory）
+  ⇒ **500**；⑨正常链路 ⇒ **200**；⑩构造成功后 acceptance 被删 ⇒ 请求期 **503**；
+  ⑪请求期无关内部异常（provider / planner）⇒ **500**；
+- **精确分类证明**：`ValueError` / `RuntimeError` / `KeyError` / `AttributeError` /
+  `TypeError` / `OSError` / `ZeroDivisionError` 在两个构造边界上**逐类型**
+  `pytest.raises` 冒泡；`CourseDataStoreError` / `CourseDataAcceptanceError` /
+  `ImmutableAcceptanceConflictError` ⇒ `course_data_not_ready`；
+  `CurriculumNormalizationError` ⇒ `curriculum_not_ready`；
+  结构层 AST 断言模块内每个 `except` 目标 ∈ 显式白名单（4 个名字）；
+- **修复前复现**（`eb135a8`）：`test_probe_06…` ⇒ 实际响应
+  `503 {"detail":{"error":"real_pipeline_not_configured"}}`，
+  `6 failed / 76 passed`；修复后同文件 **82 passed**；
+- **边界**：⛔ 未 merge main、⛔ 未改 Provider store 语义（PROVIDER GATE: PASS）、
+  ⛔ 未处理真实 artifact；Gate E / F / G 继续 parked。

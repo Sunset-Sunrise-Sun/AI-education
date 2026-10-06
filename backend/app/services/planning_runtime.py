@@ -55,6 +55,32 @@ ready                          production runtime 可用
 acceptance 绑定、行数与 case 就绪状态都在**每个请求**上重新验证，
 因此启动之后被改写 / 被覆盖的库不会继续被使用。
 
+## 异常边界（硬：⛔ 不得吞掉程序缺陷）
+
+只有**显式领域失败**可以被翻译成"未装配"，其它一切异常必须**原样冒出**：
+
+```text
+→ 503 real_pipeline_not_configured（就绪性 / 配置失败）
+    _RuntimeSourceUnavailable              curriculum source 不满足受控条件
+    _RuntimeConfigurationInvalid           配置值形态非法
+    CurriculumNormalizationError           case 缺失 / 不可读 / 非法 / 未批准
+                                           （loader 自己已把 OSError / ValueError /
+                                            RuntimeError 规范化成这一个领域异常）
+    CourseDataStoreError                   store 领域失败基类
+      ├── CourseDataAcceptanceError        acceptance 缺失 / 失效 / 不匹配
+      └── ImmutableAcceptanceConflictError 同 SHA 的语义冲突（导入期）
+
+→ 500（未预期内部 / 程序错误：⛔ 不捕获、⛔ 不翻译）
+    ValueError    RuntimeError（非上述显式类型）    KeyError
+    AttributeError    TypeError    OSError（未经 loader 规范化）
+    以及其它任何异常
+```
+
+⛔ **不得**捕获 `Exception` / `ValueError` / `RuntimeError` / `OSError` 这类泛型异常：
+一个无关的 `ValueError` 若被这里吞掉，程序缺陷就会伪装成"未配置"（503），
+掩盖真实故障。请求期间的 `CourseDataAcceptanceError` 仍由 `app/main.py` 的显式
+异常处理器映射成同一个 503（⛔ 其它异常不在那里被捕获）。
+
 ## 边界（硬）
 
 - ⛔ **不改** `CourseDataProvider` / `CurriculumProvider` / `PlannerProvider` 三个
@@ -244,9 +270,10 @@ def build_planning_runtime(
     try:
         curriculum = build_curriculum_provider(case_path.strip())
     except (
+        # ⛔ 只捕获**显式领域失败**：case loader / normalizer 已经把
+        #    OSError / ValueError / RuntimeError 规范化成 CurriculumNormalizationError；
+        #    因此这里再捕泛型异常只会吞掉程序缺陷。
         CurriculumNormalizationError,
-        OSError,
-        ValueError,
         _RuntimeSourceUnavailable,
     ):
         return PlanningRuntimeInspection(None, "curriculum_not_ready")
@@ -257,7 +284,10 @@ def build_planning_runtime(
             semester=semester.strip(),
             approved_acceptance_sha256=normalized_digest,
         )
-    except (CourseDataStoreError, OSError, ValueError):
+    except CourseDataStoreError:
+        # ⛔ store 领域失败基类（含 CourseDataAcceptanceError /
+        #    ImmutableAcceptanceConflictError）。⛔ 不捕 ValueError / OSError：
+        #    无关的构造期 ValueError 必须冒到 API 层变成 500。
         return PlanningRuntimeInspection(None, "course_data_not_ready")
 
     return PlanningRuntimeInspection(

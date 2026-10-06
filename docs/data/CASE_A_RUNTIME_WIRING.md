@@ -82,6 +82,31 @@ Course Data 侧校验：全部由 `StoreBackedCourseDataProvider` 在构造期�
 ⚠️ **每次请求重新装配**（不缓存 orchestrator）：acceptance 绑定、行数与 case 就绪状态在每个请求上
 重新验证 ⇒ 启动之后被改写 / 被覆盖的库不会继续被使用。
 
+## 异常边界（硬：503 只给显式领域失败，程序缺陷必须 500）
+
+⛔ **不得**在装配边界上捕获 `Exception` / `ValueError` / `RuntimeError` / `OSError` /
+`BaseException` / 裸 `except:`。一个无关的构造期 `ValueError`（例如 Provider 内部程序缺陷）
+若被吞掉，就会伪装成"未配置"（503），把真实故障藏起来。
+
+```text
+503 real_pipeline_not_configured（显式领域 / 配置失败）
+    _RuntimeSourceUnavailable                 curriculum source 不满足受控条件
+    _RuntimeConfigurationInvalid              配置值形态非法
+    CurriculumNormalizationError              case 缺失 / 不可读 / 非法 / 未批准
+                                              （case loader 自己已把 OSError / ValueError /
+                                               RuntimeError 规范化成这一个领域异常）
+    CourseDataStoreError                      store 领域失败基类
+      ├── CourseDataAcceptanceError           acceptance 缺失 / 失效 / 不匹配
+      └── ImmutableAcceptanceConflictError    同一 acceptance SHA 的语义冲突
+
+500（未预期内部 / 程序错误：⛔ 不捕获、⛔ 不翻译，由 FastAPI 默认处理）
+    ValueError · RuntimeError（非上述显式类型）· KeyError · AttributeError ·
+    TypeError · OSError（未经 loader 规范化）· 以及其它任何异常
+```
+
+请求期间的 `CourseDataAcceptanceError` 仍由 `app/main.py` 的**显式**异常处理器映射成同一个 503
+（⛔ 其它异常不在那里被捕获，仍为 500）。
+
 ## `POST /api/v1/plan` 的真实语义
 
 - 未装配（含全部 fail-closed 情形）⇒ `503 real_pipeline_not_configured`，且**不带**
@@ -93,9 +118,9 @@ Course Data 侧校验：全部由 `StoreBackedCourseDataProvider` 在构造期�
 
 ## 测试
 
-`backend/tests/test_planning_runtime.py`（**47 passed**，synthetic / zero-network）
+`backend/tests/test_planning_runtime.py`（**82 passed**，synthetic / zero-network）
 + `test_real_plan_api.py` / `test_mock_api.py` / `test_integration_orchestrator.py` /
-`test_planner_provider.py` 回归（合计 **307 passed**）：
+`test_planner_provider.py` 回归（合计 **347 passed**）：
 
 ```text
 缺省关闭 / 显式关闭 / 非 0-1 开关值
@@ -107,6 +132,13 @@ planner 收到**恰好**绑定行 + preference / current_schedule 原样传递
 启动后库被改写 ⇒ fail closed，且重新装配同样失败
 未装配 ⇒ 503（无 X-Data-Source）；campus-only 库 ⇒ 503
 已装配 ⇒ 200 + PlanResult 通过公共 Schema；mock 通道仍带 X-Data-Source: mock
+异常边界 11 probe（真实 dependency + 真实 endpoint + 真实 HTTP 状态码）：
+  缺库 / 缺 acceptance / 错 SHA / campus-only / 显式领域异常 ⇒ 503
+  Provider 构造器无关 ValueError / RuntimeError、构造链程序缺陷 ⇒ 500
+  正常链路 ⇒ 200；构造成功后 acceptance 被删 ⇒ 请求期 503；请求期无关内部异常 ⇒ 500
+精确分类：7 种非领域异常在两个构造边界上逐类型冒泡；领域异常 ⇒ 诊断码
+结构层 AST：模块内每个 except 目标 ∈ {CurriculumNormalizationError,
+  _RuntimeSourceUnavailable, CourseDataStoreError, _RuntimeConfigurationInvalid}
 源码级：⛔ 不 import mock 通道 / 快照 Provider / 网络库；⛔ 无旧单 bundle 变量名
 ```
 

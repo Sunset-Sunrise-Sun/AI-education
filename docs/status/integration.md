@@ -35,6 +35,34 @@
 - ⛔ 未给真实 API 增加 `X-Data-Source: real`（仍待裁定）；
 - 使用说明：`docs/data/CASE_A_RUNTIME_WIRING.md`。
 
+## Runtime 异常边界收窄（Codex BLOCK，✅ 已修）
+
+- **BLOCK**：构造期一个**无关的 `ValueError`**（例如 Provider 构造器内部程序缺陷）
+  被 `build_planning_runtime()` 的 `except (CourseDataStoreError, OSError, ValueError)`
+  吞掉 ⇒ 伪装成"未装配" ⇒ `503 real_pipeline_not_configured`。程序缺陷必须 **500**；
+- **修复**：只捕获**显式领域异常**（⛔ 不捕 `ValueError` / `RuntimeError` / `OSError` /
+  `Exception` / 裸 `except:`）：
+
+  ```text
+  503 real_pipeline_not_configured
+      _RuntimeSourceUnavailable · _RuntimeConfigurationInvalid
+      CurriculumNormalizationError            （loader 已把 OSError/ValueError/RuntimeError 规范化）
+      CourseDataStoreError
+        ├── CourseDataAcceptanceError
+        └── ImmutableAcceptanceConflictError
+  500（原样冒出，FastAPI 默认处理）
+      ValueError · RuntimeError（非上述类型）· KeyError · AttributeError · TypeError · OSError …
+  ```
+- **11 个 probe 全部走真实 dependency + 真实 `POST /api/v1/plan` 并断言真实 HTTP 状态码**
+  （缺库 / 缺 acceptance / 错 SHA / campus-only / 显式领域异常 ⇒ 503；
+  无关 `ValueError` / `RuntimeError` / 构造期程序缺陷 ⇒ 500；正常链路 ⇒ 200；
+  请求期 acceptance 失效 ⇒ 503；请求期无关内部异常 ⇒ 500）；
+  另有**精确分类**证明：非领域异常在两个构造边界上**逐个类型**冒泡，
+  领域异常（含 `ImmutableAcceptanceConflictError`）被分类成 `course_data_not_ready`；
+  结构层用 AST 断言模块内**每一个** `except` 目标都在显式白名单内；
+- `eb135a8`（修复前）上同一 probe 复现：`ValueError` ⇒ **503**（Codex 报告的 BLOCK）；
+  修复后 ⇒ **500**；⛔ 未改 public Schema / frozen Provider contract / `PlanningOrchestrator`。
+
 ## Real E2E acceptance criteria prepared
 
 - 已新增验收文档包 `docs/e2e/`：`REAL_CASE_A_ACCEPTANCE.md`（正式定义 + 等级）、
