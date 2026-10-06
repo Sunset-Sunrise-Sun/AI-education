@@ -16,11 +16,23 @@
 | `yearTerm` | → | `semester` | |
 | `score` | → | `credit` | **字符串数字** → `number` |
 | `teachingName` | → | `teacher` | 可选；教师姓名**不入库**（只在本函数内透传） |
-| `limitNumber` | → | `capacity` | |
-| `limitNumber - selectedNumber` | → | `remaining_capacity` | ⚠️ **派生值** |
+| `limitNumber` | → | `capacity` | 来源原始字段，⛔ 不改写 |
+| `limitNumber` / `selectedNumber` | → | `remaining_capacity` | ⚠️ **派生值**，见下方三分支规则 |
 
-⚠️ **`remaining_capacity` 是派生值**：学校接口**并未直接提供**剩余容量，
-它由 `limitNumber - selectedNumber` 相减得到。**不得**把它描述成"接口直接给的字段"。
+⚠️ **`remaining_capacity` 是派生值**：学校接口**并未直接提供**剩余容量。
+真实 2026-1 east artifact 已证明来源里确实存在 `selectedNumber > limitNumber`
+（超员状态），因此**不得**再因为这一关系拒绝整条教学班；
+但此时做减法也**无法**可靠产出符合公共契约的非负剩余容量。规则：
+
+```text
+selectedNumber <  limitNumber → remaining_capacity = limitNumber - selectedNumber
+selectedNumber == limitNumber → remaining_capacity = 0
+selectedNumber >  limitNumber → remaining_capacity = None（unknown）
+```
+
+- ⛔ **不 clamp 到 0**、⛔ **不修改 `capacity`**（它保持来源原值）、⛔ **不新增 `selected_count`**、
+  ⛔ **不修改公共 Schema**、⛔ **不猜学校为何超额**；
+- `None` 表示"**该派生值不可用**"，⛔ 不代表"已满"、⛔ 也不代表"无剩余"。
 
 ## 本轮明确**不映射**的字段
 
@@ -48,7 +60,9 @@ from app.models.contracts import CourseOffering, DataSource, Meeting
 __all__ = [
     "build_course_offering",
     "build_course_offering_from_missing_schedule_field",
+    "build_course_offering_from_non_concrete_schedule",
     "expand_weeks",
+    "is_plain_week_range",
 ]
 
 
@@ -66,83 +80,177 @@ __all__ = [
 #: 那属于"未确认的格式"，一律拒绝而不是宽容接受。
 _PLAIN_WEEK_RANGE = re.compile(r"^([0-9]+)-([0-9]+)周$")
 
-#: 单周语法形状 `N-M单周`。
-#: 只用于**识别**"这看起来像单周"，实际取值仍必须命中 `_ODD_WEEK_TEXTS` 白名单。
+#: 单周语法形状 `N-M单周`（区间内取**奇数周**）。
+#:
+#: ⚠️ Architecture Review 裁定（2026-1 east artifact 已确认存在 `N-M单周` 13 处）
+#: 起**泛化**为任意 `N-M单周`（此前只允许精确取值 `1-17单周`）。
 _ODD_WEEK_RANGE = re.compile(r"^([0-9]+)-([0-9]+)单周$")
 
-#: 单周：**仍然只允许已观察到的精确取值**。
+#: 双周语法形状 `N-M双周`（区间内取**偶数周**）。
+_EVEN_WEEK_RANGE = re.compile(r"^([0-9]+)-([0-9]+)双周$")
+
+#: **weeks 字段**已批准的 qualifier 白名单（Architecture Review 裁定）。
 #:
-#: ⛔ Phase 2B-2B **不把单周泛化成任意 `N-M单周`** ——
-#: 真实样本只确认了 `1-17单周` 这一个取值。
-_ODD_WEEK_TEXTS: dict[str, tuple[int, int]] = {
-    "1-17单周": (1, 17),
-}
+#: ⛔ 这是**独立**于 `_KNOWN_SCHEDULE_QUALIFIERS`（parser 的 non-concrete 路径）
+#: 与 sections suffix 白名单的**第三张**白名单：三处取值即使重合也**互不牵连**。
+#: ⛔ **sections 的 `线上` 不适用于 weeks 字段**（`N-M周线上` 继续 fail closed）。
+WEEK_QUALIFIER_OFF_CAMPUS = "校外"
+WEEK_QUALIFIER_ON_CAMPUS_OUTDOOR = "校内(户外)"
+
+_KNOWN_WEEK_QUALIFIERS = (
+    WEEK_QUALIFIER_OFF_CAMPUS,
+    WEEK_QUALIFIER_ON_CAMPUS_OUTDOOR,
+)
+
+#: 「连续 + 已批准 qualifier」：`N-M周` + 白名单字面量，**整段锚定**。
+#:
+#: ⛔ 不用 `.*`、⛔ 不用 `startswith`、⛔ 不把 qualifier 无条件 strip：
+#: qualifier 的合法性由白名单字面量（逐个 `re.escape`）保证；
+#: qualifier **只做校验**，不改变 weeks 的数学含义。
+_QUALIFIED_CONTINUOUS_WEEK_RANGE = re.compile(
+    r"^([0-9]+)-([0-9]+)周("
+    + "|".join(re.escape(qualifier) for qualifier in _KNOWN_WEEK_QUALIFIERS)
+    + r")$"
+)
+
+#: **仅用于错误分类**（⛔ 不用于接受）：是否形如 `N-M周` + 额外内容，
+#: 用来把"qualifier 未获批准"与"形状本身不认识"分开，且⛔ 不回显任何 token 内容。
+_WEEK_WITH_SUFFIX_PREFIX = re.compile(r"^[0-9]+-[0-9]+周")
+
+#: weeks 错误的**安全稳定分类**（⛔ 不回显 raw weeks token）。
+WEEK_ERROR_UNSUPPORTED_TYPE = "unsupported_week_type"
+WEEK_ERROR_UNSUPPORTED_SHAPE = "unsupported_week_shape"
+WEEK_ERROR_UNSUPPORTED_RANGE = "unsupported_week_range"
+WEEK_ERROR_UNSUPPORTED_QUALIFIER = "unsupported_week_qualifier"
+WEEK_ERROR_UNSUPPORTED_PARITY_RANGE = "unsupported_week_parity_range"
 
 _SUPPORTED_WEEK_TEXTS = (
-    "普通连续周次 `N-M周`（`N >= 1`、`M >= N`）与单周 `1-17单周`"
+    "`N-M周`（连续）/ `N-M单周`（奇数周）/ `N-M双周`（偶数周）/ "
+    "`N-M周` + 已批准 qualifier（校外、校内(户外)）；均要求 N ≥ 1 且 M ≥ N"
 )
+
+
+def is_plain_week_range(text: object) -> bool:
+    """`text` 是否是**普通连续周次** token（`N-M周`，`N >= 1`、`M >= N`）。
+
+    只用于**结构判别**（例如 non-concrete segment 的 `<weeks token>` 是否为该形态），
+    ⛔ 不扩大 `expand_weeks()` 本身接受的语法集合：
+    `1-17单周` 这类**白名单单周**不在此函数返回 `True`，
+    调用方仍应把真正的取值校验交给 `expand_weeks()`。
+    """
+
+    if not isinstance(text, str):
+        return False
+
+    match = _PLAIN_WEEK_RANGE.match(text.strip())
+    if match is None:
+        return False
+
+    start, end = int(match.group(1)), int(match.group(2))
+    return start >= 1 and end >= start
 
 
 def expand_weeks(text: str) -> list[int]:
     """把**已确认语法**的周次文本展开成实际周次数组。
 
-    当前支持（依据 Phase 2B-2B 的脱敏真实样本）：
+    已批准语法（Architecture Review 裁定；2026-1 east artifact 聚合证据：
+    `N-M周校外` 54、`N-M双周` 15、`N-M单周` 13、`N-M周校内(户外)` 11）：
 
     ```text
-    1-5周 / 1-6周 / 1-8周 / 7-8周 / 10-17周   → 连续周次
-    6-6周                                     → [6]（退化区间**合法**）
-    1-17单周                                  → [1, 3, 5, …, 17]
+    N-M周              → 连续全部周次          例如 1-5周   → [1,2,3,4,5]
+    N-M单周            → 区间内**奇数周**      例如 1-17单周 → [1,3,…,17]
+    N-M双周            → 区间内**偶数周**      例如 1-4双周  → [2,4]
+    N-M周校外          → 与 `N-M周` **完全相同**（suffix 只做白名单校验）
+    N-M周校内(户外)    → 与 `N-M周` **完全相同**（suffix 只做白名单校验）
     ```
 
     规则：
 
-    - 普通周次 `N-M周`：要求 `N >= 1` 且 `M >= N`（**允许 `M == N`**）；
-    - 单周：**只**接受已观察到的精确取值 `1-17单周`，
-      **不泛化成任意 `N-M单周`**（那一形态尚无证据）；
-    - ⛔ 其余一律拒绝：双周、逗号组合（`1,3,5周`）、带"第"字前缀（`第1-17周`）、
-      波浪号（`1~17周`）、全角数字、其它组合格式。
+    - 一律要求 `N >= 1` 且 `M >= N`（**允许 `M == N`**）；
+    - 单/双周在区间内按奇偶过滤；**过滤后为空 → fail closed**（⛔ 不生成空 weeks，
+      例如 `3-3双周`）；
+    - qualifier **不改变 weeks 的数学含义**，也⛔ **不写入公共 `Meeting`**
+      （公共 Schema 没有 week qualifier 字段）；
+    - **weeks qualifier 白名单本轮只有 `校外` / `校内(户外)`**：
+      ⛔ `N-M周线上` 继续 fail closed（sections 的 `线上` ⛔ 不迁移到 weeks）；
+    - ⛔ 其余一律拒绝：任意其它 suffix、`N-M周单周`、`N-M单双周`、`N,M周`、
+      `第N-M周`、`N~M周`、全角数字、多段组合（`1-17周,3-4单周`）；
+    - ⛔ **不用 `.*` / `startswith` / 无条件 strip qualifier**：qualifier 由
+      白名单字面量整段锚定校验。
 
-    后续如真实样本出现新的周次语法，**按证据**再加；不凭经验扩展。
+    错误只给**安全稳定分类**（`unsupported_week_type` / `unsupported_week_shape` /
+    `unsupported_week_range` / `unsupported_week_qualifier` /
+    `unsupported_week_parity_range`），⛔ **不回显 raw weeks token**。
 
     这是 Course Data **内部函数**，不是跨模块公共 API。
     """
 
     if not isinstance(text, str):
         raise CourseDataNormalizationError(
-            f"周次必须是字符串，实际是 {type(text).__name__}：{text!r}"
+            f"周次必须是字符串（{WEEK_ERROR_UNSUPPORTED_TYPE}），"
+            f"实际类型是 {type(text).__name__}（⛔ 不回显 raw weeks token）"
         )
 
     candidate = text.strip()
     if not candidate:
-        raise CourseDataNormalizationError("周次文本为空")
+        raise CourseDataNormalizationError(
+            f"周次文本为空（{WEEK_ERROR_UNSUPPORTED_SHAPE}）；"
+            f"只接受 {_SUPPORTED_WEEK_TEXTS}（⛔ 不回显 raw weeks token）"
+        )
 
-    odd_match = _ODD_WEEK_RANGE.match(candidate)
-    if odd_match:
-        observed = _ODD_WEEK_TEXTS.get(candidate)
-        if observed is None:
+    def _checked_range(match: re.Match[str]) -> tuple[int, int]:
+        start, end = int(match.group(1)), int(match.group(2))
+        if start < 1 or end < start:
             raise CourseDataNormalizationError(
-                f"暂不支持的单周格式：{text!r}。当前只接受已观察到的精确取值 "
-                f"`1-17单周`；单周暂不泛化为任意 `N-M单周`（尚无证据）。"
+                f"周次区间非法（{WEEK_ERROR_UNSUPPORTED_RANGE}）："
+                f"要求 N ≥ 1 且 M ≥ N（⛔ 不回显 raw weeks token）"
             )
-        start, end = observed
-        return [week for week in range(start, end + 1) if week % 2 == 1]
+        return start, end
 
+    # 1) 连续：N-M周
     plain_match = _PLAIN_WEEK_RANGE.match(candidate)
     if plain_match:
-        start, end = (int(group) for group in plain_match.groups())
-        if start < 1:
-            raise CourseDataNormalizationError(
-                f"周次起点必须 ≥1：{text!r}（解析出 start={start}）"
-            )
-        if end < start:
-            raise CourseDataNormalizationError(
-                f"周次区间非法（结束早于开始）：{text!r}（start={start}, end={end}）"
-            )
+        start, end = _checked_range(plain_match)
         return list(range(start, end + 1))
 
+    # 2) 连续 + 已批准 qualifier（qualifier 只做白名单校验，不改变含义）
+    qualified_match = _QUALIFIED_CONTINUOUS_WEEK_RANGE.match(candidate)
+    if qualified_match:
+        start, end = _checked_range(qualified_match)
+        return list(range(start, end + 1))
+
+    # 3) 单周 / 双周（parity）
+    for pattern, parity in ((_ODD_WEEK_RANGE, 1), (_EVEN_WEEK_RANGE, 0)):
+        parity_match = pattern.match(candidate)
+        if parity_match:
+            start, end = _checked_range(parity_match)
+            weeks = [week for week in range(start, end + 1) if week % 2 == parity]
+            if not weeks:
+                raise CourseDataNormalizationError(
+                    f"单/双周过滤后为空（{WEEK_ERROR_UNSUPPORTED_PARITY_RANGE}）："
+                    f"该区间内没有符合条件的周次，⛔ 不生成空 weeks"
+                    f"（⛔ 不回显 raw weeks token）"
+                )
+            return weeks
+
+    # 4) 未通过：只做**分类**，不回显 token / qualifier / 任何取值
+    #    多段组合（含逗号）是**形状**问题，不是 qualifier 问题。
+    if "," in candidate:
+        raise CourseDataNormalizationError(
+            f"周次形状未确认（{WEEK_ERROR_UNSUPPORTED_SHAPE}）：一个 weeks 字段只承载"
+            f"**一段**周次，逗号组合（多段）未获批准（⛔ 不回显 raw weeks token）"
+        )
+
+    if _WEEK_WITH_SUFFIX_PREFIX.match(candidate) is not None:
+        raise CourseDataNormalizationError(
+            f"周次 qualifier 未获批准（{WEEK_ERROR_UNSUPPORTED_QUALIFIER}）："
+            f"weeks 字段只接受 {'、'.join(_KNOWN_WEEK_QUALIFIERS)}；"
+            f"⛔ sections 的 `线上` 不适用于 weeks（⛔ 不回显 raw weeks token）"
+        )
+
     raise CourseDataNormalizationError(
-        f"暂不支持的周次格式：{text!r}。当前支持 {_SUPPORTED_WEEK_TEXTS}；"
-        f"其余格式需取得脱敏真实样本后再实现，本轮不猜。"
+        f"周次形状未确认（{WEEK_ERROR_UNSUPPORTED_SHAPE}）："
+        f"只接受 {_SUPPORTED_WEEK_TEXTS}（⛔ 不回显 raw weeks token）"
     )
 
 
@@ -160,7 +268,8 @@ def _require(raw: Mapping[str, object], key: str) -> object:
 def _require_text(value: object, key: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise CourseDataNormalizationError(
-            f"{key} 必须是非空字符串，实际是 {type(value).__name__}：{value!r}"
+            f"{key} 必须是非空字符串，实际类型是 {type(value).__name__}"
+            f"（⛔ 不回显 raw 取值）"
         )
     return value
 
@@ -170,40 +279,53 @@ def _require_count(value: object, key: str) -> int:
 
     if isinstance(value, bool) or not isinstance(value, int):
         raise CourseDataNormalizationError(
-            f"{key} 必须是整数，实际是 {type(value).__name__}：{value!r}"
+            f"{key} 必须是整数，实际类型是 {type(value).__name__}（⛔ 不回显 raw 取值）"
         )
     if value < 0:
-        raise CourseDataNormalizationError(f"{key} 不能为负：{value!r}")
+        raise CourseDataNormalizationError(f"{key} 不能为负（⛔ 不回显 raw 取值）")
     return value
 
 
 def _parse_credit(value: object) -> float:
-    """`score` 是**字符串数字**（已确认真实格式），转换成 `number`。
+    r"""`score` 是**字符串数字**（已确认真实格式），转换成 `number`。
 
-    ✅ 只接受**已经确认**的形态：字符串数字，例如 `"3"` / `"3.0"` / `" 3 "`
-    （去掉首尾空白后仍是数字）。
+    ✅ 只接受**已经确认**的形状（Architecture Review 裁定；2026-1 east artifact
+    已确认存在 98 个 `.N` 形式的 `score`）：
 
-    ⛔ **数值型 `score`（`3` / `3.0`）目前没有真实来源证据**，因此**当前拒绝**。
-    `docs/data/SYSU_COURSE_OFFERING_RECON.md` 只确认了"`score` 是字符串数字"；
-    如果后续**脱敏真实样本**显示 `score` 也可能是 JSON number，再据实放宽。
+    ```text
+    [0-9]+            例如 "3"   → 3.0
+    [0-9]+\.[0-9]+    例如 "3.0" → 3.0 / "0.5" → 0.5
+    \.[0-9]+          例如 ".5"  → 0.5 / ".0"  → 0.0
+    ```
 
-    继续拒绝：布尔、负数、空字符串、非数字文本（例如 `"3学分"`）。
+    ⛔ **不用宽松的 `float()` 替代语法校验**：`float()` 还会接受符号位、指数写法、
+    `nan` / `inf` 等未确认形态，且规则不在本文件里显式可见。
+    ⛔ 继续拒绝：符号位（`-.5` / `+.5`）、`3.`、`.`、`..5`、`1.2.3`、全角数字、
+    带单位文本（`"3学分"`）、布尔 / 数值型 / 其它类型。
+    ⛔ **数值型 `score`（`3` / `3.0`）仍无真实来源证据，继续拒绝**；
+    若后续脱敏真实样本显示它也可能是 JSON number，再据实放宽。
+
+    抛错时只给**安全稳定分类**（`unsupported_credit_type` / `unsupported_credit_format`），
+    ⛔ **不回显 raw score**。
     """
 
     if not isinstance(value, str):
         raise CourseDataNormalizationError(
-            f"score 必须是**字符串**形式的数字（已确认真实格式），"
-            f"实际是 {type(value).__name__}：{value!r}；"
-            f"数值型 score 尚无真实来源证据，本轮拒绝"
+            f"score 必须是**字符串**形式的数字（{CREDIT_ERROR_UNSUPPORTED_TYPE}），"
+            f"实际类型是 {type(value).__name__}（⛔ 不回显 raw score）；"
+            f"数值型 score 尚无真实来源证据，本轮仍拒绝"
         )
 
     candidate = value.strip()
-    if not re.fullmatch(r"[0-9]+(\.[0-9]+)?", candidate):
+    if _CREDIT_PATTERN.match(candidate) is None:
         raise CourseDataNormalizationError(
-            f"score 不是合法的字符串数字：{value!r}（已确认真实格式为字符串数字）"
+            f"score 形状未确认（{CREDIT_ERROR_UNSUPPORTED_FORMAT}）：只接受 "
+            f"`[0-9]+` / `[0-9]+.[0-9]+` / `.[0-9]+`（⛔ 不回显 raw score；"
+            f"已确认真实格式为字符串数字）"
         )
 
-    # 正则已排除符号位，因此结果必然 ≥0。
+    # 正则已排除符号位 / 全角 / 单位文本，因此这里可以安全地转成 float：
+    # 结果必然 ≥ 0，且不会出现 `nan` / `inf`。
     return float(candidate)
 
 
@@ -221,7 +343,8 @@ def _optional_teacher(raw: Mapping[str, object]) -> str | None:
         return None
     if not isinstance(value, str):
         raise CourseDataNormalizationError(
-            f"teachingName 类型不符合已确认语义：{type(value).__name__}（{value!r}）"
+            f"teachingName 类型不符合已确认语义：{type(value).__name__}"
+            f"（⛔ 不回显 raw 取值；教师姓名不入库）"
         )
     return value
 
@@ -274,7 +397,8 @@ def _require_source(source: str) -> str:
 #:
 #: ⚠️ **`selectedNumber` 的处理口径**：当前 2B-2A 的 **narrow normalizer**
 #: **基于已观察到的 D5 字段**把它作为必要字段（缺失即失败），因为
-#: `remaining_capacity = limitNumber - selectedNumber` 需要它。
+#: `remaining_capacity` 需要它（三分支规则见模块 docstring：
+#: `<` 相减、`==` 取 0、`>` 取 `None`）。
 #:
 #: 这**不等于**"SYSU 所有记录必然都有 `selectedNumber`" ——
 #: 该字段是否**总是**存在，目前**没有**证据。
@@ -293,6 +417,23 @@ _REQUIRED_RAW_FIELDS = (
 #: 排课字段名（Raw 侧）。**只有**它"属性不存在"时才允许走 empty path（DG-07B）。
 _SCHEDULE_RAW_FIELD = "teachingTimePlaceStr"
 
+#: 已确认的 `score` 形状（**语法校验**；Architecture Review 裁定，
+#: 2026-1 east artifact 已确认存在 98 个 `.N` 形式）：
+#:
+#: ```text
+#: [0-9]+            例如 "3"   → 3.0
+#: [0-9]+\.[0-9]+    例如 "3.0" → 3.0 / "0.5" → 0.5
+#: \.[0-9]+          例如 ".5"  → 0.5 / ".0"  → 0.0
+#: ```
+#:
+#: ⛔ **不用宽松的 `float()` 代替语法校验**（会额外接受符号位 / 指数 / `nan` / `inf`）；
+#: ⛔ 继续拒绝符号位、`3.`、`.`、`..5`、`1.2.3`、全角数字、带单位文本、数值型 / 布尔。
+_CREDIT_PATTERN = re.compile(r"^(?:[0-9]+|[0-9]+\.[0-9]+|\.[0-9]+)$")
+
+#: credit 错误的**安全稳定分类**（⛔ 不回显 raw score）。
+CREDIT_ERROR_UNSUPPORTED_TYPE = "unsupported_credit_type"
+CREDIT_ERROR_UNSUPPORTED_FORMAT = "unsupported_credit_format"
+
 
 def _build_common_offering_fields(raw: Mapping[str, object], *, source: str) -> dict[str, object]:
     """**共用**的公共字段构造（不含 `meetings`）。
@@ -300,6 +441,20 @@ def _build_common_offering_fields(raw: Mapping[str, object], *, source: str) -> 
     ⛔ 这里**只有一份**字段映射：正常 Meeting 路径与 missing-schedule 路径**共用它**，
     避免两处复制 `courseNum` / `courseName` / `classNumber` / `yearTerm` / `score` /
     `limitNumber` / `selectedNumber` 的转换逻辑。
+
+    `remaining_capacity` 是**派生值**，按三分支规则（Architecture Review 裁定，
+    真实 2026-1 east artifact 已证明来源里存在 `selectedNumber > limitNumber`）：
+
+    ```text
+    selected <  capacity → capacity - selected（正常差值）
+    selected == capacity → 0
+    selected >  capacity → None（unknown）
+    ```
+
+    - ⛔ **不 clamp 到 0**、⛔ **不改写 `capacity`**（保持来源 `limitNumber` 原值）、
+      ⛔ **不新增 `selected_count`**、⛔ **不修改公共 Schema**、⛔ **不猜学校为何超额**；
+    - `None` = "该派生值不可用"，⛔ 不表示"已满"，⛔ 也不表示"无剩余"；
+    - ⛔ `selected > capacity` **不再**拒绝整条教学班（此前会 fail closed）。
 
     这是 Course Data **内部** private helper：不进 `docs/interfaces/`、不进 Provider / API、
     不是新的公共 Schema。
@@ -321,14 +476,17 @@ def _build_common_offering_fields(raw: Mapping[str, object], *, source: str) -> 
     capacity = _require_count(_require(raw, "limitNumber"), "limitNumber")
     selected = _require_count(_require(raw, "selectedNumber"), "selectedNumber")
 
-    if selected > capacity:
-        raise CourseDataNormalizationError(
-            f"selectedNumber({selected}) 不能大于 limitNumber({capacity})："
-            f"{class_id}"
-        )
+    # ⚠️ 派生值：学校接口没有直接提供剩余容量。
+    remaining_capacity: int | None
 
-    # ⚠️ 派生值：学校接口没有直接提供剩余容量，它是相减得到的。
-    remaining_capacity = capacity - selected
+    if selected < capacity:
+        remaining_capacity = capacity - selected
+    elif selected == capacity:
+        remaining_capacity = 0
+    else:
+        # selected > capacity：减法无法可靠生成**非负**的剩余容量，
+        # 因此降级为 unknown（None），⛔ 不 clamp 到 0、⛔ 不拒绝整条教学班。
+        remaining_capacity = None
 
     return {
         "course_id": course_id,
@@ -408,6 +566,40 @@ def build_course_offering_from_missing_schedule_field(
         raise CourseDataNormalizationError(
             f"Raw row 存在 `{_SCHEDULE_RAW_FIELD}` 字段，不得走 missing-schedule 路径："
             f"字段存在时必须由 parser 解析，解析失败应整体失败（不回显取值）"
+        )
+
+    return CourseOffering(
+        **_build_common_offering_fields(raw, source=source),  # type: ignore[arg-type]
+        meetings=[],
+    )
+
+
+def build_course_offering_from_non_concrete_schedule(
+    raw: Mapping[str, object],
+    *,
+    source: str,
+) -> CourseOffering:
+    """**窄语义**路径：当 `teachingTimePlaceStr` **存在且已被解析**，
+    但其中**没有任何 concrete segment**（即全部是 non-concrete）时，
+    构造 `meetings = []` 的 `CourseOffering`。
+
+    语义（与 DG-07B 一致，且**不混用**）：
+
+    - `meetings = []` 表示「**有课程安排信息，但不足以确定时间冲突**」——
+      由现有 **DG-07** 语义承接为 **schedule UNKNOWN**；
+    - ⛔ 本函数**不解析**任何文本、**不吞**任何异常；调用方必须已经成功
+      `parse_teaching_time_place()` 并确认 `extract_meetings()` 为空；
+    - ⛔ 与 `build_course_offering_from_missing_schedule_field()` **不是同一条路径**：
+      后者要求 `teachingTimePlaceStr` **属性不存在**，本函数要求"属性存在且已解析"。
+      两者都不接受"字段存在但解析失败"。
+
+    ⚠️ 这是 Course Data **内部函数**：不进 `docs/interfaces/`、不进 Provider / API、
+    不是新的公共 Schema。
+    """
+
+    if not isinstance(raw, Mapping):
+        raise CourseDataNormalizationError(
+            f"raw 必须是字段映射，实际是 {type(raw).__name__}"
         )
 
     return CourseOffering(

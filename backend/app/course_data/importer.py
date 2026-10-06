@@ -53,6 +53,7 @@ from app.course_data.errors import CourseDataNormalizationError
 from app.course_data.normalization import (
     build_course_offering,
     build_course_offering_from_missing_schedule_field,
+    build_course_offering_from_non_concrete_schedule,
 )
 from app.course_data.schedule_parser import extract_meetings, parse_teaching_time_place
 from app.course_data.snapshot import OfferingSnapshot
@@ -134,12 +135,15 @@ def _require_rows(data: Mapping[str, object]) -> list[Mapping[str, object]]:
 def _build_offering_from_row(row: Mapping[str, object], *, source: str) -> CourseOffering:
     """把一条 Raw row 转成 `CourseOffering`。
 
-    ⛔ **两类状态必须严格分开**（DG-07B 的核心）：
+    ⛔ **三类状态必须严格分开**（DG-07B 的核心 + 2026-1 non-concrete 证据）：
 
     - **`teachingTimePlaceStr` 属性不存在** → 来源快照没有提供可形成公共 `Meeting`
       的排课信息 → 走**窄语义** normalizer，`meetings = []`；
-    - **字段存在** → **原样**交给 `parse_teaching_time_place()`；
-      `null` / 空串 / 非字符串 / 畸形 / 无法解析 → **整体失败**。
+    - **字段存在，解析成功但没有任何 concrete segment**（例如只有 `12-19周校外/实验实践环节`
+      这类 non-concrete 段）→ 同样 `meetings = []`（**schedule UNKNOWN**），
+      但走**另一条**窄语义路径；
+    - **字段存在但解析失败**（`null` / 空串 / 非字符串 / 畸形 / 字段数不支持）
+      → **整体失败**。
 
     ⛔ 这里**没有** `try/except`：解析异常**不会**被吞成 `meetings = []`。
     """
@@ -149,6 +153,12 @@ def _build_offering_from_row(row: Mapping[str, object], *, source: str) -> Cours
 
     segments = parse_teaching_time_place(row[_SCHEDULE_FIELD])  # type: ignore[arg-type]
     meetings = extract_meetings(segments)
+
+    if not meetings:
+        # parse 成功但没有任何 concrete segment（全部是 non-concrete）。
+        # ⛔ 不是"解析失败"：`ParsedScheduleSegment` 仍在 `segments` 中，
+        # 只是不足以构成公共 `Meeting`。
+        return build_course_offering_from_non_concrete_schedule(row, source=source)
 
     return build_course_offering(row, meetings=meetings, source=source)
 

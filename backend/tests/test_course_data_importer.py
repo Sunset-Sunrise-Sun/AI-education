@@ -147,6 +147,270 @@ def test_data_source_is_real_and_source_is_preserved() -> None:
     assert offering.source == SOURCE
 
 
+# ---------------------------------------------------------------------------
+# non-concrete schedule（2026-1 真实证据新增）
+# ---------------------------------------------------------------------------
+
+
+def test_non_concrete_only_schedule_produces_empty_meetings() -> None:
+    """`12-19周校外/实验实践环节`（见习类课程）→ `meetings == []`，row 不被跳过。
+
+    ⚠️ 语义：**有课程安排信息，但不足以确定时间冲突**（没有 weekday / sections /
+    具体地点），由现有 **DG-07** 承接为 **schedule UNKNOWN**。
+    ⛔ 这与"字段不存在"是**两条不同路径**，但都产出 `meetings == []`。
+    """
+
+    snapshot = _import([_row(teachingTimePlaceStr="12-19周校外/实验实践环节")], total=1)
+
+    assert snapshot.loaded_count == 1
+    assert snapshot.offerings[0].meetings == []
+    assert snapshot.offerings[0].data_source is DataSource.REAL
+
+
+def test_non_concrete_with_concrete_in_same_snapshot_keeps_both_rows() -> None:
+    """混合：concrete row + non-concrete row → 两条都保留（⛔ 不丢 row）。"""
+
+    snapshot = _import(
+        [
+            _row(classNumber="6200100120260101"),
+            _row(
+                classNumber="6200100120260102",
+                teachingTimePlaceStr="12-19周校外/实验实践环节",
+            ),
+        ],
+        total=2,
+    )
+
+    assert snapshot.loaded_count == 2
+    assert len(snapshot.offerings[0].meetings) >= 1
+    assert snapshot.offerings[1].meetings == []
+
+
+def test_malformed_schedule_still_fails_whole_import() -> None:
+    """⛔ non-concrete 支持**不得**放宽"解析失败"：未知 2 字段仍整体失败。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([_row(teachingTimePlaceStr="12-19周未知词/实验实践环节")], total=1)
+
+
+def test_three_field_non_concrete_schedule_produces_empty_meetings() -> None:
+    """3 字段 non-concrete（`1-17周/示例教师/实验实践环节`）→ `meetings == []`。
+
+    走**已有的** narrow non-concrete path，⛔ **未新增第二套 importer 逻辑**。
+    """
+
+    snapshot = _import(
+        [_row(teachingTimePlaceStr="1-17周/示例教师/实验实践环节")], total=1
+    )
+
+    assert snapshot.loaded_count == 1
+    assert snapshot.offerings[0].meetings == []
+
+
+def test_two_and_three_field_non_concrete_coexist_in_one_snapshot() -> None:
+    """两种 non-concrete（2 字段与 3 字段）可同时存在，都产出 `meetings == []`。"""
+
+    snapshot = _import(
+        [
+            _row(classNumber="6200100120260101", teachingTimePlaceStr="12-19周校外/实验实践环节"),
+            _row(classNumber="6200100120260102", teachingTimePlaceStr="1-17周/示例教师/实验实践环节"),
+        ],
+        total=2,
+    )
+
+    assert snapshot.loaded_count == 2
+    assert snapshot.offerings[0].meetings == []
+    assert snapshot.offerings[1].meetings == []
+
+
+def test_five_field_non_concrete_layout_a_produces_empty_meetings() -> None:
+    """**5 字段 non-concrete layout A**（`weeks | weekday | location | REDACTED | activity`）
+    → `meetings == []`（schedule UNKNOWN），⛔ 未新增 importer 逻辑。
+
+    走**已有的** narrow non-concrete path（`extract_meetings()` 为空 ⇒
+    `build_course_offering_from_non_concrete_schedule()`）。
+    ⛔ `meetings == []` **不表示** conflict-free。
+    """
+
+    snapshot = _import(
+        [
+            _row(
+                teachingTimePlaceStr=(
+                    "1-5周/星期五/示例校区-示例教学楼-2108/REDACTED/实验实践环节"
+                )
+            )
+        ],
+        total=1,
+    )
+
+    offering = snapshot.offerings[0]
+
+    assert snapshot.loaded_count == 1
+    assert offering.meetings == [], "⛔ 不得因为该 layout 丢 row，也不得伪造 Meeting"
+    assert offering.data_source is DataSource.REAL
+    # ⛔ capacity / credit 等公共字段仍然正常产出
+    assert offering.capacity == 90
+    assert offering.credit == 3.0
+
+
+def test_five_field_non_concrete_layout_a_coexists_with_concrete_row() -> None:
+    """layout A 与 concrete row 同在一个 snapshot：两条都保留、只有 concrete 有 Meeting。"""
+
+    snapshot = _import(
+        [
+            _row(
+                classNumber="6200100120260101",
+                teachingTimePlaceStr=(
+                    "1-5周/星期五/示例校区-示例教学楼-2108/REDACTED/实验实践环节"
+                ),
+            ),
+            _row(classNumber="6200100120260102", teachingTimePlaceStr=SCHEDULE_NO_LOCATION),
+        ],
+        total=2,
+    )
+
+    assert snapshot.loaded_count == 2
+    assert snapshot.offerings[0].meetings == []
+    assert len(snapshot.offerings[1].meetings) == 1
+
+
+def test_four_field_non_concrete_layout_b_produces_empty_meetings() -> None:
+    """**4 字段 non-concrete layout B**（`weeks | location | REDACTED_OPAQUE | activity`）
+    → `meetings == []`（schedule UNKNOWN），⛔ 未新增 importer 逻辑。
+
+    走**已有的** narrow non-concrete path（`extract_meetings()` 为空 ⇒
+    `build_course_offering_from_non_concrete_schedule()`）。
+    ⛔ `meetings == []` **不表示** conflict-free / 无课 / 异步。
+    """
+
+    snapshot = _import(
+        [
+            _row(
+                teachingTimePlaceStr=(
+                    "1-5周/示例校区-示例教学楼-2108/REDACTED_OPAQUE/实验实践环节"
+                )
+            )
+        ],
+        total=1,
+    )
+
+    offering = snapshot.offerings[0]
+
+    assert snapshot.loaded_count == 1
+    assert offering.meetings == [], "⛔ 不得因为该 layout 丢 row，也不得伪造 Meeting"
+    assert offering.data_source is DataSource.REAL
+    # ⛔ capacity / credit 等公共字段仍然正常产出
+    assert offering.capacity == 90
+    assert offering.credit == 3.0
+
+
+def test_four_field_non_concrete_layout_b_coexists_with_concrete_row() -> None:
+    """layout B 与 concrete row 同在一个 snapshot：两条都保留、只有 concrete 有 Meeting。"""
+
+    snapshot = _import(
+        [
+            _row(
+                classNumber="6200100120260101",
+                teachingTimePlaceStr=(
+                    "1-5周/示例校区-示例教学楼-2108/REDACTED_OPAQUE/实验实践环节"
+                ),
+            ),
+            _row(classNumber="6200100120260102", teachingTimePlaceStr=SCHEDULE_NO_LOCATION),
+        ],
+        total=2,
+    )
+
+    assert snapshot.loaded_count == 2
+    assert snapshot.offerings[0].meetings == []
+    assert len(snapshot.offerings[1].meetings) == 1
+
+
+def test_four_field_layout_b_with_raw_opaque_fails_whole_import() -> None:
+    """⛔ **未脱敏**的原始 opaque 取值 → 整体失败（⛔ 不静默接受、⛔ 不猜语义）。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import(
+            [
+                _row(
+                    teachingTimePlaceStr=(
+                        "1-5周/示例校区-示例教学楼-2108/示例原始值/实验实践环节"
+                    )
+                )
+            ],
+            total=1,
+        )
+
+
+def test_three_field_with_bad_weeks_still_fails_whole_import() -> None:
+    """3 字段 weeks 非法 → 整体失败（⛔ 不静默接受）。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([_row(teachingTimePlaceStr="abc周/示例教师/实验实践环节")], total=1)
+
+
+def test_three_field_qualified_non_concrete_produces_empty_meetings() -> None:
+    """3 字段 qualified（`16-16周校内(户外)/教师/实验实践环节`）→ `meetings == []`。
+
+    与其它 non-concrete 一样走**已有的** narrow path，⛔ 未新增 importer 路径。
+    """
+
+    snapshot = _import(
+        [_row(teachingTimePlaceStr="16-16周校内(户外)/示例教师/实验实践环节")], total=1
+    )
+
+    assert snapshot.loaded_count == 1
+    assert snapshot.offerings[0].meetings == []
+
+
+def test_three_field_unknown_qualifier_fails_whole_import() -> None:
+    """⛔ 未确认 qualifier → 整体失败。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([_row(teachingTimePlaceStr="16-16周未知文本/示例教师/实验实践环节")], total=1)
+
+
+def test_two_field_plain_non_concrete_produces_empty_meetings() -> None:
+    """2 字段 plain（`1-17周/实验实践环节`）→ `meetings == []`。
+
+    与其它 non-concrete 一样走**已有的** narrow path，⛔ 未新增 importer 路径。
+    """
+
+    snapshot = _import([_row(teachingTimePlaceStr="1-17周/实验实践环节")], total=1)
+
+    assert snapshot.loaded_count == 1
+    assert snapshot.offerings[0].meetings == []
+
+
+def test_two_field_plain_with_bad_weeks_fails_whole_import() -> None:
+    """2 字段 plain weeks 非法 → 整体失败。"""
+
+    with pytest.raises(CourseDataNormalizationError):
+        _import([_row(teachingTimePlaceStr="abc周/实验实践环节")], total=1)
+
+
+def test_all_five_confirmed_shapes_coexist_in_one_snapshot() -> None:
+    """五种已确认形态可共存于一个快照，全部保留、均不丢 row。"""
+
+    snapshot = _import(
+        [
+            _row(classNumber="6200100120260101"),  # concrete（5 字段）
+            _row(classNumber="6200100120260102", teachingTimePlaceStr="1-17周/实验实践环节"),
+            _row(classNumber="6200100120260103", teachingTimePlaceStr="12-19周校外/实验实践环节"),
+            _row(classNumber="6200100120260104", teachingTimePlaceStr="1-17周/示例教师/实验实践环节"),
+            _row(
+                classNumber="6200100120260105",
+                teachingTimePlaceStr="16-16周校内(户外)/示例教师/实验实践环节",
+            ),
+        ],
+        total=5,
+    )
+
+    assert snapshot.loaded_count == 5
+    assert len(snapshot.offerings[0].meetings) >= 1
+    for offering in snapshot.offerings[1:]:
+        assert offering.meetings == []
+
+
 def test_multiple_segments_are_all_kept() -> None:
     multi = (
         f"1-5周/星期五/第3-4节/示例校区-示例教学楼-2108/{TEACHER_A}/{ACTIVITY},"
@@ -344,13 +608,22 @@ def test_present_schedule_field_with_unusable_value_is_rejected(value: object) -
 
 
 def test_present_schedule_field_with_malformed_text_is_rejected() -> None:
-    """⛔ 非空但 malformed → **整体失败**（parser 原样抛错）。"""
+    """⛔ 非空但 malformed → **整体失败**（parser 原样抛错）。
+
+    ⚠️ `1-8周/星期五/第5-6节` 这类 **3 字段**自本轮起是**合法结构**
+    （`weeks / teacher / activity`），因此不再作为 malformed 样例。
+    """
 
     with pytest.raises(CourseDataNormalizationError):
         _import([_row(teachingTimePlaceStr="只有一段没有分隔符的文本")])
 
     with pytest.raises(CourseDataNormalizationError):
-        _import([_row(teachingTimePlaceStr="1-8周/星期五/第5-6节,")])  # 字段数不足
+        # 7 字段 → 字段数不支持
+        _import([_row(teachingTimePlaceStr="1-8周/星期五/第5-6节/示例教师A/示例环节/多/再多")])
+
+    with pytest.raises(CourseDataNormalizationError):
+        # 3 字段但 weeks token 非法
+        _import([_row(teachingTimePlaceStr="abc周/示例教师/实验实践环节")])
 
 
 def test_parser_exception_is_never_converted_into_empty_meetings() -> None:

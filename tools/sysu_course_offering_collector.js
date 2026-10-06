@@ -5,10 +5,13 @@
  * 定位
  * ----
  * 本文件是 **SYSU-specific Transport 的浏览器侧实现**。
- * 它提供三件事：
- *   1. `collect()` —— 串行取页 → 最小化字段 + 脱敏 → 产出本地 Capture Bundle；
- *   2. `diagnoseSchedulePresence()` —— **只取第 1 页一次**的**结构诊断**（只统计，不产出数据）；
- *   3. `diagnoseMissingScheduleCorrelation()` —— 同样**只取第 1 页一次**的
+ * 它提供四件事：
+ *   1. `collect()` —— 串行取页 → 最小化字段 + 脱敏 → 产出**一个**本地 Capture Bundle；
+ *   2. `collectSharded()` —— **五校区 shard 编排**：
+ *      `baseline_before → 五校区串行 collect → baseline_after → 外层 diagnostics`，
+ *      产出**五个独立裸 Capture Bundle** + **一个外层 diagnostics 对象**；
+ *   3. `diagnoseSchedulePresence()` —— **只取第 1 页一次**的**结构诊断**（只统计，不产出数据）；
+ *   4. `diagnoseMissingScheduleCorrelation()` —— 同样**只取第 1 页一次**的
  *      **相关性诊断**：比较"缺 `teachingTimePlaceStr`"与"该字段非空"两组 row
  *      的**字段聚合结构**，用来看前者是否表现出一致的结构特征。
  *
@@ -22,10 +25,13 @@
  * 用户必须在控制台**显式调用**：
  *
  *     await window.XuehangSysuCollector.collect({ semester: "2026-1" })
+ *     await window.XuehangSysuCollector.collectSharded({ semester: "2026-1", maxPages: 20 })
  *     await window.XuehangSysuCollector.diagnoseSchedulePresence({ semester: "2026-1" })
  *     await window.XuehangSysuCollector.diagnoseMissingScheduleCorrelation({ semester: "2026-1" })
  *
  * 默认只跑 2 页 smoke test；要跑更多页必须显式提高 `maxPages`，并会弹出确认框。
+ * **全局 batch pacing**：同一 endpoint 的相邻请求至少间隔 30 秒，
+ * 且每累计 5 个**成功**请求先冷却 5 分钟（计数是整个采集 run 的全局计数）。
  *
  * 取出结果：
  *
@@ -34,6 +40,13 @@
  *
  * `toJson()` 输出的**顶层就是** `format` / `semester` / `first_page_no` / `page_size` / `pages`，
  * 可直接交给 Python 的 `load_capture_bundle(...)`。
+ *
+ * 五校区结果取出方式（⛔ diagnostics **不**进入裸 bundle）：
+ *
+ *     const sharded = await window.XuehangSysuCollector.collectSharded({ semester: "2026-1", maxPages: 20 });
+ *     for (const shard of sharded.shards) { console.log(shard.shard_id, shard.bundle); }
+ *     window.XuehangSysuCollector.toShardJson(sharded, "东校园");      // 某个 shard 的裸 bundle
+ *     window.XuehangSysuCollector.toDiagnosticsJson(sharded);        // 外层 diagnostics
  *
  * ⛔ 参数归属
  * ----------
@@ -82,13 +95,70 @@
   /** SYSU 已验证：pageSize=200 请求成功。 */
   var DEFAULT_PAGE_SIZE = 200;
 
-  /** 串行请求间隔：默认 1500ms，下限 1000ms。 */
-  var DEFAULT_DELAY_MS = 1500;
-  var MIN_DELAY_MS = 1000;
+  /**
+   * 串行请求间隔（**同一 endpoint 的所有连续请求**都必须满足）。
+   *
+   * ⚠️ **30 秒是当前的 conservative operational minimum**，来源是**人工实测**：
+   * 同一 endpoint 短间隔连续请求会稳定出现
+   * `HTTP 600 / code=50015000 / 系统异常`。
+   * ⛔ **不声称**这是学校官方公布的阈值，也不据此推断任何服务端限流实现。
+   *
+   * ⛔ 调用方**只能把它调大**（更慢、更保守），不能调小。
+   */
+  var DEFAULT_DELAY_MS = 30000;
+  var MIN_DELAY_MS = 30000;
+
+  /**
+   * **全局 batch pacing**（Architecture Review 裁定）。
+   *
+   * ⚠️ 人工 sustained pacing 实测：`pageSize=50` + 30 秒间隔，
+   * **连续 7 次成功（200）后第 8 次**出现 `HTTP 600 / code=50015000`。
+   * ⇒ 单纯继续加大单一 `delayMs` 不足以规避，因此改为
+   * "**每 5 个成功请求 → 冷却 5 分钟**"的批次节奏。
+   *
+   * ⚠️ 因此 **5-request batch + 5-minute cooldown 是当前保守运营策略**，
+   * 来自上述人工实测，⛔ **不是学校公开阈值**。
+   *
+   * ⛔ 计数是**整个 sharded collection 的全局请求数**
+   * （`baseline_before` + 所有 shard 的页 + `baseline_after`）：
+   * ⛔ **不是 per-shard**，⛔ 不会在 shard 边界重置。
+   *
+   * ⛔ `BATCH_COOLDOWN_MS` 本身已大于普通间隔，所以批次边界**只等冷却**，
+   * ⛔ 不再叠加一次 `delayMs`；若调用方把 `delayMs` 调得更大则取较大者。
+   */
+  var MAX_REQUESTS_PER_BATCH = 5;
+  var BATCH_COOLDOWN_MS = 300000;
 
   /** 默认只做 2 页 smoke test；50 是**客户端安全上限**，不是学校系统限制。 */
   var DEFAULT_MAX_PAGES = 2;
   var ABSOLUTE_MAX_PAGES = 50;
+
+  /**
+   * 五校区 shard 分页固定使用的单页大小（= 已验证的 `DEFAULT_PAGE_SIZE`）。
+   *
+   * ⛔ `collectSharded()` **不接受**调用方传入 `pageSize`（严格白名单拒绝）。
+   */
+  var SHARD_PAGE_SIZE = DEFAULT_PAGE_SIZE;
+
+  /** 校区维度请求参数名（与已取证的 UI 参数一致）。 */
+  var SHARD_PARAM_NAME = "openingSchoolNumber";
+
+  /**
+   * 已批准的五个校区 shard —— **顺序即请求顺序**（稳定、可复现）。
+   *
+   * ⚠️ `openingSchoolNumber` 由负责人在官方 UI 中**人工取证**；
+   * ⛔ 不猜其它校区、⛔ 不自动读取下拉框、⛔ 不从任何接口发现 shard 列表、
+   * ⛔ 不接受调用方传入自定义 shard。
+   *
+   * ⛔ 这些是**请求参数**（校区维度），不是 row 字段：它们**不会**进入 Capture Bundle。
+   */
+  var APPROVED_SHARDS = [
+    { shard_id: "东校园", openingSchoolNumber: "5063559" },
+    { shard_id: "北校园", openingSchoolNumber: "5062202" },
+    { shard_id: "南校园", openingSchoolNumber: "5062201" },
+    { shard_id: "深圳校区", openingSchoolNumber: "333291143" },
+    { shard_id: "珠海校区", openingSchoolNumber: "5062203" }
+  ];
 
   /** Capture Bundle 格式标识（Course Data **内部**交换格式，不是公共 Schema）。 */
   var CAPTURE_FORMAT = "sysu-opening-courses-capture-v1";
@@ -135,18 +205,150 @@
   /** segment 内 teacher 的脱敏占位符。 */
   var REDACTED_TEACHER = "REDACTED";
 
+  /**
+   * **opaque（语义未知）槽位**的脱敏占位符（Architecture Review 裁定）。
+   *
+   * ⚠️ 已批准的 4 字段 non-concrete **layout B** = `weeks | location | opaque | activity`；
+   * opaque 槽位**语义未知**，⛔ 不得解释成 teacher / 地点 / 活动 / 其它业务字段，
+   * 因此只做**结构性脱敏**（Parser 侧精确识别该常量）。
+   */
+  var REDACTED_OPAQUE = "REDACTED_OPAQUE";
+
+  /**
+   * 明确判定为 location 所需的**最少非空 `-` 分段数**。
+   *
+   * ⚠️ 只用于 **5 字段的二义判别**；6 字段的语义已由字段数确定，不受此门槛约束。
+   */
+  var MIN_LOCATION_SEGMENTS = 3;
+
+  /**
+   * 目前**经真实证据确认**的 schedule qualifier 白名单。
+   *
+   * ⛔ **白名单而非通配**：`12-19周XXX` / `16-16周线上` 等一律拒绝。
+   */
+  var SCHEDULE_QUALIFIER_OFF_CAMPUS = "校外";
+  var SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR = "校内(户外)";
+  var KNOWN_SCHEDULE_QUALIFIERS = [
+    SCHEDULE_QUALIFIER_OFF_CAMPUS,
+    SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR
+  ];
+
+  /**
+   * **non-concrete** 2 字段段第 1 个字段的形状：`<weeks token><已确认 qualifier>`。
+   *
+   * 与 Python `schedule_parser._QUALIFIED_WEEKS_ONLY` **同规则**，
+   * 且必须**整段**匹配（`^...$`），因此不会出现"周次后面接任意字符"。
+   */
+  var NON_CONCRETE_FIRST_FIELD = /^([0-9]+-[0-9]+周)(校外|校内\(户外\))$/;
+
+  /**
+   * **non-concrete 带 teacher** 的 3 字段段第 1 个字段：
+   * `<weeks token>` 或 `<weeks token><已确认 qualifier>`。
+   *
+   * ⚠️ 与 Python `_WEEKS_WITH_OPTIONAL_QUALIFIER` 同规则：
+   * 先把 weeks 与 qualifier **拆开**，再各自校验；
+   * ⛔ qualifier 的具体取值由白名单把关（`KNOWN_SCHEDULE_QUALIFIERS`）。
+   */
+  var PLAIN_WEEK_RANGE = /^([0-9]+)-([0-9]+)周$/;
+  var WEEKS_WITH_OPTIONAL_QUALIFIER = /^([0-9]+-[0-9]+周)(.+)?$/;
+
+  /** 已确认 qualifier 的精确匹配。 */
+  var KNOWN_QUALIFIER_EXACT = /^(校外|校内\(户外\))$/;
+
   // ---------------------------------------------------------------------
   // 基础工具
   // ---------------------------------------------------------------------
 
   function fail(message) {
-    throw new Error("[学航采集器] " + message);
+    throw new Error(ERROR_PREFIX + message);
+  }
+
+  /** 错误信息前缀（包装下层错误时用它去重，避免出现两个前缀）。 */
+  var ERROR_PREFIX = "[学航采集器] ";
+
+  /** 去掉已经带上的前缀（只用于**包装**下层错误信息时）。 */
+  function unwrapErrorMessage(error) {
+    // ⛔ 只信任**本采集器自己**抛出的错误（带 ERROR_PREFIX，且其文案已按安全分类书写）；
+    //    其它来源的 error（fetch / 运行时 / 第三方）一律折叠成稳定分类，
+    //    ⛔ 不回显其 message / name / String(error)。
+    var message = "unexpected_error（⛔ 不回显原始 message）";
+    if (
+      error instanceof Error &&
+      typeof error.message === "string" &&
+      error.message.indexOf(ERROR_PREFIX) === 0
+    ) {
+      message = error.message;
+    }
+
+    return message.indexOf(ERROR_PREFIX) === 0 ? message.slice(ERROR_PREFIX.length) : message;
   }
 
   function sleep(ms) {
     return new Promise(function (resolve) {
       setTimeout(resolve, ms);
     });
+  }
+
+  /**
+   * **全局 request pacing controller**（每个采集 run **恰好一个**）。
+   *
+   * 它是本文件**唯一**决定"下一次请求什么时候可以发"的地方：
+   * - ⛔ `baseline_before` / `collectPages()` / shard 循环 / `baseline_after`
+   *   **都不再各自 sleep、也不各自计数** —— 它们只是把同一个 controller
+   *   交给 `requestPage()`，由后者在**发请求之前**调用 `beforeRequest()`；
+   * - 计数是**全局**的（整个 run 的所有请求：baseline + 所有 shard 的页 + baseline_after），
+   *   ⛔ 不是 per-shard，也⛔ 不会在 shard 边界重置；
+   * - 规则：
+   *
+   * ```text
+   * 第 1 个请求                → 立即发送（不等待）
+   * 其它请求                   → 先等 delayMs（>= MIN_DELAY_MS）
+   * 已累计 5 个**成功**请求时  → 改为先等 max(BATCH_COOLDOWN_MS, delayMs)
+   *                              （冷却本身已 > 普通间隔，⛔ 不叠加）
+   * ```
+   *
+   * ⛔ 失败（HTTP 非 200 / code 非 200 / 网络错误）**不计入**成功数，
+   * 而且会直接 fail closed 终止整个 run：⛔ 不重试、⛔ 不 backoff 重试、
+   * ⛔ 不续采（no resume）、⛔ 不跳页。
+   *
+   * ⚠️ `batchCeiling` 由调用方选择**已批准**口径，⛔ **不是**调用方可任意传入的参数：
+   *
+   * ```text
+   * ordinary / 五校区路径         → MAX_REQUESTS_PER_BATCH = 5（默认）
+   * single-approved-campus 路径   → APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH = 7
+   * ```
+   *
+   * ⛔ `delayMs` 下限（`MIN_DELAY_MS`）与冷却时长（`BATCH_COOLDOWN_MS`）**未改**：
+   * 两个口径只决定"多少个成功请求之后进入冷却"，⛔ 不改变最小间隔。
+   */
+  function createRequestPacer(delayMs, batchCeiling) {
+    var isFirstRequest = true;
+    var successfulInBatch = 0;
+    var ceiling = batchCeiling === undefined ? MAX_REQUESTS_PER_BATCH : batchCeiling;
+
+    return {
+      /** 发请求**之前**调用：保证与上一个请求的间隔（含批次冷却）。 */
+      beforeRequest: async function () {
+        if (isFirstRequest) {
+          isFirstRequest = false;
+          return;
+        }
+
+        if (successfulInBatch >= ceiling) {
+          successfulInBatch = 0;
+          // 冷却本身已超过普通间隔；若调用方把 delayMs 调得更大则取较大者。
+          await sleep(Math.max(BATCH_COOLDOWN_MS, delayMs));
+          return;
+        }
+
+        await sleep(delayMs);
+      },
+
+      /** 请求**成功后**调用（HTTP 200 且 code 200）：只在这里推进批次计数。 */
+      noteSuccess: function () {
+        successfulInBatch += 1;
+      }
+    };
   }
 
   function requireAllowedHost() {
@@ -167,11 +369,67 @@
   // ---------------------------------------------------------------------
 
   /**
-   * 对一个 segment 脱敏：只把 teacher 字段替换为 REDACTED。
+   * 统计按 `-` 切分后**非空**（去空白后）的分段数量。
+   */
+  function countNonEmptyDashSegments(token) {
+    var parts = token.split("-");
+    var count = 0;
+    for (var index = 0; index < parts.length; index += 1) {
+      if (parts[index].trim() !== "") {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  /**
+   * 判别 **5 字段** `fields[3]` 的语义（**严格三态**）。
    *
-   * 已确认结构：
-   *   5 fields: weeks / weekday / sections / teacher / activity
-   *   6 fields: weeks / weekday / sections / location / teacher / activity
+   * ```text
+   * 无 "-"                → "teacher"
+   * >= 3 个非空 "-" 分段   → "location"
+   * 其余二义形态           → "ambiguous" → 调用方 fail closed
+   * ```
+   *
+   * ⚠️ **为什么不复用 `isLocationToken()`**：后者只要"非空园区 + `-` + 非空教室"成立，
+   * 会把 `A-B` 这种**只有两段**的 token 判成 location —— 而它同样可能是一个
+   * **含 `-` 的 teacher**。5 字段本身二义，必须用更严格的门槛，
+   * 否则会重现"teacher / location 互相静默错读"。
+   *
+   * ⛔ 无法明确归类时**不猜**；⛔ 不比对课程名 / 学院 / 教师名，不做模糊匹配。
+   */
+  function classifyFiveFieldToken(token) {
+    if (typeof token !== "string") {
+      return "ambiguous";
+    }
+
+    if (token.indexOf("-") === -1) {
+      return "teacher";
+    }
+
+    if (countNonEmptyDashSegments(token) >= MIN_LOCATION_SEGMENTS) {
+      return "location";
+    }
+
+    return "ambiguous";
+  }
+
+  /**
+   * 对一个 segment 脱敏：**只**把真实存在的 teacher 字段替换为 REDACTED。
+   *
+   * 已确认结构（2026-1 真实证据）：
+   *
+   * ```text
+   * 4 fields: weeks / weekday / sections / activity                  → 无 teacher，原样保留
+   * 5 fields: 需**严格三态**判别：
+   *            无 "-"              → teacher  → fields[3] = REDACTED
+   *            >= 3 个非空 "-" 分段 → location → 原样保留
+   *            其余二义形态         → fail closed
+   * 6 fields: weeks / weekday / sections / location / teacher / activity → fields[4] = REDACTED
+   * ```
+   *
+   * ⚠️ 5 字段必须**结构判别**：⛔ 不得再把第 4 字段无条件当成 teacher
+   * （那会把 location 脱敏掉，破坏地点信息）。
    *
    * 其余字段（weeks / weekday / sections / location / activity）**原样保留**。
    *
@@ -179,29 +437,211 @@
    */
   function redactSegmentTeacher(segment, pageNo, humanRowNo) {
     var fields = segment.split(FIELD_SEPARATOR);
+    var fieldCount = fields.length;
 
-    if (fields.length !== 5 && fields.length !== 6) {
+    if (fieldCount === 3) {
+      // non-concrete 带 teacher：`<weeks token>[<已确认 qualifier>]` / teacher / activity
+      // （2026-1 真实证据：`1-17周/龙霞/实验实践环节` 与
+      //   `16-16周校内(户外)/龙霞/实验实践环节`，同行 teachingName 亦为教师姓名）。
+      var firstField3 = fields[0].trim();
+      var qualifiedMatch = WEEKS_WITH_OPTIONAL_QUALIFIER.exec(firstField3);
+
+      if (qualifiedMatch === null) {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "是 3 字段（weeks / teacher / activity），但其第 1 个字段既不是合法的 " +
+            "`N-M周` 周次 token，也不符合已确认的 qualifier 形态。" +
+            "本采集器不猜格式，已整体停止（不回显该字段取值）。"
+        );
+      }
+
+      var weeksToken3 = qualifiedMatch[1];
+      var qualifier3 = qualifiedMatch[2];
+
+      // ⛔ qualifier 是**白名单**：`16-16周未知文本` 一律拒绝。
+      if (qualifier3 !== undefined && !KNOWN_QUALIFIER_EXACT.test(qualifier3)) {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "中的 qualifier 尚未被真实证据确认（已确认：" +
+            KNOWN_SCHEDULE_QUALIFIERS.join("/") +
+            "）。本采集器不猜格式，已整体停止（不回显该字段取值）。"
+        );
+      }
+
+      // ⛔ 只按 **weeks token 自身** 校验区间，绝不把 qualifier 一起送进去。
+      var weekMatch3 = PLAIN_WEEK_RANGE.exec(weeksToken3);
+      if (weekMatch3 === null) {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "3 字段段的周次 token 不是合法的 `N-M周`。本采集器不猜格式，已整体停止。"
+        );
+      }
+
+      var startWeek3 = parseInt(weekMatch3[1], 10);
+      var endWeek3 = parseInt(weekMatch3[2], 10);
+      if (startWeek3 < 1 || endWeek3 < startWeek3) {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "3 字段段的周次区间非法（要求 N >= 1 且 M >= N）。本采集器不猜格式，已整体停止。"
+        );
+      }
+
+      var teacher3 = fields[1];
+      if (typeof teacher3 !== "string" || teacher3.trim() === "") {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "中 teacher 字段为空或不是字符串。本采集器不写入脱敏占位符来掩盖该问题，已整体停止。"
+        );
+      }
+
+      if (fields[2].trim() === "") {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "中 activity 字段为空。已整体停止。"
+        );
+      }
+
+      // teacher 在 fields[1]：替换为 REDACTED；
+      // ⛔ 不能因为第一个字段带 qualifier 就跳过脱敏。
+      // weeks（含 qualifier）与 activity 原样保留。
+      fields[1] = REDACTED_TEACHER;
+      return fields.join(FIELD_SEPARATOR);
+    }
+
+    if (fieldCount === 2) {
+      // non-concrete（无 teacher）两种已确认形态：
+      //   plain     ：`<weeks token>` / activity            例如 1-17周/实验实践环节
+      //   qualified ：`<weeks token><已确认 qualifier>` / activity
+      //                                                    例如 12-19周校外/实验实践环节
+      if (
+        PLAIN_WEEK_RANGE.test(fields[0].trim()) ||
+        NON_CONCRETE_FIRST_FIELD.test(fields[0].trim())
+      ) {
+        // ⛔ activity 必须非空（与 Python parser 一致，不把空 activity 当合法）。
+        if (fields[1].trim() === "") {
+          fail(
+            "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+              "中 activity 字段为空。已整体停止。"
+          );
+        }
+        // 没有 weekday / sections / 具体地点 / teacher → ⛔ 不做任何脱敏。
+        // ⛔ 也不得把 row 级 teachingName 注入本 segment。
+        return segment;
+      }
+      // ⛔ 2 字段**只接受已验证 grammar**；其余一律 fail closed（不回显取值）。
       fail(
         "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
-          "出现不支持的字段数（" + fields.length + "）。本采集器不猜格式，已整体停止。"
+          "是 2 字段，但既不是已确认的 plain 形态（`<weeks token>` / activity），" +
+          "也不是已确认的 qualified 形态（`<weeks token>` + 已确认 qualifier " +
+          KNOWN_SCHEDULE_QUALIFIERS.join("/") +
+          " / activity）。本采集器不猜格式，已整体停止（不回显该字段取值）。"
       );
     }
 
-    var teacherIndex = fields.length === 6 ? 4 : 3;
-    var teacher = fields[teacherIndex];
+    if (
+      fieldCount !== 4 &&
+      fieldCount !== 5 &&
+      fieldCount !== 6
+    ) {
+      fail(
+        "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+          "出现不支持的字段数（" + fieldCount + "）。" +
+          "只接受 2 / 3（non-concrete）/ 4 / 5 / 6，本采集器不猜格式，已整体停止。"
+      );
+    }
 
-    // ⛔ 替换前必须确认原 teacher 确实存在：
-    // 空 teacher 若也被写成 REDACTED，等于**静默修复**了原始数据问题，
-    // 会让下游 Python parser 误以为这条记录合法。
-    // 错误信息不回显 teacher 取值。
-    if (typeof teacher !== "string" || teacher.trim() === "") {
+    if (fieldCount === 4) {
+      // 4 字段有两种已确认形态（Architecture Review 裁定）：
+      //   concrete：weeks / weekday  / sections / activity  → 无 teacher，原样保留
+      //   layout B：weeks / location / **opaque** / activity → opaque 槽位必须脱敏
+      //
+      // ⚠️ opaque 槽位的**语义未知**（⛔ 不是 teacher / 地点 / 活动 / 其它业务字段）：
+      //    因此**只**把它替换成结构性占位符 `REDACTED_OPAQUE`，
+      //    ⛔ 不做姓名 / CJK / 长度启发式，⛔ 不注入 row 级 teachingName。
+      // ⛔ 只对**精确** Layout B（f2 是严格 location）脱敏，⛔ 不泛化到所有 4 字段。
+      // ⛔ 其余 4 字段形态保持原状，由 Python parser 决定是否 fail closed。
+      if (countNonEmptyDashSegments(fields[1].trim()) >= MIN_LOCATION_SEGMENTS) {
+        // ⚠️ **精确 Layout B 准入**（与 Python parser 的四条准入**逐条一致**）：
+        //    f1 已批准 weeks（= `expand_weeks` 的接受集合）/ f2 严格 location /
+        //    f3 non-empty opaque / f4 non-empty activity。
+        //    ⛔ 任一不满足 ⇒ **fail closed**（⛔ 不放行到 bundle：那会把 opaque 原文带出去）。
+        if (!isConfirmedWeeksToken(fields[0].trim())) {
+          fail(
+            "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+              "形如 4 字段 layout B（f2 是 location），但 f1 不是已批准的 weeks token。" +
+              "本采集器不猜格式，已整体停止（⛔ 不回显该字段取值）。"
+          );
+        }
+
+        var opaque4 = fields[2];
+        if (typeof opaque4 !== "string" || opaque4.trim() === "") {
+          fail(
+            "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+              "是 4 字段 layout B，但其 opaque 槽位为空或不是字符串。" +
+              "本采集器不写入占位符来掩盖该问题，已整体停止（不回显该字段取值）。"
+          );
+        }
+
+        var activity4 = fields[3];
+        if (typeof activity4 !== "string" || activity4.trim() === "") {
+          fail(
+            "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+              "是 4 字段 layout B，但其 activity 槽位为空或不是字符串。" +
+              "本采集器不猜格式，已整体停止（不回显该字段取值）。"
+          );
+        }
+
+        fields[2] = REDACTED_OPAQUE;
+        return fields.join(FIELD_SEPARATOR);
+      }
+
+      // concrete 4 字段（f2 是 weekday）或其它未归类形态：不做替换。
+      return segment;
+    }
+
+    if (fieldCount === 5) {
+      var classification = classifyFiveFieldToken(fields[3]);
+
+      if (classification === "ambiguous") {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "第 4 个字段既不能明确判定为 location（需 >= " + MIN_LOCATION_SEGMENTS +
+            " 个非空 '-' 分段），也不能明确判定为 teacher（需完全不含 '-'）。" +
+            "本采集器不猜语义，已整体停止（不回显该字段取值）。"
+        );
+      }
+
+      if (classification === "location") {
+        // 5 字段 A：有地点、无 teacher → 原样保留。
+        return segment;
+      }
+
+      // 5 字段 B：无地点、有 teacher。
+      // ⛔ 替换前必须确认原 teacher 确实存在：
+      // 空 teacher 若也被写成 REDACTED，等于**静默修复**了原始数据问题，
+      // 会让下游 Python parser 误以为这条记录合法。
+      // 错误信息不回显 teacher 取值。
+      var teacher5 = fields[3];
+      if (typeof teacher5 !== "string" || teacher5.trim() === "") {
+        fail(
+          "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+            "中 teacher 字段为空或不是字符串。本采集器不写入脱敏占位符来掩盖该问题，已整体停止。"
+        );
+      }
+      fields[3] = REDACTED_TEACHER;
+      return fields.join(FIELD_SEPARATOR);
+    }
+
+    // 6 字段：weeks / weekday / sections / location / teacher / activity
+    var teacher6 = fields[4];
+    if (typeof teacher6 !== "string" || teacher6.trim() === "") {
       fail(
         "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
           "中 teacher 字段为空或不是字符串。本采集器不写入脱敏占位符来掩盖该问题，已整体停止。"
       );
     }
 
-    fields[teacherIndex] = REDACTED_TEACHER;
+    fields[4] = REDACTED_TEACHER;
 
     return fields.join(FIELD_SEPARATOR);
   }
@@ -321,7 +761,12 @@
       fail("第 " + pageNo + " 页响应不是对象。");
     }
     if (payload.code !== 200) {
-      fail("第 " + pageNo + " 页 code 不是 200（实际 " + payload.code + "）。已整体停止。");
+      // ⛔ 不回显 `payload.code` 原始取值：只给稳定安全分类
+      //    （它是学校返回的任意值，可能携带可识别信息）。
+      fail(
+        "第 " + pageNo + " 页 code 不是 200（安全分类 code_not_200；" +
+          "⛔ 不回显原始 code 取值）。已整体停止。"
+      );
     }
 
     var data = payload.data;
@@ -339,12 +784,45 @@
   }
 
   /**
+   * 构造请求 body 的 `param`。
+   *
+   * - `openingSchoolNumber === undefined` → **只有** `yearTerm`（baseline 请求形态）；
+   * - 传入已批准校区号 → 追加 `openingSchoolNumber`（shard 请求形态）。
+   *
+   * ⛔ 不传时**不写** `openingSchoolNumber: undefined`：不依赖 JSON 序列化的副作用，
+   * 直接把键省掉（否则"键存在但值为 undefined"与"不带该维度"在语义上会混淆）。
+   */
+  function buildRequestParam(semester, openingSchoolNumber) {
+    if (openingSchoolNumber === undefined) {
+      return { yearTerm: semester };
+    }
+
+    var param = { yearTerm: semester };
+    param[SHARD_PARAM_NAME] = openingSchoolNumber;
+    return param;
+  }
+
+  /**
    * 取一页：same-origin POST，认证状态由浏览器自己带上。
+   *
+   * `openingSchoolNumber` 为 `undefined` 时是 **baseline（全量）** 请求；
+   * 传入已批准校区号时是 **该 shard** 的请求。
+   *
+   * `pacer` 为本次 run 的**全局 pacing controller**：
+   * - 发请求**之前**调用 `beforeRequest()`（⛔ 这是唯一的等待入口）；
+   * - 响应校验**成功**后调用 `noteSuccess()`（推进全局批次计数）。
+   *
+   * ⚠️ 一次性诊断入口（2C1B / 2C1C）只发 1 次请求、不传 `pacer`：
+   * 它们不受批次影响，也⛔ 不改动任何计数。
    *
    * `?_t=` 只是**复现已观察到的请求形态**（已观察请求带时间戳参数），
    * 不代表任何业务语义。
    */
-  async function requestPage(semester, pageNo, pageSize) {
+  async function requestPage(semester, pageNo, pageSize, openingSchoolNumber, pacer) {
+    if (pacer) {
+      await pacer.beforeRequest();
+    }
+
     var url = ENDPOINT_PATH + "?_t=" + Date.now();
 
     var response;
@@ -357,11 +835,16 @@
           pageNo: pageNo,
           pageSize: pageSize,
           total: true,
-          param: { yearTerm: semester }
+          param: buildRequestParam(semester, openingSchoolNumber)
         })
       });
     } catch (error) {
-      fail("第 " + pageNo + " 页请求失败：" + error.message + "。已整体停止。");
+      // ⛔ 不回显 `error.message`：fetch 抛出的文本可能包含 URL / 内部信息。
+      //    只给稳定安全分类。
+      fail(
+        "第 " + pageNo + " 页请求失败（安全分类 network_error；" +
+          "⛔ 不回显原始 error.message）。已整体停止。"
+      );
     }
 
     if (response.status === 401 || response.status === 403) {
@@ -388,18 +871,26 @@
       fail("第 " + pageNo + " 页 JSON 解析失败。已整体停止。");
     }
 
-    return validatePagePayload(payload, pageNo);
+    var data = validatePagePayload(payload, pageNo);
+
+    // ⛔ 只有"HTTP 200 且 code 200 且结构合法"才算成功：全局批次计数只在这里推进。
+    if (pacer) {
+      pacer.noteSuccess();
+    }
+
+    return data;
   }
 
   // ---------------------------------------------------------------------
   // 主流程：必须由用户显式调用
   // ---------------------------------------------------------------------
 
-  async function collect(options) {
-    requireAllowedHost();
-
-    var opts = options || {};
-
+  /**
+   * 校验并解析 `collect()` / `collectSharded()` **共用**的分页选项。
+   *
+   * ⛔ 只接受 SYSU 已验证的取值；⛔ 校验全部发生在**任何取页调用之前**。
+   */
+  function resolvePagingOptions(opts) {
     var semester = opts.semester;
     if (typeof semester !== "string" || semester.trim() === "") {
       fail('必须显式提供非空 semester（例如 "2026-1"）。');
@@ -431,38 +922,49 @@
 
     var delayMs = opts.delayMs === undefined ? DEFAULT_DELAY_MS : opts.delayMs;
     if (!Number.isInteger(delayMs) || delayMs < MIN_DELAY_MS) {
-      fail("delayMs 不得小于 " + MIN_DELAY_MS + " 毫秒（串行、低频）。");
-    }
-
-    // 超过默认 smoke 页数时，必须由用户明确确认。
-    if (maxPages > DEFAULT_MAX_PAGES) {
-      var confirmed = window.confirm(
-        "即将对本人已授权可见的 " + semester + " 开课数据执行串行采集。\n" +
-          "pageSize=" + pageSize + "\n" +
-          "最多请求 " + maxPages + " 页\n" +
-          "请求间隔至少 " + delayMs / 1000 + " 秒\n" +
-          "是否继续？"
+      fail(
+        "delayMs 不得小于 " + MIN_DELAY_MS + " 毫秒" +
+          "（同一 endpoint 的 conservative operational minimum，来自人工实测；" +
+          "只能调大，不能调小）。"
       );
-      if (!confirmed) {
-        return { cancelled: true, requests: 0, bundle: null };
-      }
     }
 
+    return {
+      semester: semester,
+      pageSize: pageSize,
+      firstPageNo: firstPageNo,
+      maxPages: maxPages,
+      delayMs: delayMs
+    };
+  }
+
+  /**
+   * **唯一**的分页循环（`collect()` 与每个 shard 都走这里）。
+   *
+   * - 严格串行：一页一页取；⛔ 不并发、⛔ 不预取、⛔ 不重试、⛔ 不跳页；
+   * - `firstPageNo` 恒为 `FIRST_PAGE_NO`（1）：调用方**无法**改变起始页；
+   * - `expectedTotal` 取**本次第一页**的 `data.total`；中途变化 → 整体失败；
+   * - `accumulatedRows === expectedTotal` → `reached_total` 并停止；
+   * - **pacing**：本循环**不自己 sleep、也不自己计数**；每一对相邻请求的间隔
+   *   （含批次冷却）全部由传入的**全局 pacing controller** 在 `requestPage()`
+   *   里统一保证 —— 见 `createRequestPacer()`。
+   *
+   * ⚠️ `openingSchoolNumber === undefined` 时为 **baseline（全量）** 请求形态；
+   * 传入已批准校区号时为**该 shard** 的请求形态。
+   *
+   * 返回值只有结构性计数与**已脱敏**的 pages（不判断完整性、不产出 bundle）。
+   */
+  async function collectPages(semester, pageSize, maxPages, pacer, openingSchoolNumber) {
     var pages = [];
     var expectedTotal = null;
     var accumulatedRows = 0;
     var requests = 0;
     var stoppedReason = "max_pages";
 
-    // 严格串行：一页一页取，中间 sleep；不并发、不预取。
     for (var index = 0; index < maxPages; index += 1) {
-      var currentPageNo = firstPageNo + index;
+      var currentPageNo = FIRST_PAGE_NO + index;
 
-      if (index > 0) {
-        await sleep(delayMs);
-      }
-
-      var data = await requestPage(semester, currentPageNo, pageSize);
+      var data = await requestPage(semester, currentPageNo, pageSize, openingSchoolNumber, pacer);
       requests += 1;
 
       if (expectedTotal === null) {
@@ -509,21 +1011,383 @@
     }
 
     return {
-      cancelled: false,
-      requests: requests,
-      stoppedReason: stoppedReason,
-      accumulatedRows: accumulatedRows,
+      pages: pages,
       expectedTotal: expectedTotal,
+      accumulatedRows: accumulatedRows,
+      requests: requests,
+      stoppedReason: stoppedReason
+    };
+  }
+
+  /**
+   * 只读**一页**并返回其 `data.total`（baseline 探针）。
+   *
+   * ⛔ 请求体**只有** `yearTerm`（不带 `openingSchoolNumber`）；
+   * ⛔ 不做字段最小化、⛔ 不做脱敏、⛔ 不产出 bundle —— 它只读一个整数。
+   * ⛔ 只发**一次**请求（不循环、不重试）。
+   *
+   * ⚠️ 它**也走同一个全局 pacing controller**：`baseline_before` 与
+   * `baseline_after` 都计入全局请求数（⛔ 不是"免费请求"）。
+   */
+  async function requestReportedTotal(semester, pacer) {
+    var data = await requestPage(semester, FIRST_PAGE_NO, SHARD_PAGE_SIZE, undefined, pacer);
+    return data.total;
+  }
+
+  async function collect(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+    var resolved = resolvePagingOptions(opts);
+
+    // 超过默认 smoke 页数时，必须由用户明确确认。
+    if (resolved.maxPages > DEFAULT_MAX_PAGES) {
+      var confirmed = window.confirm(
+        "即将对本人已授权可见的 " + resolved.semester + " 开课数据执行串行采集。\n" +
+          "pageSize=" + resolved.pageSize + "\n" +
+          "最多请求 " + resolved.maxPages + " 页\n" +
+          "请求间隔至少 " + resolved.delayMs / 1000 + " 秒\n" +
+          "批次策略：每 " + MAX_REQUESTS_PER_BATCH + " 个成功请求后冷却 " +
+          BATCH_COOLDOWN_MS / 60000 + " 分钟\n" +
+          "是否继续？"
+      );
+      if (!confirmed) {
+        return { cancelled: true, requests: 0, bundle: null };
+      }
+    }
+
+    // 本次 run 的**唯一** pacing controller（分页循环不再自己 sleep / 计数）。
+    var pacer = createRequestPacer(resolved.delayMs);
+
+    // ⛔ 不带 openingSchoolNumber：`collect()` 仍是**全量**（baseline）入口。
+    var core = await collectPages(
+      resolved.semester,
+      resolved.pageSize,
+      resolved.maxPages,
+      pacer,
+      undefined
+    );
+
+    return {
+      cancelled: false,
+      requests: core.requests,
+      stoppedReason: core.stoppedReason,
+      accumulatedRows: core.accumulatedRows,
+      expectedTotal: core.expectedTotal,
       // 明确：本采集器**不判断**完整性，complete / partial 交给 Python Pagination Core。
       claimedComplete: false,
       bundle: {
         format: CAPTURE_FORMAT,
-        semester: semester,
-        first_page_no: firstPageNo,
-        page_size: pageSize,
-        pages: pages
+        semester: resolved.semester,
+        first_page_no: resolved.firstPageNo,
+        page_size: resolved.pageSize,
+        pages: core.pages
       }
     };
+  }
+
+  // ---------------------------------------------------------------------
+  // 五校区 shard 编排（Architecture Review 已批准）
+  //
+  //   baseline_before → 五个完整 shard → baseline_after
+  //     → baseline 稳定性（snapshot window unstable？）
+  //     → shard 覆盖性（shard coverage mismatch？）
+  //
+  // ⛔ 不改 Capture Bundle format：每个 shard 产出仍是**同一格式**的裸 bundle；
+  // ⛔ diagnostics **不进入**任何裸 bundle；
+  // ⛔ 不绕过深分页（offset >= 6500 的 HTTP 600 由**校区维度分片**规避，
+  //    而不是靠跳页 / 重编号 / 重试）。
+  // ---------------------------------------------------------------------
+
+  /** `collectSharded()` 严格白名单允许的 options 键（其余一律在发请求前拒绝）。 */
+  var SHARDED_ALLOWED_OPTIONS = ["semester", "maxPages", "delayMs"];
+
+  /**
+   * 抛出一个**带 diagnostics 的错误**。
+   *
+   * ⛔ 整体失败时**不产出任何 bundle**；但把已经采集到的结构化计数附在
+   * `error.diagnostics` 上，方便操作者在控制台查看：
+   *
+   *     try { await collectSharded(...) } catch (e) { console.log(e.diagnostics) }
+   */
+  function failWithDiagnostics(message, diagnostics) {
+    var error = new Error(ERROR_PREFIX + message);
+    error.diagnostics = diagnostics;
+    throw error;
+  }
+
+  /**
+   * 五校区 shard 采集编排。
+   *
+   * ```text
+   * ① baseline_before（{yearTerm} 单次探针，只读 total）
+   *        ↓
+   * ② 五个 shard 依次串行采集（每个 shard 从 pageNo=1 开始、pageSize=200、
+   *   expectedTotal 取**本 shard 第一页**真实 total、accumulatedRows == expectedTotal
+   *   时以 reached_total 停止；保留既有 delay / guard / fail-closed）
+   *        ↓
+   * ③ baseline_after（五个 shard 全部完整成功后**无条件**请求；同 baseline_before）
+   *        ↓
+   * ④ baseline 稳定性：baseline_before == baseline_after？
+   *        ↓（稳定才继续）
+   * ⑤ shard 覆盖性：Σ shard expectedTotal == baseline_before？
+   * ```
+   *
+   * 整体失败（`fail()` 抛出，⛔ **不产出任何 bundle**）的情形：
+   *
+   * 1. 任一 shard 未取满（`stoppedReason !== "reached_total"`）→ **立即**停止，
+   *    ⛔ 不再请求 baseline_after，也⛔ 不再请求后面的校区（fail fast）；
+   * 2. `baseline_before !== baseline_after` → **snapshot window unstable**；
+   * 3. Σ shard `expectedTotal` != baseline_before → **shard coverage mismatch**
+   *    （与 Python 侧已 Review 的编排同一口径；这里只是**提前**失败，
+   *    完整性判定的**权威仍在 Python**）。
+   *
+   * ⛔ **判定顺序是硬要求**：五个 shard 都完整成功后，必须**无条件**先取
+   * baseline_after 并判稳定性；**只有** baseline 稳定之后才允许判覆盖性。
+   * 否则会拿一个未确认的 snapshot window 去解释覆盖差异。
+   *
+   * ⛔ **pacing（全局 batch pacing）**：本函数创建**一个**全局 pacing controller，
+   * 它同时管 `baseline_before`、所有 shard 的每一页、以及 `baseline_after`：
+   *
+   * ```text
+   * 第 1 个请求（= baseline_before）立即发送
+   * 其它相邻请求                  ：先等 delayMs（默认 = 下限 = 30000ms）
+   * 全局已累计 5 个成功请求时     ：改为先等 max(BATCH_COOLDOWN_MS, delayMs)
+   *                                = 300000ms（冷却本身 > 普通间隔，⛔ 不叠加）
+   * ```
+   *
+   * ⛔ 计数是**整个 sharded collection 的全局计数**，
+   * ⛔ **不是 per-shard**、⛔ 不会在 shard 边界重置（跨 shard / 跨 baseline 连续计数）。
+   * 例如全局第 5、10 个请求之后都会先冷却 5 分钟，再发第 6、11 个请求。
+   *
+   * ⛔ 因此 "5-request batch + 5-minute cooldown" 是**当前保守运营策略**
+   * （人工实测：`pageSize=50` + 30 秒间隔连续 7 次成功后第 8 次即 `HTTP 600`），
+   * ⛔ **不是学校公开阈值**。
+   * ⛔ `HTTP 600` 仍然只是 **fail closed**：⛔ 不重试、⛔ 不做 backoff 重试、
+   * ⛔ 不跳页、⛔ 不续采、⛔ 不做任何认证绕行。
+   *
+   * ⛔ 严格白名单：只接受 `semester` / `maxPages` / `delayMs`。
+   * ⛔ 不接受调用方传入 `pageSize` / `firstPageNo` / 自定义 shard 列表，
+   * 也⛔ 不接受调用方覆盖 batch 大小 / 冷却时长。
+   */
+  async function collectSharded(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var optionNames = Object.keys(opts);
+    var unexpected = optionNames.filter(function (name) {
+      return SHARDED_ALLOWED_OPTIONS.indexOf(name) === -1;
+    });
+    if (unexpected.length > 0) {
+      fail(
+        "五校区采集只接受 " + SHARDED_ALLOWED_OPTIONS.join(" / ") +
+          "（收到 " + unexpected.length + " 个其它参数）。已停止；参数名不予回显。"
+      );
+    }
+
+    var resolved = resolvePagingOptions(opts);
+
+    // ⛔ pageSize 不在白名单里：下面的取值恒为已人工验证的 SHARD_PAGE_SIZE。
+    var pageSize = SHARD_PAGE_SIZE;
+
+    if (resolved.maxPages > DEFAULT_MAX_PAGES) {
+      var confirmed = window.confirm(
+        "即将对本人已授权可见的 " + resolved.semester + " 开课数据执行**五校区串行采集**。\n" +
+          "请求顺序：baseline → " + APPROVED_SHARDS.length + " 个校区 shard → baseline\n" +
+          "pageSize=" + pageSize + "\n" +
+          "每个 shard 最多请求 " + resolved.maxPages + " 页\n" +
+          "请求间隔至少 " + resolved.delayMs / 1000 + " 秒\n" +
+          "批次策略：**全局**每 " + MAX_REQUESTS_PER_BATCH + " 个成功请求后冷却 " +
+          BATCH_COOLDOWN_MS / 60000 + " 分钟（跨 shard / 跨 baseline 连续计数）\n" +
+          "是否继续？"
+      );
+      if (!confirmed) {
+        return { cancelled: true, requests: 0, shards: [], diagnostics: null };
+      }
+    }
+
+    // 本次 run 的**唯一** pacing controller：
+    // ⛔ 全局一个实例，计数覆盖 baseline_before + 所有 shard 的页 + baseline_after。
+    var pacer = createRequestPacer(resolved.delayMs);
+
+    var requests = 0;
+    var baselineBefore = null;
+    var baselineAfter = null;
+    var shardResults = [];
+    var shardDiagnostics = [];
+
+    /**
+     * 当前已采集到的**外层 diagnostics**（失败时也用它，所以是"增量快照"）。
+     *
+     * 字段名照 Architecture Review 给定的清单。
+     */
+    function makeDiagnostics() {
+      var totalSum = 0;
+      var pageSum = 0;
+      for (var index = 0; index < shardDiagnostics.length; index += 1) {
+        totalSum += shardDiagnostics[index].expectedTotal;
+        pageSum += shardDiagnostics[index].expected_pages;
+      }
+
+      return {
+        semester: resolved.semester,
+        page_size: pageSize,
+        shard_count: shardDiagnostics.length,
+        approved_shard_count: APPROVED_SHARDS.length,
+        baseline_before: baselineBefore,
+        baseline_after: baselineAfter,
+        shard_total_sum: totalSum,
+        // ⛔ 只作 diagnostics：不得参与任何完整性 / complete 判定。
+        expected_pages_total: pageSum,
+        shards: shardDiagnostics.slice()
+      };
+    }
+
+    // ---- baseline_before（也是全局请求计数的第 1 个请求） ------------------
+    baselineBefore = await requestReportedTotal(resolved.semester, pacer);
+    requests += 1;
+
+    // ---- 五个 shard：**串行**，顺序即已批准顺序 --------------------------
+    for (var shardIndex = 0; shardIndex < APPROVED_SHARDS.length; shardIndex += 1) {
+      var shard = APPROVED_SHARDS[shardIndex];
+
+      // ⛔ 这里**不再 sleep**：跨 shard / 跨页 / 跨批次的间隔全部由全局 pacer
+      // 在 requestPage() 里统一保证。
+      var core;
+      try {
+        core = await collectPages(
+          resolved.semester,
+          pageSize,
+          resolved.maxPages,
+          pacer,
+          shard.openingSchoolNumber
+        );
+      } catch (error) {
+        // ⛔ 不回显任何 row 取值：下层错误信息本身只含页码 / 字段名 / 计数。
+        // 带上本次已经采集到的 diagnostics，失败原因与进度都能在控制台看到。
+        failWithDiagnostics(
+          "shard " + shard.shard_id + " 采集失败：" + unwrapErrorMessage(error) +
+            "（已整体停止，不产出任何 bundle）",
+          makeDiagnostics()
+        );
+      }
+      requests += core.requests;
+
+      shardDiagnostics.push({
+        shard_id: shard.shard_id,
+        openingSchoolNumber: shard.openingSchoolNumber,
+        expectedTotal: core.expectedTotal,
+        accumulatedRows: core.accumulatedRows,
+        stoppedReason: core.stoppedReason,
+        page_count: core.pages.length,
+        // ⛔ 只作 diagnostics（ceil(expectedTotal / pageSize)）：
+        //    不得参与任何完整性判定；页码数不是证据。
+        expected_pages: Math.ceil(core.expectedTotal / pageSize)
+      });
+
+      // ② 任一 shard 未取满 → 立即整体停止（不再继续打学校接口）。
+      if (core.stoppedReason !== "reached_total" || core.accumulatedRows !== core.expectedTotal) {
+        failWithDiagnostics(
+          "shard " + shard.shard_id + " 未取满：累计 " + core.accumulatedRows +
+            " / total " + core.expectedTotal + "（停止原因 " + core.stoppedReason +
+            "）。已整体停止，不产出任何 bundle；请提高 maxPages 后重跑。",
+          makeDiagnostics()
+        );
+      }
+
+      shardResults.push({
+        shard_id: shard.shard_id,
+        openingSchoolNumber: shard.openingSchoolNumber,
+        expectedTotal: core.expectedTotal,
+        accumulatedRows: core.accumulatedRows,
+        stoppedReason: core.stoppedReason,
+        // 裸 Capture Bundle：顶层只有 format / semester / first_page_no / page_size / pages。
+        bundle: {
+          format: CAPTURE_FORMAT,
+          semester: resolved.semester,
+          first_page_no: resolved.firstPageNo,
+          page_size: pageSize,
+          pages: core.pages
+        }
+      });
+    }
+
+    // ---- baseline_after（③ 五个 shard **全部完整成功后无条件请求**） --------
+    // ⛔ 顺序是 Review 裁定的：先 baseline 稳定性，再 shard 覆盖性。
+    //    覆盖性**不得**抢在 baseline_after 之前判定（那会拿一个未确认的
+    //    snapshot window 去解释覆盖差异）。
+    // pacing：baseline_after **也走同一个全局 pacer**（计入全局请求数与批次）。
+    baselineAfter = await requestReportedTotal(resolved.semester, pacer);
+    requests += 1;
+
+    // ④ baseline 稳定性：不等价 → snapshot window unstable，整体失败。
+    if (baselineBefore !== baselineAfter) {
+      failWithDiagnostics(
+        "baseline_before(" + baselineBefore + ") != baseline_after(" + baselineAfter +
+          ")：snapshot window unstable —— 该学期数据集合在采集窗口内发生变化" +
+          "（历史 6892 → 现 6880 属已知漂移）。已整体停止，不产出任何 bundle。",
+        makeDiagnostics()
+      );
+    }
+
+    // ⑤ shard 覆盖性：**只有** baseline 稳定后才判定。
+    var coveredTotal = 0;
+    for (var coverIndex = 0; coverIndex < shardDiagnostics.length; coverIndex += 1) {
+      coveredTotal += shardDiagnostics[coverIndex].expectedTotal;
+    }
+    if (coveredTotal !== baselineBefore) {
+      failWithDiagnostics(
+        "五个 shard 的 total 之和(" + coveredTotal + ") != baseline_before(" + baselineBefore +
+          ")：shard coverage mismatch —— 分片未覆盖全体或与基线不一致。" +
+          "已整体停止，不产出任何 bundle。",
+        makeDiagnostics()
+      );
+    }
+
+    return {
+      cancelled: false,
+      requests: requests,
+      semester: resolved.semester,
+      page_size: pageSize,
+      shards: shardResults,
+      diagnostics: makeDiagnostics()
+    };
+  }
+
+  /**
+   * 取某个 shard 的**裸** Capture Bundle（对象，可直接交给 Python `load_capture_bundle`）。
+   *
+   * ⛔ 只接受**成功完成**的五校区采集结果；⛔ **不把 diagnostics 塞进 bundle**；
+   * ⛔ 找不到该 shard 时失败，且**不回显**调用方给出的名字。
+   */
+  function shardBundle(result, shardId) {
+    if (!result || result.cancelled === true || !Array.isArray(result.shards)) {
+      fail(
+        "没有可用的五校区采集结果（采集被取消或未完成）。本采集器不会生成伪 bundle。"
+      );
+    }
+
+    for (var index = 0; index < result.shards.length; index += 1) {
+      if (result.shards[index].shard_id === shardId) {
+        return result.shards[index].bundle;
+      }
+    }
+
+    fail("五校区采集结果里没有该 shard（只接受五个已批准校区名）。");
+  }
+
+  /** 某个 shard 裸 Capture Bundle 的 JSON 文本（⛔ 不含 diagnostics）。 */
+  function toShardJson(result, shardId) {
+    return JSON.stringify(shardBundle(result, shardId), null, 2);
+  }
+
+  /** 外层 diagnostics 的 JSON 文本（⛔ diagnostics **不**进入任何裸 bundle）。 */
+  function toDiagnosticsJson(result) {
+    if (!result || result.cancelled === true || !result.diagnostics) {
+      fail("没有可序列化的 diagnostics（采集被取消或未完成）。");
+    }
+    return JSON.stringify(result.diagnostics, null, 2);
   }
 
   // ---------------------------------------------------------------------
@@ -624,6 +1488,7 @@
     semester = semester.trim();
 
     // 只取第 1 页、只取一次。
+    // ⛔ **不传第 4 个参数** = baseline（全量）形态：请求体只有 `yearTerm`，不做任何分片。
     var data = await requestPage(semester, DIAGNOSTIC_PAGE_NO, DIAGNOSTIC_PAGE_SIZE);
 
     var summary = summarizeSchedulePresence(data.rows);
@@ -658,6 +1523,1429 @@
       );
     }
     return JSON.stringify(result.bundle, null, 2);
+  }
+
+  // ---------------------------------------------------------------------
+  // Single-approved-campus capture（Architecture Review 裁定；独立于五校区编排）
+  //
+  // ✅ 用途：在**会话寿命不足以跑完五个 shard**（第 6 页真实 `401` 证据）时，
+  //    一次只采**一个已批准校区**，产出**标准裸 Capture Bundle**。
+  // ⛔ 不新增 wrapper schema、⛔ 不做 fake global page renumbering、
+  //    ⛔ 不改五校区编排、⛔ 不改 public Schema。
+  // ⛔ 调用方**不能**传 `openingSchoolNumber` 冒充已批准 shard：
+  //    只接受下面表里的 `capture_shard_id`，映射由本文件内部固定。
+  // ⛔ 北校园保留在白名单中，但 operational status = **suspended**（真实 `HTTP 600` 证据）
+  //    ⇒ 直接 fail closed，⛔ 不做任何绕过。
+  // ---------------------------------------------------------------------
+
+  /**
+   * 已批准校区 **capture shard** 白名单（`capture_shard_id` → 已批准中文 shard）。
+   *
+   * ⚠️ **不重复任何 `openingSchoolNumber`**：号码只在 `APPROVED_SHARDS` 里出现一次
+   * （单一真源），这里通过 `shard_id` 引用，避免两份映射漂移。
+   *
+   * `source_label` 是**审计标签**（导入时作为 `source` 使用），
+   * ⛔ **不写入 Capture Bundle**（bundle 仍然是标准裸格式）。
+   */
+  var APPROVED_CAMPUS_CAPTURE_SHARDS = [
+    {
+      capture_shard_id: "east-campus",
+      shard_id: "东校园",
+      operational: true,
+      source_label: "sysu-2026-1-east-campus"
+    },
+    {
+      capture_shard_id: "south-campus",
+      shard_id: "南校园",
+      operational: true,
+      source_label: "sysu-2026-1-south-campus"
+    },
+    {
+      capture_shard_id: "shenzhen-campus",
+      shard_id: "深圳校区",
+      operational: true,
+      source_label: "sysu-2026-1-shenzhen-campus"
+    },
+    {
+      capture_shard_id: "zhuhai-campus",
+      shard_id: "珠海校区",
+      operational: true,
+      source_label: "sysu-2026-1-zhuhai-campus"
+    },
+    {
+      capture_shard_id: "north-campus",
+      shard_id: "北校园",
+      operational: false, // ⏸ suspended（真实 HTTP 600 证据；⛔ 不绕过）
+      source_label: "sysu-2026-1-north-campus"
+    }
+  ];
+
+  /**
+   * single-approved-campus 路径的**批次上限**（Architecture Review 裁定）。
+   *
+   * ⚠️ **不是**全局 pacing 变更：ordinary / 五校区路径继续用 5。
+   * 7 的选择依据是已观测包络："`pageSize=50` + 30 s 间隔连续 **7** 次成功后，
+   * 第 **8** 次出现 `HTTP 600`" ⇒ 第 8 个请求必须落在冷却之后。
+   * ⛔ 最小间隔（`MIN_DELAY_MS`）与冷却（`BATCH_COOLDOWN_MS`）**未改**。
+   */
+  var APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH = 7;
+
+  /** single-approved-campus 允许的 options（**严格白名单**；⛔ 不接受 openingSchoolNumber）。 */
+  var APPROVED_CAMPUS_ALLOWED_OPTIONS = ["semester", "shardId", "maxPages", "delayMs"];
+
+  /** 按 `capture_shard_id` 查白名单条目（⛔ 不回显调用方给出的名字）。 */
+  function resolveApprovedCampusShard(captureShardId) {
+    for (var index = 0; index < APPROVED_CAMPUS_CAPTURE_SHARDS.length; index += 1) {
+      if (APPROVED_CAMPUS_CAPTURE_SHARDS[index].capture_shard_id === captureShardId) {
+        return APPROVED_CAMPUS_CAPTURE_SHARDS[index];
+      }
+    }
+    return null;
+  }
+
+  /** 按已批准中文 shard 名查 `APPROVED_SHARDS` 条目（号码的唯一真源）。 */
+  function resolveApprovedShardById(shardId) {
+    for (var index = 0; index < APPROVED_SHARDS.length; index += 1) {
+      if (APPROVED_SHARDS[index].shard_id === shardId) {
+        return APPROVED_SHARDS[index];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 采集**一个已批准校区**，返回标准裸 Capture Bundle。
+   *
+   * ```js
+   * const east = await window.XuehangSysuCollector.collectApprovedShard({
+   *   semester: "2026-1",
+   *   shardId: "east-campus",
+   *   maxPages: 50
+   * });
+   * copy(window.XuehangSysuCollector.toJson(east));   // 标准 Capture Bundle
+   * ```
+   *
+   * 返回（JS 层包装，⛔ **bundle 本身仍是裸格式**）：
+   *
+   * ```text
+   * cancelled / requests / semester / page_size
+   * shard: { capture_shard_id, shard_id, openingSchoolNumber, source_label, operational }
+   * expectedTotal / accumulatedRows / stoppedReason
+   * bundle（标准裸格式）：format / semester / first_page_no / page_size / pages
+   * ```
+   *
+   * - ✅ `semester` 必须**显式**提供，并原样绑定进 bundle；
+   * - ⛔ 不接受 `openingSchoolNumber`（由内部映射解析）⇒ 调用方无法冒充已批准 shard；
+   * - ⛔ 不做 fake global page renumbering：`pages[].page_no` 就是该校区的真实页码；
+   * - ⛔ `source_label` **不写入 bundle**，只作为后续导入的审计标签；
+   * - ⛔ suspended 校区（北校园）→ fail closed；
+   * - ⛔ 未取满（`stoppedReason !== "reached_total"`）→ fail closed，⛔ 不产出 bundle；
+   * - 401 / 403 / HTTP 600 / malformed / total 漂移 → 由 `requestPage()` fail closed，
+   *   ⛔ 不重试、⛔ 不刷新认证、⛔ 不读 token/cookie、⛔ 不跳页、⛔ 不续采。
+   */
+  async function collectApprovedShard(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var optionNames = Object.keys(opts);
+    var unexpected = optionNames.filter(function (name) {
+      return APPROVED_CAMPUS_ALLOWED_OPTIONS.indexOf(name) === -1;
+    });
+    if (unexpected.length > 0) {
+      fail(
+        "single-approved-campus 采集只接受 " +
+          APPROVED_CAMPUS_ALLOWED_OPTIONS.join(" / ") +
+          "（收到 " + unexpected.length + " 个其它参数，含可能的 openingSchoolNumber）。" +
+          "已停止；参数名不予回显（⛔ 不接受调用方指定校区号）。"
+      );
+    }
+
+    var campus = resolveApprovedCampusShard(opts.shardId);
+    if (campus === null) {
+      fail(
+        "shardId 不在已批准校区白名单内（" +
+          APPROVED_CAMPUS_CAPTURE_SHARDS.length +
+          " 个已批准取值）。已停止（⛔ 不回显调用方给出的名字，" +
+          "⛔ 不接受任意 openingSchoolNumber）。"
+      );
+    }
+
+    if (campus.operational !== true) {
+      fail(
+        "该校区当前为 **suspended**（真实 HTTP 600 证据），本采集器 ⛔ 不做任何绕过：" +
+          "不重试、不降级参数、不换 endpoint。已停止；解除 suspended 需要 Architecture Review 裁定。"
+      );
+    }
+
+    var approved = resolveApprovedShardById(campus.shard_id);
+    if (approved === null) {
+      fail("内部一致性错误：capture shard 未能在 APPROVED_SHARDS 中解析。已停止。");
+    }
+
+    var resolved = resolvePagingOptions(opts);
+
+    if (resolved.maxPages > DEFAULT_MAX_PAGES) {
+      var confirmed = window.confirm(
+        "即将采集**单个已批准校区**（只产出该校区的标准 Capture Bundle）。\n" +
+          "最多请求 " + resolved.maxPages + " 页\n" +
+          "请求间隔至少 " + resolved.delayMs / 1000 + " 秒；每 " +
+          APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH + " 个成功请求后冷却 " +
+          BATCH_COOLDOWN_MS / 60000 + " 分钟\n" +
+          "是否继续？"
+      );
+      if (!confirmed) {
+        fail("用户取消了单校区采集：本次不产生任何 bundle（⛔ 不生成伪 bundle）。");
+      }
+    }
+
+    var pacer = createRequestPacer(
+      resolved.delayMs,
+      APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH
+    );
+
+    var core = await collectPages(
+      resolved.semester,
+      resolved.pageSize,
+      resolved.maxPages,
+      pacer,
+      approved.openingSchoolNumber
+    );
+
+    // ⛔ 未取满：不产出 bundle、⛔ 不续采、⛔ 不跳页（与五校区编排同口径）。
+    if (core.stoppedReason !== "reached_total" || core.accumulatedRows !== core.expectedTotal) {
+      fail(
+        "单校区采集未取满：累计 " + core.accumulatedRows + " / total " + core.expectedTotal +
+          "（停止原因 " + core.stoppedReason + "）。已整体停止，不产出任何 bundle；" +
+          "请提高 maxPages 后重跑。"
+      );
+    }
+
+    return {
+      cancelled: false,
+      requests: core.requests,
+      semester: resolved.semester,
+      page_size: resolved.pageSize,
+      shard: {
+        capture_shard_id: campus.capture_shard_id,
+        shard_id: campus.shard_id,
+        openingSchoolNumber: approved.openingSchoolNumber,
+        source_label: campus.source_label,
+        operational: campus.operational
+      },
+      expectedTotal: core.expectedTotal,
+      accumulatedRows: core.accumulatedRows,
+      stoppedReason: core.stoppedReason,
+      // 标准裸 Capture Bundle：顶层只有 format / semester / first_page_no / page_size / pages。
+      // ⛔ source label / 校区号 / diagnostics 都**不**写进 bundle。
+      bundle: {
+        format: CAPTURE_FORMAT,
+        semester: resolved.semester,
+        first_page_no: resolved.firstPageNo,
+        page_size: resolved.pageSize,
+        pages: core.pages
+      }
+    };
+  }
+
+  // ---------------------------------------------------------------------
+  // 一次性 Layout B 诊断（**零留存**；Architecture Review 裁定）
+  //
+  // ⛔ 只在内存中比较 **minimize 之前的 raw row**，且只返回**聚合计数**：
+  //    不回显 teachingName / f3 / f4 / 课程号 / 教学班号 / 原文；
+  //    不产出 bundle、不落盘、不写日志文件、不保存 raw response。
+  // ⛔ 不参与生产链路：`collect()` / `collectSharded()` 都不调用它。
+  // ---------------------------------------------------------------------
+
+  /** Layout B 候选的字段数（已确认 4 字段）。 */
+  var LAYOUT_B_FIELD_COUNT = 4;
+
+  /**
+   * Layout B 诊断允许的 options（**严格白名单**）。
+   *
+   * ⛔ 不开放 `pageSize` / `firstPageNo` / `delayMs`：诊断恒用已验证的默认口径
+   * （`pageSize=200`、`firstPageNo=1`、`delayMs>=30000`）。
+   */
+  var LAYOUT_B_ALLOWED_OPTIONS = ["semester", "openingSchoolNumber", "maxPages"];
+
+  /**
+   * 已批准 **weeks** 形状（与 Python `expand_weeks()` 的已批准 grammar **同规则**）。
+   *
+   * ⛔ 整段锚定、⛔ 无 `.*`、⛔ 不做 `startswith` / 去前缀 / 大小写折叠。
+   */
+  var LAYOUT_B_WEEKS_PATTERNS = [
+    /^[0-9]+-[0-9]+周$/,
+    /^[0-9]+-[0-9]+(单周|双周)$/,
+    /^[0-9]+-[0-9]+周(校外|校内\(户外\))$/
+  ];
+
+  /**
+   * 已批准 **sections** 形状（与 Python `parse_sections()` 的已批准 grammar **同规则**）。
+   *
+   * ⚠️ 本诊断只用它**排除**「f3 是 sections」的情形（Layout B 定义要求没有 sections）。
+   */
+  var LAYOUT_B_SECTIONS_PATTERN = /^第[0-9]+-[0-9]+节(校内\(户外\)|校外|线上)?$/;
+
+  /** `f1` 是否是已批准的 weeks token（仅结构判定，**不返回取值**）。 */
+  function isApprovedWeeksToken(token) {
+    for (var index = 0; index < LAYOUT_B_WEEKS_PATTERNS.length; index += 1) {
+      if (LAYOUT_B_WEEKS_PATTERNS[index].test(token)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 判断一个**已脱敏前**的 segment 是否属于 Layout B 候选。
+   *
+   * ```text
+   * 4 fields
+   * f1 = 已确认 weeks
+   * f2 = 已确认 location（复用现有判别器：>= 3 个非空 "-" 分段）
+   *      ⇒ 同时排除 weekday（weekday token 不含 "-"）
+   * f3 ≠ 已确认 sections
+   * ```
+   *
+   * ⛔ 只做**结构**判定：不比对课程名 / 教师名 / 学院，不做模糊匹配；
+   * ⛔ 返回值只有 true / false（**不返回任何字段取值**）。
+   */
+  function isLayoutBCandidate(segment) {
+    var fields = segment.split(FIELD_SEPARATOR);
+
+    if (fields.length !== LAYOUT_B_FIELD_COUNT) {
+      return false;
+    }
+
+    if (!isApprovedWeeksToken(fields[0].trim())) {
+      return false;
+    }
+
+    if (countNonEmptyDashSegments(fields[1].trim()) < MIN_LOCATION_SEGMENTS) {
+      return false;
+    }
+
+    if (LAYOUT_B_SECTIONS_PATTERN.test(fields[2].trim())) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /** activity 的**现有**规则：非空字符串（与 Python `_require_non_empty_token` 同规则）。 */
+  function isNonEmptyActivityToken(token) {
+    return typeof token === "string" && token.trim() !== "";
+  }
+
+  // ---------------------------------------------------------------------
+  // 已确认 layout 的 **activity 固定槽位**（Architecture Review 裁定 2026-10-05）
+  //
+  // ⛔ 字段**角色**只由 layout 结构确定（字段数 + 各槽位是否命中已批准 grammar）；
+  // ⛔ **不**用"非空字符串 = activity"当角色证据；
+  // ⛔ 不比对课程名 / 教师名 / 学院，⛔ 无姓名启发式，⛔ 无 CJK 长度猜测。
+  // ---------------------------------------------------------------------
+
+  /** 已确认 weekday 白名单（与 Python `_WEEKDAY_BY_TOKEN` **同集合**；⛔ 无通配）。 */
+  var CONFIRMED_WEEKDAY_TOKENS = [
+    "星期一",
+    "星期二",
+    "星期三",
+    "星期四",
+    "星期五",
+    "星期六",
+    "星期日"
+  ];
+
+  /** 已确认 **non-concrete** 2 / 3 字段的 f1 形状（⛔ **不含** parity：Python 那两条路径只认 `N-M周`）。 */
+  var CONFIRMED_NON_CONCRETE_WEEKS_PATTERNS = [
+    /^[0-9]+-[0-9]+周$/,
+    /^[0-9]+-[0-9]+周(校外|校内\(户外\))$/
+  ];
+
+  /** 已确认 weeks 的三种形状（含 parity；用于 layout A 的 f1）。 */
+  var CONFIRMED_PLAIN_WEEKS_PATTERN = /^([0-9]+)-([0-9]+)周$/;
+  var CONFIRMED_PARITY_WEEKS_PATTERN = /^([0-9]+)-([0-9]+)(单周|双周)$/;
+  var CONFIRMED_QUALIFIED_WEEKS_PATTERN = /^([0-9]+)-([0-9]+)周(校外|校内\(户外\))$/;
+
+  /** 已确认 sections：`第N-M节` + 已批准 suffix（与 Python `_SECTION_PATTERN` 同规则）。 */
+  var CONFIRMED_SECTIONS_PATTERN = /^第([0-9]+)-([0-9]+)节(校内\(户外\)|校外|线上)?$/;
+
+  function isConfirmedWeekdayToken(token) {
+    return CONFIRMED_WEEKDAY_TOKENS.indexOf(token) !== -1;
+  }
+
+  /**
+   * 已确认 weeks token？与 Python `expand_weeks()` 的**接受集合**同规则：
+   *
+   * ```text
+   * N-M周 / N-M单周 / N-M双周 / N-M周校外 / N-M周校内(户外)
+   * 且 N >= 1、M >= N；单/双周在区间内必须至少有一个对应 parity 的周
+   * ```
+   *
+   * ⛔ 整段锚定；⛔ 无 `.*` / `startswith` / 无条件 strip。
+   */
+  function isConfirmedWeeksToken(token) {
+    var match = CONFIRMED_PLAIN_WEEKS_PATTERN.exec(token);
+    var parity = null;
+
+    if (match === null) {
+      match = CONFIRMED_PARITY_WEEKS_PATTERN.exec(token);
+      if (match !== null) {
+        parity = match[3];
+      }
+    }
+    if (match === null) {
+      match = CONFIRMED_QUALIFIED_WEEKS_PATTERN.exec(token);
+    }
+    if (match === null) {
+      return false;
+    }
+
+    var start = Number(match[1]);
+    var end = Number(match[2]);
+    if (start < 1 || end < start) {
+      return false;
+    }
+
+    if (parity !== null) {
+      for (var week = start; week <= end; week += 1) {
+        if (parity === "单周" ? week % 2 === 1 : week % 2 === 0) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  /** `f1` 是否是已确认 non-concrete（2 / 3 字段）的 weeks token（形状 + 数值，⛔ 不含 parity）。 */
+  function isConfirmedNonConcreteWeeksToken(token) {
+    for (var index = 0; index < CONFIRMED_NON_CONCRETE_WEEKS_PATTERNS.length; index += 1) {
+      if (!CONFIRMED_NON_CONCRETE_WEEKS_PATTERNS[index].test(token)) {
+        continue;
+      }
+      return isConfirmedWeeksToken(token);
+    }
+    return false;
+  }
+
+  /** 已确认 sections token（形状 + `N >= 1`、`M >= N`）？ */
+  function isConfirmedSectionsToken(token) {
+    var match = CONFIRMED_SECTIONS_PATTERN.exec(token);
+    if (match === null) {
+      return false;
+    }
+    var start = Number(match[1]);
+    var end = Number(match[2]);
+    return start >= 1 && end >= start;
+  }
+
+  /** 通用 location grammar（与 Python `_is_location_token` 同规则：非空园区 + `-` + 非空教室）。 */
+  function isGeneralLocationToken(token) {
+    if (typeof token !== "string") {
+      return false;
+    }
+    var separatorIndex = token.indexOf("-");
+    if (separatorIndex === -1) {
+      return false;
+    }
+    return (
+      token.slice(0, separatorIndex).trim() !== "" &&
+      token.slice(separatorIndex + 1).trim() !== ""
+    );
+  }
+
+  /**
+   * 返回**已确认 layout** 的 activity **固定槽位下标**；不是已确认 layout → `-1`。
+   *
+   * 已确认 layout（与 production parser 的已确认 grammar **同规则**）：
+   *
+   * ```text
+   * 2 字段：weeks(plain|+已确认 qualifier) / activity                       → 槽位 1
+   * 3 字段：weeks(plain|+已确认 qualifier) / teacher / activity             → 槽位 2
+   * 4 字段：weeks / weekday / sections / activity                           → 槽位 3
+   * 5 字段 layout A：weeks / weekday / location / REDACTED / activity       → 槽位 4
+   * 5 字段 concrete：weeks / weekday / sections / location-or-teacher / activity → 槽位 4
+   * 6 字段：weeks / weekday / sections / location / teacher / activity      → 槽位 5
+   * ```
+   *
+   * ⛔ 5 字段 f4 若**二义**（既非明确 location 也非明确 teacher）→ 不算已确认（返回 `-1`）；
+   * ⛔ layout A 的 f4 必须**精确等于** `REDACTED`（⛔ 无前缀 / 包含 / 通配 / 空白容忍）；
+   * ⛔ 返回的只是**下标**（⛔ 不返回任何取值）。
+   */
+  function confirmedActivitySlotIndex(segment) {
+    var fields = segment.split(FIELD_SEPARATOR);
+    var fieldCount = fields.length;
+    var third;
+    var classification;
+
+    if (fieldCount === 2) {
+      if (!isConfirmedNonConcreteWeeksToken(fields[0].trim())) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[1])) {
+        return -1;
+      }
+      return 1;
+    }
+
+    if (fieldCount === 3) {
+      if (!isConfirmedNonConcreteWeeksToken(fields[0].trim())) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[1])) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[2])) {
+        return -1;
+      }
+      return 2;
+    }
+
+    if (fieldCount === 4) {
+      if (!isConfirmedWeekdayToken(fields[1].trim())) {
+        return -1;
+      }
+      if (!isConfirmedSectionsToken(fields[2].trim())) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[3])) {
+        return -1;
+      }
+      return 3;
+    }
+
+    if (fieldCount === 5) {
+      // layout A（已批准；必须**先**判定：它的第 3 个字段是 location，不是 sections）
+      if (
+        isConfirmedWeeksToken(fields[0].trim()) &&
+        isConfirmedWeekdayToken(fields[1].trim()) &&
+        countNonEmptyDashSegments(fields[2].trim()) >= MIN_LOCATION_SEGMENTS &&
+        fields[3] === REDACTED_TEACHER &&
+        isNonEmptyActivityToken(fields[4])
+      ) {
+        return 4;
+      }
+
+      // concrete 5 字段：weeks / weekday / sections / location-or-teacher / activity
+      if (!isConfirmedWeekdayToken(fields[1].trim())) {
+        return -1;
+      }
+      if (!isConfirmedSectionsToken(fields[2].trim())) {
+        return -1;
+      }
+      third = fields[3].trim();
+      classification = classifyFiveFieldToken(third);
+      if (classification === "ambiguous") {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[4])) {
+        return -1;
+      }
+      return 4;
+    }
+
+    if (fieldCount === 6) {
+      if (!isConfirmedWeekdayToken(fields[1].trim())) {
+        return -1;
+      }
+      if (!isConfirmedSectionsToken(fields[2].trim())) {
+        return -1;
+      }
+      if (!isGeneralLocationToken(fields[3])) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[4])) {
+        return -1;
+      }
+      if (!isNonEmptyActivityToken(fields[5])) {
+        return -1;
+      }
+      return 5;
+    }
+
+    return -1;
+  }
+
+  /** 多重集自增（token → 出现次数）；⛔ 只在内存中使用，⛔ 不返回、⛔ 不落盘。 */
+  function addTokenOccurrence(multiset, token) {
+    var current = multiset.get(token);
+    multiset.set(token, current === undefined ? 1 : current + 1);
+  }
+
+  // ---------------------------------------------------------------------
+  // Layout B 候选 `f3` 的**原始字段名命中**统计（Architecture Review 裁定 2026-10-05）
+  //
+  // 目的：`f3 == teachingName` 与 `f3 ∈ 已确认 activity 集合` 都是 0，
+  //       因此用**严格字符串相等**在 raw row 的**字符串字段**里找出 f3 命中哪些字段。
+  //
+  // ⛔ 只输出**字段名**与命中次数（⛔ 不输出 raw value / f3 原文 / teacher name / 任何 id）；
+  // ⛔ 只做**严格相等**（⛔ 无模糊匹配 / ⛔ 无 substring / ⛔ 无分词 / ⛔ 无大小写折叠）；
+  // ⛔ 多个字段同时命中 → **全部保留**（⛔ 不自行裁定哪一个才是答案）。
+  // ---------------------------------------------------------------------
+
+  /**
+   * 明确排除的字段名（Architecture Review 清单 + collector 既有字段）。
+   *
+   * ⛔ 这些是**精确**字段名，不参与 f3 命中统计。
+   */
+  var LAYOUT_B_F3_MATCH_EXCLUDED_FIELDS = [
+    // 非 ID 但同样不参与（体积大 / 无诊断价值 / 属排课原文）
+    "courseNum",
+    "classNumber",
+    "teachingTimePlaceStr",
+    // Architecture Review 明确列出的内部 ID 字段
+    "courseId",
+    "class_ID",
+    "sumClassesID",
+    "outLineId",
+    "timePlaceId"
+  ];
+
+  /**
+   * 内部 ID 字段名的**词法边界**判定（**机械**规则，⛔ 不猜业务语义）。
+   *
+   * ```text
+   * id     / ID / Id / iD  （整个字段名就是 id，忽略大小写）
+   * xxxId  （驼峰）
+   * xxxID  （全大写后缀）
+   * xxx_id / xxx_ID / xxx_Id …（下划线 + id，忽略大小写）
+   * ```
+   *
+   * ⛔ **不再**使用"任意以 `id` 两个字符结尾"的规则：
+   * `valid` / `invalid` / `hybrid` 这类**普通单词**必须**参与**统计
+   * （过度排除会造成 false negative，降低诊断证明力）。
+   *
+   * ⚠️ 按裁定的**词法边界**要求，全小写且无分隔符的 `xxxid`（如 `courseid`）
+   * **没有** ID 边界 ⇒ **不**排除；若要覆盖该形态，需要 Review 给出明确规则。
+   */
+  var LAYOUT_B_F3_MATCH_ID_SUFFIXES = ["Id", "ID"];
+
+  /** `_id` / `_ID` / `_Id` …（下划线 + id，忽略大小写）。 */
+  var LAYOUT_B_F3_MATCH_ID_UNDERSCORE_PATTERN = /_id$/i;
+
+  /** 字段名是否具有内部 ID 的**词法形状**（⛔ 必须有边界）。 */
+  function hasInternalIdShape(fieldName) {
+    if (fieldName.toLowerCase() === "id") {
+      return true;
+    }
+
+    for (var index = 0; index < LAYOUT_B_F3_MATCH_ID_SUFFIXES.length; index += 1) {
+      if (fieldName.endsWith(LAYOUT_B_F3_MATCH_ID_SUFFIXES[index])) {
+        return true;
+      }
+    }
+
+    return LAYOUT_B_F3_MATCH_ID_UNDERSCORE_PATTERN.test(fieldName);
+  }
+
+  /** 该字段名是否被排除在 f3 命中统计之外（精确清单 + ID 词法形状）。 */
+  function isExcludedMatchFieldName(fieldName) {
+    if (LAYOUT_B_F3_MATCH_EXCLUDED_FIELDS.indexOf(fieldName) !== -1) {
+      return true;
+    }
+    return hasInternalIdShape(fieldName);
+  }
+
+  /** 多重集中命中集合的出现次数合计。 */
+  function countMultisetTokensInSet(multiset, tokenSet) {
+    var total = 0;
+    multiset.forEach(function (occurrences, token) {
+      if (tokenSet.has(token)) {
+        total += occurrences;
+      }
+    });
+    return total;
+  }
+
+  /**
+   * **一次性、零留存** Layout B 诊断：串行拉取若干页，在**minimize 之前**对 raw rows
+   * 做内存比较，最终**只**返回**七个聚合计数**。
+   *
+   * ```text
+   * candidate_count                     Layout B 候选 segment 数
+   * comparable_teaching_name_count      其中 raw row **带** teachingName 属性者
+   * f3_equals_teaching_name_count       其中 f3 === row.teachingName 者
+   * f4_equals_teaching_name_count       其中 f4 === row.teachingName 者
+   * f4_activity_count                   其中 f4 满足现有 activity 非空规则者（⛔ 仅语法检查）
+   * f3_in_confirmed_activity_set_count  其中 f3 ∈ 已确认 activity 集合者
+   * f4_in_confirmed_activity_set_count  其中 f4 ∈ 已确认 activity 集合者
+   * f3_matching_raw_fields              字段名 → "f3 严格等于该字段的候选数"（只含 **>= 1** 命中）
+   * ```
+   *
+   * `f3_matching_raw_fields` 只遍历 raw row 的**字符串类型字段**，只做**严格相等**
+   * （⛔ 无模糊匹配 / substring / 分词），并排除 `courseNum` / `classNumber` /
+   * `teachingTimePlaceStr` 与**内部 ID 字段**（见 `isExcludedMatchFieldName()`）；
+   * 多个字段同时命中时**全部保留**（⛔ 不自行裁定）。⛔ 只输出**字段名**与计数，
+   * ⛔ 不输出任何 raw value / f3 原文 / teacher name / 课程与教学班标识。
+   *
+   * **已确认 activity 集合**只来自**已确认 layout 的 activity 固定槽位**
+   * （见 `confirmedActivitySlotIndex()`），**只在内存中构造**，⛔ 不返回、⛔ 不落盘、
+   * ⛔ 不写 bundle、⛔ 不写日志；集合里**没有任何取值被输出**。
+   *
+   * ⚠️ **顺序无关**：候选的 f3 / f4 先计入两个**极小的内存多重集**，等**全部页**扫完后
+   * 才与集合求交 ⇒ 候选出现在"提供该 activity token 的那一行**之前**"也不会被误判成
+   * 不在集合中（否则会得出错误的字段角色结论）。两个多重集同样 ⛔ 不返回、⛔ 不落盘。
+   *
+   * ⛔ "非空字符串 = activity" **只作为语法检查**保留（`f4_activity_count`），
+   * **本轮不作为字段角色证据**（角色只由 layout 结构确定）。
+   *
+   * - ⛔ **不输出** teachingName / f3 / f4 / activity token / 课程号 / 教学班号 / 原文；
+   * - ⛔ **不把** teachingName 写入任何 bundle（本函数**不产出 bundle**）；
+   * - ⛔ 不保存 raw response、不写日志文件（rows 只在本次循环内使用，不留引用）；
+   * - ⛔ raw row **没有** `teachingName` 属性 → 只计入 `candidate_count`，
+   *   `comparable_teaching_name_count` / `f3_equals_*` / `f4_equals_*` **不增加**
+   *   （**不猜**、不用其它字段代替）；
+   * - ⛔ 无姓名启发式、⛔ 无 CJK 长度猜测、⛔ 不比对课程名 / 教师名 / 学院；
+   * - ⚠️ 扫完仍然**没有任何**已确认 activity 槽位 → **fail closed**（成员判定会退化为
+   *   恒假，返回 0 会被误读为"不是 activity"）；
+   * - ⛔ 不修改 `collect()` / `collectSharded()` 的任何行为；
+   * - 复用既有 hostname guard / **同一**取页函数 / **同一**全局 pacing controller
+   *   （⛔ 不复制认证与请求逻辑，⛔ 不自己 sleep）。
+   */
+  async function diagnoseLayoutBCandidates(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var optionNames = Object.keys(opts);
+    var unexpected = optionNames.filter(function (name) {
+      return LAYOUT_B_ALLOWED_OPTIONS.indexOf(name) === -1;
+    });
+    if (unexpected.length > 0) {
+      fail(
+        "Layout B 诊断只接受 " + LAYOUT_B_ALLOWED_OPTIONS.join(" / ") +
+          "（收到 " + unexpected.length + " 个其它参数）。已停止；参数名不予回显。"
+      );
+    }
+
+    var resolved = resolvePagingOptions(opts);
+
+    var campus = opts.openingSchoolNumber;
+    if (campus !== undefined && (typeof campus !== "string" || campus.trim() === "")) {
+      fail("openingSchoolNumber 必须是非空字符串（或省略）。");
+    }
+
+    if (resolved.maxPages > DEFAULT_MAX_PAGES) {
+      var confirmed = window.confirm(
+        "即将执行**一次性 Layout B 诊断**（只取聚合计数，不产出任何数据、不落盘）。\n" +
+          "最多请求 " + resolved.maxPages + " 页；请求间隔至少 " +
+          resolved.delayMs / 1000 + " 秒（含全局批次冷却）。\n" +
+          "是否继续？"
+      );
+      if (!confirmed) {
+        fail("用户取消了 Layout B 诊断：本次不产生任何计数（不返回伪造的 0）。");
+      }
+    }
+
+    var pacer = createRequestPacer(resolved.delayMs);
+
+    var candidateCount = 0;
+    var comparableTeachingNameCount = 0;
+    var equalThirdCount = 0;
+    var equalFourthCount = 0;
+    var activityCount = 0;
+    var expectedTotal = null;
+    var accumulatedRows = 0;
+
+    // ---- 只在内存中的结构（⛔ 不返回（除 f3 命中字段名外）/ ⛔ 不落盘 / ⛔ 不写 bundle） ----
+    // 1) 已确认 activity 集合：只来自已确认 layout 的 activity 固定槽位；
+    // 2) / 3) 候选 f3、f4 的**内存多重集**：只为"顺序无关"求交，扫完即弃；
+    // 4) f3 命中的**字段名 → 候选数**（唯一的对外输出，只有字段名，⛔ 无任何取值）。
+    var confirmedActivityTokens = new Set();
+    var candidateThirdTokens = new Map();
+    var candidateFourthTokens = new Map();
+    var f3FieldMatchCounts = new Map();
+
+    for (var index = 0; index < resolved.maxPages; index += 1) {
+      var currentPageNo = FIRST_PAGE_NO + index;
+      var data = await requestPage(
+        resolved.semester,
+        currentPageNo,
+        resolved.pageSize,
+        campus,
+        pacer
+      );
+
+      if (expectedTotal === null) {
+        expectedTotal = data.total;
+      } else if (data.total !== expectedTotal) {
+        fail(
+          "第 " + currentPageNo + " 页的 data.total 与首页不一致：" +
+            "诊断期间数据集合发生变化。已整体停止（不回显任何取值）。"
+        );
+      }
+
+      for (var rowIndex = 0; rowIndex < data.rows.length; rowIndex += 1) {
+        var row = data.rows[rowIndex];
+
+        if (!row || typeof row !== "object" || Array.isArray(row)) {
+          fail(
+            "第 " + currentPageNo + " 页第 " + (rowIndex + 1) +
+              " 条记录不是对象。诊断已停止（不回显任何取值）。"
+          );
+        }
+
+        var text = row[SCHEDULE_FIELD];
+        if (typeof text !== "string" || text === "") {
+          continue;
+        }
+
+        var segments = text.split(SEGMENT_SEPARATOR);
+        if (segments.length > 1 && segments[segments.length - 1].trim() === "") {
+          segments.pop();
+        }
+
+        // ⚠️ 属性**存在性**判定（不是"非空"）：缺失即不可比较 → 不猜。
+        var hasTeachingName = Object.prototype.hasOwnProperty.call(row, "teachingName");
+
+        for (var segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+          var segment = segments[segmentIndex];
+          if (segment.trim() === "") {
+            continue;
+          }
+
+          // ① 已确认 layout 的 **activity 固定槽位** → 只在内存中累积集合。
+          //    ⛔ 不输出任何 token；⛔ 不落盘；⛔ 不写 bundle。
+          var activitySlot = confirmedActivitySlotIndex(segment);
+          if (activitySlot !== -1) {
+            confirmedActivityTokens.add(
+              segment.split(FIELD_SEPARATOR)[activitySlot].trim()
+            );
+          }
+
+          // ② Layout B 候选
+          if (!isLayoutBCandidate(segment)) {
+            continue;
+          }
+
+          candidateCount += 1;
+
+          var fields = segment.split(FIELD_SEPARATOR);
+          var thirdField = fields[2].trim();
+          var fourthField = fields[3].trim();
+
+          if (hasTeachingName) {
+            comparableTeachingNameCount += 1;
+            if (thirdField === row.teachingName) {
+              equalThirdCount += 1;
+            }
+            if (fourthField === row.teachingName) {
+              equalFourthCount += 1;
+            }
+          }
+
+          // ⚠️ 仅**语法**检查（⛔ 不作为字段角色证据）
+          if (isNonEmptyActivityToken(fields[3])) {
+            activityCount += 1;
+          }
+
+          // ⚠️ 只记入**内存多重集**：等全部页扫完后才与集合求交（顺序无关）。
+          addTokenOccurrence(candidateThirdTokens, thirdField);
+          addTokenOccurrence(candidateFourthTokens, fourthField);
+
+          // ③ f3 在本行**字符串字段**里的**严格相等**命中（⛔ 只记录字段名 + 计数）
+          var rowFieldNames = Object.keys(row);
+          for (
+            var fieldIndex = 0;
+            fieldIndex < rowFieldNames.length;
+            fieldIndex += 1
+          ) {
+            var fieldName = rowFieldNames[fieldIndex];
+
+            if (isExcludedMatchFieldName(fieldName)) {
+              continue;
+            }
+            if (typeof row[fieldName] !== "string") {
+              continue;
+            }
+            if (thirdField === row[fieldName]) {
+              var matchedSoFar = f3FieldMatchCounts.get(fieldName);
+              f3FieldMatchCounts.set(
+                fieldName,
+                matchedSoFar === undefined ? 1 : matchedSoFar + 1
+              );
+            }
+          }
+        }
+      }
+
+      accumulatedRows += data.rows.length;
+      if (accumulatedRows >= expectedTotal) {
+        break;
+      }
+    }
+
+    // ⚠️ 集合为空 ⇒ 成员判定恒假（返回 0 会被误读为"不是 activity"）→ fail closed。
+    if (confirmedActivityTokens.size === 0) {
+      fail(
+        "本次扫描没有得到任何来自已确认 layout 的 activity 固定槽位取值：" +
+          "成员判定会退化为恒假。已整体停止（不回显任何取值），" +
+          "并**不返回**可能被误读的计数。"
+      );
+    }
+
+    var thirdInSetCount = countMultisetTokensInSet(
+      candidateThirdTokens,
+      confirmedActivityTokens
+    );
+    var fourthInSetCount = countMultisetTokensInSet(
+      candidateFourthTokens,
+      confirmedActivityTokens
+    );
+
+    // ⚠️ 只输出**字段名 → 命中候选数**（只含 >= 1 次命中的字段名）；
+    //    ⛔ 映射里没有任何 raw value / f3 原文 / id；字段名按码点排序，输出稳定。
+    var f3MatchingRawFields = Object.fromEntries(
+      Array.from(f3FieldMatchCounts.keys())
+        .sort()
+        .map(function (fieldName) {
+          return [fieldName, f3FieldMatchCounts.get(fieldName)];
+        })
+    );
+
+    return {
+      candidate_count: candidateCount,
+      comparable_teaching_name_count: comparableTeachingNameCount,
+      f3_equals_teaching_name_count: equalThirdCount,
+      f4_equals_teaching_name_count: equalFourthCount,
+      f4_activity_count: activityCount,
+      f3_in_confirmed_activity_set_count: thirdInSetCount,
+      f4_in_confirmed_activity_set_count: fourthInSetCount,
+      f3_matching_raw_fields: f3MatchingRawFields
+    };
+  }
+
+  // ---------------------------------------------------------------------
+  // 分段式 f3 字段来源诊断（Architecture Review 方案 D；**仅** f3 raw-field 来源确认）
+  //
+  // ⛔ 与完整 `diagnoseLayoutBCandidates()` **并存、互不引用**；
+  //    本接口**不提供** activity-membership 计数：既不计算、也⛔ 不用 0 / null 占位，
+  //    它们**不存在**于本接口的契约里（真实 one-shot 的历史结果继续作为历史证据）。
+  // ⛔ 生产链路（`collect()` / `collectSharded()` / 分页核心）完全不引用本接口。
+  // ⛔ checkpoint **零敏感**：只有数值计数 + 字段名 → 计数；⛔ 不落盘、⛔ 不写 bundle、
+  //    ⛔ 无任何 raw value / 原文 / 标识 / 认证材料。
+  // ⛔ 请求行为**完全复用**既有路径：hostname guard / `requestPage()` / 全局 pacer /
+  //    页校验 / total 一致性；⛔ 不改 pacing 常量、⛔ 不 retry。
+  // ⛔ 覆盖不完整 / 重复 / 重叠 / 绑定不一致 → **fail closed**（⛔ 不返回近似结果）。
+  // ---------------------------------------------------------------------
+
+  /** 分段 state 的格式版本（⛔ 不一致即 fail closed）。 */
+  var LAYOUT_B_FIELD_SOURCE_STATE_VERSION = 1;
+
+  /** 分段接口允许的 options（**严格白名单**；⛔ 不开放 pageSize / delayMs / firstPageNo）。 */
+  var LAYOUT_B_FIELD_SOURCE_ALLOWED_OPTIONS = [
+    "semester",
+    "openingSchoolNumber",
+    "startPage",
+    "endPage",
+    "previousState"
+  ];
+
+  /** state 顶层键（**精确**集合；多一个 / 少一个都视为被篡改 → fail closed）。 */
+  var LAYOUT_B_FIELD_SOURCE_STATE_KEYS = [
+    "version",
+    "semester",
+    "openingSchoolNumber",
+    "page_size",
+    "expected_total",
+    "processed_pages",
+    "candidate_count",
+    "comparable_teaching_name_count",
+    "f3_equals_teaching_name_count",
+    "f4_equals_teaching_name_count",
+    "f4_activity_count",
+    "f3_matching_raw_fields"
+  ];
+
+  /** 最终结果的键（**恰好六个**；⛔ 不含任何 activity-membership 计数）。 */
+  var LAYOUT_B_FIELD_SOURCE_RESULT_KEYS = [
+    "candidate_count",
+    "comparable_teaching_name_count",
+    "f3_equals_teaching_name_count",
+    "f4_equals_teaching_name_count",
+    "f4_activity_count",
+    "f3_matching_raw_fields"
+  ];
+
+  /** `processed_pages` 元素只允许这两个键（page number / count：安全数字）。 */
+  var LAYOUT_B_FIELD_SOURCE_PAGE_KEYS = ["page_no", "row_count"];
+
+  /** 非负整数校验（⛔ 不回显取值，只回显字段语义名）。 */
+  function requireFieldSourceCount(value, label) {
+    if (!Number.isInteger(value) || value < 0) {
+      fail("分段诊断的 " + label + " 必须是非负整数；已整体停止（不回显取值）。");
+    }
+    return value;
+  }
+
+  /** 校验 `f3_matching_raw_fields`：字段名 → **>= 1** 的整数计数；⛔ 不接受任何取值。 */
+  function readFieldMatchCounts(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      fail("f3_matching_raw_fields 必须是「字段名 → 计数」的对象；已整体停止（不回显取值）。");
+    }
+
+    var fieldNames = Object.keys(value);
+    var counts = new Map();
+
+    for (var index = 0; index < fieldNames.length; index += 1) {
+      var fieldName = fieldNames[index];
+      if (typeof fieldName !== "string" || fieldName === "") {
+        fail("f3_matching_raw_fields 含空字段名；已整体停止（不回显取值）。");
+      }
+      var count = value[fieldName];
+      if (!Number.isInteger(count) || count < 1) {
+        fail("f3_matching_raw_fields 的计数必须是 >= 1 的整数；已整体停止（不回显取值）。");
+      }
+      counts.set(fieldName, count);
+    }
+
+    return counts;
+  }
+
+  /** 把字段名 → 计数 写回普通对象（字段名按码点排序；⛔ 无任何取值）。 */
+  function writeFieldMatchCounts(counts) {
+    return Object.fromEntries(
+      Array.from(counts.keys())
+        .sort()
+        .map(function (fieldName) {
+          return [fieldName, counts.get(fieldName)];
+        })
+    );
+  }
+
+  /**
+   * 校验（并规整）一个分段 state。
+   *
+   * ⛔ 不信任外部传入的 state：键集合、版本、绑定元数据、页码唯一性、计数类型全部校验；
+   * 任何不符合 → **fail closed**（⛔ 不回显被篡改的内容）。
+   */
+  function validateLayoutBFieldSourceState(state) {
+    if (!state || typeof state !== "object" || Array.isArray(state)) {
+      fail("分段 state 必须是对象；已整体停止（不回显取值）。");
+    }
+
+    var actualKeys = Object.keys(state).sort();
+    var expectedKeys = LAYOUT_B_FIELD_SOURCE_STATE_KEYS.slice().sort();
+    // ⚠️ **先比长度**再逐项比较：只逐项比较会让"多出来的键"在排序靠后时悄悄通过
+    //    （⛔ 多一个键即视为被篡改）。
+    if (actualKeys.length !== expectedKeys.length) {
+      fail(
+        "分段 state 的键数量与契约不一致（多出或缺少键；版本不符或被篡改）；" +
+          "已整体停止（不回显键名）。"
+      );
+    }
+    for (var keyIndex = 0; keyIndex < expectedKeys.length; keyIndex += 1) {
+      if (actualKeys[keyIndex] !== expectedKeys[keyIndex]) {
+        fail(
+          "分段 state 的键集合与契约不一致（版本不符或被篡改）；" +
+            "已整体停止（不回显键名）。"
+        );
+      }
+    }
+
+    if (state.version !== LAYOUT_B_FIELD_SOURCE_STATE_VERSION) {
+      fail("分段 state 的 version 不受支持；已整体停止（不回显取值）。");
+    }
+    if (typeof state.semester !== "string" || state.semester.trim() === "") {
+      fail("分段 state 的 semester 非法；已整体停止（不回显取值）。");
+    }
+    if (
+      state.openingSchoolNumber !== null &&
+      (typeof state.openingSchoolNumber !== "string" ||
+        state.openingSchoolNumber.trim() === "")
+    ) {
+      fail("分段 state 的 openingSchoolNumber 非法；已整体停止（不回显取值）。");
+    }
+    if (state.page_size !== DEFAULT_PAGE_SIZE) {
+      fail("分段 state 的 page_size 与已验证口径不一致；已整体停止（不回显取值）。");
+    }
+
+    var expectedTotal = requireFieldSourceCount(state.expected_total, "expected_total");
+    if (expectedTotal < 1) {
+      fail("分段 state 的 expected_total 必须 >= 1；已整体停止（不回显取值）。");
+    }
+
+    if (!Array.isArray(state.processed_pages)) {
+      fail("分段 state 的 processed_pages 必须是数组；已整体停止（不回显取值）。");
+    }
+
+    var pages = [];
+    var seenPages = {};
+    for (var pageIndex = 0; pageIndex < state.processed_pages.length; pageIndex += 1) {
+      var entry = state.processed_pages[pageIndex];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        fail("processed_pages 的元素必须是对象；已整体停止（不回显取值）。");
+      }
+
+      var entryKeys = Object.keys(entry).sort();
+      // ⚠️ 同样**先比长度**：多出来的键排序靠后时不会被逐项比较发现。
+      if (entryKeys.length !== LAYOUT_B_FIELD_SOURCE_PAGE_KEYS.length) {
+        fail(
+          "processed_pages 的元素只允许 page_no / row_count（键数量不符）；" +
+            "已整体停止（不回显取值）。"
+        );
+      }
+      for (var entryKeyIndex = 0; entryKeyIndex < entryKeys.length; entryKeyIndex += 1) {
+        if (entryKeys[entryKeyIndex] !== LAYOUT_B_FIELD_SOURCE_PAGE_KEYS[entryKeyIndex]) {
+          fail(
+            "processed_pages 的元素只允许 page_no / row_count；" +
+              "已整体停止（不回显取值）。"
+          );
+        }
+      }
+
+      var pageNo = requireFieldSourceCount(entry.page_no, "page_no");
+      if (pageNo < FIRST_PAGE_NO) {
+        fail("processed_pages 的 page_no 必须 >= " + FIRST_PAGE_NO + "；已整体停止。");
+      }
+      if (seenPages[pageNo] === true) {
+        fail("分段 state 出现重复页；已整体停止（不回显页码）。");
+      }
+      seenPages[pageNo] = true;
+
+      pages.push({
+        page_no: pageNo,
+        row_count: requireFieldSourceCount(entry.row_count, "row_count")
+      });
+    }
+
+    pages.sort(function (left, right) {
+      return left.page_no - right.page_no;
+    });
+
+    return {
+      semester: state.semester,
+      openingSchoolNumber: state.openingSchoolNumber,
+      expectedTotal: expectedTotal,
+      pages: pages,
+      seenPages: seenPages,
+      counters: {
+        candidateCount: requireFieldSourceCount(state.candidate_count, "candidate_count"),
+        comparableTeachingName: requireFieldSourceCount(
+          state.comparable_teaching_name_count,
+          "comparable_teaching_name_count"
+        ),
+        f3EqualsTeachingName: requireFieldSourceCount(
+          state.f3_equals_teaching_name_count,
+          "f3_equals_teaching_name_count"
+        ),
+        f4EqualsTeachingName: requireFieldSourceCount(
+          state.f4_equals_teaching_name_count,
+          "f4_equals_teaching_name_count"
+        ),
+        f4Activity: requireFieldSourceCount(state.f4_activity_count, "f4_activity_count")
+      },
+      fieldMatches: readFieldMatchCounts(state.f3_matching_raw_fields)
+    };
+  }
+
+  /** 组装一个 state（只有数值计数 + 字段名 → 计数 + 安全分页元数据）。 */
+  function buildLayoutBFieldSourceState(binding, pages, counters, fieldMatches) {
+    return {
+      version: LAYOUT_B_FIELD_SOURCE_STATE_VERSION,
+      semester: binding.semester,
+      openingSchoolNumber: binding.openingSchoolNumber,
+      page_size: binding.pageSize,
+      expected_total: binding.expectedTotal,
+      processed_pages: pages,
+      candidate_count: counters.candidateCount,
+      comparable_teaching_name_count: counters.comparableTeachingName,
+      f3_equals_teaching_name_count: counters.f3EqualsTeachingName,
+      f4_equals_teaching_name_count: counters.f4EqualsTeachingName,
+      f4_activity_count: counters.f4Activity,
+      f3_matching_raw_fields: writeFieldMatchCounts(fieldMatches)
+    };
+  }
+
+  /**
+   * 逐行累计**六个**输出（⛔ 完全不触碰 activity-membership）。
+   *
+   * ⚠️ 与完整诊断对同样六个字段使用**同一批**判别函数
+   * （`isLayoutBCandidate()` / `isExcludedMatchFieldName()` / `isNonEmptyActivityToken()`），
+   * 因此两者在同一份数据上必然给出相同的这六个值。
+   */
+  function accumulateLayoutBFieldSourceRows(rows, counters, fieldMatches) {
+    for (var rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      var row = rows[rowIndex];
+
+      if (!row || typeof row !== "object" || Array.isArray(row)) {
+        fail("分段诊断读到非对象记录；已整体停止（不回显取值）。");
+      }
+
+      var text = row[SCHEDULE_FIELD];
+      if (typeof text !== "string" || text === "") {
+        continue;
+      }
+
+      var segments = text.split(SEGMENT_SEPARATOR);
+      if (segments.length > 1 && segments[segments.length - 1].trim() === "") {
+        segments.pop();
+      }
+
+      var hasTeachingName = Object.prototype.hasOwnProperty.call(row, "teachingName");
+
+      for (var segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+        var segment = segments[segmentIndex];
+        if (segment.trim() === "" || !isLayoutBCandidate(segment)) {
+          continue;
+        }
+
+        counters.candidateCount += 1;
+
+        var fields = segment.split(FIELD_SEPARATOR);
+        var thirdField = fields[2].trim();
+        var fourthField = fields[3].trim();
+
+        if (hasTeachingName) {
+          counters.comparableTeachingName += 1;
+          if (thirdField === row.teachingName) {
+            counters.f3EqualsTeachingName += 1;
+          }
+          if (fourthField === row.teachingName) {
+            counters.f4EqualsTeachingName += 1;
+          }
+        }
+
+        if (isNonEmptyActivityToken(fields[3])) {
+          counters.f4Activity += 1;
+        }
+
+        var rowFieldNames = Object.keys(row);
+        for (
+          var fieldIndex = 0;
+          fieldIndex < rowFieldNames.length;
+          fieldIndex += 1
+        ) {
+          var fieldName = rowFieldNames[fieldIndex];
+
+          if (isExcludedMatchFieldName(fieldName)) {
+            continue;
+          }
+          if (typeof row[fieldName] !== "string") {
+            continue;
+          }
+          if (thirdField === row[fieldName]) {
+            var matchedSoFar = fieldMatches.get(fieldName);
+            fieldMatches.set(fieldName, matchedSoFar === undefined ? 1 : matchedSoFar + 1);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * 扫描 `startPage..endPage` 并返回**合并后的** state。
+   *
+   * ```text
+   * part1 = await diagnoseLayoutBFieldSourcePart({ semester, openingSchoolNumber,
+   *                                               startPage: 1, endPage: 5 })
+   * // 用户把 part1 复制保存；重新登录后：
+   * part2 = await diagnoseLayoutBFieldSourcePart({ semester, openingSchoolNumber,
+   *                                               startPage: 6, endPage: 6,
+   *                                               previousState: part1 })
+   * final = finalizeLayoutBFieldSource(part2)
+   * ```
+   *
+   * ⚠️ `startPage > 1` **允许**（无序合并也被支持）：绑定与覆盖率在 finalize 校验，
+   * 因此 `6 + 1..5` 与 `4..6 + 1..3` 同样成立。
+   * ⛔ 重复 / 重叠页、semester / shard / page_size / expected_total 不一致 → fail closed。
+   */
+  async function diagnoseLayoutBFieldSourcePart(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var optionNames = Object.keys(opts);
+    var unexpected = optionNames.filter(function (name) {
+      return LAYOUT_B_FIELD_SOURCE_ALLOWED_OPTIONS.indexOf(name) === -1;
+    });
+    if (unexpected.length > 0) {
+      fail(
+        "分段诊断只接受 " + LAYOUT_B_FIELD_SOURCE_ALLOWED_OPTIONS.join(" / ") +
+          "（收到 " + unexpected.length + " 个其它参数）。已停止；参数名不予回显。"
+      );
+    }
+
+    var semester = opts.semester;
+    if (typeof semester !== "string" || semester.trim() === "") {
+      fail('分段诊断必须显式提供非空 semester（例如 "2026-1"）。');
+    }
+    semester = semester.trim();
+
+    var campus = opts.openingSchoolNumber;
+    if (campus !== undefined && (typeof campus !== "string" || campus.trim() === "")) {
+      fail("openingSchoolNumber 必须是非空字符串（或省略）。");
+    }
+    if (campus === undefined) {
+      campus = null;
+    }
+
+    var startPage = requireFieldSourceCount(opts.startPage, "startPage");
+    var endPage = requireFieldSourceCount(opts.endPage, "endPage");
+    if (startPage < FIRST_PAGE_NO || endPage < startPage) {
+      fail(
+        "startPage / endPage 必须是 " + FIRST_PAGE_NO + " <= startPage <= endPage 的整数；" +
+          "已整体停止（不回显取值）。"
+      );
+    }
+    if (endPage > ABSOLUTE_MAX_PAGES) {
+      fail("endPage 不得超过 " + ABSOLUTE_MAX_PAGES + "；已整体停止（不回显取值）。");
+    }
+
+    // ⛔ pageSize / delayMs 恒为已验证默认值：诊断不接受调用方覆盖。
+    var pageSize = DEFAULT_PAGE_SIZE;
+
+    var pages = [];
+    var seenPages = {};
+    var counters = {
+      candidateCount: 0,
+      comparableTeachingName: 0,
+      f3EqualsTeachingName: 0,
+      f4EqualsTeachingName: 0,
+      f4Activity: 0
+    };
+    var fieldMatches = new Map();
+    var expectedTotal = null;
+    var accumulatedRows = 0;
+
+    if (opts.previousState !== undefined) {
+      var previous = validateLayoutBFieldSourceState(opts.previousState);
+
+      if (previous.semester !== semester) {
+        fail("previousState 的 semester 与本次 semester 不一致；已整体停止（不回显取值）。");
+      }
+      if (previous.openingSchoolNumber !== campus) {
+        fail(
+          "previousState 的 shard 与本次 openingSchoolNumber 不一致；" +
+            "已整体停止（不回显取值）。"
+        );
+      }
+
+      pages = previous.pages;
+      seenPages = previous.seenPages;
+      counters = previous.counters;
+      fieldMatches = previous.fieldMatches;
+      expectedTotal = previous.expectedTotal;
+      for (var previousIndex = 0; previousIndex < pages.length; previousIndex += 1) {
+        accumulatedRows += pages[previousIndex].row_count;
+      }
+    }
+
+    if (endPage - startPage + 1 > DEFAULT_MAX_PAGES) {
+      var confirmed = window.confirm(
+        "即将执行**分段式 f3 字段来源诊断**（只取聚合计数，不产出任何数据、不落盘）。\n" +
+          "本次最多请求 " + (endPage - startPage + 1) + " 页；请求间隔至少 " +
+          DEFAULT_DELAY_MS / 1000 + " 秒（含全局批次冷却）。\n" +
+          "是否继续？"
+      );
+      if (!confirmed) {
+        fail("用户取消了分段诊断：本次不产生任何 state（不返回伪造计数）。");
+      }
+    }
+
+    var pacer = createRequestPacer(DEFAULT_DELAY_MS);
+
+    for (var pageNo = startPage; pageNo <= endPage; pageNo += 1) {
+      if (seenPages[pageNo] === true) {
+        fail(
+          "第 " + pageNo + " 页在 previousState 中已处理过（重复 / 重叠页）；" +
+            "已整体停止（⛔ 不静默覆盖）。"
+        );
+      }
+
+      var data = await requestPage(semester, pageNo, pageSize, campus, pacer);
+
+      if (expectedTotal === null) {
+        expectedTotal = data.total;
+      } else if (data.total !== expectedTotal) {
+        fail(
+          "第 " + pageNo + " 页的 data.total 与已记录的 expected_total 不一致：" +
+            "数据集合发生变化。已整体停止（不回显任何取值，⛔ 不合并）。"
+        );
+      }
+
+      accumulateLayoutBFieldSourceRows(data.rows, counters, fieldMatches);
+
+      pages.push({ page_no: pageNo, row_count: data.rows.length });
+      seenPages[pageNo] = true;
+      accumulatedRows += data.rows.length;
+
+      if (accumulatedRows >= expectedTotal) {
+        break;
+      }
+    }
+
+    pages.sort(function (left, right) {
+      return left.page_no - right.page_no;
+    });
+
+    return buildLayoutBFieldSourceState(
+      {
+        semester: semester,
+        openingSchoolNumber: campus,
+        pageSize: pageSize,
+        expectedTotal: expectedTotal
+      },
+      pages,
+      counters,
+      fieldMatches
+    );
+  }
+
+  /**
+   * 校验覆盖完整性并返回**恰好六个**最终计数。
+   *
+   * ⛔ 页码必须恰好覆盖 `1..N`（无洞）、⛔ `Σ row_count >= expected_total`（取满）；
+   * 否则 **fail closed**（⛔ 不返回近似结果）。
+   * ⛔ 返回值**不含** activity-membership 计数（不存在、也不用 0 / null 占位）。
+   */
+  function finalizeLayoutBFieldSource(state) {
+    var parsed = validateLayoutBFieldSourceState(state);
+
+    var maxPage = 0;
+    var totalRows = 0;
+    for (var index = 0; index < parsed.pages.length; index += 1) {
+      if (parsed.pages[index].page_no > maxPage) {
+        maxPage = parsed.pages[index].page_no;
+      }
+      totalRows += parsed.pages[index].row_count;
+    }
+
+    for (var pageNo = FIRST_PAGE_NO; pageNo <= maxPage; pageNo += 1) {
+      if (parsed.seenPages[pageNo] !== true) {
+        fail(
+          "分段 state 缺少第 " + pageNo + " 页（覆盖不连续）；" +
+            "已整体停止（⛔ 不返回近似结果）。"
+        );
+      }
+    }
+
+    if (totalRows < parsed.expectedTotal) {
+      fail(
+        "分段 state 只覆盖 " + totalRows + " / " + parsed.expectedTotal + " 行；" +
+          "已整体停止（⛔ 不返回近似结果）。"
+      );
+    }
+
+    // ⚠️ 页数与 expected_total 必须自洽（防止把 expected_total 改小来伪造"已完成"）。
+    var requiredPages = Math.ceil(parsed.expectedTotal / DEFAULT_PAGE_SIZE);
+    if (maxPage !== requiredPages) {
+      fail(
+        "分段 state 的页数与 expected_total 不自洽；" +
+          "已整体停止（⛔ 不返回近似结果）。"
+      );
+    }
+
+    return {
+      candidate_count: parsed.counters.candidateCount,
+      comparable_teaching_name_count: parsed.counters.comparableTeachingName,
+      f3_equals_teaching_name_count: parsed.counters.f3EqualsTeachingName,
+      f4_equals_teaching_name_count: parsed.counters.f4EqualsTeachingName,
+      f4_activity_count: parsed.counters.f4Activity,
+      f3_matching_raw_fields: writeFieldMatchCounts(parsed.fieldMatches)
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -1125,6 +3413,7 @@
     }
 
     // 只取第 1 页、只取一次。
+    // ⛔ **不传第 4 个参数** = baseline（全量）形态：请求体只有 `yearTerm`，不做任何分片。
     var data = await requestPage(semester, CORRELATION_PAGE_NO, CORRELATION_PAGE_SIZE);
     var rows = data.rows;
 
@@ -1162,10 +3451,22 @@
 
   window.XuehangSysuCollector = {
     collect: collect,
+    collectSharded: collectSharded,
+    collectApprovedShard: collectApprovedShard,
     diagnoseSchedulePresence: diagnoseSchedulePresence,
     summarizeSchedulePresence: summarizeSchedulePresence,
     diagnoseMissingScheduleCorrelation: diagnoseMissingScheduleCorrelation,
+    diagnoseLayoutBCandidates: diagnoseLayoutBCandidates,
+    diagnoseLayoutBFieldSourcePart: diagnoseLayoutBFieldSourcePart,
+    finalizeLayoutBFieldSource: finalizeLayoutBFieldSource,
     toJson: toJson,
+    shardBundle: shardBundle,
+    toShardJson: toShardJson,
+    toDiagnosticsJson: toDiagnosticsJson,
+    APPROVED_SHARDS: APPROVED_SHARDS,
+    APPROVED_CAMPUS_CAPTURE_SHARDS: APPROVED_CAMPUS_CAPTURE_SHARDS,
+    APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH: APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH,
+    SHARD_PAGE_SIZE: SHARD_PAGE_SIZE,
     DIAGNOSTIC_PAGE_NO: DIAGNOSTIC_PAGE_NO,
     DIAGNOSTIC_PAGE_SIZE: DIAGNOSTIC_PAGE_SIZE,
     CORRELATION_PAGE_NO: CORRELATION_PAGE_NO,
@@ -1181,6 +3482,8 @@
     ABSOLUTE_MAX_PAGES: ABSOLUTE_MAX_PAGES,
     DEFAULT_DELAY_MS: DEFAULT_DELAY_MS,
     MIN_DELAY_MS: MIN_DELAY_MS,
+    MAX_REQUESTS_PER_BATCH: MAX_REQUESTS_PER_BATCH,
+    BATCH_COOLDOWN_MS: BATCH_COOLDOWN_MS,
     REDACTED_TEACHER: REDACTED_TEACHER
   };
 })();

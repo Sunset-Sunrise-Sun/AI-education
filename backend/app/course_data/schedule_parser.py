@@ -1,7 +1,8 @@
 """`teachingTimePlaceStr` → `ParsedScheduleSegment[]`（Course Data 内部 parser）。
 
 依据：负责人提供的**私密脱敏样本**（Sanitized Sample，**不入 Git**，
-`source_id = OFFERING-001`，2026-1）。本模块只实现样本**已经证明**的结构。
+`source_id = OFFERING-001`，2026-1）与 **2026-1 全量采集首轮的真实报错证据**。
+本模块只实现证据**已经证明**的结构。
 
 ## 已确认结构
 
@@ -9,18 +10,105 @@
 segment separator = ","
 field separator   = "/"
 
-无地点（5 字段）：weeks / weekday / sections / teacher / activity
-有地点（6 字段）：weeks / weekday / sections / location / teacher / activity
+2 字段（non-concrete：无 weekday / sections / 具体地点 / teacher）：
+        <weeks token> / activity                        例如 1-17周 / 实验实践环节
+        <weeks token><qualifier> / activity             例如 12-19周校外 / 实验实践环节
+3 字段（non-concrete：无 weekday / sections / 具体地点）：
+        <weeks token> / teacher / activity              例如 1-17周 / 龙霞 / 实验实践环节
+        <weeks token><qualifier> / teacher / activity   例如 16-16周校内(户外) / 龙霞 / 实验实践环节
+4 字段（无地点、无教师）：weeks / weekday / sections / activity
+5 字段 A（有地点、无教师）：weeks / weekday / sections / location / activity
+5 字段 B（无地点、有教师）：weeks / weekday / sections / teacher / activity
+6 字段（有地点、有教师）：weeks / weekday / sections / location / teacher / activity
 ```
+
+### non-concrete segment（2026-1 真实证据确认）
+
+真实见习类课程的 `teachingTimePlaceStr` 形如 `12-19周校外/实验实践环节`：
+**没有** weekday / sections / 具体地点 / teacher，因此：
+
+- ⛔ **不制造** `Meeting`（`meeting = None`）——
+  ⛔ 不得把 `weekday=None` / `sections=None` 塞进公共 `Meeting`；⛔ 不猜星期 / 节次；
+- ⛔ **不把 qualifier 伪装成 `campus`**：`"校外"` 不是具体校区
+  （与 `openingSchoolName → campus` 是两回事），因此单独存入
+  `ParsedScheduleSegment.schedule_qualifier`；
+- ⚠️ **不能整串**把 `12-19周校外` 交给 `expand_weeks()` —— 它只认识 `<weeks token>`。
+  必须先拆成 `weeks_token = "12-19周"`（→ `expand_weeks`）与 `qualifier = "校外"`；
+- ⛔ qualifier 是**白名单**（目前只有 `校外`）：`12-19周XXX` 一律拒绝；
+  后续按新真实证据逐个加入，⛔ 不预先泛化；
+- `extract_meetings()` **不投影**它，但 `ParsedScheduleSegment` **仍保留**
+  （⛔ 不是静默丢弃）。若某 `CourseOffering` 因此 `meetings == []`，
+  按现有 **DG-07** 即为 **schedule UNKNOWN**。
+
+⚠️ **teacher 并不总是在 segment 中出现**（2026-1 真实证据已确认）：
+真实记录既可以没有 location，也可以没有 teacher。因此
+⛔ **不得再把第 4 / 5 字段无条件当成 teacher** —— 那会把 location 静默错读成 teacher，
+并导致 `Meeting.campus / classroom` 变成 `None`（**静默错误解释**）。
+
+### 5 字段的判别规则（**严格三态**，唯一允许的判别方式）
+
+只看 `fields[3]`：
+
+```text
+无 "-"                → teacher    → 5 字段 B（无地点、有教师）
+>= 3 个非空 "-" 分段   → location   → 5 字段 A（有地点、无教师）
+其余二义形态           → 一律 fail closed（⛔ 不猜）
+```
+
+⛔ 不根据 `courseName` / 学院 / `teachingName` 等字段猜；⛔ 不引入模糊匹配。
+
+⚠️ **为什么不复用 `_is_location_token()`**：后者只要"非空园区 + `-` + 非空教室"成立，
+会把 `A-B` 这种**只有两段**的 token 判成 location —— 而它同样可能是一个**含 `-` 的 teacher**。
+5 字段本身二义，必须用更严格的门槛，否则会重现"teacher / location 互相静默错读"。
+
+⚠️ **本轮未收紧 6 字段**：6 字段的语义**已由字段数确定**，因此仍用通用
+`_parse_location()`；由此产生的 5 / 6 字段不对称性已记录为**已知风险**。
 
 - **最多一个末尾逗号**：`seg,` → 忽略末尾空 segment；
   ⛔ `seg,,` / `seg,,,`（多个末尾逗号）**失败**；
 - **中间**空 segment **不得静默忽略**：`segment1,,segment2` → `CourseDataNormalizationError`；
-- **字段数只接受 5 或 6**，其它一律 fail closed。
+- **字段数只接受 2 / 3 / 4 / 5 / 6**，其它（7+）一律 fail closed。
+
+### 2 字段 non-concrete（**无 teacher**，2026-1 真实证据）
+
+两种已确认形态，**都没有** teacher 字段：
+
+```text
+plain     ：<weeks token> / activity              例如 1-17周 / 实验实践环节
+qualified ：<weeks token><已确认 qualifier> / activity  例如 12-19周校外 / 实验实践环节
+```
+
+⛔ **不得把 row 级 `teachingName` 注入 `segment.teacher`**：
+`teachingName` 是 **row 级**信息，与"该 segment 内是否有 teacher"没有对应关系；
+注入等于凭空造事实。因此这两种形态的 `teacher` **一律为 `None`**。
+
+- `meeting = None`；`schedule_weeks` 保存展开后的周次；
+  plain 的 `schedule_qualifier = None`，qualified 的为对应白名单取值；
+- ⛔ 2 字段只接受上面两种形态；其它 suffix（`1-17周未知词`）→ fail closed。
+
+### 3 字段 non-concrete（带 teacher，2026-1 真实证据）
+
+真实证据：`1-17周/龙霞/实验实践环节` 与 **`16-16周校内(户外)/龙霞/实验实践环节`**，
+同行 `row.teachingName` 均为同一教师姓名。
+⇒ 该 3 字段是 **`weeks[qualifier] / teacher / activity`**：
+⛔ **不是** location，⛔ **不是**未知 qualifier。
+
+- **两种已确认形态**：plain（`1-17周`，`schedule_qualifier = None`）与
+  qualified（`16-16周校内(户外)`，`schedule_qualifier = "校内(户外)"`）；
+- ⚠️ **必须先拆开**：`16-16周校内(户外)` → `weeks_token = "16-16周"` +
+  `qualifier = "校内(户外)"`，⛔ **只把 `weeks_token` 交给 `expand_weeks()`**；
+- `meeting = None`（没有 weekday / sections）；⛔ 不生成 `Meeting`；
+- `teacher` 保留在内部字段（脱敏由 collector 负责）；
+- `schedule_weeks` 保存展开后的周次；
+- ⛔ `weeks` 必须是合法 `N-M周`；⛔ teacher / activity 必须非空；
+- ⛔ **qualifier 是白名单**（当前：`校外`、`校内(户外)`）：
+  `16-16周未知文本` / `16-16周线上` / `16-16周医院` 一律拒绝；
+- ⛔ **不放开为"任意 3 字段 / 任意 suffix"**。
+
 
 ## 为什么需要内部 `ParsedScheduleSegment`
 
-真实 segment **确实携带 teacher**，但**当前公共 `Meeting` 没有 `teacher`**
+真实 segment **可能携带 teacher**，但**当前公共 `Meeting` 没有 `teacher`**
 （Data Gate 已登记为 **known deferred representation gap**）。
 
 因此 parser **在内部保留** teacher / activity 这两个真实语义，
@@ -33,6 +121,7 @@ field separator   = "/"
   样本已显示 Raw `weekDay` 的排列顺序**不能安全假设**与 segment 顺序一致，
   更不得与 segment 按位置 zip；
 - ⛔ **不用 `openingSchoolName` 当 `campus`**：地点只来自 segment 中**实际存在的** location 字段；
+- ⛔ **不自动补 teacher / location**：缺失就是缺失，保持 `None`；
 - ⛔ 不排序、不去重、不丢弃任何一段：输出顺序 == Raw segment 顺序。
 
 ## 隐私
@@ -49,7 +138,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.course_data.errors import CourseDataNormalizationError
-from app.course_data.normalization import expand_weeks
+from app.course_data.normalization import expand_weeks, is_plain_week_range
 from app.models.contracts import Meeting
 
 __all__ = [
@@ -66,11 +155,104 @@ SEGMENT_SEPARATOR = ","
 #: 字段分隔符（已确认）。
 FIELD_SEPARATOR = "/"
 
-#: 无地点 segment 的字段数（已确认）。
-FIELDS_WITHOUT_LOCATION = 5
+#: **无地点、无教师** segment 的字段数（2026-1 真实证据确认）。
+FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER = 4
 
-#: 有地点 segment 的字段数（已确认）。
-FIELDS_WITH_LOCATION = 6
+#: 5 字段 segment 的字段数：**有地点无教师** 或 **无地点有教师**，需按 location grammar 判别。
+FIELDS_FIVE = 5
+
+#: 有地点、有教师 segment 的字段数（已确认）。
+FIELDS_WITH_LOCATION_AND_TEACHER = 6
+
+#: **non-concrete** segment 的字段数（2026-1 真实证据确认）：
+#: `<weeks token> + <qualifier>` / `<activity>`，**没有** weekday / sections / 具体地点 / teacher。
+FIELDS_NON_CONCRETE = 2
+
+#: **non-concrete、带 teacher** segment 的字段数（2026-1 真实证据确认）：
+#: `<weeks token>` / `<teacher>` / `<activity>`，**没有** weekday / sections / 具体地点。
+#:
+#: 真实证据：`1-17周/龙霞/实验实践环节`，同行 `row.teachingName` 亦为同一教师姓名。
+#: ⇒ 该 3 字段是 **teacher**，⛔ **不是** location，⛔ 也不是未知 qualifier。
+FIELDS_NON_CONCRETE_WITH_TEACHER = 3
+
+#: 允许的字段数集合（其它一律 fail closed）。
+_ALLOWED_FIELD_COUNTS = (
+    FIELDS_NON_CONCRETE,
+    FIELDS_NON_CONCRETE_WITH_TEACHER,
+    FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER,
+    FIELDS_FIVE,
+    FIELDS_WITH_LOCATION_AND_TEACHER,
+)
+
+#: 目前**唯一**经真实证据确认的 schedule qualifier（校外见习类）。
+#:
+#: ⛔ **白名单而非通配**：`12-19周XXX` 一律拒绝。
+#: 后续若真实数据再出现（例如 `12-19周线上` / `12-19周医院` / `12-19周实践基地`），
+#: **按新证据**逐个加入，⛔ 不预先泛化。
+SCHEDULE_QUALIFIER_OFF_CAMPUS = "校外"
+
+#: 真实证据（2026-1）：`16-16周校内(户外)/<教师>/实验实践环节`。
+#: ⛔ 这是**另一个已确认 qualifier**，且**不是**具体校区 → 同样不得当作 `campus`。
+SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR = "校内(户外)"
+
+#: 已确认的 schedule qualifier 集合（**白名单**）。
+_KNOWN_SCHEDULE_QUALIFIERS = (
+    SCHEDULE_QUALIFIER_OFF_CAMPUS,
+    SCHEDULE_QUALIFIER_ON_CAMPUS_OUTDOOR,
+)
+
+# ---------------------------------------------------------------------------
+# sections 字段的 suffix 白名单（Architecture Review 裁定，2026-1 真实 east artifact）
+# ---------------------------------------------------------------------------
+#
+# 真实证据：east campus artifact 的 sections 位置上出现 `第N-M节<suffix>`，
+# 其中 suffix 的聚合计数为 `校内(户外)` × 173、`线上` × 11、`校外` × 1。
+#
+# ⚠️ 这是**独立于** `_KNOWN_SCHEDULE_QUALIFIERS` 的**第二张**白名单：
+#    weeks 字段的限定词白名单当前仍只有 `校外` / `校内(户外)`，
+#    ⛔ **不因本裁定而被放宽**（`线上` 只被批准出现在 **sections** 字段上）。
+SCHEDULE_SECTIONS_SUFFIX_ON_CAMPUS_OUTDOOR = "校内(户外)"
+SCHEDULE_SECTIONS_SUFFIX_OFF_CAMPUS = "校外"
+SCHEDULE_SECTIONS_SUFFIX_ONLINE = "线上"
+
+#: sections suffix 白名单（**已批准**的完整取值，⛔ 不含任何前缀/通配）。
+_KNOWN_SECTIONS_SUFFIXES = (
+    SCHEDULE_SECTIONS_SUFFIX_ON_CAMPUS_OUTDOOR,
+    SCHEDULE_SECTIONS_SUFFIX_OFF_CAMPUS,
+    SCHEDULE_SECTIONS_SUFFIX_ONLINE,
+)
+
+#: production 错误的**安全分类**：⛔ 不回显原始 token，只给出类别。
+SECTIONS_ERROR_UNSUPPORTED_SUFFIX = "unsupported_sections_suffix"
+SECTIONS_ERROR_UNSUPPORTED_SHAPE = "unsupported_sections_shape"
+SECTIONS_ERROR_UNSUPPORTED_RANGE = "unsupported_sections_range"
+
+#: weekday 错误的**安全分类**（Architecture Review 裁定；⛔ 不回显 raw token）。
+WEEKDAY_ERROR_UNSUPPORTED_TYPE = "unsupported_weekday_type"
+WEEKDAY_ERROR_UNSUPPORTED_SHAPE = "unsupported_weekday_shape"
+WEEKDAY_ERROR_UNSUPPORTED_VALUE = "unsupported_weekday_value"
+
+#: 普通周次 token：`N-M周`（`N >= 1`、`M >= N`）。
+_PLAIN_WEEKS_GRAMMAR = r"[0-9]+-[0-9]+周"
+
+#: schedule qualifier 的形状：**非空任意文本**（具体取值由白名单把关）。
+#:
+#: ⚠️ 这里刻意**不把 qualifier 枚举进正则**：regex 只负责"拆出 weeks 与 qualifier"，
+#: "这个 qualifier 是否已被真实证据确认"由白名单判断。
+#: 这样新增一个已确认 qualifier 只需改常量，不必改文法。
+_QUALIFIER_GRAMMAR = r".+"
+
+#: 带 qualifier 的周次字段形状（qualifier 可省略，但若存在则不能为空）。
+_WEEKS_WITH_OPTIONAL_QUALIFIER = re.compile(
+    r"^(" + _PLAIN_WEEKS_GRAMMAR + r")(" + _QUALIFIER_GRAMMAR + r")?$"
+)
+
+#: 已确认 qualifier 的**整段**匹配（用于 2 字段场景）。
+_QUALIFIED_WEEKS_ONLY = re.compile(
+    r"^(" + _PLAIN_WEEKS_GRAMMAR + r")("
+    + "|".join(re.escape(q) for q in _KNOWN_SCHEDULE_QUALIFIERS)
+    + r")$"
+)
 
 #: 星期 token → 公共 `weekday`（1=周一 … 7=周日）。
 #: ⛔ 只接受这些标准 token；`星期天` / `周一` / `Monday` 等**未确认**写法一律拒绝。
@@ -84,51 +266,185 @@ _WEEKDAY_BY_TOKEN: dict[str, int] = {
     "星期日": 7,
 }
 
-#: 节次 `第N-M节`（`N >= 1`，`M >= N`；**允许 `M == N`**，样本中 `第4-4节` 真实存在）。
-_SECTION_PATTERN = re.compile(r"^第([0-9]+)-([0-9]+)节$")
+#: 节次：`第N-M节` + **精确命中白名单**的可选 suffix
+#: （`N >= 1`、`M >= N`；**允许 `M == N`**，样本中 `第4-4节` 真实存在）。
+#:
+#: ⛔ 实现约束（Architecture Review 裁定）：
+#: - ⛔ **不用 `startswith`**；
+#: - ⛔ **不用 `.*`**（也不抓取 suffix 再做字符串比较）；
+#: - ⛔ **不把 `节` 之后的字符无条件 strip**；
+#: - suffix 的合法性由**白名单字面量**（逐个 `re.escape`）+ **整段锚定** `^...$` 保证，
+#:   因此 `第5-6节校内(户外)X` / `第5-6节校` / `第5-6节线上教学` 一律不接受。
+_SECTION_PATTERN = re.compile(
+    r"^第([0-9]+)-([0-9]+)节("
+    + "|".join(re.escape(suffix) for suffix in _KNOWN_SECTIONS_SUFFIXES)
+    + r")?$"
+)
+
+#: **仅用于错误分类**（⛔ 不用于接受）：`第N-M节` 前缀是否成立，
+#: 用来把"未知 suffix"与"形状本身不认识"分开，同时⛔ 不回显任何 token 内容。
+_SECTION_PREFIX_PATTERN = re.compile(r"^第[0-9]+-[0-9]+节")
+
+#: collector 的 teacher 脱敏占位符（**已知常量**，⛔ 不是取自任何 row 的值）。
+#:
+#: ⚠️ 单一真源在浏览器侧采集器
+#: （`tools/sysu_course_offering_collector.js` 的 `REDACTED_TEACHER = "REDACTED"`）；
+#: parser 侧必须**精确**识别它，才能判定下面的 5 字段 non-concrete layout。
+#: ⛔ 不得放宽为"包含 / 以它开头 / 正则通配"。
+_REDACTED_TEACHER_PLACEHOLDER = "REDACTED"
+
+#: 已批准的 **5 字段 non-concrete layout A**（Architecture Review 裁定；east artifact 39/39）：
+#:
+#: ```text
+#: weeks | weekday | location | REDACTED | activity
+#: ```
+#:
+#: 与已确认的 concrete 5 字段（`weeks/weekday/sections/location-or-teacher/activity`）
+#: **不同**：它的第 3 个字段是 **location** 而不是 sections，
+#: 因此**没有 concrete sections** ⇒ ⛔ 不能形成公共 `Meeting`。
+#: 精确准入（**五条全部**满足才走这条路，否则落回原有路径继续 fail closed）：
+#:
+#: ```text
+#: f1：现有 weeks parser（expand_weeks）成功
+#: f2：现有 weekday parser（parse_weekday）成功
+#: f3：现有 location 判别器（_classify_five_field_token）判定为 location
+#: f4：**精确等于** collector 的 REDACTED 占位符
+#: f5：现有 activity 规则（非空）通过
+#: ```
+#:
+#: ⛔ 不得泛化为"任意 5 字段无 sections"；⛔ 不猜 teacher / location 语义。
+_LAYOUT_A_NON_CONCRETE_FIELD_COUNT = 5
+
+#: collector 的 **opaque 槽位**脱敏占位符（**已知常量**，⛔ 不是取自任何 row 的值）。
+#:
+#: ⚠️ 单一真源在浏览器侧采集器
+#: （`tools/sysu_course_offering_collector.js` 的 `REDACTED_OPAQUE = "REDACTED_OPAQUE"`）；
+#: parser 侧必须**精确**识别它，才能判定下面的 4 字段 non-concrete layout B。
+#: ⛔ 不得放宽为"包含 / 以它开头 / 正则通配 / 前后空白容忍"。
+_REDACTED_OPAQUE_PLACEHOLDER = "REDACTED_OPAQUE"
+
+#: 已批准的 **4 字段 non-concrete layout B**（Architecture Review 裁定）：
+#:
+#: ```text
+#: weeks | location | REDACTED_OPAQUE | activity
+#: ```
+#:
+#: ⚠️ **没有** weekday / sections ⇒ **没有 concrete sections**
+#: ⇒ ⛔ 不能形成公共 `Meeting`（`meetings = []` = schedule UNKNOWN）。
+#: ⛔ **不解释** f3（opaque / unmodeled slot）：⛔ 不称其为 teacher / 地点 / 活动 /
+#: 其它任何业务字段；⛔ 不注入 `teachingName`；⛔ 不做姓名或 CJK 启发式。
+#: 精确准入（**四条全部**满足才走这条路，否则落回原有 concrete 路径继续 fail closed）：
+#:
+#: ```text
+#: f1：现有 weeks parser（expand_weeks）成功
+#: f2：现有**严格**location 判别器（_classify_five_field_token）判定为 location
+#: f3：**精确等于** collector 的 REDACTED_OPAQUE 占位符
+#: f4：现有 activity 规则（非空）通过
+#: ```
+_LAYOUT_B_NON_CONCRETE_FIELD_COUNT = 4
 
 
 @dataclass(frozen=True)
 class ParsedScheduleSegment:
     """一段已解析的上课安排（Course Data **内部对象**）。
 
-    - `meeting` —— 可交给公共契约的部分；
-    - `teacher` / `activity` —— 真实存在、但**当前公共契约不承载**的内部保真信息。
+    - `meeting` —— 可交给公共契约的部分；**可为 `None`**（non-concrete segment，
+      见下）；
+    - `teacher` / `activity` —— 真实存在、但**当前公共契约不承载**的内部保真信息；
+    - `schedule_qualifier` —— **non-concrete** segment 携带的限定词
+      （目前唯一已确认取值：`"校外"`）；
+    - `schedule_weeks` —— **non-concrete** segment 已展开的周次
+      （例如 `12-19周校外` → `[12, …, 19]`）。
+
+    ⚠️ `meeting is None` 表示该 segment **有课程安排信息，但不足以确定时间冲突**
+    （没有 weekday / sections / 具体地点）。此时：
+
+    - `schedule_weeks` **必须**保存已解析的周次 ——
+      ⛔ 否则周次信息在 `meeting is None` 时就**永久丢失**（`meeting.weeks` 不存在，
+      而 qualifier 里也没有周次），后续无法回答"这门见习课到底排在第几周"；
+    - ⛔ **不得**把 `weekday=None` / `sections=None` 塞进公共 `Meeting`；
+    - ⛔ **不得**把 qualifier 伪装成 `Meeting.campus`（`"校外"` 不是具体校区，
+      与 `openingSchoolName → campus` 是两回事）；
+    - ⛔ **不猜**星期 / 节次。
+
+    因此该 segment 由 `extract_meetings()` **不投影**为 `Meeting`，
+    但 **`ParsedScheduleSegment` 本身仍保留**（⛔ 不是静默丢弃）。
+
+    ⚠️ `schedule_weeks` 只用于 non-concrete segment；
+    concrete segment 的周次仍在 `meeting.weeks`（此处为 `None`）。
 
     ⚠️ 这不是 Schema、不是 DTO、不是 Integration 公共接口。
     """
 
-    meeting: Meeting
-    teacher: str
+    meeting: Meeting | None
+    teacher: str | None
     activity: str
+    schedule_qualifier: str | None = None
+    schedule_weeks: list[int] | None = None
 
 
 def parse_weekday(token: str) -> int:
     """把 segment 自带的星期 token 转成公共 `weekday`（1=周一 … 7=周日）。
 
-    ⛔ 只接受 `星期一` … `星期日`；其它写法（`星期天` / `周一` / `Monday` / 空）一律拒绝。
+    ⛔ 只接受 `星期一` … `星期日`（**整段白名单**）；
+    其它写法（`星期天` / `周一` / `Monday` / 空 / 任意文本）一律拒绝。
+
+    抛错时只给**稳定安全分类**（⛔ **不回显 raw token**）：
+
+    ```text
+    unsupported_weekday_type   非字符串
+    unsupported_weekday_shape  空 / 全空白（形状本身不成立）
+    unsupported_weekday_value  是字符串但不在白名单内
+    ```
+
+    ⛔ 不重构 `CourseDataNormalizationError`（分类写在 message 的稳定 token 里）。
     """
 
     if not isinstance(token, str):
         raise CourseDataNormalizationError(
-            f"星期必须是字符串，实际是 {type(token).__name__}"
+            f"星期必须是字符串（{WEEKDAY_ERROR_UNSUPPORTED_TYPE}），"
+            f"实际类型是 {type(token).__name__}（⛔ 不回显 raw token）"
         )
 
     candidate = token.strip()
+    if candidate == "":
+        raise CourseDataNormalizationError(
+            f"星期 token 为空（{WEEKDAY_ERROR_UNSUPPORTED_SHAPE}）："
+            f"只接受 星期一 / 星期二 / … / 星期日（⛔ 不回显 raw token）"
+        )
+
     weekday = _WEEKDAY_BY_TOKEN.get(candidate)
     if weekday is None:
         raise CourseDataNormalizationError(
-            f"无法识别的星期 token：{token!r}；只接受 星期一 / 星期二 / … / 星期日"
+            f"星期 token 未获批准（{WEEKDAY_ERROR_UNSUPPORTED_VALUE}）："
+            f"只接受 星期一 / 星期二 / … / 星期日（⛔ 不回显 raw token）"
         )
 
     return weekday
 
 
 def parse_sections(token: str) -> tuple[int, int]:
-    """解析 `第N-M节`，返回 `(start_section, end_section)`。
+    """解析 sections 字段，返回 `(start_section, end_section)`。
 
-    要求 `N >= 1` 且 `M >= N` —— **允许 `M == N`**（样本中 `第4-4节` 真实存在）。
+    已批准形态（**白名单**，Architecture Review 裁定）：
+
+    ```text
+    第N-M节
+    第N-M节校内(户外)
+    第N-M节校外
+    第N-M节线上
+    ```
+
+    要求 `N >= 1` 且 `M >= N` —— **允许 `M == N`**（样本中 `第4-4节` 真实存在）；
     ⛔ 不得写成 `end > start`。
+
+    ⚠️ suffix **只用于白名单校验**：公共 `Meeting` 没有 qualifier 字段，
+    因此⛔ **不新增公共字段**、⛔ 也不把它存进任何公共对象（校验后即丢弃）。
+
+    ⛔ 未批准的 suffix / 不认识的形状 / 非法区间一律 fail closed，
+    且异常信息**只给安全分类**（`unsupported_sections_suffix` /
+    `unsupported_sections_shape` / `unsupported_sections_range`），
+    ⛔ **不回显原始 token**。
     """
 
     if not isinstance(token, str):
@@ -139,16 +455,25 @@ def parse_sections(token: str) -> tuple[int, int]:
     candidate = token.strip()
     match = _SECTION_PATTERN.match(candidate)
     if match is None:
+        # ⛔ 只做分类，不回显 token / suffix / 任何 token 内容
+        reason = (
+            SECTIONS_ERROR_UNSUPPORTED_SUFFIX
+            if _SECTION_PREFIX_PATTERN.match(candidate) is not None
+            else SECTIONS_ERROR_UNSUPPORTED_SHAPE
+        )
         raise CourseDataNormalizationError(
-            f"无法识别的节次格式：{token!r}；只接受 `第N-M节`（N ≥ 1、M ≥ N）"
+            f"节次形态未确认（{reason}）：只接受 `第N-M节` 或 `第N-M节` + 已批准 suffix "
+            f"（{'、'.join(_KNOWN_SECTIONS_SUFFIXES)}）；N ≥ 1 且 M ≥ N。"
+            f"⛔ 本错误不回显原始 token"
         )
 
-    start, end = (int(group) for group in match.groups())
-    if start < 1:
-        raise CourseDataNormalizationError(f"节次起点必须 ≥1：{token!r}（start={start}）")
-    if end < start:
+    # ⚠️ 第 3 个捕获组是**已批准 suffix**（可能为 `None`）：
+    # 它只用于白名单校验，⛔ 不进入任何公共对象。
+    start, end = int(match.group(1)), int(match.group(2))
+    if start < 1 or end < start:
         raise CourseDataNormalizationError(
-            f"节次区间非法（结束早于开始）：{token!r}（start={start}, end={end}）"
+            f"节次区间非法（{SECTIONS_ERROR_UNSUPPORTED_RANGE}）：要求 N ≥ 1 且 M ≥ N。"
+            f"⛔ 本错误不回显原始 token"
         )
 
     return start, end
@@ -192,6 +517,81 @@ def _parse_location(token: str, segment_index: int) -> tuple[str, str]:
     return campus, classroom
 
 
+def _is_location_token(token: object) -> bool:
+    """`token` 是否满足 **location grammar**。
+
+    与 `_parse_location()` **完全同一套规则**（非空园区 + 至少一个 `-` + 非空教室），
+    只是以**布尔**形式表达。
+
+    ⚠️ 这是**通用**判定，用于 6 字段等**已经由字段数确定语义**的位置。
+    ⛔ 5 字段的**二义判别**不使用本函数 —— 它用更严格的 `_classify_five_field_token()`
+    （要求 `>= 3` 个非空 `-` 分段），以免把 `A-B` 形态的 teacher 误判成 location。
+
+    ⛔ 纯结构判别：不比对课程名 / 学院 / 教师名，不做模糊匹配。
+
+    ⚠️ 本函数**不抛异常** —— 判别失败是正常分支，不是错误。
+    """
+
+    if not isinstance(token, str):
+        return False
+
+    campus, separator, classroom = token.partition("-")
+    if not separator:
+        return False
+
+    return bool(campus.strip()) and bool(classroom.strip())
+
+
+#: 5 字段 `fields[3]` 的三种判别结果。
+#: - `teacher` —— 明确是 teacher（无 `-`）
+#: - `location` —— 明确是 location（`>= 3` 个非空 `-` 分段）
+#: - `ambiguous` —— **二义形态**，一律 fail closed
+_FIVE_FIELD_TEACHER = "teacher"
+_FIVE_FIELD_LOCATION = "location"
+_FIVE_FIELD_AMBIGUOUS = "ambiguous"
+
+#: 明确判定为 location 所需的**最少非空 `-` 分段数**。
+_MIN_LOCATION_SEGMENTS = 3
+
+
+def _count_non_empty_dash_segments(token: str) -> int:
+    """统计按 `-` 切分后**非空**（去空白后）的分段数量。"""
+
+    return sum(1 for part in token.split("-") if part.strip() != "")
+
+
+def _classify_five_field_token(token: object) -> str:
+    """判别 5 字段 `fields[3]` 的语义（**严格三态**）。
+
+    判定规则（本轮收紧后）：
+
+    ```text
+    无 "-"                 → teacher    （明确是 teacher）
+    >= 3 个非空 "-" 分段    → location   （明确是 location）
+    其余二义形态            → ambiguous  → 调用方 fail closed
+    ```
+
+    ⚠️ **为什么不复用 `_is_location_token()`**：
+    后者只要"非空园区 + `-` + 非空教室"就成立，会把 `A-B` 这种
+    **只有两段**的 token 判成 location —— 而那同样可能是一个**含 `-` 的 teacher**。
+    对 5 字段这种**本身二义**的位置，必须用更严格的门槛，
+    否则会重现"把 teacher 当成 location（或反之）"的静默错读。
+
+    ⛔ 无法明确归入上面两类时**不猜**：返回 `ambiguous`，由调用方整体失败。
+    """
+
+    if not isinstance(token, str):
+        return _FIVE_FIELD_AMBIGUOUS
+
+    if "-" not in token:
+        return _FIVE_FIELD_TEACHER
+
+    if _count_non_empty_dash_segments(token) >= _MIN_LOCATION_SEGMENTS:
+        return _FIVE_FIELD_LOCATION
+
+    return _FIVE_FIELD_AMBIGUOUS
+
+
 def _require_non_empty_token(value: object, *, field: str, segment_index: int) -> str:
     """teacher / activity 必须是非空字符串。
 
@@ -207,13 +607,281 @@ def _require_non_empty_token(value: object, *, field: str, segment_index: int) -
     return value
 
 
+def _try_parse_non_concrete_fields(
+    fields: Sequence[str], segment_index: int
+) -> ParsedScheduleSegment | None:
+    """尝试把 **2 字段** 解析为 **non-concrete** segment。
+
+    支持**两种已确认**形态：
+
+    ```text
+    plain     ：<weeks token> / <non-empty activity>
+                例如 1-17周 / 实验实践环节
+    qualified ：<weeks token><已确认 qualifier> / <non-empty activity>
+                例如 12-19周校外 / 实验实践环节
+    ```
+
+    ✅ 两种都**没有** teacher 字段：
+    ⛔ **不得把 row 级 `teachingName` 注入 segment.teacher**
+    （row 级教师与该 segment 无对应关系，注入等于凭空造事实）。
+
+    成功返回 `ParsedScheduleSegment(meeting=None, teacher=None, ...)`；
+    ⛔ 不符合 grammar 时返回 `None`，由调用方**整体失败**。
+
+    ⚠️ 关键点：`12-19周校外` **不能整串**送进 `expand_weeks()` ——
+    它只认识 `<weeks token>`。因此这里先**分别**取得：
+
+    - `weeks_token` = `12-19周` → 交给 `expand_weeks()`
+    - `qualifier`    = `校外`    → 单独存入 `schedule_qualifier`（⛔ 不伪装成 campus）
+
+    展开后的周次存入 **`schedule_weeks`**：因为 `meeting is None`，
+    `meeting.weeks` 不存在，若不在此保存，周次信息会**永久丢失**。
+
+    ⛔ qualifier 是**白名单**：`12-19周XXX` 一律不匹配 → 整体失败。
+    """
+
+    first_field = fields[0].strip()
+    weeks_token: str
+    qualifier: str | None
+
+    if is_plain_week_range(first_field):
+        # plain：`1-17周 / activity` —— 没有 qualifier。
+        weeks_token, qualifier = first_field, None
+    else:
+        match = _QUALIFIED_WEEKS_ONLY.match(first_field)
+        if match is None:
+            return None
+        # qualified：`12-19周校外 / activity` —— qualifier 已在白名单内。
+        weeks_token, qualifier = match.group(1), match.group(2)
+
+    # 只展开**周次 token 自身**，绝不把 qualifier 一起送进去。
+    weeks = expand_weeks(weeks_token)
+
+    activity = _require_non_empty_token(
+        fields[1], field="activity", segment_index=segment_index
+    )
+
+    # non-concrete：没有 weekday / sections / 具体地点 / teacher。
+    # ⚠️ 周次**必须**随 segment 保留（meeting 为 None，别处无处存放）。
+    return ParsedScheduleSegment(
+        meeting=None,
+        teacher=None,
+        activity=activity,
+        schedule_qualifier=qualifier,
+        schedule_weeks=weeks,
+    )
+
+
+def _try_parse_non_concrete_with_teacher_fields(
+    fields: Sequence[str], segment_index: int
+) -> ParsedScheduleSegment:
+    """把 **3 字段** 解析为 **non-concrete、带 teacher** 的 segment。
+
+    支持**两种已确认**的第 1 字段形态：
+
+    ```text
+    plain     ：<weeks token> / <non-empty teacher> / <non-empty activity>
+                例如 1-17周 / 龙霞 / 实验实践环节
+    qualified ：<weeks token><已确认 qualifier> / <non-empty teacher> / <non-empty activity>
+                例如 16-16周校内(户外) / 龙霞 / 实验实践环节
+    ```
+
+    ⚠️ **真实证据（2026-1）**：两种形态的 `fields[1]` 均经同行 `row.teachingName`
+    交叉确认是 **teacher** ⇒
+    ⛔ **不是** location（没有 weekday / sections / 具体地点）；
+    ⛔ 也**不是**未知 qualifier。
+
+    ⚠️ **必须先把 weeks 与 qualifier 拆开**：
+    `16-16周校内(户外)` → `weeks_token = "16-16周"`、`qualifier = "校内(户外)"`；
+    ⛔ **只把 `weeks_token` 交给 `expand_weeks()`**（整串会直接失败）。
+
+    ⛔ **不生成 `Meeting`**；⛔ **不把 teacher 塞进 `Meeting`**；
+    ✅ 周次保留在 `schedule_weeks`；✅ qualifier 保留在 `schedule_qualifier`
+    （⛔ **不当作 `campus`**）；✅ teacher 保留在内部 `teacher` 字段。
+    """
+
+    first_field = fields[0].strip()
+
+    match = _WEEKS_WITH_OPTIONAL_QUALIFIER.match(first_field)
+    if match is None:
+        # 连"weeks + 可选 qualifier"的基本形状都不是（例如 `abc周/...`、
+        # `1-17/...`、`第1-17周/...`）。
+        if not is_plain_week_range(first_field):
+            raise CourseDataNormalizationError(
+                f"teachingTimePlaceStr 的第 {segment_index} 段是 3 字段"
+                f"（weeks / teacher / activity），但其第 1 个字段不是合法的"
+                f"`N-M周` 周次 token（也不符合已确认的 qualifier 形态）。"
+                f"本 parser 不猜格式，已整体停止（不回显该字段取值）"
+            )
+        weeks_token, qualifier = first_field, None
+    else:
+        weeks_token = match.group(1)
+        qualifier = match.group(2)
+
+    if qualifier is not None and qualifier not in _KNOWN_SCHEDULE_QUALIFIERS:
+        # ⛔ 白名单而非通配：`16-16周未知文本` 一律拒绝（不回显取值）。
+        raise CourseDataNormalizationError(
+            f"teachingTimePlaceStr 的第 {segment_index} 段的 qualifier 尚未被真实证据确认"
+            f"（已确认：{'、'.join(_KNOWN_SCHEDULE_QUALIFIERS)}）。"
+            f"本 parser 不猜格式，已整体停止（不回显该字段取值）"
+        )
+
+    # 只展开**周次 token 自身**，绝不把 qualifier 一起送进去。
+    weeks = expand_weeks(weeks_token)
+
+    teacher = _require_non_empty_token(
+        fields[1], field="teacher", segment_index=segment_index
+    )
+    activity = _require_non_empty_token(
+        fields[2], field="activity", segment_index=segment_index
+    )
+
+    # non-concrete：没有 weekday / sections / 具体地点；⛔ 不生成 Meeting。
+    return ParsedScheduleSegment(
+        meeting=None,
+        teacher=teacher,
+        activity=activity,
+        schedule_qualifier=qualifier,
+        schedule_weeks=weeks,
+    )
+
+
+def _try_parse_five_field_non_concrete_layout_a(
+    fields: Sequence[str], segment_index: int
+) -> ParsedScheduleSegment | None:
+    """尝试把 **已批准的 5 字段 non-concrete layout A** 解析成 segment。
+
+    ```text
+    weeks | weekday | location | REDACTED | activity
+    ```
+
+    ⚠️ **精确准入**：五条**全部**满足才返回 segment，否则返回 `None`
+    （调用方落回原有 concrete 路径，继续 fail closed）：
+
+    ```text
+    f1：现有 weeks parser（expand_weeks）成功
+    f2：现有 weekday parser（parse_weekday）成功
+    f3：现有 location 判别器（_classify_five_field_token）判定为 location
+    f4：**精确等于** collector 的 `REDACTED` 占位符（⛔ 不用 startswith / 包含 / 通配）
+    f5：现有 activity 规则（非空）通过
+    ```
+
+    ⛔ **不泛化**为"任意 5 字段不含 sections"；⛔ 不猜 teacher / location 语义；
+    ⛔ 不重排字段；⛔ **不生成 `Meeting`**（该 layout **没有** concrete sections，
+    公共 `Meeting` 需要的 `start_section` / `end_section` 无从取得）。
+
+    ✅ `schedule_weeks` 保留展开后的周次；✅ `teacher` 保留（真实链路里就是脱敏占位符）；
+    ✅ `activity` 保留；⛔ `schedule_qualifier` 保持 `None`（本 layout 没有 qualifier）。
+    """
+
+    if len(fields) != _LAYOUT_A_NON_CONCRETE_FIELD_COUNT:
+        return None
+
+    # f1：weeks
+    try:
+        weeks = expand_weeks(fields[0].strip())
+    except CourseDataNormalizationError:
+        return None
+
+    # f2：weekday
+    try:
+        parse_weekday(fields[1].strip())
+    except CourseDataNormalizationError:
+        return None
+
+    # f3：location（**严格**三态判别器：>= 3 个非空 '-' 分段才算 location）
+    if _classify_five_field_token(fields[2].strip()) != _FIVE_FIELD_LOCATION:
+        return None
+
+    # f4：**精确**等于 collector 的 REDACTED 占位符
+    #     （⛔ 不用 startswith / 包含 / 正则通配；⛔ 不做 surrounding-whitespace 容忍）
+    if fields[3] != _REDACTED_TEACHER_PLACEHOLDER:
+        return None
+
+    # f5：activity 非空（现有规则）
+    activity = fields[4]
+    if not isinstance(activity, str) or activity.strip() == "":
+        return None
+
+    return ParsedScheduleSegment(
+        meeting=None,
+        teacher=fields[3],
+        activity=activity,
+        schedule_qualifier=None,
+        schedule_weeks=weeks,
+    )
+
+
+def _try_parse_four_field_non_concrete_layout_b(
+    fields: Sequence[str], segment_index: int
+) -> ParsedScheduleSegment | None:
+    """尝试把 **已批准的 4 字段 non-concrete layout B** 解析成 segment。
+
+    ```text
+    weeks | location | REDACTED_OPAQUE | activity
+    ```
+
+    ⚠️ **精确准入**：四条**全部**满足才返回 segment，否则返回 `None`
+    （调用方落回原有 concrete 路径，继续 fail closed）：
+
+    ```text
+    f1：现有 weeks parser（expand_weeks）成功
+    f2：现有**严格** location 判别器（_classify_five_field_token >= 3 个非空 '-' 分段）
+    f3：**精确等于** collector 的 REDACTED_OPAQUE 占位符（⛔ 无 strip / 前缀 / 通配）
+    f4：现有 activity 规则（非空）通过
+    ```
+
+    ⛔ **不解释 opaque 槽位**：它既不是 teacher、也不是地点 / 活动 / 任何其它业务字段；
+    ⛔ 不把 row 级 `teachingName` 注入；⛔ 不做姓名 / CJK / 长度启发式；
+    ⛔ **不生成 `Meeting`**（没有 weekday / sections ⇒ 无法确定时间冲突）。
+    ✅ `schedule_weeks` 保留展开后的周次；✅ `activity` 保留；
+    ⛔ `schedule_qualifier` 保持 `None`（本 layout 没有 qualifier）；
+    ⛔ `teacher` 保持 `None`（opaque 槽位**不是** teacher，⛔ 也不塞占位符冒充 teacher）。
+
+    ⚠️ 原始 opaque 取值**不得**被本 parser 接受：只有采集器已脱敏的
+    `REDACTED_OPAQUE` 才匹配（未脱敏的原始 token 一律 fail closed）。
+    """
+
+    if len(fields) != _LAYOUT_B_NON_CONCRETE_FIELD_COUNT:
+        return None
+
+    # f1：weeks
+    try:
+        weeks = expand_weeks(fields[0].strip())
+    except CourseDataNormalizationError:
+        return None
+
+    # f2：location（**严格**三态判别器：>= 3 个非空 '-' 分段才算 location）
+    if _classify_five_field_token(fields[1].strip()) != _FIVE_FIELD_LOCATION:
+        return None
+
+    # f3：**精确**等于 collector 的 REDACTED_OPAQUE 占位符
+    #     （⛔ 不用 startswith / 包含 / 正则通配；⛔ 不做 surrounding-whitespace 容忍）
+    if fields[2] != _REDACTED_OPAQUE_PLACEHOLDER:
+        return None
+
+    # f4：activity 非空（现有规则）
+    activity = fields[3]
+    if not isinstance(activity, str) or activity.strip() == "":
+        return None
+
+    return ParsedScheduleSegment(
+        meeting=None,
+        teacher=None,
+        activity=activity,
+        schedule_qualifier=None,
+        schedule_weeks=weeks,
+    )
+
+
 def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
     """解析整条 `teachingTimePlaceStr`，按 Raw 顺序返回**全部** segment。
 
     - 输出顺序 == Raw 顺序（**不排序**）；**不丢段**、**不合并**；
     - **最多一个**末尾逗号：`seg,` 可以，`seg,,` / `seg,,,` 抛错；
     - 中间 / 开头的空 segment 抛错；
-    - 字段数只接受 5（无地点）或 6（有地点）。
+    - 字段数只接受 4（无地点无教师）/ 5（按 location grammar 判别）/
+      6（有地点有教师）。
     """
 
     if not isinstance(text, str):
@@ -262,32 +930,115 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
         fields = raw_segment.split(FIELD_SEPARATOR)
         field_count = len(fields)
 
-        if field_count not in (FIELDS_WITHOUT_LOCATION, FIELDS_WITH_LOCATION):
+        if field_count not in _ALLOWED_FIELD_COUNTS:
             raise CourseDataNormalizationError(
-                f"teachingTimePlaceStr 的第 {offset} 段字段数为 {field_count}，"
-                f"只接受 {FIELDS_WITHOUT_LOCATION}（无地点）或 "
-                f"{FIELDS_WITH_LOCATION}（有地点）"
+                f"teachingTimePlaceStr 的第 {offset} 段字段数为 {field_count}，只接受 "
+                f"{FIELDS_NON_CONCRETE}（non-concrete："
+                f"`<weeks token><已确认 qualifier>` / activity）/ "
+                f"{FIELDS_NON_CONCRETE_WITH_TEACHER}（non-concrete："
+                f"`<weeks token>` / teacher / activity）/ "
+                f"{FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER}（无地点无教师）/ "
+                f"{FIELDS_FIVE}（有地点无教师 或 无地点有教师）/ "
+                f"{FIELDS_WITH_LOCATION_AND_TEACHER}（有地点有教师）"
             )
+
+        # 2 字段：**只有**已确认的 non-concrete grammar 才接受；
+        # ⛔ 其余任意 2 字段结构一律 fail closed。
+        if field_count == FIELDS_NON_CONCRETE:
+            non_concrete = _try_parse_non_concrete_fields(fields, offset)
+            if non_concrete is None:
+                raise CourseDataNormalizationError(
+                    f"teachingTimePlaceStr 的第 {offset} 段是 2 字段，"
+                    f"但既不是已确认的 plain 形态（`<weeks token>` / activity），"
+                    f"也不是已确认的 qualified 形态"
+                    f"（`<weeks token>` + 已确认 qualifier "
+                    f"{'/'.join(_KNOWN_SCHEDULE_QUALIFIERS)} / activity）。"
+                    f"本 parser 不猜格式，已整体停止（不回显该字段取值）"
+                )
+            parsed.append(non_concrete)
+            continue
+
+        # 3 字段：**只有**已确认的 `weeks / teacher / activity` 结构才接受
+        # （2026-1 真实证据；⛔ 不是 location，⛔ 不生成 Meeting）。
+        if field_count == FIELDS_NON_CONCRETE_WITH_TEACHER:
+            parsed.append(
+                _try_parse_non_concrete_with_teacher_fields(fields, offset)
+            )
+            continue
+
+        # 4 字段 non-concrete **layout B**（Architecture Review 裁定）：
+        #   weeks | location | REDACTED_OPAQUE | activity
+        # ⛔ 必须在下方的 `parse_weekday(fields[1])` **之前**判定：
+        #    该 layout 的第 2 个字段是 location 而不是 weekday。
+        # ⛔ 四条准入条件不全满足时返回 None → 落回原有 concrete 路径继续 fail closed。
+        if field_count == FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER:
+            layout_b = _try_parse_four_field_non_concrete_layout_b(fields, offset)
+            if layout_b is not None:
+                parsed.append(layout_b)
+                continue
+
+        # 5 字段 non-concrete **layout A**（Architecture Review 裁定）：
+        #   weeks | weekday | location | REDACTED | activity
+        # ⛔ 必须在下方的 `parse_sections(fields[2])` **之前**判定：
+        #    该 layout 的第 3 个字段是 location 而不是 sections。
+        # ⛔ 五条准入条件不全满足时返回 None → 落回原有 concrete 路径继续 fail closed。
+        if field_count == FIELDS_FIVE:
+            layout_a = _try_parse_five_field_non_concrete_layout_a(fields, offset)
+            if layout_a is not None:
+                parsed.append(layout_a)
+                continue
 
         weeks = expand_weeks(fields[0])
         weekday = parse_weekday(fields[1])
         start_section, end_section = parse_sections(fields[2])
 
-        if field_count == FIELDS_WITH_LOCATION:
+        campus: str | None
+        classroom: str | None
+        teacher: str | None
+
+        if field_count == FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER:
+            # 4 字段：weeks / weekday / sections / activity
+            campus, classroom, teacher = None, None, None
+            activity = _require_non_empty_token(
+                fields[3], field="activity", segment_index=offset
+            )
+        elif field_count == FIELDS_FIVE:
+            # 5 字段**二义**：必须严格判别，⛔ 不得默认按 teacher 也不得默认按 location。
+            classification = _classify_five_field_token(fields[3])
+
+            if classification == _FIVE_FIELD_AMBIGUOUS:
+                raise CourseDataNormalizationError(
+                    f"teachingTimePlaceStr 的第 {offset} 段是 5 字段，"
+                    f"但其第 4 个字段既不能明确判定为 location"
+                    f"（需 >= {_MIN_LOCATION_SEGMENTS} 个非空 '-' 分段），"
+                    f"也不能明确判定为 teacher（需完全不含 '-'）。"
+                    f"本 parser 不猜语义，已整体停止（不回显该字段取值）"
+                )
+
+            if classification == _FIVE_FIELD_LOCATION:
+                # 5 字段 A：weeks / weekday / sections / location / activity
+                campus, classroom = _parse_location(fields[3], offset)
+                teacher = None
+            else:
+                # 5 字段 B：weeks / weekday / sections / teacher / activity
+                campus, classroom = None, None
+                teacher = _require_non_empty_token(
+                    fields[3], field="teacher", segment_index=offset
+                )
+
+            activity = _require_non_empty_token(
+                fields[4], field="activity", segment_index=offset
+            )
+        else:
+            # 6 字段：weeks / weekday / sections / location / teacher / activity
+            # ⚠️ 6 字段的语义**已由字段数确定**，因此仍用通用 location grammar
+            # （本轮**未**收紧 6 字段；该不对称性已记录为已知风险）。
             campus, classroom = _parse_location(fields[3], offset)
             teacher = _require_non_empty_token(
                 fields[4], field="teacher", segment_index=offset
             )
             activity = _require_non_empty_token(
                 fields[5], field="activity", segment_index=offset
-            )
-        else:
-            campus, classroom = None, None
-            teacher = _require_non_empty_token(
-                fields[3], field="teacher", segment_index=offset
-            )
-            activity = _require_non_empty_token(
-                fields[4], field="activity", segment_index=offset
             )
 
         parsed.append(
@@ -309,10 +1060,18 @@ def parse_teaching_time_place(text: str) -> list[ParsedScheduleSegment]:
 
 
 def extract_meetings(segments: Sequence[ParsedScheduleSegment]) -> list[Meeting]:
-    """把解析结果投影成公共 `Meeting[]`（原顺序、原段数）。
+    """把解析结果投影成公共 `Meeting[]`。
 
-    ⚠️ 这里**只做投影**：丢弃当前公共契约不承载的 `teacher` / `activity`，
-    不做任何筛选、合并、排序，也**不修改** `Meeting` Schema。
+    - 只投影 `meeting is not None` 的 segment（**non-concrete** segment
+      没有 weekday / sections，不足以构成公共 `Meeting`）；
+    - ⛔ **不是静默丢弃**：`ParsedScheduleSegment` 本身仍完整保留在解析结果里，
+      只是不进入公共契约；
+    - 其余情况仍**只做投影**：丢弃当前公共契约不承载的 `teacher` / `activity` /
+      `schedule_qualifier`，不筛选、不合并、不排序，也**不修改** `Meeting` Schema。
+
+    ⚠️ 若某 `CourseOffering` 最终 `meetings == []`（例如只有 non-concrete segment），
+    按现有 **DG-07** 语义即为 **schedule UNKNOWN** ——
+    「有课程安排信息，但不足以判断时间冲突」。⛔ 本轮**未修改** Planner。
     """
 
-    return [segment.meeting for segment in segments]
+    return [segment.meeting for segment in segments if segment.meeting is not None]
