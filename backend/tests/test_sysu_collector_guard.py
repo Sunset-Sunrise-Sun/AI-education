@@ -164,12 +164,12 @@ def test_collector_has_exactly_one_global_pacing_controller(collector_source: st
     """
 
     assert collector_source.count("function createRequestPacer(") == 1
-    # 定义 1 处 + 四个入口各创建 1 个（每次 run 恰好一个 controller）；
+    # 定义 1 处 + 五个入口各创建 1 个（每次 run 恰好一个 controller）；
     #   `collect()` / `collectSharded()` 是生产入口，
-    #   `diagnoseLayoutBCandidates()` 是**一次性零留存诊断**（多页请求 ⇒ 同样必须受同一 pacing 约束），
-    #   `diagnoseLayoutBFieldSourcePart()` 是**分段式诊断**（每段一个 controller，同样不自己 sleep）。
+    #   `collectApprovedShard()` 是**单校区**生产入口（已批准批次上限 7），
+    #   `diagnoseLayoutBCandidates()` / `diagnoseLayoutBFieldSourcePart()` 是诊断。
     # 只看代码，不看注释。
-    assert _collector_code_only(collector_source).count("createRequestPacer(") == 5
+    assert _collector_code_only(collector_source).count("createRequestPacer(") == 6
 
     pacer = _js_function_slice(
         collector_source, "function createRequestPacer(", "function requireAllowedHost("
@@ -180,7 +180,13 @@ def test_collector_has_exactly_one_global_pacing_controller(collector_source: st
     assert pacer.count("await sleep(") == 2
 
     assert "if (isFirstRequest) {" in pacer, "第 1 个请求必须立即发送"
-    assert "successfulInBatch >= MAX_REQUESTS_PER_BATCH" in pacer
+    # ⚠️ 批次上限现在是**参数**（默认 = 普通/五校区口径 5；单校区路径 = 7），
+    #    但默认值必须**仍然**是 MAX_REQUESTS_PER_BATCH（⛔ 不得把默认改大）。
+    assert "successfulInBatch >= ceiling" in pacer
+    assert (
+        "var ceiling = batchCeiling === undefined ? MAX_REQUESTS_PER_BATCH : batchCeiling;"
+        in pacer
+    ), "⛔ 默认批次上限必须仍是 MAX_REQUESTS_PER_BATCH"
     assert "Math.max(BATCH_COOLDOWN_MS, delayMs)" in pacer, (
         "批次边界只等冷却（若 delayMs 更大则取较大者），⛔ 不叠加"
     )
@@ -400,7 +406,11 @@ def test_collector_bundle_keys_match_python_bridge_expectation(collector_source:
 
     # ⛔ 每一个 bundle 字面量的顶层键都必须是 snake_case
     literals = _bundle_literal_slices(collector_source)
-    assert len(literals) == 2, "预期恰好两个 bundle 构造点（collect / 五校区 shard）"
+    # ⚠️ 现在是**四个**构造点：`collect()` / 五校区 shard / 单校区 `collectApprovedShard()` /
+    #    `toJson` 之外的另一处 wrapper 组装（见下）。数量变化必须被显式承认。
+    # collect() / 五校区 shard / 单校区 collectApprovedShard()
+    # ⚠️ 文档注释里的示意写法**不算**构造点（JSDoc 不得包含 bundle 字面量）。
+    assert len(literals) == 3, "预期恰好三个 bundle 构造点"
 
     for literal in literals:
         for key in ("format:", "semester:", "first_page_no:", "page_size:", "pages:"):
@@ -408,6 +418,10 @@ def test_collector_bundle_keys_match_python_bridge_expectation(collector_source:
 
         for camel in ("firstPageNo:", "pageSize:", "pageNo:"):
             assert camel not in literal, f"bundle 顶层不得使用 camelCase 请求参数名：{camel}"
+
+        # ⛔ 审计元数据 / 校区号 / diagnostics 一律不得进入任何 bundle 字面量
+        for forbidden in ("source_label", "openingSchoolNumber", "capture_shard_id", "diagnostics"):
+            assert forbidden not in literal, f"⛔ bundle 不得包含：{forbidden}"
 
     # 请求 body 仍用 camelCase（只出现在请求里）
     assert "pageSize: pageSize," in collector_source
@@ -2590,6 +2604,198 @@ def test_field_source_reuses_the_same_predicates_as_the_full_diagnostic(
 
     # 读排课字段走 `row[SCHEDULE_FIELD]`：⛔ 段内不出现字面量
     assert "teachingTimePlaceStr" not in section
+
+
+# ---------------------------------------------------------------------------
+# Single-approved-campus capture（Architecture Review 裁定）
+#
+# ⛔ 调用方不能指定校区号；⛔ 五校区编排不变；⛔ 北校园 suspended ⇒ fail closed；
+# ⛔ 单校区批次上限 7 只作用于该路径（普通路径仍为 5）。
+# ---------------------------------------------------------------------------
+
+_CAMPUS_CAPTURE_IDS = (
+    "east-campus",
+    "south-campus",
+    "shenzhen-campus",
+    "zhuhai-campus",
+    "north-campus",
+)
+
+
+def _campus_capture_slice(collector_source: str) -> str:
+    """单校区采集段（从 capture shard 白名单常量到 Layout B 诊断段之前）。"""
+
+    start = collector_source.index("var APPROVED_CAMPUS_CAPTURE_SHARDS")
+    end = collector_source.index("// 一次性 Layout B 诊断")
+    assert start < end, "单校区采集段应位于 Layout B 诊断之前"
+
+    return collector_source[start:end]
+
+
+def test_campus_capture_whitelist_is_the_five_approved_shards(
+    collector_source: str,
+) -> None:
+    """白名单恰好五个已批准 capture shard；⛔ 不重复校区号（单一真源）。"""
+
+    section = _collector_code_only(_campus_capture_slice(collector_source))
+
+    for capture_shard_id in _CAMPUS_CAPTURE_IDS:
+        assert f'"{capture_shard_id}"' in section, f"白名单缺少：{capture_shard_id}"
+
+    start = section.index("APPROVED_CAMPUS_CAPTURE_SHARDS = [")
+    end = section.index("];", start)
+    table = section[start:end]
+
+    # ⛔ 表里**不得**出现任何校区号（号码只在 APPROVED_SHARDS 出现一次）
+    for number in ("5063559", "5062201", "333291143", "5062203", "5062202"):
+        assert number not in table, f"⛔ capture shard 表不得重复校区号：{number}"
+
+    # 白名单通过已批准中文 shard 名引用号码（单一真源）
+    for shard_id in ("东校园", "南校园", "深圳校区", "珠海校区", "北校园"):
+        assert f'"{shard_id}"' in table, f"缺少 shard_id 引用：{shard_id}"
+
+    # 北校园保留在白名单中，但 operational = false（suspended）
+    north_start = table.index('"north-campus"')
+    north = table[north_start : north_start + 400]
+    assert "operational: false" in north, "⛔ 北校园必须标记 suspended"
+
+    # 其它四个校区 operational = true
+    assert table.count("operational: true") == 4
+
+
+def test_campus_capture_rejects_any_option_outside_the_whitelist(
+    collector_source: str,
+) -> None:
+    """⛔ 不接受 openingSchoolNumber：调用方无法冒充已批准 shard。"""
+
+    assert (
+        'var APPROVED_CAMPUS_ALLOWED_OPTIONS = ["semester", "shardId", "maxPages", "delayMs"];'
+        in collector_source
+    )
+
+    section = _collector_code_only(_campus_capture_slice(collector_source))
+
+    prompt = section.index("unexpected.length > 0")
+    resolve = section.index("resolveApprovedCampusShard(opts.shardId)")
+    assert prompt < resolve, "参数校验必须发生在 shard 解析之前"
+
+    # 只按 capture_shard_id 解析；⛔ 不直接读 opts.openingSchoolNumber
+    assert "resolveApprovedCampusShard(opts.shardId)" in section
+    assert "opts.openingSchoolNumber" not in section
+    # 号码来自 APPROVED_SHARDS（唯一真源）
+    assert "resolveApprovedShardById(" in section
+    assert "approved.openingSchoolNumber" in section
+
+
+def test_campus_capture_fails_closed_on_suspended_shard(
+    collector_source: str,
+) -> None:
+    """⛔ suspended 校区（北校园）→ 在**发请求之前** fail closed，⛔ 不绕过。"""
+
+    section = _collector_code_only(_campus_capture_slice(collector_source))
+
+    suspended = section.index("campus.operational !== true")
+    request = section.index("await collectPages(")
+    assert suspended < request, "suspended 判定必须早于任何取页调用"
+    assert "不做任何绕过" in collector_source
+    assert "不重试、不降级参数、不换 endpoint" in collector_source
+
+
+def test_campus_capture_pacing_uses_the_approved_ceiling_only_on_this_path(
+    collector_source: str,
+) -> None:
+    """单校区路径批次上限 = 7；普通/五校区路径仍为 5（⛔ 不全局改 pacing）。"""
+
+    assert "var APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH = 7;" in collector_source
+    assert "var MAX_REQUESTS_PER_BATCH = 5;" in collector_source
+
+    section = _collector_code_only(_campus_capture_slice(collector_source))
+    # ⚠️ 必须精确断言**传入的第二个参数**：只断言常量名会被"常量仍定义但未被使用"骗过
+    #    （曾导致 P34 假绿灯）。
+    assert (
+        "createRequestPacer(\n      resolved.delayMs,\n"
+        "      APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH\n    );"
+    ) in section, "单校区路径必须把已批准批次上限**传给** pacer"
+
+    # ⛔ 最小间隔与冷却未被改动；⛔ 不得自建 sleep / 并发 / 重试
+    assert "MIN_DELAY_MS = 30000" in collector_source
+    assert "BATCH_COOLDOWN_MS = 300000" in collector_source
+    for forbidden in ("await sleep(", "Promise.all", "setInterval", "retry"):
+        assert forbidden not in section, f"⛔ 单校区采集段不得出现：{forbidden}"
+
+
+def test_campus_capture_outputs_a_bare_bundle_without_audit_metadata(
+    collector_source: str,
+) -> None:
+    """输出仍是标准裸 bundle：⛔ source label / 校区号 / diagnostics 不进 bundle。"""
+
+    section = _collector_code_only(_campus_capture_slice(collector_source))
+
+    builder = section[section.index("bundle: {") :]
+    builder = builder[: builder.index("}")]
+    for key in (
+        "format: CAPTURE_FORMAT",
+        "semester: resolved.semester",
+        "first_page_no:",
+        "page_size:",
+        "pages: core.pages",
+    ):
+        assert key in builder, f"裸 bundle 缺少：{key}"
+    for forbidden in ("source_label", "openingSchoolNumber", "capture_shard_id", "diagnostics"):
+        assert forbidden not in builder, f"⛔ bundle 不得包含审计元数据：{forbidden}"
+
+    # source label 只作为 JS 返回值的审计标签
+    assert "source_label: campus.source_label" in section
+
+
+def test_campus_capture_is_isolated_from_the_five_shard_orchestration(
+    collector_source: str,
+) -> None:
+    """⛔ 五校区编排不引用单校区入口；⛔ 单校区入口不改五校区常量。"""
+
+    sharded = _collect_sharded_slice(collector_source)
+    for forbidden in ("collectApprovedShard", "APPROVED_CAMPUS_", "capture_shard_id"):
+        assert forbidden not in sharded, f"五校区编排不得引用单校区实现：{forbidden}"
+
+    section = _collector_code_only(_campus_capture_slice(collector_source))
+    # ⛔ 不得改写 APPROVED_SHARDS / CAPTURE_FORMAT / 也不得做 fake page renumbering
+    # ⚠️ `first_page_no:` 合法地包含 `page_no:` 子串 ⇒ 先剔除它再检查页码改写
+    without_first_page = section.replace("first_page_no:", "")
+    for forbidden in ("APPROVED_SHARDS =", "CAPTURE_FORMAT =", "page_no:", "fake"):
+        assert forbidden not in without_first_page, f"⛔ 单校区采集段不得出现：{forbidden}"
+
+    # 取页仍走**同一个**分页核心与 pacer
+    assert "await collectPages(" in section
+    assert _collector_code_only(collector_source).count("await collectPages(") == 3
+
+
+def test_campus_capture_has_no_auth_storage_or_console_channels(
+    collector_source: str,
+) -> None:
+    """⛔ 不读认证材料 / 不落盘 / 不 console / 不新增请求通道。"""
+
+    section = _campus_capture_slice(collector_source)
+
+    for forbidden in (
+        "localStorage",
+        "sessionStorage",
+        "document.cookie",
+        "indexedDB",
+        "console.",
+        "fetch(",
+        "credentials",
+        "XMLHttpRequest",
+        "Blob",
+        "download",
+        "JSON.stringify",
+    ):
+        assert forbidden not in section, f"⛔ 单校区采集段不得出现：{forbidden}"
+
+    # 唯一的 window 用法是既有确认框（⚠️ 只看**代码**：JSDoc 里有用法示例）
+    section_code = _collector_code_only(section)
+    assert section_code.count("window.") == 1
+    assert "window.confirm(" in section_code
+    assert "requireAllowedHost();" in section_code
 
 
 # ---------------------------------------------------------------------------

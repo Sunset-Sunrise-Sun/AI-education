@@ -3076,6 +3076,228 @@ test("分段诊断：超过 smoke 上限的 part 先确认；取消 → 不发�
 });
 
 // ---------------------------------------------------------------------------
+// Single-approved-campus capture（Architecture Review 裁定）
+//
+// ✅ 只采一个**已批准**校区，产出**标准裸 Capture Bundle**
+// ⛔ 调用方不能传 openingSchoolNumber、⛔ 不改五校区编排、⛔ 不新增 wrapper schema
+// ⛔ 北校园 suspended ⇒ fail closed（⛔ 不绕过）
+// ---------------------------------------------------------------------------
+
+const CAMPUS_PAGE_SIZE = 200;
+
+/** 单校区语料：`rows` 行（默认 3 页 + 尾页）。 */
+function campusRows(total) {
+  return Array.from({ length: total }, (_, index) =>
+    Object.assign(rawRow(`1-8周/星期五/第5-6节/${ACTIVITY}`), {
+      classNumber: `SYN-CAMPUS-${String(index + 1).padStart(4, "0")}`,
+    }),
+  );
+}
+
+function loadCampusCollector(rows, options = {}) {
+  return loadShardedCollector({
+    campuses: [
+      { openingSchoolNumber: "5063559", rows: rows },
+      { openingSchoolNumber: "5062202", rows: rows },
+    ],
+    confirmResult: options.confirmResult,
+  });
+}
+
+test("单校区采集：产出标准裸 bundle，且 source label / 校区号不写入 bundle", async () => {
+  const rows = campusRows(450);
+  const { collector, calls, confirms } = loadCampusCollector(rows);
+
+  const result = await collector.collectApprovedShard({
+    semester: SEMESTER,
+    shardId: "east-campus",
+    maxPages: 10,
+  });
+
+  assert.equal(result.cancelled, false);
+  assert.equal(result.shard.capture_shard_id, "east-campus");
+  assert.equal(result.shard.shard_id, "东校园");
+  assert.equal(result.shard.openingSchoolNumber, "5063559");
+  assert.equal(result.shard.source_label, "sysu-2026-1-east-campus");
+  assert.equal(result.shard.operational, true);
+
+  assert.deepEqual(Object.keys(result.bundle).sort(), [
+    "first_page_no",
+    "format",
+    "page_size",
+    "pages",
+    "semester",
+  ]);
+  const serialized = collector.toJson(result);
+  assert.ok(!serialized.includes("sysu-2026-1-east-campus"), "⛔ source label 不得进 bundle");
+  assert.ok(!serialized.includes("5063559"), "⛔ 校区号不得进 bundle");
+  assert.ok(!serialized.includes("capture_shard_id"), "⛔ 审计元数据不得进 bundle");
+
+  // 页码是该校区真实页码（⛔ 不做 fake global renumbering）
+  assert.deepEqual(
+    plain(result.bundle.pages.map((page) => page.page_no)),
+    [1, 2, 3],
+  );
+  assert.equal(result.bundle.semester, SEMESTER);
+  assert.equal(result.bundle.first_page_no, 1);
+  assert.equal(result.bundle.page_size, CAMPUS_PAGE_SIZE);
+  assert.deepEqual(calls.map((call) => call.campus), ["5063559", "5063559", "5063559"]);
+  assert.equal(confirms.length, 1, "超过 smoke 上限必须先确认");
+});
+
+test("单校区采集：⛔ 不接受调用方指定 openingSchoolNumber（冒充已批准 shard）", async () => {
+  const { collector, calls } = loadCampusCollector(campusRows(10));
+
+  for (const bad of [
+    { openingSchoolNumber: "5063559" },
+    { openingSchoolNumber: "9999999" },
+    { shard_id: "东校园" },
+    { pageSize: 50 },
+    { firstPageNo: 2 },
+  ]) {
+    await assert.rejects(
+      () =>
+        collector.collectApprovedShard(
+          Object.assign({ semester: SEMESTER, shardId: "east-campus" }, bad),
+        ),
+      /single-approved-campus 采集只接受/,
+    );
+  }
+  assert.equal(calls.length, 0, "⛔ 参数校验必须发生在任何取页调用之前");
+});
+
+test("单校区采集：未知 shardId 被拒绝且不回显名字", async () => {
+  const { collector, calls } = loadCampusCollector(campusRows(10));
+
+  for (const badShardId of ["east", "东校园", "5063559", "SOUTH-CAMPUS", ""]) {
+    await assert.rejects(
+      () => collector.collectApprovedShard({ semester: SEMESTER, shardId: badShardId }),
+      /不在已批准校区白名单内/,
+    );
+  }
+  assert.equal(calls.length, 0);
+});
+
+test("单校区采集：北校园 suspended ⇒ fail closed（⛔ 不绕过、不发请求）", async () => {
+  const { collector, calls } = loadCampusCollector(campusRows(10));
+
+  await assert.rejects(
+    () =>
+      collector.collectApprovedShard({
+        semester: SEMESTER,
+        shardId: "north-campus",
+        maxPages: 10,
+      }),
+    /suspended/,
+  );
+  assert.equal(calls.length, 0, "⛔ suspended 校区不得发出任何请求");
+
+  // 白名单仍然保留北校园（仅 operational=false）
+  const north = collector.APPROVED_CAMPUS_CAPTURE_SHARDS.find(
+    (entry) => entry.capture_shard_id === "north-campus",
+  );
+  assert.ok(north, "⛔ 北校园必须仍在白名单中");
+  assert.equal(north.operational, false);
+  assert.equal(collector.APPROVED_CAMPUS_CAPTURE_SHARDS.length, 5);
+});
+
+test("单校区采集：未取满 ⇒ fail closed，不产出 bundle", async () => {
+  const { collector } = loadCampusCollector(campusRows(450));
+
+  await assert.rejects(
+    () =>
+      collector.collectApprovedShard({
+        semester: SEMESTER,
+        shardId: "east-campus",
+        maxPages: 2,
+      }),
+    /单校区采集未取满|增加 maxPages|提高 maxPages/,
+  );
+});
+
+test("单校区采集：semester 缺失 / 非法被拒绝（⛔ 不猜学期）", async () => {
+  const { collector, calls } = loadCampusCollector(campusRows(10));
+
+  await assert.rejects(
+    () => collector.collectApprovedShard({ shardId: "east-campus" }),
+    /semester/,
+  );
+  await assert.rejects(
+    () => collector.collectApprovedShard({ semester: "  ", shardId: "east-campus" }),
+    /semester/,
+  );
+  assert.equal(calls.length, 0);
+});
+
+test("单校区采集：pacing = 30s 间隔 + 每 7 个成功请求一次批次冷却", async () => {
+  // 7 页 + 1 行 ⇒ 8 个请求：第 2..7 个各等 30 s，第 8 个等批次冷却
+  const rows = campusRows(7 * CAMPUS_PAGE_SIZE + 1);
+  const { collector, calls, timers } = loadCampusCollector(rows);
+
+  const result = await collector.collectApprovedShard({
+    semester: SEMESTER,
+    shardId: "east-campus",
+    maxPages: 20,
+  });
+
+  assert.equal(result.requests, 8);
+  assert.equal(calls.length, 8);
+  assert.deepEqual(
+    timers,
+    [30000, 30000, 30000, 30000, 30000, 30000, 300000],
+    "前 6 个间隔 30 s；第 7 个成功请求之后（第 8 个请求之前）进入批次冷却",
+  );
+});
+
+test("单校区采集：普通（五校区）路径的批次上限仍是 5（⛔ 未被改动）", async () => {
+  const rows = campusRows(5 * CAMPUS_PAGE_SIZE + 1);
+  const shardTotal = rows.length; // 每个校区 1001 行
+  const { collector, timers } = loadShardedCollector({
+    // ⚠️ 五校区编排会**遍历全部五个**已批准校区，因此假 fetch 必须覆盖五个；
+    //    baseline 也必须等于五个 shard 的 total 之和（否则 coverage mismatch，fail closed）。
+    campuses: SHARDS.map((shard) => ({
+      openingSchoolNumber: shard.openingSchoolNumber,
+      rows: rows,
+    })),
+    baselineTotals: [shardTotal * SHARDS.length, shardTotal * SHARDS.length],
+  });
+
+  const result = await collector.collectSharded({
+    semester: SEMESTER,
+    maxPages: 20,
+    delayMs: 30000,
+  });
+
+  assert.ok(result.requests >= 7);
+  assert.equal(
+    timers[4],
+    300000,
+    "⛔ 五校区路径不得因为单校区口径而改变：第 5 个成功请求后（第 6 个请求前）必须冷却",
+  );
+  assert.equal(timers[0], 30000);
+  assert.equal(timers[3], 30000);
+});
+
+test("单校区采集：401 / 403 / 600 立即整体停止（⛔ 不 retry / 不读认证）", async () => {
+  for (const status of [401, 403, 600]) {
+    const rows = campusRows(10);
+    const harness = loadShardedCollector({
+      campuses: [{ openingSchoolNumber: "5063559", rows: rows }],
+      http600: { campus: "5063559", pageNo: 1 },
+    });
+
+    await assert.rejects(() =>
+      harness.collector.collectApprovedShard({
+        semester: SEMESTER,
+        shardId: "east-campus",
+        maxPages: 10,
+      }),
+    );
+    assert.equal(harness.calls.length, 1, `HTTP ${status} 只允许请求 1 次`);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Layout B：4 字段 non-concrete（weeks | location | opaque | activity）
 //
 // Architecture Review 裁定：opaque 槽位**语义未知** ⇒ 只做**结构性**脱敏

@@ -1,148 +1,205 @@
 # 真实开课数据采集 · 操作包（Course Data，2026-1）
 
 > ⚠️ 本文只描述**由人类在授权登录会话中手动执行**的步骤。
-> Builder ⛔ 不发真实请求、⛔ 不读取 cookie / token、⛔ 不绕认证、⛔ 不猜测未确证语义。
-> 所有命令都是**可直接复制运行**的浏览器控制台片段（前提：已按既有方式加载
-> `tools/sysu_course_offering_collector.js`，且当前页面为
-> `https://jwxt.sysu.edu.cn` 的「全校开设课程」模块）。
+> Builder ⛔ 不发真实请求、⛔ 不读 cookie / token、⛔ 不绕认证、⛔ 不猜未确证语义。
+>
+> 前提：已按既有方式在 `https://jwxt.sysu.edu.cn` 的「全校开设课程」模块加载
+> `tools/sysu_course_offering_collector.js`。
 
-## 0. 已批准的分片（`APPROVED_SHARDS`）
+---
 
-| 校区 | `openingSchoolNumber`（= `scope_id`） | `shard_id`（导出用名字） | 状态 |
-| --- | --- | --- | --- |
-| 东校园 | `5063559` | `东校园` | ✅ 可采集（已有旧 artifact，见 §4） |
-| 南校园 | `5062201` | `南校园` | ✅ 可采集 |
-| 深圳校区 | `333291143` | `深圳校区` | ✅ 可采集 |
-| 珠海校区 | `5062203` | `珠海校区` | ✅ 可采集 |
-| 北校园 | `5062202` | `北校园` | ⏸ **suspended**（真实证据为 `HTTP 600`；⛔ 不绕过、⛔ 不自行设计规避） |
+## A. 用户只需要做的 9 步（极简清单）
 
-## 1. ⚠️ 现状：**当前没有"单校区采集"入口**（必须由 Review 裁定）
+1. 登录教务系统（人工，⛔ 不由 Agent 代做）；
+2. 东校园：复制 §C.1 命令 → 导出 → 保存为本地文件；
+3. 南校园：复制 §C.2 命令 → 导出 → 保存；
+4. 深圳校区：复制 §C.3 命令 → 导出 → 保存；
+5. 珠海校区：复制 §C.4 命令 → 导出 → 保存；
+6. 把 4 个 artifact（或其路径 + SHA-256）交给 Agent；
+7. Agent 执行导入 + provenance read-back（§E）；
+8. 最终 Architecture Review（含 North suspended 的完整性口径，§G）；
+9. 用户明确"合并"。
 
-现有唯一采集入口是：
+> 北校园（`north-campus`）**保持 suspended**，⛔ 本清单不包含它，
+> 也⛔ 不得用任何其它方式补全。
+
+---
+
+## B. 已批准校区与内部映射（单一真源在 collector 内）
+
+| capture `shardId` | `shard_id`（已批准中文名） | `openingSchoolNumber` | 历史基线 total | 状态 |
+| --- | --- | --- | --- | --- |
+| `east-campus` | 东校园 | `5063559` | 1071 | ✅ 可采集 |
+| `south-campus` | 南校园 | `5062201` | 2898 | ✅ 可采集 |
+| `shenzhen-campus` | 深圳校区 | `333291143` | 1171 | ✅ 可采集 |
+| `zhuhai-campus` | 珠海校区 | `5062203` | 1335 | ✅ 可采集 |
+| `north-campus` | 北校园 | `5062202` | 405 | ⏸ **suspended**（真实 `HTTP 600`） |
+
+⚠️ **历史基线只作参考/交叉核对**：真实运行一律以**当次响应**的 `data.total` 为准
+（⛔ 不预填、⛔ 不因为对不上基线就重试或改参数）。
+
+---
+
+## C. 每个校区一条可直接复制的采集命令
+
+> ✅ 调用方**只能**传 `shardId`（白名单值）；⛔ 不能传 `openingSchoolNumber`
+> —— 号码由采集器内部固定映射，冒充已批准 shard 会被拒绝。
+> ⛔ `maxPages` 不要调小（必须取满当次 `data.total`）；⛔ `delayMs` 只能 ≥ 30000。
+> ⚠️ 超过 smoke 上限会先弹一次确认框；取消则不发出任何请求。
+
+### C.1 东校园
 
 ```js
-await window.XuehangSysuCollector.collectSharded({ semester, maxPages, delayMs })
-```
-
-它是**五个已批准 shard 的一次性、全有或全无事务**：
-
-- `APPROVED_SHARDS` 固定为**五个**校区（含**北校园**），调用方**不能选择 shard**
-  （options 白名单只有 `semester` / `maxPages` / `delayMs`）；
-- 任一 shard 失败（含北校园已确证的 `HTTP 600`）⇒ **整体失败、不产出任何 bundle、不续采、不跳页**。
-
-⇒ 因为**北校园按裁定保持 suspended**，一个五 shard 运行**预期会在北校园失败**，
-因此 **East / South / Shenzhen / Zhuhai 目前无法通过现有入口单独取得 bundle**。
-
-**这是当前真实数据链路的首要阻塞项（非 Builder 可自行解决）**，需要 Architecture Review 二选一：
-
-| 选项 | 内容 | Builder 立场 |
-| --- | --- | --- |
-| A | 批准**新增一个已批准的"单校区采集"入口**（例如只接受一个已批准 `openingSchoolNumber`，产出**单个** campus bundle；不动五 shard 编排） | ⛔ 未获批准前**不实现** |
-| B | 明确**允许在北校园 suspended 期间跳过该 shard**（等价于放宽"全有或全无"语义） | ⛔ 未获批准前**不改** `APPROVED_SHARDS` / 不跳过 |
-
-⛔ 在获得上述任一裁定之前，**不要**运行五 shard 命令去"碰运气"（那会浪费一次真实请求配额，
-且必然 fail closed）；也⛔ **不要**手工改动常量或绕过失败 shard。
-
-## 2. 一旦获批（命令形态，供 Review 参考）
-
-```js
-// 选项 A 落地后的形态（名称以实际批准为准；⛔ 现在尚不存在）
-const east = await window.XuehangSysuCollector.collectCampus({
-  semester: "2026-1",
-  openingSchoolNumber: "5063559",
-  maxPages: 50,
-  delayMs: 30000
+const east = await window.XuehangSysuCollector.collectApprovedShard({
+  semester: "2026-1", shardId: "east-campus", maxPages: 50
 });
+east.shard; east.requests; east.expectedTotal;   // 自检：shard_id / 请求数 / 当次 total
+copy(window.XuehangSysuCollector.toJson(east));  // → 保存为 east-campus.capture.json
 ```
 
-| 校区 | `openingSchoolNumber` | 已知 `data.total` | 页数（= `ceil(total/200)`） | 预计耗时 |
-| --- | --- | --- | --- | --- |
-| 东校园 | `5063559` | **1071**（已有证据） | 6 | ≈ 3 分钟（5 次普通间隔 + 1 次批次冷却） |
-| 南校园 | `5062201` | 运行时读出（⛔ 不预填） | 运行时决定 | 同上量级 |
-| 深圳校区 | `333291143` | 运行时读出（⛔ 不预填） | 运行时决定 | 同上量级 |
-| 珠海校区 | `5062203` | 运行时读出（⛔ 不预填） | 运行时决定 | 同上量级 |
+| 项 | 值 |
+| --- | --- |
+| 预计页数（基线口径） | 6（= `ceil(1071 / 200)`） |
+| 预计请求数 | 6 |
+| 预计耗时 | ≈ 2.5 分钟（5 × 30 s） |
+| 成功判据 | `cancelled === false`；`stoppedReason === "reached_total"`；`accumulatedRows === expectedTotal`；`toJson` 成功 |
+| scope_kind / scope_id | `campus` / `5063559` |
+| canonical source label | `sysu-2026-1-east-campus` |
 
-pacing 仍为：相邻请求 ≥ 30 s；每 5 个成功请求后冷却 300 s（策略未改，⛔ 不可调小）。
-
-**成功判据（单校区）**：`cancelled === false`；`accumulatedRows >= expectedTotal`；
-`stoppedReason === "reached_total"`；导出成功（⛔ 拒绝未完成结果）。
-
-## 3. 单校区导出命令（每个 shard 单独导出为裸 Capture Bundle）
+### C.2 南校园
 
 ```js
-// 东校园（其余校区把名字换成 "南校园" / "深圳校区" / "珠海校区"）
-copy(window.XuehangSysuCollector.toShardJson(result, "东校园"));
-// 结构诊断（无 row 内容，可一并留存）
-copy(window.XuehangSysuCollector.toDiagnosticsJson(result));
+const south = await window.XuehangSysuCollector.collectApprovedShard({
+  semester: "2026-1", shardId: "south-campus", maxPages: 50
+});
+south.shard; south.requests; south.expectedTotal;
+copy(window.XuehangSysuCollector.toJson(south));   // → south-campus.capture.json
 ```
 
-⚠️ `toShardJson(result, shardId)` 的 `shardId` 是**已批准校区名**（`东校园` 等）；
-⛔ 只接受成功完成的采集结果；⛔ 找不到该 shard 时失败且不回显调用方给的名字。
+| 项 | 值 |
+| --- | --- |
+| 预计页数（基线口径） | 15（= `ceil(2898 / 200)`） |
+| 预计请求数 | 15 |
+| 预计耗时 | ≈ 16 分钟（12 × 30 s + 2 次批次冷却 × 300 s） |
+| scope_kind / scope_id | `campus` / `5062201` |
+| canonical source label | `sysu-2026-1-south-campus` |
 
-⛔ 导出物**不得进入 Git**（真实材料规则）；保存在本地并记录其 SHA-256。
+### C.3 深圳校区
 
-## 4. 各校区的导入元数据（`scope_kind` / `scope_id` / `source`）
+```js
+const shenzhen = await window.XuehangSysuCollector.collectApprovedShard({
+  semester: "2026-1", shardId: "shenzhen-campus", maxPages: 50
+});
+shenzhen.shard; shenzhen.requests; shenzhen.expectedTotal;
+copy(window.XuehangSysuCollector.toJson(shenzhen)); // → shenzhen-campus.capture.json
+```
 
-| 校区 | `scope_kind` | `scope_id` | 建议 `source` 标签 | `expected_total` |
-| --- | --- | --- | --- | --- |
-| 东校园 | `campus` | `5063559` | `sysu-2026-1-east-campus` | 1071（**已有证据**：固定 artifact `daafdb18…a31b`） |
-| 南校园 | `campus` | `5062201` | `sysu-2026-1-south-campus` | 运行时读出 |
-| 深圳校区 | `campus` | `333291143` | `sysu-2026-1-shenzhen-campus` | 运行时读出 |
-| 珠海校区 | `campus` | `5062203` | `sysu-2026-1-zhuhai-campus` | 运行时读出 |
+| 项 | 值 |
+| --- | --- |
+| 预计页数（基线口径） | 6（= `ceil(1171 / 200)`） |
+| 预计请求数 | 6 |
+| 预计耗时 | ≈ 2.5 分钟 |
+| scope_kind / scope_id | `campus` / `333291143` |
+| canonical source label | `sysu-2026-1-shenzhen-campus` |
 
-导入（现有库函数，⛔ 不新增 wiring）：
+### C.4 珠海校区
+
+```js
+const zhuhai = await window.XuehangSysuCollector.collectApprovedShard({
+  semester: "2026-1", shardId: "zhuhai-campus", maxPages: 50
+});
+zhuhai.shard; zhuhai.requests; zhuhai.expectedTotal;
+copy(window.XuehangSysuCollector.toJson(zhuhai));   // → zhuhai-campus.capture.json
+```
+
+| 项 | 值 |
+| --- | --- |
+| 预计页数（基线口径） | 7（= `ceil(1335 / 200)`） |
+| 预计请求数 | 7 |
+| 预计耗时 | ≈ 3 分钟 |
+| scope_kind / scope_id | `campus` / `5062203` |
+| canonical source label | `sysu-2026-1-zhuhai-campus` |
+
+---
+
+## D. 导出的 bundle 是什么（⛔ 不得人工编辑）
+
+- `toJson(...)` 输出**标准裸 Capture Bundle**：
+  `format` / `semester` / `first_page_no` / `page_size` / `pages`；
+  ⛔ **不含** source label、校区号或诊断元数据（它们只出现在 JS 返回值里）。
+- ⛔ **不得人工编辑 artifact**（不得改字段、不得把原始 opaque 取值改成占位符、
+  不得补页 / 删页 / 改页码）—— 那是伪造采集证据。
+- 保存后计算 SHA-256 并记录：
+
+```powershell
+Get-FileHash .\east-campus.capture.json -Algorithm SHA256
+```
+
+```bash
+sha256sum east-campus.capture.json
+```
+
+---
+
+## E. 导入 + provenance read-back（Agent 执行；现有库函数，⛔ 不新增 wiring）
 
 ```python
 from app.course_data.captured_pages import load_capture_bundle
-from app.course_data.store import SnapshotScope, import_offering_snapshot
+from app.course_data.store import (
+    SnapshotScope, import_offering_snapshot,
+    load_course_data_provenance, load_course_offerings,
+    compute_artifact_sha256,
+)
 
+raw = open("east-campus.capture.json", "rb").read()
+digest = compute_artifact_sha256(raw)          # 与 §D 的 SHA-256 核对
 snapshot = load_capture_bundle("east-campus.capture.json")
+
 import_offering_snapshot(
-    "course-data.sqlite",
-    snapshot,
-    artifact_sha256="<导出物的 SHA-256>",
+    "course-data.sqlite", snapshot,
+    artifact_sha256=digest,
     scope=SnapshotScope(scope_kind="campus", scope_id="5063559"),
 )
+
+load_course_offerings("course-data.sqlite", semester="2026-1")   # 读回
+load_course_data_provenance("course-data.sqlite")                # 审计记录
 ```
 
-## 5. 成功判据（逐条）
+⛔ 不完整（`partial`）快照**不入库**；⛔ 导入失败后**不得**假设数据库零写入
+（事务边界见 `backend/tests/test_course_data_store.py`）。
 
-单校区（选项 A 落地后）：
+---
 
-1. `result.cancelled === false`；
-2. `accumulatedRows >= expectedTotal`（取满）且 `stoppedReason === "reached_total"`；
-3. 导出的 bundle 能被 `load_capture_bundle` 接受；
-4. 若该校区是东校园：`Σ rows === 1071` 且 `pages === 6`（已有证据的口径）。
+## F. 401 / 403 / HTTP 600 / malformed / total 漂移 时如何停止
 
-五 shard 运行（选项 B 落地后）：
+- **401 / 403**：立即整体停止（错误标注 `【BLOCKED】`）。⛔ 不重试、⛔ 不刷新认证、
+  ⛔ 不读 cookie/token、⛔ 不换 endpoint、⛔ 不降级参数。
+  **唯一恢复动作 = 人工重新登录**后重新运行该校区命令。
+- **HTTP 600**：立即整体停止（北校园即因此 suspended）。⛔ 不绕过、⛔ 不自动等待重试。
+- **malformed / total 漂移 / 未取满**：立即整体停止，**不产出 bundle**；⛔ 不要手工拼造。
 
-1. `result.cancelled === false` 且 `result.shards.length === 5`；
-2. 每个 shard 取满且 `stoppedReason === "reached_total"`；
-3. `Σ shard expectedTotal === baseline_after 的 total`（覆盖一致；不一致即整体失败）；
-4. `toShardJson(...)` 对每个校区都能成功导出（⛔ 拒绝未完成结果）。
+---
 
-## 6. `401` / `403` / `HTTP 600` / malformed 的停止说明
+## G. 完整性口径（⛔ 不得混淆）
 
-- 任一页返回 `401` / `403`：**立即整体停止**，错误信息标注 `【BLOCKED】`；
-  ⛔ 不重试、⛔ 不刷新认证、⛔ 不读取 cookie/token、⛔ 不寻找其它 endpoint；
-  **人工重新登录**后重新运行（这是唯一的恢复动作）。
-- `HTTP 600`（真实证据：短间隔连续请求触发）：**立即整体停止**；
-  ⛔ 不绕过、⛔ 不降级参数、⛔ 不自动等待重试。北校园即因此保持 suspended。
-- 返回非 JSON（可能被重定向到登录页）/ JSON 结构不合法 / `data.total` 中途漂移：
-  **立即整体停止**，不生成 bundle。
-- 失败后 `result` 不存在 ⇒ ⛔ 不要手工拼造 bundle。
+```text
+East + South + Shenzhen + Zhuhai 四个校区 complete
+      ≠  full semester complete
+```
 
-## 7. 与 Layout B 相关的**必须重抓**说明
+- 北校园仍是**已批准 shard 之一**；Python 侧入口 `collect_sharded_capture_set()` **没有**
+  "跳过 / suspended"概念 ⇒ 缺任一已批准 shard 一律 fail closed
+  （见 `backend/tests/test_course_data_campus_scope_completeness.py`）。
+- 因此单校区采集得到的都是 **campus-scoped** artifact：
+  导入时必须声明 `scope_kind="campus"`；⛔ **不得**声称为 `full_semester`。
+- ⛔ **不得**把 North 缺失伪装成 full-semester complete；
+  如需学期级 complete，只能等 North 可采集，或由 Architecture Review 正式裁定口径。
 
-- 本轮 collector 已对**精确 Layout B**（`weeks | location | opaque | activity`）
-  把第 3 项脱敏为 `REDACTED_OPAQUE`；parser 只接受这个占位符。
-- **旧的东校园 artifact 含原始 opaque 取值** ⇒ 在本 parser 下会在 Layout B 处 fail closed
-  ⇒ **必须重抓东校园**（§1 命令已包含东校园；导出后替换旧 artifact）。
-- ⛔ 不要手工编辑旧 artifact、⛔ 不要把原始取值改成占位符 —— 那是伪造采集证据。
+---
 
-## 8. 可选（development-only，非必需）
+## H. 可选（development-only，非采集/导入前置条件）
 
-- 「一次性 Layout B 诊断」与「分段式 f3 字段来源诊断」**保留但非必需**：
-  裁定已确认 Layout B 的字段语义为 `weeks | location | opaque | activity`，
-  因此这两个诊断**不再是采集或导入的前置条件**，仅在将来需要复核字段来源时使用。
-- 两个诊断都**只发读取请求**、不落盘、不进 bundle；⛔ 不得用于替代正式采集。
+- 一次性 Layout B 诊断（`diagnoseLayoutBCandidates`）与分段式 f3 字段来源诊断
+  （`diagnoseLayoutBFieldSourcePart` + `finalizeLayoutBFieldSource`）分类为
+  **development-only / safe-to-remove-after-final-East-acceptance**：
+  ⛔ 不被 production 引用、⛔ 不自动运行、⛔ 不读认证、⛔ 不污染 bundle。

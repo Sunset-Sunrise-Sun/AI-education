@@ -300,10 +300,21 @@
    * ⛔ 失败（HTTP 非 200 / code 非 200 / 网络错误）**不计入**成功数，
    * 而且会直接 fail closed 终止整个 run：⛔ 不重试、⛔ 不 backoff 重试、
    * ⛔ 不续采（no resume）、⛔ 不跳页。
+   *
+   * ⚠️ `batchCeiling` 由调用方选择**已批准**口径，⛔ **不是**调用方可任意传入的参数：
+   *
+   * ```text
+   * ordinary / 五校区路径         → MAX_REQUESTS_PER_BATCH = 5（默认）
+   * single-approved-campus 路径   → APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH = 7
+   * ```
+   *
+   * ⛔ `delayMs` 下限（`MIN_DELAY_MS`）与冷却时长（`BATCH_COOLDOWN_MS`）**未改**：
+   * 两个口径只决定"多少个成功请求之后进入冷却"，⛔ 不改变最小间隔。
    */
-  function createRequestPacer(delayMs) {
+  function createRequestPacer(delayMs, batchCeiling) {
     var isFirstRequest = true;
     var successfulInBatch = 0;
+    var ceiling = batchCeiling === undefined ? MAX_REQUESTS_PER_BATCH : batchCeiling;
 
     return {
       /** 发请求**之前**调用：保证与上一个请求的间隔（含批次冷却）。 */
@@ -313,7 +324,7 @@
           return;
         }
 
-        if (successfulInBatch >= MAX_REQUESTS_PER_BATCH) {
+        if (successfulInBatch >= ceiling) {
           successfulInBatch = 0;
           // 冷却本身已超过普通间隔；若调用方把 delayMs 调得更大则取较大者。
           await sleep(Math.max(BATCH_COOLDOWN_MS, delayMs));
@@ -1470,6 +1481,229 @@
       );
     }
     return JSON.stringify(result.bundle, null, 2);
+  }
+
+  // ---------------------------------------------------------------------
+  // Single-approved-campus capture（Architecture Review 裁定；独立于五校区编排）
+  //
+  // ✅ 用途：在**会话寿命不足以跑完五个 shard**（第 6 页真实 `401` 证据）时，
+  //    一次只采**一个已批准校区**，产出**标准裸 Capture Bundle**。
+  // ⛔ 不新增 wrapper schema、⛔ 不做 fake global page renumbering、
+  //    ⛔ 不改五校区编排、⛔ 不改 public Schema。
+  // ⛔ 调用方**不能**传 `openingSchoolNumber` 冒充已批准 shard：
+  //    只接受下面表里的 `capture_shard_id`，映射由本文件内部固定。
+  // ⛔ 北校园保留在白名单中，但 operational status = **suspended**（真实 `HTTP 600` 证据）
+  //    ⇒ 直接 fail closed，⛔ 不做任何绕过。
+  // ---------------------------------------------------------------------
+
+  /**
+   * 已批准校区 **capture shard** 白名单（`capture_shard_id` → 已批准中文 shard）。
+   *
+   * ⚠️ **不重复任何 `openingSchoolNumber`**：号码只在 `APPROVED_SHARDS` 里出现一次
+   * （单一真源），这里通过 `shard_id` 引用，避免两份映射漂移。
+   *
+   * `source_label` 是**审计标签**（导入时作为 `source` 使用），
+   * ⛔ **不写入 Capture Bundle**（bundle 仍然是标准裸格式）。
+   */
+  var APPROVED_CAMPUS_CAPTURE_SHARDS = [
+    {
+      capture_shard_id: "east-campus",
+      shard_id: "东校园",
+      operational: true,
+      source_label: "sysu-2026-1-east-campus"
+    },
+    {
+      capture_shard_id: "south-campus",
+      shard_id: "南校园",
+      operational: true,
+      source_label: "sysu-2026-1-south-campus"
+    },
+    {
+      capture_shard_id: "shenzhen-campus",
+      shard_id: "深圳校区",
+      operational: true,
+      source_label: "sysu-2026-1-shenzhen-campus"
+    },
+    {
+      capture_shard_id: "zhuhai-campus",
+      shard_id: "珠海校区",
+      operational: true,
+      source_label: "sysu-2026-1-zhuhai-campus"
+    },
+    {
+      capture_shard_id: "north-campus",
+      shard_id: "北校园",
+      operational: false, // ⏸ suspended（真实 HTTP 600 证据；⛔ 不绕过）
+      source_label: "sysu-2026-1-north-campus"
+    }
+  ];
+
+  /**
+   * single-approved-campus 路径的**批次上限**（Architecture Review 裁定）。
+   *
+   * ⚠️ **不是**全局 pacing 变更：ordinary / 五校区路径继续用 5。
+   * 7 的选择依据是已观测包络："`pageSize=50` + 30 s 间隔连续 **7** 次成功后，
+   * 第 **8** 次出现 `HTTP 600`" ⇒ 第 8 个请求必须落在冷却之后。
+   * ⛔ 最小间隔（`MIN_DELAY_MS`）与冷却（`BATCH_COOLDOWN_MS`）**未改**。
+   */
+  var APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH = 7;
+
+  /** single-approved-campus 允许的 options（**严格白名单**；⛔ 不接受 openingSchoolNumber）。 */
+  var APPROVED_CAMPUS_ALLOWED_OPTIONS = ["semester", "shardId", "maxPages", "delayMs"];
+
+  /** 按 `capture_shard_id` 查白名单条目（⛔ 不回显调用方给出的名字）。 */
+  function resolveApprovedCampusShard(captureShardId) {
+    for (var index = 0; index < APPROVED_CAMPUS_CAPTURE_SHARDS.length; index += 1) {
+      if (APPROVED_CAMPUS_CAPTURE_SHARDS[index].capture_shard_id === captureShardId) {
+        return APPROVED_CAMPUS_CAPTURE_SHARDS[index];
+      }
+    }
+    return null;
+  }
+
+  /** 按已批准中文 shard 名查 `APPROVED_SHARDS` 条目（号码的唯一真源）。 */
+  function resolveApprovedShardById(shardId) {
+    for (var index = 0; index < APPROVED_SHARDS.length; index += 1) {
+      if (APPROVED_SHARDS[index].shard_id === shardId) {
+        return APPROVED_SHARDS[index];
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 采集**一个已批准校区**，返回标准裸 Capture Bundle。
+   *
+   * ```js
+   * const east = await window.XuehangSysuCollector.collectApprovedShard({
+   *   semester: "2026-1",
+   *   shardId: "east-campus",
+   *   maxPages: 50
+   * });
+   * copy(window.XuehangSysuCollector.toJson(east));   // 标准 Capture Bundle
+   * ```
+   *
+   * 返回（JS 层包装，⛔ **bundle 本身仍是裸格式**）：
+   *
+   * ```text
+   * cancelled / requests / semester / page_size
+   * shard: { capture_shard_id, shard_id, openingSchoolNumber, source_label, operational }
+   * expectedTotal / accumulatedRows / stoppedReason
+   * bundle（标准裸格式）：format / semester / first_page_no / page_size / pages
+   * ```
+   *
+   * - ✅ `semester` 必须**显式**提供，并原样绑定进 bundle；
+   * - ⛔ 不接受 `openingSchoolNumber`（由内部映射解析）⇒ 调用方无法冒充已批准 shard；
+   * - ⛔ 不做 fake global page renumbering：`pages[].page_no` 就是该校区的真实页码；
+   * - ⛔ `source_label` **不写入 bundle**，只作为后续导入的审计标签；
+   * - ⛔ suspended 校区（北校园）→ fail closed；
+   * - ⛔ 未取满（`stoppedReason !== "reached_total"`）→ fail closed，⛔ 不产出 bundle；
+   * - 401 / 403 / HTTP 600 / malformed / total 漂移 → 由 `requestPage()` fail closed，
+   *   ⛔ 不重试、⛔ 不刷新认证、⛔ 不读 token/cookie、⛔ 不跳页、⛔ 不续采。
+   */
+  async function collectApprovedShard(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var optionNames = Object.keys(opts);
+    var unexpected = optionNames.filter(function (name) {
+      return APPROVED_CAMPUS_ALLOWED_OPTIONS.indexOf(name) === -1;
+    });
+    if (unexpected.length > 0) {
+      fail(
+        "single-approved-campus 采集只接受 " +
+          APPROVED_CAMPUS_ALLOWED_OPTIONS.join(" / ") +
+          "（收到 " + unexpected.length + " 个其它参数，含可能的 openingSchoolNumber）。" +
+          "已停止；参数名不予回显（⛔ 不接受调用方指定校区号）。"
+      );
+    }
+
+    var campus = resolveApprovedCampusShard(opts.shardId);
+    if (campus === null) {
+      fail(
+        "shardId 不在已批准校区白名单内（" +
+          APPROVED_CAMPUS_CAPTURE_SHARDS.length +
+          " 个已批准取值）。已停止（⛔ 不回显调用方给出的名字，" +
+          "⛔ 不接受任意 openingSchoolNumber）。"
+      );
+    }
+
+    if (campus.operational !== true) {
+      fail(
+        "该校区当前为 **suspended**（真实 HTTP 600 证据），本采集器 ⛔ 不做任何绕过：" +
+          "不重试、不降级参数、不换 endpoint。已停止；解除 suspended 需要 Architecture Review 裁定。"
+      );
+    }
+
+    var approved = resolveApprovedShardById(campus.shard_id);
+    if (approved === null) {
+      fail("内部一致性错误：capture shard 未能在 APPROVED_SHARDS 中解析。已停止。");
+    }
+
+    var resolved = resolvePagingOptions(opts);
+
+    if (resolved.maxPages > DEFAULT_MAX_PAGES) {
+      var confirmed = window.confirm(
+        "即将采集**单个已批准校区**（只产出该校区的标准 Capture Bundle）。\n" +
+          "最多请求 " + resolved.maxPages + " 页\n" +
+          "请求间隔至少 " + resolved.delayMs / 1000 + " 秒；每 " +
+          APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH + " 个成功请求后冷却 " +
+          BATCH_COOLDOWN_MS / 60000 + " 分钟\n" +
+          "是否继续？"
+      );
+      if (!confirmed) {
+        fail("用户取消了单校区采集：本次不产生任何 bundle（⛔ 不生成伪 bundle）。");
+      }
+    }
+
+    var pacer = createRequestPacer(
+      resolved.delayMs,
+      APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH
+    );
+
+    var core = await collectPages(
+      resolved.semester,
+      resolved.pageSize,
+      resolved.maxPages,
+      pacer,
+      approved.openingSchoolNumber
+    );
+
+    // ⛔ 未取满：不产出 bundle、⛔ 不续采、⛔ 不跳页（与五校区编排同口径）。
+    if (core.stoppedReason !== "reached_total" || core.accumulatedRows !== core.expectedTotal) {
+      fail(
+        "单校区采集未取满：累计 " + core.accumulatedRows + " / total " + core.expectedTotal +
+          "（停止原因 " + core.stoppedReason + "）。已整体停止，不产出任何 bundle；" +
+          "请提高 maxPages 后重跑。"
+      );
+    }
+
+    return {
+      cancelled: false,
+      requests: core.requests,
+      semester: resolved.semester,
+      page_size: resolved.pageSize,
+      shard: {
+        capture_shard_id: campus.capture_shard_id,
+        shard_id: campus.shard_id,
+        openingSchoolNumber: approved.openingSchoolNumber,
+        source_label: campus.source_label,
+        operational: campus.operational
+      },
+      expectedTotal: core.expectedTotal,
+      accumulatedRows: core.accumulatedRows,
+      stoppedReason: core.stoppedReason,
+      // 标准裸 Capture Bundle：顶层只有 format / semester / first_page_no / page_size / pages。
+      // ⛔ source label / 校区号 / diagnostics 都**不**写进 bundle。
+      bundle: {
+        format: CAPTURE_FORMAT,
+        semester: resolved.semester,
+        first_page_no: resolved.firstPageNo,
+        page_size: resolved.pageSize,
+        pages: core.pages
+      }
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -3161,6 +3395,7 @@
   window.XuehangSysuCollector = {
     collect: collect,
     collectSharded: collectSharded,
+    collectApprovedShard: collectApprovedShard,
     diagnoseSchedulePresence: diagnoseSchedulePresence,
     summarizeSchedulePresence: summarizeSchedulePresence,
     diagnoseMissingScheduleCorrelation: diagnoseMissingScheduleCorrelation,
@@ -3172,6 +3407,8 @@
     toShardJson: toShardJson,
     toDiagnosticsJson: toDiagnosticsJson,
     APPROVED_SHARDS: APPROVED_SHARDS,
+    APPROVED_CAMPUS_CAPTURE_SHARDS: APPROVED_CAMPUS_CAPTURE_SHARDS,
+    APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH: APPROVED_CAMPUS_MAX_REQUESTS_PER_BATCH,
     SHARD_PAGE_SIZE: SHARD_PAGE_SIZE,
     DIAGNOSTIC_PAGE_NO: DIAGNOSTIC_PAGE_NO,
     DIAGNOSTIC_PAGE_SIZE: DIAGNOSTIC_PAGE_SIZE,

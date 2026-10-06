@@ -2696,4 +2696,100 @@
   Planner / Curriculum 语义 / runtime 架构；⛔ 未做真实登录或教务请求；⛔ 真实材料未入 Git。
 - 下一步：等 Review 对 (A)/(B) 与 CLI commit 给出裁定；随后 push + PR（PR 描述见下条）。
 
+### 2026-10-06 - Autonomous Closeout（Phase 1-12）：单校区采集 + 审计 + 集成准备
+
+- **Phase 1（single-approved-campus capture，✅ 已实现）**
+  （`tools/sysu_course_offering_collector.js`）：
+  - `collectApprovedShard({ semester, shardId, maxPages, delayMs })`：只采**一个已批准校区**，
+    产出**标准裸 Capture Bundle**（⛔ 无 wrapper schema、⛔ 无 fake global page renumbering、
+    ⛔ 不改五校区编排、⛔ 不改 public Schema）；
+  - 固定白名单 `east-campus / south-campus / shenzhen-campus / zhuhai-campus / north-campus`
+    （顺序即已批准顺序）；`shardId → openingSchoolNumber` 映射**内部固定**，
+    且**不重复任何校区号**（号码只在 `APPROVED_SHARDS` 出现一次 = 单一真源）；
+    ⛔ 调用方**不能**传 `openingSchoolNumber`（不在 options 白名单里 ⇒ 先于任何请求拒绝）；
+  - **pacing**：单校区路径 `request interval >= 30 s` + **batch ceiling = 7**
+    （依据已观测包络："30 s 间隔连续 7 次成功后第 8 次 `HTTP 600`" ⇒ 第 8 个请求必须落在冷却之后）；
+    ordinary / 五校区路径**继续 = 5**；⛔ 未全局改 pacing（`MIN_DELAY_MS` / `BATCH_COOLDOWN_MS` 未动）；
+    `createRequestPacer(delayMs, batchCeiling)` 的**默认值仍是** `MAX_REQUESTS_PER_BATCH`（守卫锁定）；
+  - `semester` 显式绑定；`source_label` **不写入 bundle**（只作为导入时的审计标签）；
+  - **北校园**：白名单保留、`operational: false` ⇒ 在**发请求之前** fail closed
+    （⛔ 不重试、⛔ 不降级参数、⛔ 不换 endpoint、⛔ 不做任何绕过）；
+  - 未取满（`stoppedReason !== "reached_total"`）⇒ fail closed，⛔ 不产出 bundle；
+    401 / 403 / HTTP 600 / malformed / total 漂移 ⇒ 由 `requestPage()` 立即整体停止。
+- **Phase 2（操作包完整化）**：`docs/data/REAL_CAPTURE_OPERATION_PACK.md` 重写：
+  用户 9 步极简清单、四校区各自一条可复制命令、历史基线
+  （East 1071 / South 2898 / Shenzhen 1171 / Zhuhai 1335 / North 405-suspended，
+  ⚠️ 仅作参考，真实运行以当次 `data.total` 为准）、预计页数 / 请求数 / 耗时、
+  成功判据、导出与 SHA-256 计算、导入 + provenance read-back、`scope_kind=campus` 口径、
+  401/403/600 停止说明、⛔ 不得人工编辑 artifact、⛔ 不得把 North 缺失伪装成学期完整。
+- **Phase 3（CLI 集成）**：再次 fetch 全部远端 ref 后，commit
+  `1bb8bfdbaddbaac7280702942ba0783c29722ec8` **仍不存在**（`git cat-file -t` 失败、
+  `--contains` 无结果、全仓无等价 Course Data acceptance CLI）⇒ **记录 blocker，未重建、未替代**，
+  并按要求继续后续阶段。
+- **Phase 4（SQLite / store 深度审计）**：逐条核对 16 项清单
+  （campus / full_semester scope 语义、scope_id 校验、artifact_sha256 绑定、import history、
+  current-row provenance、幂等重入、同 digest 不同 scope、不同 digest 同 identity 更新、
+  事务边界、失败回滚、provenance read-back、重复 identity、source 首次值语义、
+  db 计数 vs artifact 计数）⇒ **全部已由既有 `test_course_data_store.py`（51 项）覆盖**，
+  ⛔ 未发现实现缺陷（本轮**未**为"覆盖已足"的项重复造测试）。
+- **Phase 5（campus merge / completeness 审计）**：新增
+  `backend/tests/test_course_data_campus_scope_completeness.py`（5 项）锁定语义边界：
+  ① **低层** `merge_offering_snapshots()` **信任调用方 baseline**（四校区 + Σ(4) 会被接受）
+  ⇒ "四校区 = 完整学期"⛔ 不能靠低层把关，必须走已批准五 shard 入口；
+  ② `sharded_capture.py` **没有** "跳过 / suspended" 概念（静态断言）；
+  ③ campus-scoped artifact 的 `complete` **只对该校区成立**，provenance 无学期级声明；
+  ④ 四校区 artifact 并排入库后**仍无**任何 full-semester 声明；
+  ⑤ `full_semester` 只能是**显式声明**（⛔ 不从 source / 文件名 / 校区数推断）。
+- **Phase 6（runtime 兼容性）**：结论 **B —— PR #39 需要小改**（写入
+  `docs/data/RUNTIME_AND_FRONTEND_COMPATIBILITY_REVIEW.md`）：
+  PR #39（`feature/case-a-runtime-wiring`，commit `a4dc48ce…`，**open/未合并**）的装载模型是
+  "**一个** Capture Bundle + **一个** SHA-256 + 一个内存快照"，而真实数据已变成
+  **每校区 artifact + SQLite store + 需五 shard 齐备的 merge**；
+  ⛔ 不是 A（单 gate 装一份 campus artifact 会被 `SnapshotCourseDataProvider` 当作整学期返回 ⇒ 静默不完整）、
+  ⛔ 不是 C（frozen `CourseDataProvider.get_course_offerings(semester)` 不需改、store 已能按学期读）；
+  ⇒ 需要**小改**：① 装载范围显式声明（`campus:<id>` / `full_semester:<semester>`，⛔ 不推断）；
+  ② 多 artifact 入口（运行期合并 **或** store-backed provider）；③ campus 范围必须如实标注。
+  ⛔ 本轮**未**合并 PR #39、⛔ 未改 runtime architecture；需要 Review 裁定
+  "North suspended 期间 runtime 允许装载的最高范围"。
+- **Phase 7（synthetic 结构 dry-run）**：逐条核对并给出证据（同文档 §2）——
+  无 Mock fallback、未装配 503（`real_pipeline_not_configured`）、provider 异常向上传播、
+  `meetings = [] → Planner UNKNOWN`（`planner/conflicts.py:85`、`feasibility.py:13/45/57`）、
+  Layout A/B 不被当 CLEAR、`remaining_capacity=None` 不破坏 Planner、provider 只被调用一次。
+  ⚠️ **不声明** Real E2E / LEVEL2 / LEVEL3 已通过。
+- **Phase 8（frontend 兼容性审计）**：全部 ✅（同文档 §3，逐条 file:line 证据）：
+  `meetings=[]` 中性文案（`labels.ts:142`）、⛔ 无 conflict-free 文案、
+  `remaining_capacity=None → '—'`（`labels.ts:131-136`、`CourseOfferingList.vue:192`）、
+  Real/Mock 模式清晰（`App.vue:78-82`，且 Real 结果禁用 Mock 课程名映射 `:90-93`）、
+  ⛔ 无"已选课" / ⛔ 无"可直接执行"文案、503 不触发 Mock fallback（`api/plan.ts:7/32-37`）。
+  ⚠️ **发现 1 处 API 层缺口（非显示 bug）**：`X-Data-Source` 响应头**只由 mock API 设置**
+  （`api/mock.py:37`），真实 `POST /api/v1/plan` **不返回**该头 ⇒ 建议（需裁定）真实接口也返回
+  `X-Data-Source: real`；⛔ 本轮未擅自改接口面。
+- **Phase 9（诊断代码分类）**：2C1B / 2C1C / `diagnoseLayoutBCandidates` /
+  分段式字段来源诊断 ⇒ **development-only，safe-to-remove-after-final-East-acceptance**；
+  `collectApprovedShard` ⇒ **production-needed**。⛔ 不被 production 引用、⛔ 不自动运行、
+  ⛔ 不读认证、⛔ 不泄露 raw value、⛔ 不污染 bundle（守卫锁定）。
+- **Phase 10（PR #40 整理）**：PR #40 状态经 GitHub 公开 API 核实 ——
+  `open` / **draft** / base `main`(`21f558f`) / head `fix/course-data-schedule-no-teacher`，
+  `mergeable: true`、`mergeable_state: clean`；PR **head 会随 push 自动更新**。
+  ⛔ 本机无 `gh`、⛔ 未读取任何凭据 ⇒ **PR 描述更新未执行**（已备好新描述文本，见 PR 包文件）。
+- **Phase 11（第二轮审计）**：`git diff` / 隐私（raw-value 回显 grep + AST docstring 剔除）/
+  parser over-generalization / mutation adequacy（锚点唯一性强制）/
+  dead code / docs-code 一致性 / branch vs main 对比 / 最终测试重跑 —— 见下方回归数字。
+- **Phase 12（release 包）**：极简用户清单写入操作包 §A（登录 → 四条命令 → 交 artifact →
+  导入/read-back → Review → 明确合并）。
+- **回归（本轮）**：`node --check` exit 0；collector node **159 passed**（150 → 159）；
+  守卫 **121 passed**（114 → 121）；targeted（parser+normalization+importer+pagination+
+  store+snapshot_merge+sharded_capture+campus_scope+guard，`-W error::SyntaxWarning`）
+  **763 passed**；full backend 见提交说明；`compileall app` exit 0；
+  mutation **78 个变异**（44 Node + 34 Python，含 Phase 1 新增：suspended 绕过 / options 放开 /
+  批次上限改错 / 白名单重复号码 / 北校园标记可采集）—— 结果见提交说明。
+- ⚠️ **自查纠正**：① 两条新变异（未取满 / source label 进 bundle）锚点与五校区**同形代码**冲突
+  ⇒ 按"锚点必须唯一"的既有纪律**删除**这两条变异（其语义仍由 node 测试与静态守卫覆盖），
+  ⛔ 不留假绿；② JSDoc 里的示意写法 `bundle: { … }` 会被 bundle-literal 守卫当成构造点
+  ⇒ 已改写文案（守卫计数恢复 3）；③ `first_page_no:` 合法包含 `page_no:` 子串 ⇒ 守卫改为剔除后检查。
+- **边界**：⛔ **未 merge main**；⛔ 未改 public Schema / frozen Provider contract /
+  Planner / Curriculum 语义 / runtime architecture；⛔ 未自动登录、⛔ 未读 cookie/token、
+  ⛔ 未发真实教务请求；⛔ 真实材料未入 Git。
+
+
 

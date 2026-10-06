@@ -1483,6 +1483,41 @@ course_data_import（artifact 级审计；同一 (artifact, semester, scope) 只
 - 仓库内**不含**真实教师姓名、真实教室、内部长 ID 取值、`readObj`、Raw JSON、
   Cookie / Session / Token、endpoint。
 
+### 单校区采集（single-approved-campus capture；✅ 已实现）
+
+- `collectApprovedShard({ semester, shardId, maxPages, delayMs })`：
+  只采**一个已批准校区**，产出**标准裸 Capture Bundle**
+  （`format` / `semester` / `first_page_no` / `page_size` / `pages`）；
+  ⛔ 不新增 wrapper schema、⛔ 不做 fake global page renumbering、⛔ 不改五校区编排。
+- **固定白名单**（顺序即已批准顺序）：`east-campus` / `south-campus` / `shenzhen-campus` /
+  `zhuhai-campus` / `north-campus`；`shardId → openingSchoolNumber` **内部固定映射**，
+  ⛔ 调用方不能传 `openingSchoolNumber`（不在 options 白名单内 ⇒ 先于任何请求拒绝）；
+  ⛔ 号码不重复（唯一真源仍是 `APPROVED_SHARDS`）。
+- **pacing**：单校区路径 `>= 30 s` 间隔 + **batch ceiling 7**；
+  ordinary / 五校区路径继续 **5**；⛔ 未全局改 pacing（`MIN_DELAY_MS` / `BATCH_COOLDOWN_MS` 未动）。
+- **北校园**：白名单保留、`operational: false` ⇒ **发请求之前** fail closed（⛔ 不绕过）；
+  未取满 ⇒ fail closed、⛔ 不产出 bundle；401/403/600/malformed/total 漂移 ⇒ 立即整体停止。
+- ⚠️ **完整性口径**：East+South+Shenzhen+Zhuhai 四个校区 complete
+  **≠ full semester complete**；campus artifact 必须以 `scope_kind = campus` 导入；
+  ⛔ 不得把 North 缺失伪装成学期完整（见 `docs/data/REAL_CAPTURE_OPERATION_PACK.md` §G）。
+
+### Runtime / Frontend 兼容性结论（✅ 已审计）
+
+- **Phase 6 结论 = B（PR #39 需要小改）**：PR #39 的装载模型是
+  "一个 Capture Bundle + 一个 SHA-256 + 一个内存快照"，而真实数据已变为
+  每校区 artifact + SQLite store + 需五 shard 齐备的 merge ⇒ 需要
+  ① 装载范围显式声明 ② 多 artifact 入口 ③ campus 范围如实标注；
+  ⛔ frozen `CourseDataProvider.get_course_offerings(semester)` 不变。
+  ⛔ 本轮未合并 PR #39、未改 runtime architecture；详见
+  `docs/data/RUNTIME_AND_FRONTEND_COMPATIBILITY_REVIEW.md`。
+- **Phase 8 frontend = 全部 ✅**（`meetings=[]` 中性文案、⛔ 无 conflict-free、
+  `remaining_capacity=None → 破折号`、Real/Mock 清晰、503 不 Mock fallback）；
+  唯一发现：`X-Data-Source` 响应头只由 mock API 设置 ⇒ 建议真实接口也返回
+  `X-Data-Source: real`（需 Review 裁定，⛔ 未擅自改接口面）。
+- **诊断分类（Phase 9）**：2C1B / 2C1C / `diagnoseLayoutBCandidates` /
+  分段式字段来源诊断 = **development-only / safe-to-remove-after-final-East-acceptance**；
+  `collectApprovedShard` = **production-needed**。
+
 ## 下一步
 
 - **不再等待 DG-07C / DG-07D**：DG-07A / B / C / D 已全部 IMPLEMENTED / REVIEWED，
