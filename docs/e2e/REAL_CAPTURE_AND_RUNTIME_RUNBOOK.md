@@ -166,7 +166,14 @@ python tools/prepare_real_case_a_runtime.py `
   --env-out <本地目录>/runtime.env
 ```
 
-期望最后一行 `{"status": "ready", ...}`，并且：
+期望最后一行是下面**两种状态之一**（语义见 §3.5）：
+
+```text
+status == "ready"          完整 runtime input readiness（⛔ 只有它才表示可以启动真实 runtime）
+status == "partial_ready"  只有 Course Data 就绪；Curriculum 证据缺席 ⇒ ⛔ 不可启动真实 runtime
+```
+
+`status == "ready"` 时还必须同时成立：
 
 ```text
 provider_read_back.provider_offering_count == acceptance.merged_offering_count
@@ -178,14 +185,11 @@ final_readiness_verification.final_curriculum_reverified == true
     （发布 env 之后**再次解析**该路径、对**此刻真实可达的字节**重算 SHA-256，
       并重新评估批准门；⛔ 期间被替换 / 删除 / 重绑定 / 批准失效 ⇒ 不输出 ready）
 readiness_scope == "course_data_and_curriculum"
-level2_eligible == true   （仅当 Course Data 门 AND Curriculum 门都通过：
-                           handoff approved + 批准元数据有效 + 五个 digest 一致，
-                           且 curriculum provenance approved + digest == 被消费的 case 文件）
+level2_eligible == true   （仅当 Course Data 门 AND Curriculum 门都通过）
 ```
 
 ⚠️ 若没有通过 Curriculum 门的 provenance 记录，env 里**不会**写出
-`APP_CASE_A_CURRICULUM_CASE_PATH`（⛔ 绝不发出未经验证的路径），
-`readiness_scope = "course_data_only"` 且 `level2_eligible = false`。
+`APP_CASE_A_CURRICULUM_CASE_PATH`（⛔ 绝不发出未经验证的路径）。
 
 ⚠️ env 文件**只能独占创建**：目标已存在 ⇒ fail closed（exit 7）。
 ⛔ **不存在** overwrite 选项 —— 需要重新生成时，请换一个**新路径**，
@@ -237,8 +241,31 @@ curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/api/v1/pla
 # 已装配且数据一致 → 200；未装配 / 数据失效 → 503
 ```
 
-### 3.4 失败矩阵（与当前实现一致；均由既有测试锁定）
+### 3.4 状态语义（⛔ 两种状态不可混用）
 
+编排 CLI 的 `status` 只有下面两种"可继续"取值（其余是草稿态与硬失败）：
+
+| `status` | 精确含义 | 必须同时成立 | 允许做什么 |
+| --- | --- | --- | --- |
+| **`ready`** | **完整 runtime input readiness** | `final_store_reverified == true` **且** `final_curriculum_reverified == true`，且 `runtime_environment` 同时含**已验证的 Course Data 配置**（`APP_COURSE_DATA_SQLITE_PATH` / `..._SEMESTER` / `..._ACCEPTANCE_SHA256`）与**已验证的 Curriculum 配置**（`APP_CASE_A_CURRICULUM_CASE_PATH`） | ✅ 可以启动 backend（uvicorn）→ 探针 → 前端 Real 验证 |
+| **`partial_ready`** | 只有 **Course Data** 就绪（store 已重新验证），Curriculum 证据/输入**刻意缺席** | `final_store_reverified == true` **且** `final_curriculum_reverified == false`；`readiness_scope == "course_data_only"`；`level2_eligible == false`；blocker `curriculum_provenance_missing` | ⛔ **不可**启动真实 runtime、⛔ 不可当作"已准备好跑 Real E2E"、⛔ 不满足 LEVEL2 |
+
+```text
+⛔ 不要从 partial_ready 启动真实 runtime（缺 curriculum 配置时 runtime 只会 503）
+⛔ 不要把 partial_ready 说成"已准备好"或"LEVEL2 就绪"
+✅ 补齐已批准的 curriculum provenance（--curriculum-provenance + --curriculum-case）后重跑，
+   只有 status=="ready" 才是完整 runtime-ready
+```
+
+⚠️ 结构性不变量（工具内 fail closed，有单元测试）：`status == "ready"` **蕴含**
+两个 final 布尔都为 `true` 且 env 里两份配置都在。因此 ⛔ 不可能出现
+"`status=ready` 但 `final_curriculum_reverified=false`"。
+⚠️ **提供了** curriculum 却在最终校验失败（字节被换 / 删除 / 路径重绑定 / symlink 重定向 /
+env 路径被改写 / 批准证据失效）⇒ **硬失败**（exit 11），⛔ 既不是 `ready` 也不是 `partial_ready`。
+⚠️ synthetic preflight 没有真实 curriculum 输入 ⇒ `status = partial_ready`
+（`level = LEVEL1-synthetic-preflight`，`level2_eligible = false`）。
+
+### 3.5 失败矩阵（与当前实现一致；均由既有测试锁定）
 | 情形 | 期望结果 | 判定类别 |
 | --- | --- | --- |
 | 成功启动（五变量齐全且一致） | `POST /api/v1/plan` → **200** + PlanResult | — |

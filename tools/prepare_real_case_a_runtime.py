@@ -289,6 +289,28 @@ _CURRICULUM_REQUIRED_TEXT_KEYS = (
 )
 _SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
 
+#: 状态值（⛔ 只有 `STATUS_READY` 才表示"完整 runtime-ready"）。
+STATUS_READY = "ready"
+STATUS_PARTIAL_READY = "partial_ready"
+STATUS_DRAFT_INVENTORY_WRITTEN = "draft_inventory_written"
+STATUS_DRAFT_HANDOFF_WRITTEN = "draft_handoff_written"
+
+#: 状态语义（写进输出，供机器与操作员共用**同一份**定义）。
+STATUS_SEMANTICS: dict[str, str] = {
+    STATUS_READY: (
+        "complete runtime input readiness: the verified Course Data store AND the approved "
+        "Curriculum artifact were BOTH re-verified after env publication; the emitted runtime "
+        "environment contains both configs"
+    ),
+    STATUS_PARTIAL_READY: (
+        "Course Data prepared (store re-verified) but Curriculum evidence/input was "
+        "intentionally absent ⇒ NOT full runtime-ready, NOT LEVEL2-eligible; the real runtime "
+        "MUST NOT be launched from this state"
+    ),
+    STATUS_DRAFT_INVENTORY_WRITTEN: "only the canonical inventory DRAFT was written; no acceptance",
+    STATUS_DRAFT_HANDOFF_WRITTEN: "only the real-capture handoff DRAFT was written; no acceptance",
+}
+
 
 class CliArgumentError(ValueError):
     """CLI 形状非法；⛔ 不回显任何调用方取值。"""
@@ -455,6 +477,83 @@ def _write_bytes_exclusive(
             temporary.unlink()
         except OSError:
             pass
+
+
+def _resolve_readiness_status(
+    *,
+    final_verification: dict[str, object],
+    environment: dict[str, str],
+    verified_curriculum: VerifiedCurriculum | None,
+) -> str:
+    """状态模型：⛔ 只有两边都最终验证通过（且 env 里两者都在）才是 `ready`。
+
+    ```text
+    ready           final_store_reverified == true
+                    AND final_curriculum_reverified == true
+                    AND env 同时含已验证的 store 配置与 curriculum 配置
+    partial_ready   final_store_reverified == true
+                    AND final_curriculum_reverified == false
+                    （Curriculum provenance/输入**刻意缺席**）
+    ```
+    ⚠️ "supplied 但最终验证失败" 不会走到这里：那种情况在 `_final_readiness_verification`
+    里已经 **硬失败**（⛔ 不会降级成 partial_ready）。
+    """
+
+    store_ok = final_verification.get("final_store_reverified") is True
+    curriculum_ok = final_verification.get("final_curriculum_reverified") is True
+    env_ok = (
+        store_ok
+        and curriculum_ok
+        and verified_curriculum is not None
+        and environment.get("APP_COURSE_DATA_SQLITE_PATH") == final_verification.get("final_store_path")
+        and environment.get("APP_COURSE_DATA_ACCEPTANCE_SHA256")
+        == final_verification.get("final_store_acceptance_sha256")
+        and environment.get("APP_CASE_A_CURRICULUM_CASE_PATH")
+        == str(verified_curriculum.resolved_path)
+    )
+    return STATUS_READY if (store_ok and curriculum_ok and env_ok) else STATUS_PARTIAL_READY
+
+
+def _require_ready_invariant(
+    *,
+    status: str,
+    final_verification: dict[str, object],
+    environment: dict[str, str],
+) -> None:
+    """结构性不变量（⛔ fail closed，不依赖 `-O` 下会被剥掉的 assert）：
+
+    ```text
+    status == "ready"  ⟹  final_store_reverified == true
+                          AND final_curriculum_reverified == true
+                          AND env 里同时存在 store 与 curriculum 配置
+    ```
+    """
+
+    if status != STATUS_READY:
+        return
+    if (
+        final_verification.get("final_store_reverified") is not True
+        or final_verification.get("final_curriculum_reverified") is not True
+    ):
+        _fail(
+            EXIT_STORE_BINDING,
+            _payload(
+                stage="ready_invariant",
+                category="ready_without_both_final_verifications",
+                final_store_reverified=final_verification.get("final_store_reverified"),
+                final_curriculum_reverified=final_verification.get("final_curriculum_reverified"),
+            ),
+        )
+    if (
+        "APP_COURSE_DATA_SQLITE_PATH" not in environment
+        or "APP_CASE_A_CURRICULUM_CASE_PATH" not in environment
+    ):
+        _fail(
+            EXIT_CURRICULUM_BINDING,
+            _payload(stage="ready_invariant", category="ready_without_both_runtime_configs"),
+        )
+    assert final_verification["final_store_reverified"] is True
+    assert final_verification["final_curriculum_reverified"] is True
 
 
 def _build_parser() -> SafeArgumentParser:
@@ -1853,8 +1952,35 @@ def _orchestrate(
         blockers == [] and final_verification["final_curriculum_reverified"]
     )
 
+    # ---- 状态模型（⛔ 只有两边最终验证通过才是 ready） -------------------- #
+    status = _resolve_readiness_status(
+        final_verification=final_verification,
+        environment=environment,
+        verified_curriculum=verified_curriculum,
+    )
+    _require_ready_invariant(
+        status=status, final_verification=final_verification, environment=environment
+    )
+
+    if status == STATUS_READY:
+        next_steps = [
+            "start backend: (cd backend && python -m uvicorn app.main:app --port 8000)",
+            "probe: curl -sS -o /dev/null -w '%{http_code}' -X POST "
+            "http://127.0.0.1:8000/api/v1/plan -H 'Content-Type: application/json' "
+            f"-d '{{\"semester\":\"{semester}\",\"current_schedule\":[],\"preference\":{{}}}}'",
+            "expect HTTP 200 (503 means one of the five env vars is missing/mismatched)",
+        ]
+    else:
+        next_steps = [
+            "⛔ DO NOT launch the real runtime from partial_ready",
+            "supply an approved curriculum provenance record (--curriculum-provenance + "
+            "--curriculum-case) and rerun: only then can status become 'ready'",
+            "level2_eligible stays false until both final verifications succeed",
+        ]
+
     return {
-        "status": "ready",
+        "status": status,
+        "status_semantics": STATUS_SEMANTICS[status],
         "level": "runtime_inputs_prepared",
         "acceptance_performed": True,
         "semester": semester,
@@ -1892,18 +2018,17 @@ def _orchestrate(
         },
         "level2_eligible": level2_eligible,
         "level2_blockers": blockers,
-        "next_steps": [
-            "APP_CASE_A_CURRICULUM_CASE_PATH must be the already-approved curriculum case",
-            "start backend: (cd backend && python -m uvicorn app.main:app --port 8000)",
-            "probe: curl -sS -o /dev/null -w '%{http_code}' -X POST "
-            "http://127.0.0.1:8000/api/v1/plan -H 'Content-Type: application/json' "
-            f"-d '{{\"semester\":\"{semester}\",\"current_schedule\":[],\"preference\":{{}}}}'",
-            "expect HTTP 200 (503 means one of the five env vars is missing/mismatched)",
-        ],
+        "next_steps": next_steps,
     }
 
 
 def _preflight_payload(directory: Path, result: dict[str, object]) -> dict[str, object]:
+    # ⛔ preflight 没有真实 curriculum 输入 ⇒ ⛔ 绝不能是通用 `ready`。
+    if result.get("status") == STATUS_READY:  # pragma: no cover - 结构性防御
+        _fail(
+            EXIT_CURRICULUM_BINDING,
+            _payload(stage="ready_invariant", category="synthetic_preflight_claimed_ready"),
+        )
     return {
         **result,
         "level": "LEVEL1-synthetic-preflight",
@@ -1911,10 +2036,12 @@ def _preflight_payload(directory: Path, result: dict[str, object]) -> dict[str, 
         # ⛔ synthetic handoff 永远不能满足 real-source gate。
         "level2_eligible": False,
         "level2_blockers": ["synthetic_preflight_handoff", "not_a_real_capture"],
+        "readiness_scope": "course_data_only",
         "preflight_dir": str(directory),
         "note": (
             "synthetic inputs only: this proves the operational chain, it is NOT Real E2E "
-            "(no school data, no real acceptance, synthetic handoff, no LEVEL2/LEVEL3 claim)"
+            "(no school data, no real acceptance, synthetic handoff, no LEVEL2/LEVEL3 claim); "
+            "status is partial_ready because no real Curriculum artifact was verified"
         ),
     }
 

@@ -217,6 +217,31 @@ def test_evidence_protocol_has_the_real_source_provenance_gate() -> None:
         assert condition in protocol, condition
 
 
+def test_docs_define_the_ready_and_partial_ready_status_semantics() -> None:
+    """状态语义必须被文档精确定义，且⛔ 不允许从 partial_ready 启动真实 runtime。"""
+
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+    protocol = EVIDENCE_PROTOCOL.read_text(encoding="utf-8")
+
+    for text in (runbook, protocol):
+        assert "partial_ready" in text
+        assert "final_store_reverified" in text and "final_curriculum_reverified" in text
+        assert "course_data_only" in text
+
+    assert "完整 runtime input readiness" in runbook
+    assert "即 **`level2_eligible == true`**" in protocol or "level2_eligible == true" in protocol
+    # ⛔ 操作指引不得从 partial_ready 启动真实 runtime
+    assert "不要从 partial_ready 启动真实 runtime" in runbook
+    assert "不可" in runbook
+
+    # 结构性不变量在文档与实现中一致
+    tool_source = TOOL_PATH.read_text(encoding="utf-8")
+    assert "_require_ready_invariant" in tool_source
+    assert "ready_without_both_final_verifications" in tool_source
+    assert 'STATUS_READY = "ready"' in tool_source
+    assert 'STATUS_PARTIAL_READY = "partial_ready"' in tool_source
+
+
 def test_runbook_has_no_overwrite_option_and_documents_the_curriculum_gate() -> None:
     runbook = RUNBOOK.read_text(encoding="utf-8")
 

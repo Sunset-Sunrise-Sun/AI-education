@@ -108,6 +108,26 @@
 即 **`level2_eligible == true`**（= Course Data 门 **AND** Curriculum 门同时通过）。
 关键否决项：**L2-0A、L2-0B、L2-10**（任一不成立 ⇒ LEVEL 2 = FAIL）。
 
+### 1.C 状态语义（⛔ 只有 `ready` 才算完整 runtime-ready）
+
+```text
+status == "ready"          完整 runtime input readiness：
+                             final_store_reverified == true  AND  final_curriculum_reverified == true
+                             且 runtime_environment 同时含已验证的 store 配置与 curriculum 配置
+status == "partial_ready"  只有 Course Data 就绪（store 已再次验证），Curriculum 证据刻意缺席：
+                             final_store_reverified == true  AND  final_curriculum_reverified == false
+                             readiness_scope == "course_data_only" · level2_eligible == false
+                             blocker: curriculum_provenance_missing
+                             ⛔ 不是完整 runtime-ready、⛔ 不是 LEVEL2、⛔ 不得据此启动真实 runtime
+硬失败（exit 11）            **提供了** curriculum 但最终校验失败（字节替换 / 删除 / 路径重绑定 /
+                             symlink 重定向 / env 路径被改写 / 批准证据失效）
+                             ⇒ ⛔ 既不是 ready 也不是 partial_ready
+```
+
+结构性不变量（工具内 fail closed）：`status == "ready"` ⟹ 两个 final 布尔都为 `true`
+且 env 里 store 与 curriculum 两份配置都在。
+⚠️ synthetic preflight 只能是 `partial_ready`（`level = LEVEL1-synthetic-preflight`）。
+
 ## 2. LEVEL 3 证据清单（Real Case A E2E passed）
 
 > 在 LEVEL 2 全部证据之上，**追加**前端链路与 `REAL_CASE_A_ACCEPTANCE.md` §1 的 **10 条**。

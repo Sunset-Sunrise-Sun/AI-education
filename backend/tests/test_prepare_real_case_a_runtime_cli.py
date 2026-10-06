@@ -128,7 +128,8 @@ def test_preflight_runs_the_whole_chain_and_cleans_up(capsys) -> None:
     code, payload = _run(capsys, ["--preflight", "--quiet"])
 
     assert code == TOOL.EXIT_OK, payload
-    assert payload["status"] == "ready"
+    # ⛔ preflight 没有真实 curriculum ⇒ 只能是 partial_ready，⛔ 绝不是通用 ready
+    assert payload["status"] == TOOL.STATUS_PARTIAL_READY
     assert payload["level"] == "LEVEL1-synthetic-preflight"
     assert payload["synthetic"] is True
     assert "NOT Real E2E" in payload["note"]
@@ -213,7 +214,9 @@ def test_real_mode_draft_then_accept(capsys, tmp_path: Path) -> None:
          "--curriculum-case", "C:/approved/case-a.json"],
     )
     assert accept_code == TOOL.EXIT_OK, accept_payload
-    assert accept_payload["status"] == "ready"
+    # 没有 curriculum provenance ⇒ Course Data 已就绪但**不是**完整 runtime-ready
+    assert accept_payload["status"] == TOOL.STATUS_PARTIAL_READY
+    assert accept_payload["readiness_scope"] == "course_data_only"
     assert accept_payload["acceptance"]["sqlite_imported"] is True
     assert accept_payload["provider_read_back"]["provider_offering_count"] == ROWS_PER_SHARD * len(SHARDS)
 
@@ -873,7 +876,7 @@ def test_approved_handoff_alone_does_not_complete_level2(capsys, tmp_path: Path)
     assert set(payload["level2_gate_conditions"]) == {"course_data", "curriculum"}
 
 
-def test_acceptance_without_handoff_is_ready_but_not_level2(capsys, tmp_path: Path) -> None:
+def test_acceptance_without_handoff_is_partial_ready_and_not_level2(capsys, tmp_path: Path) -> None:
     bundles = _write_bundles(tmp_path)
     inventory = _approved_inventory(capsys, tmp_path, bundles)
 
@@ -884,7 +887,7 @@ def test_acceptance_without_handoff_is_ready_but_not_level2(capsys, tmp_path: Pa
     )
 
     assert code == TOOL.EXIT_OK, payload
-    assert payload["status"] == "ready"
+    assert payload["status"] == TOOL.STATUS_PARTIAL_READY
     assert payload["level2_eligible"] is False
     assert "real_source_handoff_missing" in payload["level2_blockers"]
     assert payload["real_source_provenance"] is None
@@ -988,14 +991,19 @@ def test_final_verification_reads_back_the_env_file_and_reopens_the_store(capsys
 
 
 def _handoff_run(capsys, tmp_path: Path, *, mutate, name: str) -> tuple[int, dict]:
+    """只让 handoff 批准元数据成为唯一变量：curriculum provenance 是**有效**的。"""
+
     bundles = _write_bundles(tmp_path)
     inventory = _approved_inventory(capsys, tmp_path, bundles)
     handoff = _write_handoff(tmp_path, bundles, mutate=mutate, name=name)
+    case_path = _case_file(tmp_path, f"{name}.case.json")
+    curriculum = _curriculum_provenance(tmp_path, case_path, name=f"{name}.curriculum.json")
     return _run(
         capsys,
         [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
          "--sqlite", str(tmp_path / f"{name}.sqlite3"), "--inventory", str(inventory),
-         "--handoff", str(handoff)],
+         "--handoff", str(handoff), "--curriculum-provenance", str(curriculum),
+         "--curriculum-case", str(case_path)],
     )
 
 
@@ -1097,11 +1105,25 @@ def _combined_run(capsys, tmp_path: Path, *, handoff_mutate, curriculum_digest, 
 
 
 def test_curriculum_provenance_missing_blocks_level2(capsys, tmp_path: Path) -> None:
-    code, payload = _handoff_run(capsys, tmp_path, mutate=None, name="no-curriculum.json")
+    """⛔ 没有 curriculum provenance ⇒ partial_ready（⛔ 不是 ready）+ level2 false。"""
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    handoff = _write_handoff(tmp_path, bundles, name="no-curriculum.handoff.json")
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "no-curriculum.sqlite3"), "--inventory", str(inventory),
+         "--handoff", str(handoff)],
+    )
 
     assert code == TOOL.EXIT_OK, payload
+    assert payload["status"] == TOOL.STATUS_PARTIAL_READY
+    assert payload["readiness_scope"] == "course_data_only"
     assert payload["level2_eligible"] is False
     assert "curriculum_provenance_missing" in payload["level2_blockers"]
+    assert payload["final_readiness_verification"]["final_curriculum_reverified"] is False
 
 
 @pytest.mark.parametrize(
@@ -1606,10 +1628,192 @@ def test_curriculum_path_is_withheld_when_no_provenance_was_verified(capsys, tmp
     )
 
     assert code == TOOL.EXIT_OK, payload
-    assert payload["status"] == "ready"
+    assert payload["status"] == TOOL.STATUS_PARTIAL_READY
     assert payload["readiness_scope"] == "course_data_only"
     assert payload["curriculum_binding"]["curriculum_path_emitted"] is False
     assert "APP_CASE_A_CURRICULUM_CASE_PATH" not in env_out.read_text(encoding="utf-8")
     assert payload["final_readiness_verification"]["final_curriculum_reverified"] is False
     assert payload["level2_eligible"] is False
     assert "curriculum_provenance_missing" in payload["level2_blockers"]
+
+
+# --------------------------------------------------------------------------- #
+# PR #48 status semantics：⛔ status="ready" ⟺ 两边 final verification 都成立
+# --------------------------------------------------------------------------- #
+
+
+def test_ready_requires_both_final_verifications_structurally() -> None:
+    """结构性不变量（单元级）：status=ready 但任一 final 校验为假 ⇒ fail closed。"""
+
+    environment = {
+        "APP_COURSE_DATA_SQLITE_PATH": "C:/x/course-data.sqlite3",
+        "APP_CASE_A_CURRICULUM_CASE_PATH": "C:/x/case-a.json",
+    }
+
+    with pytest.raises(TOOL.StageFailure) as failure:
+        TOOL._require_ready_invariant(
+            status=TOOL.STATUS_READY,
+            final_verification={
+                "final_store_reverified": True,
+                "final_curriculum_reverified": False,
+            },
+            environment=environment,
+        )
+    assert failure.value.payload["category"] == "ready_without_both_final_verifications"
+    assert failure.value.exit_code == TOOL.EXIT_STORE_BINDING
+
+    with pytest.raises(TOOL.StageFailure) as failure:
+        TOOL._require_ready_invariant(
+            status=TOOL.STATUS_READY,
+            final_verification={
+                "final_store_reverified": False,
+                "final_curriculum_reverified": True,
+            },
+            environment=environment,
+        )
+    assert failure.value.payload["category"] == "ready_without_both_final_verifications"
+
+    # ⛔ 只有两边都为真才放行
+    TOOL._require_ready_invariant(
+        status=TOOL.STATUS_READY,
+        final_verification={
+            "final_store_reverified": True,
+            "final_curriculum_reverified": True,
+        },
+        environment=environment,
+    )
+
+    # partial_ready 不做该断言（它本来就不要求 curriculum）
+    TOOL._require_ready_invariant(
+        status=TOOL.STATUS_PARTIAL_READY,
+        final_verification={
+            "final_store_reverified": True,
+            "final_curriculum_reverified": False,
+        },
+        environment={"APP_COURSE_DATA_SQLITE_PATH": "C:/x/course-data.sqlite3"},
+    )
+
+
+def test_ready_requires_both_runtime_configs_in_the_environment() -> None:
+    """结构性不变量：env 里缺任一份配置 ⇒ 不能是 ready。"""
+
+    with pytest.raises(TOOL.StageFailure) as failure:
+        TOOL._require_ready_invariant(
+            status=TOOL.STATUS_READY,
+            final_verification={
+                "final_store_reverified": True,
+                "final_curriculum_reverified": True,
+            },
+            environment={"APP_COURSE_DATA_SQLITE_PATH": "C:/x/course-data.sqlite3"},
+        )
+    assert failure.value.payload["category"] == "ready_without_both_runtime_configs"
+
+
+def test_valid_store_without_curriculum_is_partial_ready_only(capsys, tmp_path: Path) -> None:
+    """用例 2：Store 有效 + **刻意没有** curriculum provenance ⇒ partial_ready（不是 ready）。"""
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    env_out = tmp_path / "partial.env"
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "partial.sqlite3"), "--inventory", str(inventory),
+         "--env-out", str(env_out)],
+    )
+
+    assert code == TOOL.EXIT_OK, payload
+    assert payload["status"] == TOOL.STATUS_PARTIAL_READY
+    assert payload["status_semantics"] == TOOL.STATUS_SEMANTICS[TOOL.STATUS_PARTIAL_READY]
+    assert payload["readiness_scope"] == "course_data_only"
+    final = payload["final_readiness_verification"]
+    assert final["final_store_reverified"] is True
+    assert final["final_curriculum_reverified"] is False
+    assert payload["level2_eligible"] is False
+    assert "curriculum_provenance_missing" in payload["level2_blockers"]
+    # ⛔ 操作指引不得让人从 partial_ready 启动真实 runtime
+    assert any("DO NOT launch" in step for step in payload["next_steps"])
+
+
+def test_valid_store_with_valid_curriculum_is_ready(capsys, tmp_path: Path) -> None:
+    """用例 1：两边都有效 ⇒ ready + 两个 final 布尔都为 true。"""
+
+    code, payload, _out = _curriculum_run(capsys, tmp_path, name="status-ready")
+
+    assert code == TOOL.EXIT_OK, payload
+    assert payload["status"] == TOOL.STATUS_READY
+    assert payload["status_semantics"] == TOOL.STATUS_SEMANTICS[TOOL.STATUS_READY]
+    final = payload["final_readiness_verification"]
+    assert final["final_store_reverified"] is True
+    assert final["final_curriculum_reverified"] is True
+    assert "APP_COURSE_DATA_SQLITE_PATH" in payload["runtime_environment"]
+    assert "APP_CASE_A_CURRICULUM_CASE_PATH" in payload["runtime_environment"]
+
+
+def test_supplied_but_invalid_curriculum_is_a_hard_failure_not_partial(capsys, tmp_path: Path) -> None:
+    """用例 3：**提供了** curriculum 但最终校验失败 ⇒ 硬失败（⛔ 不是 partial_ready）。"""
+
+    def _replace(env_path: Path, case_path: Path) -> None:
+        case_path.write_text('{"demo": "mutated after publication"}', encoding="utf-8")
+
+    code, payload, out = _curriculum_run(capsys, tmp_path, after_publish=_replace, name="hard-fail")
+
+    assert code == TOOL.EXIT_CURRICULUM_BINDING
+    assert payload["category"] == "curriculum_final_digest_mismatch"
+    assert payload["status"] == "failed"
+    assert '"status": "ready"' not in out
+    assert '"status": "partial_ready"' not in out
+
+
+def test_preflight_never_reports_generic_ready(capsys) -> None:
+    """用例 4：synthetic preflight ⛔ 绝不是通用 ready；LEVEL1 + level2=false。"""
+
+    code, payload, out, _err = _run_capture(capsys, ["--preflight", "--quiet"])
+
+    assert code == TOOL.EXIT_OK, payload
+    assert payload["status"] == TOOL.STATUS_PARTIAL_READY
+    assert payload["level"] == "LEVEL1-synthetic-preflight"
+    assert payload["synthetic"] is True
+    assert payload["level2_eligible"] is False
+    assert '"status": "ready"' not in out
+
+
+def test_globally_every_ready_payload_has_both_final_verifications_true(capsys, tmp_path: Path) -> None:
+    """用例 5：全局蕴含 —— 任何 status=ready 的 payload 两个 final 布尔都必须为 true。"""
+
+    payloads: list[dict] = []
+
+    # (a) 完整（store + curriculum）
+    _code, payload_a, _out = _curriculum_run(capsys, tmp_path, name="global-ready")
+    payloads.append(payload_a)
+
+    # (b) 只有 Course Data
+    (tmp_path / "gd").mkdir()
+    bundles = _write_bundles(tmp_path / "gd")
+    inventory = _approved_inventory(capsys, tmp_path / "gd", bundles)
+    _code, payload_b = _run(
+        capsys,
+        [*_base_argv(tmp_path / "gd", bundles=bundles),
+         "--campus-store", str(tmp_path / "gd" / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "gd" / "s.sqlite3"), "--inventory", str(inventory)],
+    )
+    payloads.append(payload_b)
+
+    # (c) synthetic preflight
+    _code, payload_c, _out, _err = _run_capture(capsys, ["--preflight", "--quiet"])
+    payloads.append(payload_c)
+
+    for payload in payloads:
+        if payload.get("status") == TOOL.STATUS_READY:
+            final = payload["final_readiness_verification"]
+            assert final["final_store_reverified"] is True
+            assert final["final_curriculum_reverified"] is True
+            assert "APP_CASE_A_CURRICULUM_CASE_PATH" in payload["runtime_environment"]
+        else:
+            assert payload["status"] in {TOOL.STATUS_PARTIAL_READY}
+
+    assert {payload["status"] for payload in payloads} == {
+        TOOL.STATUS_READY,
+        TOOL.STATUS_PARTIAL_READY,
+    }
