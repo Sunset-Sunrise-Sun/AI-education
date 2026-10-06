@@ -51,12 +51,15 @@ from app.course_data import (  # noqa: E402
     SCOPE_KIND_CAMPUS,
     CourseDataStoreError,
     SnapshotScope,
+    campus_source_label,
     collect_captured_pages_snapshot,
     compute_artifact_sha256,
     import_offering_snapshot,
-    load_capture_bundle,
+    load_accepted_offerings,
+    load_capture_bundle_bytes,
     load_course_data_provenance,
     load_course_offerings,
+    offering_set_sha256,
 )
 
 
@@ -191,7 +194,7 @@ def _validated_arguments(args: argparse.Namespace) -> tuple[str, str, SnapshotSc
         )
 
     # source 必须**精确**匹配 campus 模板（semester 与 scope_id 双重一致）。
-    expected_source = f"capture://sysu/{semester}/campus/{scope.scope_id}"
+    expected_source = campus_source_label(semester, scope.scope_id)
     if source != expected_source:
         _fail(
             exit_code=EXIT_SCOPE,
@@ -227,8 +230,10 @@ def _read_and_validate_bundle(path: Path) -> tuple[bytes, str, dict[str, Any]]:
             exception=exc,
         )
 
+    # ⛔ **被 hash 的字节 == 被解析的字节**（BLOCK B1）：
+    #    只读一次，digest 与 JSON 解析吃同一批 bytes；不再为了 parse 重新打开路径。
     try:
-        bundle = load_capture_bundle(path)
+        bundle = load_capture_bundle_bytes(artifact_bytes)
     except Exception as exc:
         _fail(
             exit_code=EXIT_NORMALIZATION,
@@ -238,9 +243,7 @@ def _read_and_validate_bundle(path: Path) -> tuple[bytes, str, dict[str, Any]]:
             exception=exc,
         )
 
-    # `load_capture_bundle()` intentionally owns validation and reads the given file.
-    # Re-read afterwards so the digest cannot silently describe different bytes if
-    # another process changes the artifact during acceptance.
+    # `load_capture_bundle_bytes()` 只吃内存字节；复读只作为**额外的**变动探测。
     try:
         bytes_after_validation = path.read_bytes()
     except OSError as exc:
@@ -419,6 +422,31 @@ def accept_artifact(args: argparse.Namespace) -> dict[str, object]:
             )
 
         db_offerings = load_course_offerings(sqlite_path, expected_semester)
+
+        # ⛔ **content-bound** 回读（BLOCK B3）：acceptance 平面必须与本次解析结果
+        #    逐 identity / 逐行内容指纹 / 整批 digest 一致。
+        dataset = load_accepted_offerings(
+            sqlite_path,
+            semester=expected_semester,
+            acceptance_sha256=artifact_sha256,
+            scope=scope,
+        )
+        if (
+            dataset.acceptance.artifact_sha256 != artifact_sha256
+            or dataset.acceptance.scope_kind != SCOPE_KIND_CAMPUS
+            or dataset.acceptance.scope_id != scope.scope_id
+            or dataset.acceptance.source != source
+            or dataset.acceptance.offering_set_sha256
+            != offering_set_sha256(snapshot.offerings)
+            or len(dataset.offerings) != len(snapshot.offerings)
+        ):
+            _fail(
+                exit_code=EXIT_SQLITE,
+                status="sqlite_import_failed",
+                stage="sqlite_content_binding_validation",
+                category="content_binding_mismatch",
+                exception=ProvenanceReadBackError("content binding mismatch"),
+            )
     except Exception as exc:
         _fail(
             exit_code=EXIT_SQLITE,
@@ -444,6 +472,12 @@ def accept_artifact(args: argparse.Namespace) -> dict[str, object]:
         "db_semester_offering_count": len(db_offerings),
         "db_semester_offering_count_semantics": (
             "all_offerings_currently_stored_for_this_semester_not_this_artifact"
+        ),
+        # ⛔ campus acceptance identity = 该 artifact 的 raw bytes digest。
+        "campus_acceptance_sha256": dataset.acceptance.artifact_sha256,
+        "offering_set_sha256": dataset.acceptance.offering_set_sha256,
+        "offering_set_sha256_semantics": (
+            "exact_normalized_offering_content_of_this_artifact"
         ),
         "provenance_artifact_sha256": provenance_record.artifact_sha256,
         "provenance_semester": provenance_record.semester,

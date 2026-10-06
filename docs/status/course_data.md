@@ -1677,3 +1677,33 @@ course_data_import（artifact 级审计；同一 (artifact, semester, scope) 只
   ⛔ 不得声称"非零退出 == SQLite 零变化"；
 - 使用说明：`docs/data/FULL_SEMESTER_ACCEPTANCE.md`；
   ⛔ 尚未处理任何真实 artifact；**PR #39 = frozen / do not merge**；formal Real E2E = **LEVEL0**。
+
+## Forward Red-Team 四个 BLOCK 的修复（✅ 已修）
+
+Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semester/REVIEW.md`），
+被审计 HEAD：acceptance `c01b7c9` / provider `13c5556`。
+
+- **B1 —— digest 与解析必须同源**：新增 `captured_pages.load_capture_bundle_bytes(raw)`；
+  full-semester `_read_shard_bundle_once()` 与 campus CLI 都改为**只读一次**，
+  digest 与 JSON 解析吃**同一批** bytes（复读只作额外变动探测）；⛔ 不复制 parser / validator；
+- **B2 —— artifact 与 campus scope 独立绑定**：正式 acceptance 必须同时消费
+  ①**已批准 capture inventory**（`(semester, shard_id, openingSchoolNumber, raw_bundle_sha256)`，
+  exact five-shard / 号码等于批准值 / canonical / 五个 digest 两两不同）与
+  ②**已导入的 campus acceptance 记录**（digest / scope / canonical source / counts /
+  **内容 digest** 逐项一致）⇒ ⛔ "调用方自称 East" 不再是证据；
+  ⛔ 同一批字节不得声明成两个校区；⛔ 不从文件名推 scope、⛔ 不从 rows 猜 campus；
+- **B3 —— exact accepted dataset content-bound**：新增内部 `offering_digest.py`
+  （`offering_payload_sha256` / `offering_set_sha256`：canonical 序列化 + 按 identity 稳定排序）；
+  manifest 记录 `merged_offering_set_sha256` 与每 shard `campus_offering_set_sha256`；
+  ⛔ 只用 `CourseOffering` 现有公共字段，⛔ 未改 public Schema；
+- **B4 —— Provider 持续验证**：store 新增 content-bound 平面
+  （`course_data_acceptance` + `course_data_acceptance_member`，与 rows 同一事务写入），
+  Provider **不缓存** metadata / rows，每次读取都在一个一致读事务里重新核对
+  两个平面 / scope / 计数 / membership / 逐行内容指纹 / 整批 digest；
+- **内部 DB schema**：允许修改（⛔ public Schema / frozen Provider contract 未动）；
+  旧库缺 acceptance 表时明确要求重建（⛔ 不自动迁移、⛔ 不降级读取）；
+- **测试**：acceptance module + CLI **119 passed**；store **78 passed**；
+  full backend **2623 passed**（2 个既有 Windows-only Curriculum failure，⛔ 未修未 skip）；
+- 逐条映射：`docs/data/FORWARD_REDTEAM_RESPONSE.md`（Reviewer 20-case 矩阵 + runtime/E2E 矩阵）；
+- ⛔ **未声称** physical immutability（专用 immutable acceptance DB 属后续 Architecture Decision）；
+  ⛔ 未处理真实 artifact、⛔ 未 merge main。

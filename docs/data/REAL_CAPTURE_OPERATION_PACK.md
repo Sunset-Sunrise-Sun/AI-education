@@ -184,18 +184,35 @@ python tools/accept_full_semester_course_data.py \
   --east east-campus.capture.json --south south-campus.capture.json \
   --shenzhen shenzhen-campus.capture.json --zhuhai zhuhai-campus.capture.json \
   --north north-campus.capture.json \
+  --inventory ./capture-inventory.json \
+  --campus-store ./campus-acceptances.sqlite \
   --output-manifest ./full-semester-acceptance-manifest.json \
   --sqlite ./course-data.sqlite
 ```
 
 - **五个 `--<campus>` 参数全部必填**：⛔ 没有 `--skip-north` /
   `--allow-partial-semester` / `--force-complete`；
+- **`--campus-store` 必填**：五个校区必须先各自跑一次 **campus CLI**
+  （§E）把 artifact 以 `campus` scope 正式入库 —— 这是 B2 的独立 scope 绑定来源，
+  ⛔ "调用方说这是 East" 本身不是证据；
+- **`--inventory` 必填**：一份**经审核**的 capture inventory
+  （`(semester, shard_id, openingSchoolNumber, raw_bundle_sha256)`）。
+  可以先让本工具生成**草稿**（⛔ 草稿不是批准，只记录 digest）：
+
+  ```bash
+  python tools/accept_full_semester_course_data.py \
+    --semester 2026-1 --east … --south … --shenzhen … --zhuhai … --north … \
+    --draft-inventory ./capture-inventory.json
+  ```
+
+  草稿由人 / Review 核对（对照 §D 手工记录的 SHA-256）后再用于正式 acceptance；
+  ⛔ 工具无法证明某个 inventory 被批准过；
 - `baseline-before` / `baseline-after` = collector 报告的**全学期总数**（⛔ 不是快照）；
   两者必须相等，且必须等于**五份** shard 的 `reported_total` 之和；
-- 成功输出 `manifest_sha256`；manifest 文件字节的 SHA-256 **就是** acceptance identity；
-- ⛔ **North 当前拿不到** ⇒ 这一步**现在无法完成**：缺第五份输入就是缺，
-  ⛔ 不得先做"四校区 full_semester"；
-- 细节与失败类别：`docs/data/FULL_SEMESTER_ACCEPTANCE.md`。
+- 成功输出 `manifest_sha256`（acceptance identity）与 `merged_offering_set_sha256`
+  （规范化内容的确定性 digest）；manifest 文件字节的 SHA-256 **就是** acceptance identity；
+- ⛔ **North 当前拿不到** ⇒ 这一步**现在无法完成**；
+- 细节与失败类别（退出码 2–10）：`docs/data/FULL_SEMESTER_ACCEPTANCE.md`。
 
 ---
 

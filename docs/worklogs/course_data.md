@@ -3022,3 +3022,41 @@
 - **边界**：⛔ 未 merge main、⛔ 未改 PR #39 / runtime / public Schema /
   frozen Provider contract、⛔ 未发真实教务请求、⛔ 未读 cookie/token、
   ⛔ 未处理真实 artifact、⛔ 未声明 Real E2E（继续 **LEVEL0**）。
+
+### 2026-10-06 - Forward Red-Team BLOCK 修复（B1 / B2 / B3）
+
+- **分支**：从 Gate A tip `c01b7c9` 新建 `fix/full-semester-acceptance-blocks`
+  （Reviewer 审计的正是该 HEAD）；
+- **B1 同源字节**：`captured_pages.load_capture_bundle_bytes()`；
+  `_read_shard_bundle_once()` 只读一次 ⇒ digest / parse 同源；复读降级为额外探测；
+  campus CLI 同样改为解析被 hash 的 bytes；
+- **B2 独立 scope 绑定**：新增 `CaptureInventory` + `load_capture_inventory()` +
+  `build_capture_inventory()`（草稿）+ `capture_inventory_bytes()`；
+  正式 acceptance 逐 shard 核对 inventory digest、approved openingSchoolNumber、
+  campus acceptance 记录的 digest / scope / canonical source / counts /
+  内容 digest；⛔ 无 inventory / ⛔ 无 campus-store 直接 fail closed；
+  ⛔ 同一批字节两个校区在 inventory 阶段即被拒；
+- **B3 内容绑定**：新增 `offering_digest.py`；manifest v2 增加
+  `inventory_sha256` / `merged_offering_set_sha256` / 每 shard
+  `campus_acceptance_sha256` / `campus_source` / `campus_offering_set_sha256`；
+  新增严格 manifest 校验器（未知字段 / 重复键 / NaN / bool 计数 / 非批准 shard 全部拒绝，
+  shard 数组按批准顺序语义规范化）；
+- **store content-bound 平面**：`course_data_acceptance` +
+  `course_data_acceptance_member`；`import_offering_snapshot()` 在同一事务写两个平面 +
+  逐行内容指纹；新增 `load_course_data_acceptances()` 与 `load_accepted_offerings()`
+  （一次一致读事务内核对两个平面 / membership / 逐行指纹 / 整批 digest / 行级 provenance）；
+- **CLI**：`--inventory` 与 `--campus-store` 必填；新增 `--draft-inventory`
+  （只写 canonical 草稿、⛔ 不做 acceptance、⛔ 不写库）；退出码 9（inventory）/
+  10（campus binding）；回读改用 content-bound 平面并核对整批 digest；
+- **测试**：module `test_course_data_full_semester_acceptance.py` **70 passed**
+  （含 A/B/A 交错同源、inventory 校验矩阵、campus 绑定矩阵、内容 digest 敏感性、
+  manifest 校验器）；CLI **49 passed**（含草稿模式、绑定失败、真实 campus→full 两步流程、
+  内容篡改读回检测）；store **78 passed**（含 6 种同数量内容替换、
+  两个平面一致性、删除 acceptance、scope 参数化、陈旧行隔离）；
+  full backend **2623 passed**（2 个既有 Windows-only Curriculum failure）；
+- **文档**：`docs/data/FORWARD_REDTEAM_RESPONSE.md`（BLOCK 关闭方式 + 20-case 矩阵映射）、
+  `FULL_SEMESTER_ACCEPTANCE.md`（v2 契约 / inventory / 内容绑定 / 退出码）、
+  `ARTIFACT_ACCEPTANCE_CLI.md`（B1 + content-bound 回读 + 字段语义）、
+  `REAL_CAPTURE_OPERATION_PACK.md`（§E2 两步流程 + 草稿 inventory）；
+- **边界**：⛔ 未 merge main、⛔ 未改 PR #39 / public Schema / frozen Provider contract、
+  ⛔ 未处理真实 artifact、⛔ 未发真实网络请求；formal Real E2E 继续 **LEVEL0**。

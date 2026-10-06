@@ -64,6 +64,7 @@ __all__ = [
     "CapturedPagesFetcher",
     "collect_captured_pages_snapshot",
     "load_capture_bundle",
+    "load_capture_bundle_bytes",
     "validate_capture_bundle",
 ]
 
@@ -274,21 +275,61 @@ def load_capture_bundle(path: str | Path) -> Mapping[str, object]:
     """从**本地** UTF-8 JSON 文件读取 Capture Bundle（stdlib `json`，无新依赖）。
 
     - 只读取调用方给出的**具体文件**：不提供默认路径、不扫描目录、不复制进仓库；
-    - 读取后立即做与内存 bundle 相同的校验。
+    - 读取后立即做与内存 bundle 相同的校验；
+    - ⚠️ 本函数**只读一次**：它把读到的**同一批字节**交给
+      `load_capture_bundle_bytes()` 解析（⛔ 不再复开路径），
+      因此调用方对"被 hash 的字节"与"被解析的字节"的一致性要求可以真正成立。
     """
 
     file_path = Path(path)
 
     try:
-        raw = file_path.read_text(encoding="utf-8")
+        raw = file_path.read_bytes()
     except FileNotFoundError as exc:
         raise CourseDataNormalizationError(f"Capture Bundle 文件不存在：{file_path}") from exc
 
     try:
-        payload = json.loads(raw)
+        return load_capture_bundle_bytes(raw)
+    except CourseDataNormalizationError as exc:
+        # ⚠️ 复用同一份解析 / 校验逻辑，只在本地读取场景补上文件定位信息。
+        raise CourseDataNormalizationError(f"{exc}（文件：{file_path}）") from exc
+
+
+def load_capture_bundle_bytes(raw: bytes) -> Mapping[str, object]:
+    """把**给定的原始字节**解析并校验成 Capture Bundle（⛔ 不读文件、⛔ 不联网）。
+
+    ⚠️ 这是"**被 hash 的字节 == 被解析的字节**"这一不变量的落点：
+    需要 digest 与 normalized payload 同源的调用方必须
+
+    ```python
+    raw = path.read_bytes()
+    digest = sha256(raw)
+    bundle = load_capture_bundle_bytes(raw)   # ⛔ 不要再用 path 重新打开一次
+    ```
+
+    - ⛔ 不复制 parser / validator 逻辑：仍然走同一个 `validate_capture_bundle()`；
+    - 非法 UTF-8 / 非法 JSON / 非法 bundle 一律 `CourseDataNormalizationError`；
+    - 错误信息**只含结构性**内容（行列号 / 字段名），⛔ 不回显 row 取值，
+      ⛔ 也不含任何本地路径（路径由调用方自行决定是否补上）。
+    """
+
+    if not isinstance(raw, (bytes, bytearray, memoryview)):
+        raise CourseDataNormalizationError(
+            f"Capture Bundle 原始字节必须是 bytes，实际是 {type(raw).__name__}"
+        )
+
+    try:
+        text = bytes(raw).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CourseDataNormalizationError(
+            f"Capture Bundle 不是合法 UTF-8 字节（第 {exc.start} 字节处）"
+        ) from exc
+
+    try:
+        payload = json.loads(text)
     except json.JSONDecodeError as exc:
         raise CourseDataNormalizationError(
-            f"Capture Bundle 不是合法 JSON：{file_path}（第 {exc.lineno} 行第 {exc.colno} 列）"
+            f"Capture Bundle 不是合法 JSON（第 {exc.lineno} 行第 {exc.colno} 列）"
         ) from exc
 
     validate_capture_bundle(payload)

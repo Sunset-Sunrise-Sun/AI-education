@@ -66,6 +66,21 @@ SHA-256 = artifact identity / integrity
 ⛔ **不证明**它是什么时候、由谁、在什么授权状态下采集的，
 也⛔ 不得被当作采集来源的合规证明。本模块只是**如实记录**调用方给出的这个值。
 
+## 两个平面（⛔ 不得混同）
+
+```text
+声明平面 / 历史审计：course_data_import          —— 调用方声明"以哪个 scope 导入了什么"
+content-bound 平面： course_data_acceptance      —— 同一份声明 + 整批内容 digest
+                     course_data_acceptance_member —— 逐 identity 的内容指纹
+```
+
+- 两个平面在**同一次 import 事务**里写入；
+- ⛔ "import 成功"**不等于**"可以拿来当 production readiness"：
+  只有 `load_accepted_offerings()`（同时核对两个平面 + membership + 逐行内容指纹 +
+  整批 digest）通过，才说明"当前 rows 仍精确等于被接受的那批内容"；
+- ⛔ 只比较 `offering_count` / identity 集合**不够**：同数量、同身份的"内容替换"
+  必须被发现（见 `offering_digest.py`）。
+
 ## 数据边界（⛔ 只存已标准化的公共对象）
 
 不存：Cookie / token / 登录信息 / 原始完整 response / 教师隐私扩展字段 / 学生信息。
@@ -94,16 +109,25 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from app.course_data.errors import CourseDataNormalizationError
+from app.course_data.offering_digest import (
+    offering_identity,
+    offering_payload_sha256,
+    offering_set_sha256,
+)
 from app.course_data.snapshot import OfferingSnapshot
 from app.models.contracts import CourseOffering, DataSource, Meeting
 
 __all__ = [
+    "ACCEPTANCE_MEMBER_TABLE",
+    "ACCEPTANCE_TABLE",
     "ALLOWED_SCOPE_KINDS",
     "ARTIFACT_SHA256_PATTERN",
     "COURSE_OFFERING_TABLE",
     "IMPORT_RECORD_TABLE",
     "SCOPE_KIND_CAMPUS",
     "SCOPE_KIND_FULL_SEMESTER",
+    "AcceptedDataset",
+    "CourseDataAcceptance",
     "CourseDataImport",
     "CourseDataProvenance",
     "CourseDataStoreError",
@@ -111,6 +135,8 @@ __all__ = [
     "compute_artifact_sha256",
     "import_offering_snapshot",
     "initialize_course_data_store",
+    "load_accepted_offerings",
+    "load_course_data_acceptances",
     "load_course_data_provenance",
     "load_course_offerings",
 ]
@@ -120,6 +146,14 @@ COURSE_OFFERING_TABLE = "course_offering"
 
 #: 导入记录表（artifact 级 provenance；同一 artifact **在同一 scope 下**只记首次导入）。
 IMPORT_RECORD_TABLE = "course_data_import"
+
+#: **acceptance 元数据表**（content-bound 平面）：一次被接受的 artifact 的
+#: scope / 计数 / **整批内容 digest**（`offering_set_sha256`）。
+ACCEPTANCE_TABLE = "course_data_acceptance"
+
+#: **acceptance membership 表**：逐 identity 记录该 acceptance 接受了哪些教学班，
+#: 以及每行的内容指纹（`offering_payload_sha256`）。
+ACCEPTANCE_MEMBER_TABLE = "course_data_acceptance_member"
 
 #: `artifact_sha256` 的形状：64 位十六进制（大小写都接受，落库统一小写）。
 ARTIFACT_SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
@@ -185,9 +219,38 @@ CREATE TABLE IF NOT EXISTS {IMPORT_RECORD_TABLE} (
     offering_count      INTEGER NOT NULL,
     PRIMARY KEY (artifact_sha256, semester, scope_kind, scope_id)
 );
+
+CREATE TABLE IF NOT EXISTS {ACCEPTANCE_TABLE} (
+    artifact_sha256      TEXT    NOT NULL,
+    semester             TEXT    NOT NULL,
+    scope_kind           TEXT    NOT NULL,
+    scope_id             TEXT    NOT NULL,
+    source               TEXT,
+    imported_at          TEXT    NOT NULL,
+    completeness         TEXT    NOT NULL,
+    loaded_count         INTEGER NOT NULL,
+    reported_total       INTEGER,
+    offering_count       INTEGER NOT NULL,
+    offering_set_sha256  TEXT    NOT NULL,
+    PRIMARY KEY (artifact_sha256, semester, scope_kind, scope_id)
+);
+
+CREATE TABLE IF NOT EXISTS {ACCEPTANCE_MEMBER_TABLE} (
+    artifact_sha256          TEXT NOT NULL,
+    semester                 TEXT NOT NULL,
+    course_id                TEXT NOT NULL,
+    class_id                 TEXT NOT NULL,
+    offering_payload_sha256  TEXT NOT NULL,
+    PRIMARY KEY (artifact_sha256, semester, course_id, class_id)
+);
 """
 
-_REQUIRED_TABLES = (COURSE_OFFERING_TABLE, IMPORT_RECORD_TABLE)
+_REQUIRED_TABLES = (
+    COURSE_OFFERING_TABLE,
+    IMPORT_RECORD_TABLE,
+    ACCEPTANCE_TABLE,
+    ACCEPTANCE_MEMBER_TABLE,
+)
 
 #: 当前 schema 的列清单（用于识别**过旧**的本地库并给出明确提示，⛔ 不自动迁移）。
 _EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -219,6 +282,26 @@ _EXPECTED_COLUMNS: dict[str, tuple[str, ...]] = {
         "loaded_count",
         "reported_total",
         "offering_count",
+    ),
+    ACCEPTANCE_TABLE: (
+        "artifact_sha256",
+        "semester",
+        "scope_kind",
+        "scope_id",
+        "source",
+        "imported_at",
+        "completeness",
+        "loaded_count",
+        "reported_total",
+        "offering_count",
+        "offering_set_sha256",
+    ),
+    ACCEPTANCE_MEMBER_TABLE: (
+        "artifact_sha256",
+        "semester",
+        "course_id",
+        "class_id",
+        "offering_payload_sha256",
     ),
 }
 
@@ -305,6 +388,50 @@ class CourseDataProvenance:
     loaded_count: int
     reported_total: int | None
     offering_count: int
+
+
+@dataclass(frozen=True)
+class CourseDataAcceptance:
+    """**content-bound acceptance** 元数据（⛔ 不含任何教学班取值）。
+
+    与 `CourseDataProvenance`（声明平面 / 历史审计记录）的区别：
+
+    ```text
+    provenance  = 调用方声明"这份 artifact 是以哪个 scope 导入的"
+    acceptance  = 同样声明 + **整批内容 digest**（offering_set_sha256）
+                  + 逐 identity / 逐行内容指纹的 membership
+    ```
+
+    ⚠️ `offering_set_sha256` 是"**这一批规范化后的教学班内容**"的确定性指纹，
+    ⛔ 不是 artifact 字节摘要（后者见 `artifact_sha256`），
+    ⛔ 也不是 acquisition provenance proof。
+    """
+
+    artifact_sha256: str
+    semester: str
+    scope_kind: str
+    scope_id: str
+    source: str | None
+    imported_at: str
+    completeness: str
+    loaded_count: int
+    reported_total: int | None
+    offering_count: int
+    offering_set_sha256: str
+
+
+@dataclass(frozen=True)
+class AcceptedDataset:
+    """一次 **完整校验通过** 的 acceptance 读取结果（⛔ 内部对象）。
+
+    - `acceptance` —— 元数据（含 `offering_set_sha256`）；
+    - `offerings` —— **恰好**该 acceptance 接受的规范化教学班（已逐行核对内容指纹）；
+    - `member_count` —— membership 表的行数（应与 `offering_count` 相等）。
+    """
+
+    acceptance: CourseDataAcceptance
+    offerings: tuple[CourseOffering, ...]
+    member_count: int
 
 
 def compute_artifact_sha256(data: bytes) -> str:
@@ -470,6 +597,14 @@ def _require_schema(connection: sqlite3.Connection) -> None:
 
     missing = [name for name in _REQUIRED_TABLES if name not in existing]
     if missing:
+        # ⚠️ 区分"根本不是 Course Data 库"与"是本层更早版本建立的库"：
+        #    后者只有旧表 ⇒ 必须明确要求重建，⛔ 不自动迁移、⛔ 不降级读取。
+        if COURSE_OFFERING_TABLE in existing:
+            raise CourseDataStoreError(
+                f"本地库缺少 acceptance 表：{missing}；该库由更早的版本建立"
+                f"（尚没有 content-bound acceptance 平面，可能也缺少 scope 列）。"
+                f"⛔ 本层不自动迁移，请重建本地库后重新导入"
+            )
         raise CourseDataStoreError(
             f"该 SQLite 文件不是 Course Data 本地库（缺少表：{missing}）"
         )
@@ -585,6 +720,20 @@ def import_offering_snapshot(
     sources = {offering.source for offering in snapshot.offerings}
     record_source = sources.pop() if len(sources) == 1 else None
 
+    # ⛔ content binding：整批内容 digest + 逐行内容指纹。
+    #    它们与 rows 在**同一个事务**里写入，读回时按它们复核（见 `load_accepted_offerings`）。
+    set_digest = offering_set_sha256(snapshot.offerings)
+    member_digests = [
+        (
+            digest,
+            semester,
+            offering.course_id,
+            offering.class_id,
+            offering_payload_sha256(offering),
+        )
+        for offering in snapshot.offerings
+    ]
+
     inserted = 0
     updated = 0
     unchanged = 0
@@ -665,6 +814,54 @@ def import_offering_snapshot(
                 snapshot.reported_total,
                 len(snapshot.offerings),
             ),
+        )
+
+        # ---- content-bound acceptance 平面（与 rows 同一事务） -----------------
+        # ⚠️ 与上面的历史审计记录不同：这里**重复导入会刷新**（membership 必须反映
+        #    最近一次以该 identity 写入的内容），否则 digest 与实际 rows 会脱钩。
+        connection.execute(
+            f"""
+            INSERT INTO {ACCEPTANCE_TABLE} (
+                artifact_sha256, semester, scope_kind, scope_id, source, imported_at,
+                completeness, loaded_count, reported_total, offering_count,
+                offering_set_sha256
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (artifact_sha256, semester, scope_kind, scope_id) DO UPDATE SET
+                source = excluded.source,
+                imported_at = excluded.imported_at,
+                completeness = excluded.completeness,
+                loaded_count = excluded.loaded_count,
+                reported_total = excluded.reported_total,
+                offering_count = excluded.offering_count,
+                offering_set_sha256 = excluded.offering_set_sha256
+            """,
+            (
+                digest,
+                semester,
+                declared_scope.scope_kind,
+                declared_scope.scope_id,
+                record_source,
+                imported_at,
+                snapshot.completeness,
+                snapshot.loaded_count,
+                snapshot.reported_total,
+                len(snapshot.offerings),
+                set_digest,
+            ),
+        )
+
+        connection.execute(
+            f"DELETE FROM {ACCEPTANCE_MEMBER_TABLE} "
+            "WHERE artifact_sha256 = ? AND semester = ?",
+            (digest, semester),
+        )
+        connection.executemany(
+            f"""
+            INSERT INTO {ACCEPTANCE_MEMBER_TABLE} (
+                artifact_sha256, semester, course_id, class_id, offering_payload_sha256
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            member_digests,
         )
 
     return CourseDataImport(
@@ -776,6 +973,237 @@ def load_course_offerings(
         ).fetchall()
 
     return [_row_to_offering(row) for row in rows]
+
+
+def load_course_data_acceptances(
+    path: str | Path,
+    *,
+    semester: str | None = None,
+) -> list[CourseDataAcceptance]:
+    """读回 **content-bound acceptance** 元数据（⛔ 不含任何教学班取值）。
+
+    - `semester=None` → 全部学期的 acceptance；
+    - 顺序：`ORDER BY imported_at, artifact_sha256, scope_kind, scope_id`（确定、可复现）；
+    - ⚠️ 这是**元数据**，不足以证明"当前 rows 仍等于被接受的内容"；
+      要证明这一点必须用 `load_accepted_offerings()`（它在一次读事务里同时核对
+      membership 与逐行内容指纹）。
+    """
+
+    parameters: list[object] = []
+    where = ""
+
+    if semester is not None:
+        where = "WHERE semester = ?"
+        parameters.append(_require_semester(semester))
+
+    with _open_store(path, must_exist=True, ensure_schema=False) as connection:
+        rows = connection.execute(
+            "SELECT artifact_sha256, semester, scope_kind, scope_id, source, imported_at, "
+            "completeness, loaded_count, reported_total, offering_count, offering_set_sha256 "
+            f"FROM {ACCEPTANCE_TABLE} {where} "
+            "ORDER BY imported_at, artifact_sha256, scope_kind, scope_id",
+            parameters,
+        ).fetchall()
+
+    return [
+        CourseDataAcceptance(
+            artifact_sha256=row["artifact_sha256"],
+            semester=row["semester"],
+            scope_kind=row["scope_kind"],
+            scope_id=row["scope_id"],
+            source=row["source"],
+            imported_at=row["imported_at"],
+            completeness=row["completeness"],
+            loaded_count=row["loaded_count"],
+            reported_total=row["reported_total"],
+            offering_count=row["offering_count"],
+            offering_set_sha256=row["offering_set_sha256"],
+        )
+        for row in rows
+    ]
+
+
+def load_accepted_offerings(
+    path: str | Path,
+    *,
+    semester: str,
+    acceptance_sha256: str,
+    scope: SnapshotScope | None = None,
+) -> AcceptedDataset:
+    """在一次**一致读事务**里完整校验并物化一个 acceptance 接受的教学班。
+
+    `scope=None` ⇒ 默认 `full_semester / <semester>`（production Provider 语义）；
+    campus acceptance 的调用方（campus CLI 回读）显式传入 `campus / <number>`。
+
+    校验（任一不满足 ⇒ `CourseDataStoreError`，fail closed）：
+
+    ```text
+     1. acceptance 元数据行存在，且 (semester, scope_kind, scope_id, artifact_sha256)
+        精确匹配
+     2. 与历史审计记录（course_data_import）**同时存在且计数一致**
+        （⛔ 两个平面任何一边被删除 / 改写都视为不可信）
+     3. completeness == complete；loaded_count == reported_total == offering_count > 0
+     4. membership 行数 == offering_count
+     5. membership 的 identity 集合 == 实际读到的 rows 的 identity 集合
+        （⛔ 既不缺行，也不多行 ⇒ 陈旧 campus 行无法混入）
+     6. 每一行的 `offering_payload_sha256` == membership 记录的内容指纹
+     7. 重算整批 `offering_set_sha256` == 元数据里的 `offering_set_sha256`
+     8. 每行的行级 provenance 仍指向**本次 acceptance**
+        （declaration 平面与内容平面必须一致）
+    ```
+
+    ⚠️ 第 5/6/7 条才是 BLOCK B3 的修复点：**同数量 / 同身份的"内容替换"
+    无法逃过**；第 1/2 条是 BLOCK B4 的修复点：acceptance 被删除 / 改写后
+    **每一次读取都会重新失败**，⛔ 不依赖构造期缓存。
+
+    - 只读、一次性事务；⛔ 不写库、⛔ 不建表、⛔ 不联网；
+    - 返回顺序确定：`ORDER BY course_id, class_id`。
+    """
+
+    target_semester = _require_semester(semester)
+    digest = _require_sha256(acceptance_sha256)
+
+    if scope is None:
+        wanted_scope = SnapshotScope(
+            scope_kind=SCOPE_KIND_FULL_SEMESTER, scope_id=target_semester
+        )
+    else:
+        if not isinstance(scope, SnapshotScope):
+            raise CourseDataStoreError(
+                f"scope 必须是 SnapshotScope 或 None，实际是 {type(scope).__name__}"
+            )
+        wanted_scope = _require_scope(scope, semester=target_semester)
+
+    with _open_store(path, must_exist=True, ensure_schema=False) as connection:
+        acceptance_row = connection.execute(
+            "SELECT artifact_sha256, semester, scope_kind, scope_id, source, imported_at, "
+            "completeness, loaded_count, reported_total, offering_count, offering_set_sha256 "
+            f"FROM {ACCEPTANCE_TABLE} WHERE artifact_sha256 = ? AND semester = ? "
+            "AND scope_kind = ? AND scope_id = ?",
+            (digest, target_semester, wanted_scope.scope_kind, wanted_scope.scope_id),
+        ).fetchone()
+
+        if acceptance_row is None:
+            raise CourseDataStoreError(
+                "本地库中没有与该 acceptance identity 对应的 content-bound 记录；"
+                "⛔ 拒绝退化为『该学期任意行』"
+            )
+        provenance_row = connection.execute(
+            "SELECT offering_count, completeness, loaded_count, reported_total "
+            f"FROM {IMPORT_RECORD_TABLE} WHERE artifact_sha256 = ? AND semester = ? "
+            "AND scope_kind = ? AND scope_id = ?",
+            (digest, target_semester, wanted_scope.scope_kind, wanted_scope.scope_id),
+        ).fetchone()
+
+        if provenance_row is None:
+            raise CourseDataStoreError(
+                "该 acceptance 缺少历史导入记录（两个平面不一致）；拒绝继续"
+            )
+
+        acceptance = CourseDataAcceptance(
+            artifact_sha256=acceptance_row["artifact_sha256"],
+            semester=acceptance_row["semester"],
+            scope_kind=acceptance_row["scope_kind"],
+            scope_id=acceptance_row["scope_id"],
+            source=acceptance_row["source"],
+            imported_at=acceptance_row["imported_at"],
+            completeness=acceptance_row["completeness"],
+            loaded_count=acceptance_row["loaded_count"],
+            reported_total=acceptance_row["reported_total"],
+            offering_count=acceptance_row["offering_count"],
+            offering_set_sha256=acceptance_row["offering_set_sha256"],
+        )
+
+        if (
+            provenance_row["offering_count"] != acceptance.offering_count
+            or provenance_row["completeness"] != acceptance.completeness
+            or provenance_row["loaded_count"] != acceptance.loaded_count
+            or provenance_row["reported_total"] != acceptance.reported_total
+        ):
+            raise CourseDataStoreError(
+                "该 acceptance 的两个平面（导入记录 / content-bound 记录）计数不一致；"
+                "本地库可能被外部修改，拒绝继续"
+            )
+
+        if acceptance.completeness != "complete":
+            raise CourseDataStoreError(
+                f"该 acceptance 不是 complete（completeness={acceptance.completeness!r}）；"
+                f"⛔ partial 数据不得进入 production 链路"
+            )
+
+        if (
+            acceptance.reported_total is None
+            or acceptance.loaded_count != acceptance.reported_total
+            or acceptance.loaded_count != acceptance.offering_count
+        ):
+            raise CourseDataStoreError(
+                f"该 acceptance 计数不自洽（loaded_count={acceptance.loaded_count}，"
+                f"reported_total={acceptance.reported_total}，"
+                f"offering_count={acceptance.offering_count}）；拒绝继续"
+            )
+
+        if acceptance.offering_count <= 0:
+            raise CourseDataStoreError(
+                f"该 acceptance 的 offering_count({acceptance.offering_count}) 必须 > 0；"
+                f"⛔ 空 acceptance 不得装配 production Provider"
+            )
+
+        members = connection.execute(
+            "SELECT course_id, class_id, offering_payload_sha256 "
+            f"FROM {ACCEPTANCE_MEMBER_TABLE} WHERE artifact_sha256 = ? AND semester = ? "
+            "ORDER BY course_id, class_id",
+            (digest, target_semester),
+        ).fetchall()
+
+        if len(members) != acceptance.offering_count:
+            raise CourseDataStoreError(
+                f"acceptance membership 行数({len(members)}) != "
+                f"offering_count({acceptance.offering_count})；拒绝继续"
+            )
+
+        rows = connection.execute(
+            f"SELECT {', '.join(_LOAD_COLUMNS)} FROM {COURSE_OFFERING_TABLE} "
+            "WHERE semester = ? AND artifact_sha256 = ? AND scope_kind = ? AND scope_id = ? "
+            "ORDER BY course_id, class_id",
+            (target_semester, digest, wanted_scope.scope_kind, wanted_scope.scope_id),
+        ).fetchall()
+
+        if len(rows) != len(members):
+            raise CourseDataStoreError(
+                f"属于该 acceptance 的行数({len(rows)}) != membership 行数"
+                f"({len(members)})；⛔ 不接受部分行，也⛔ 不接受多余行"
+            )
+
+        offerings: list[CourseOffering] = []
+        for row, member in zip(rows, members, strict=True):
+            offering = _row_to_offering(row)
+            identity = offering_identity(offering)
+            if (identity[1], identity[2]) != (member["course_id"], member["class_id"]):
+                raise CourseDataStoreError(
+                    "acceptance membership 与实际行不一致（identity 不匹配）；拒绝继续"
+                )
+            computed = offering_payload_sha256(offering)
+            # ⚠️ 与下面的整批 digest 复核互为冗余：任一句都能发现内容替换，
+            #    这里保留是为了给出**逐行**定位。
+            if computed != member["offering_payload_sha256"]:
+                raise CourseDataStoreError(
+                    f"教学班 {offering.course_id}/{offering.class_id} 的**内容**与"
+                    f"acceptance membership 记录不一致（同 identity 内容被替换）；拒绝继续"
+                )
+            offerings.append(offering)
+
+        recomputed_set = offering_set_sha256(offerings)
+        # ⚠️ 与上面的逐行指纹复核互为冗余（纵深防御，⛔ 不删除）。
+        if recomputed_set != acceptance.offering_set_sha256:
+            raise CourseDataStoreError(
+                "重算的整批内容 digest 与 acceptance 记录不一致；拒绝继续"
+            )
+
+    return AcceptedDataset(
+        acceptance=acceptance,
+        offerings=tuple(offerings),
+        member_count=len(members),
+    )
 
 
 def load_course_data_provenance(
