@@ -308,10 +308,21 @@ def _command_smoke(args: argparse.Namespace) -> int:
         "makeup_task_count": len(curriculum.get_makeup_tasks()),
         "current_schedule_count": len(current_schedule),
         "plan_status": result.status.value,
+        # ⚠️ 下面三项是**既有 RestrictedPlanner 的原样输出**，本工具⛔ 不解释、⛔ 不改写：
+        #    - selected_classes 是**建议**课表（含学生当前已选班 + 本次可加入的 CLEAR 班），
+        #      ⛔ 不是"已完成选课 / 已注册"；
+        #    - changes 中新增 required 任务是 Planner 的既定语义（唯一 CLEAR 班才自动加入），
+        #      ⛔ 本工具不参与该判断；
+        #    - unresolved 里可能包含"Preference 字段口径待确认"，
+        #      即 ⛔ **并非**每个偏好都被完全执行。
         "selected_classes": [item.model_dump() for item in result.selected_classes],
         "changes": [item.model_dump() for item in result.changes],
         "risk_count": len(result.risks),
         "unresolved": [item.model_dump() for item in result.unresolved],
+        "planner_output_note": (
+            "selected_classes 是建议（⛔ 不是已完成选课）；Planner 为受限确定性规划，"
+            "⛔ 不是全局最优、⛔ 不自动注册；未能完全执行的偏好会在 unresolved 中如实列出。"
+        ),
     }, ensure_ascii=False, indent=2))
     return EXIT_OK
 

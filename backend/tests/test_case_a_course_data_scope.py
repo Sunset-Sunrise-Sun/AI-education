@@ -807,8 +807,15 @@ def test_smoke_runs_the_planner_with_the_case_scoped_offerings(
     assert payload["makeup_task_count"] == 1
     assert payload["current_schedule_count"] == 1
     assert payload["plan_status"] in {"feasible", "partially_feasible", "infeasible"}
-    # ⛔ 不自动加入未选课程 / 不自动替换：changes 恒为空（本 smoke 只做连通性验证）。
-    assert payload["changes"] == []
+    assert payload["planner_output_note"]
+
+    # Planner 原样收到了手工录入的当前班（⛔ 未丢弃、⛔ 未被改写）。
+    assert {"course_id": "SYN-A-0001", "class_id": "01"} in payload["selected_classes"]
+
+    # Preference 未完全执行的字段必须**如实出现在** unresolved 中（⛔ 不静默忽略）。
+    unresolved_text = " ".join(item["message"] for item in payload["unresolved"])
+    assert "max_credit" in unresolved_text
+    assert "avoid_cross_campus" in unresolved_text
 
 
 def test_export_command_output_never_claims_full_semester(
