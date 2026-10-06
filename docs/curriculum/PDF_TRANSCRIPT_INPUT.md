@@ -44,6 +44,10 @@ MakeupTask[]
 - ⛔ 扫描件 / 图片型 PDF（**没有 OCR**）；
 - ⛔ 其它学校、其它语言、其它版式；
 - ⛔ 中山大学成绩单的**其它版本**（只有当前核验过的这一种）；
+- ⛔ **需要修复的 PDF**（截断 / 损坏）：页面解析库会**成功修复**这类文件并返回
+  （可能不完整的）内容而不报错。实测把真实成绩单截断到 97% 会让第二个学期整段消失。
+  因此打开文档后立即检查 `is_repaired`，为真即按 "malformed PDF" **fail closed**：
+  ⛔ 绝不把修复过的文件当作权威成绩单输入。
 - ⛔ 从版面里"猜"课程号（成绩单本来就没有官方课程号）。
 
 ## 必须被拒绝的行（⛔ 绝不当作课程）
@@ -118,7 +122,7 @@ POST /api/v1/completed-courses/import-pdf
 | 413 | `completed_courses_pdf_upload_too_large` | 声明或实际字节数超限 |
 | 400 | `completed_courses_pdf_upload_length_mismatch` | 字节数与声明长度不一致 |
 | 400 | `completed_courses_pdf_upload_empty` | 空文件 |
-| 400 | `completed_courses_pdf_invalid` | 不是合格成绩单 / 版面不符 / 损坏 |
+| 400 | `completed_courses_pdf_invalid` | 不是合格成绩单 / 版面不符 / 损坏 / **需要修复** |
 | 400 | `completed_courses_pdf_empty` | 版面正确但没有任何课程行 |
 | 400 | `completed_courses_pdf_too_many_records` | 课程条数超过上限 |
 

@@ -157,6 +157,108 @@ def test_pdf_without_transcript_title_fails_closed(tmp_path: Path) -> None:
     assert "title" in str(error.value) or "layout" in str(error.value)
 
 
+# --- 修复过的 PDF 必须被拒绝（截断 / 损坏） --- #
+
+
+def _repaired_truncations(payload: bytes) -> list[bytes]:
+    """Return truncations that PyMuPDF *opens* but only by repairing the document.
+
+    ⚠️ 刻意**不**断言 MuPDF 的告警文案（那是实现细节，也可能随版本变化）；
+    只依据 `is_repaired`——本修复所依赖的唯一事实。
+    """
+
+    import pymupdf
+
+    found: list[bytes] = []
+    for pct in (95, 90, 85, 80, 70, 60, 50, 40):
+        truncated = payload[: max(1, int(len(payload) * pct / 100))]
+        try:
+            document = pymupdf.open(stream=truncated, filetype="pdf")
+        except Exception:  # noqa: BLE001 - 打不开的截断由既有 malformed 分支负责
+            continue
+        try:
+            if document.is_repaired:
+                found.append(truncated)
+        finally:
+            document.close()
+    return found
+
+
+def test_valid_transcript_does_not_report_a_repair(tmp_path: Path) -> None:
+    """前置条件：正常成绩单**不**应被判定为修复过，否则修复会误杀合法文件。"""
+
+    import pymupdf
+
+    path = fixtures.build_transcript_pdf(
+        tmp_path / "DEMO-transcript.pdf", bands=fixtures.fictional_transcript()
+    )
+    document = pymupdf.open(str(path))
+    try:
+        assert document.is_repaired is False
+    finally:
+        document.close()
+    # 正常文件仍必须被接受。
+    assert len(parse_transcript_pdf(path).records) == 6
+
+
+def test_repaired_or_truncated_pdf_is_rejected_with_a_generic_error(tmp_path: Path) -> None:
+    """截断到 PyMuPDF 需要修复时，必须 fail closed（⛔ 不返回不完整课程）。"""
+
+    path = fixtures.build_transcript_pdf(
+        tmp_path / "DEMO-transcript.pdf", bands=fixtures.fictional_transcript()
+    )
+    payload = path.read_bytes()
+
+    truncations = _repaired_truncations(payload)
+    assert truncations, "fixture 未被截断到需要修复的程度；请调整截断比例"
+
+    for truncated in truncations:
+        with pytest.raises(CurriculumNormalizationError) as error:
+            parse_transcript_pdf_bytes(truncated)
+        message = str(error.value)
+        # 错误文案必须保持通用 / 隐私安全。
+        assert message == "transcript: malformed PDF"
+        for forbidden in (
+            fixtures.DEMO_STUDENT_NAME,
+            fixtures.DEMO_STUDENT_NUMBER,
+            "Traceback",
+            str(path),
+            ".pdf",
+        ):
+            assert forbidden not in message
+
+
+def test_multi_page_repaired_transcript_is_rejected(tmp_path: Path) -> None:
+    """多页成绩单被截断到需要修复时同样拒绝（⛔ 不静默丢掉后面的页面）。"""
+
+    import pymupdf
+
+    merged = pymupdf.open()
+    for index in range(3):
+        part = fixtures.build_transcript_pdf(
+            tmp_path / f"DEMO-part-{index}.pdf",
+            bands=[[(fixtures.TERM_ONE, [
+                {"name": f"示例第{index + 1}页课程", "credit": "3",
+                 "grade": "88", "attribute": "专必"},
+            ])]],
+        )
+        with pymupdf.open(str(part)) as source:
+            merged.insert_pdf(source)
+    full_path = tmp_path / "DEMO-multi.pdf"
+    merged.save(str(full_path))
+    merged.close()
+
+    full = parse_transcript_pdf(full_path)
+    assert full.page_count == 3
+    assert len(full.records) == 3
+
+    truncations = _repaired_truncations(full_path.read_bytes())
+    assert truncations, "多页 fixture 未被截断到需要修复的程度"
+    for truncated in truncations:
+        with pytest.raises(CurriculumNormalizationError):
+            parse_transcript_pdf_bytes(truncated)
+
+
 def test_unreadable_file_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(CurriculumNormalizationError):
         parse_transcript_pdf(tmp_path / "DEMO-does-not-exist.pdf")
