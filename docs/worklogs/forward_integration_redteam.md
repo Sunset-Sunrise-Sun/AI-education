@@ -38,3 +38,15 @@ test_immutable_identity_gate.py。旧实现 3 failed，已知且明确 expected-
 要求 same-count changed-content 第二次 import 原子拒绝，旧 Provider 返回 A；stored canonical
 manifest SHA 等于 configured acceptance SHA；semantic acceptance/member 禁止 UPDATE。
 此 gate 通过后才继续新 HEAD runtime/E2E，不接受 Builder 自称修复。
+
+## Focused Architecture Reviewer role reset
+
+fetch --all --prune + wildcard refresh，确认 ef910e3 / a67ba96 / f8675e2；runtime/E2E 远端
+force-update已正确刷新。Phase 1 仅在 Provider ef910e3 archive 执行。
+独立 test_focused_provider_gate.py：24 passed / 3 failed；18同SHA/same count/same identity
+changed payload attacks全部原子拒绝，stored manifestSHA/幂等/禁止语义UPDATE通过，R-CONTENT PASS。
+实际 WAL 双连接线程+Event在acceptance read后暂停Reader，Writer commits三个变体；
+authoritative SELECT全部in_transaction=False，R-SNAPSHOT BLOCK。Reader结果为A或拒绝，
+没有混合payload泄露的夸大声明。Existing Store/Provider 163 passed。
+按用户gate依赖未执行新版Runtime/E2E，不跑full backend/frontend。精确BLOCK评论文本与
+修复要求保存在FOCUSED_PROVIDER_REVIEW.md。没有production/Schema/protocol/Builder code修改或merge。

@@ -39,3 +39,17 @@ BLOCK B4：构造后删除 acceptance record，旧 Provider 仍返回 rows。
   runtime/E2E 审查。此前旧 HEAD 证据仅供诊断。
 - GitHub API Forbidden，未留评论；exact BLOCK comment text 已写入 CLOSURE_REVIEW.md。
 - 没有 merge、production/Schema/protocol 改动，Formal Real E2E LEVEL0。
+
+## Focused Architecture Review — refreshed targets
+
+Provider ef910e3fd3c68b10d9d9ed42a39698f5e8a21f36；Runtime a67ba96；E2E f8675e2 已刷新。
+最新报告：`reviewer/full_semester/FOCUSED_PROVIDER_REVIEW.md`，优先于旧 cb585c1 结论。
+
+- R-CONTENT PASS：18 changed-payload import attacks rejected atomically；manifest SHA 重算、
+  exact-content idempotency/no semantic UPDATE、5 stored-manifest tamper cases passed。
+- R-SNAPSHOT BLOCK：双连接 WAL + Event barrier 的 acceptance delete / row replace /
+  membership mutation 三例均记录 authoritative SELECT in_transaction=False；无显式 BEGIN。
+  观察到 epoch A 或 typed refusal，没有声称这些 probes 已返回 mixed payload。
+- 独立 probes 24 passed / 3 failed；existing Store/Provider suite 163 passed。
+- Provider BLOCK；按用户 phase 顺序，本轮新 Runtime/E2E 未执行，dependency gate BLOCK。
+- 不接受旧 suite PASS 替代本次 transaction gate；不 merge、不改 Builder code。
