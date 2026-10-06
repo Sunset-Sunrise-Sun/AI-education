@@ -45,7 +45,43 @@
 - **真实 Case A 区间学期 decision 已全部落为 case 数据**：7 条 range-term entry 中，**3 条**（MAR117 `2026-1~2026-2`、MAR118 `2027-1~2027-2`、MAR119 `2028-1~2028-2`）区间整体在 `as_of_term=2025-2` **之后** → 记为 `future`；**1 条横跨时点**（PUB178 劳动教育 `2025-1~2028-2`）**亦由 case owner 裁定为 `future`**（见下条）；**3 条已 satisfied**（MAR116 / PSY199 / PUB1991，区间 `2025-1~2025-2`）按冻结语义**不阻断、无需 decision**。即：**4 条 decision + 3 条 satisfied 不阻断 = 无遗留待业务确认项**。decision 定义见 `backend/app/curriculum/case_a_decisions.py`（纯 case 数据，不含姓名/学号/成绩/GPA/私有文档；evidence 为 `case-owner-confirmed://…`，非学校官方政策）。
 - **PUB178 横跨区间已由 case owner 裁定为 `future`**：理由为该方案安排窗口横跨 `as_of_term=2025-2` 且持续至 2028-2，无证据表明必须在转专业时点前完成、也无阶段性拆分规则；为避免把仍有后续履行窗口的要求误判为历史欠修，本 Case 按 future 处理。该裁决**仅是 case-owner-confirmed 的 Case A 输入**，未升级为通用 scope 算法或学校官方政策（见 `case_a_decisions.CASE_OWNER_FUTURE_RATIONALE`）。
 - **真实 Case A 已首次打通**：target_records 94、completed 24、historical 20、future 71、unresolved 3（均为已 satisfied 的 range 条目，按冻结语义不阻断）、`unrepresented_requirements = ()`、`group_gaps = ()`、**projection_ready = True**、`get_makeup_tasks()` 成功返回 **makeup_task_count = 23**（satisfied 12 / manual_confirmation 11 / required 0 / possibly_equivalent 0；总学分 58，其中 satisfied 32、manual_confirmation 26）。23 条全部为 historical 条目，future unmet 条目不出现在 `MakeupTask[]` 中。
-- 最新后端回归：**2032 passed、2 failed、2 skipped**（UTF-8 模式）。两类失败均为既有环境性差异，与本次改动无关，详见下方说明。
+- **成绩单 PDF 入口（Case A 主路径）已实现**：新增 `backend/app/curriculum/pdf_reader.py`，
+  把**当前已核验的中山大学本科成绩单 PDF 版面**解析成 `term` / `course_name` / `credits` /
+  `grade` / `course_attribute`，再经既有 `normalize_completed_courses` 变成既有内部
+  `CompletedCourse`（⛔ 未新增中间模型）。支持：四列一组横向平铺、两行表头
+  （`课程名称`/`学分`/`成绩`/`课程` + `属性`）、`2025-2026学年 第X学期` 学期行、
+  换行课程名、整数与一位小数学分、0–100 数字成绩与 `P`/`NP`、多学期、重复表头。
+  学期行 / 每学期末 `学分 …`·`绩点 …` 汇总行 / 页脚毕业学分与平均绩点 / 审核人行
+  **一律不进入**结果；版面不符、损坏 PDF、非 PDF 输入一律 **fail closed**。
+- **成绩单不提供课程号，因此⛔ 不构造任何课程号**：所有记录都是
+  `CourseIdStatus.PENDING` + `course_id = None`，由既有 `matching.py` 的保守语义处理
+  （同名课程仍为 `possibly_equivalent` / `manual_confirmation`，⛔ 不自动抵认）。
+  内部模型 `CompletedCourse` **本来就允许** `course_id = None`，所以**无契约变更**：
+  ⛔ 未改 `/schemas/`（零改动）、⛔ 未改 Provider 签名、⛔ 未改 `matching.py`。
+- **解析层改用 PyMuPDF 取词级坐标**（新增运行期依赖 `pymupdf>=1.24`）：已核验版面的四个
+  单元格共享同一基线，而字符级回调按字体给出不同基线偏移（同一行会错位约 8 个用户单位），
+  无法可靠按行归并。库缺失时 PDF 入口 fail closed 并给出明确错误，⛔ 不静默降级。
+- **PDF 接入既有 case 的唯一改动**是 `case.py` 的 `completed` 新增第三个互斥键
+  `{"pdf": {"path": …}}`（与既有 `records` / `xlsx` 三选一）。解析结果直接喂给
+  **同一个** `build_curriculum_diff` / `project_makeup_tasks`，⛔ 没有第二套匹配逻辑。
+- **新增窄接口** `POST /api/v1/completed-courses/import-pdf`（原始 PDF 字节，
+  ⛔ 不用 multipart、⛔ 不读文件名；`source_id` 由内容摘要派生 `upload:pdf:sha256:…`）。
+  错误码与 XLSX 入口**分离**（`completed_courses_pdf_*`），XLSX 入口
+  `POST /api/v1/completed-courses/import` **保持不变**、仍是兼容的次要路径。
+- **隐私**：表头以上的姓名 / 学号 / 学院 / 专业区块在解析时整体丢弃；解析结果不含姓名、
+  学号、学院、专业、绩点；错误信息只含固定通用文案（⛔ 不含课程名、成绩、路径、堆栈）。
+- **PDF 输入确实改变 Curriculum 分析**已有端到端证明：同一份目标方案下，成绩单 PDF 与
+  空已修记录给出**不同**的投影依据（补修任务带 `pdf:` 来源引用）；同名的 `示例线性代数`
+  仍是 `possibly_equivalent`（待人工确认）、目标方案有而成绩单无的课是
+  `manual_confirmation`（因仍有课程号待确认的已修记录），⛔ 没有任何 `satisfied` 自动抵认。
+- **解析口径与真实 D4 记录数一致**：用负责人交接的**真实**成绩单 PDF 做本地校核，
+  解析出 **24 条**课程（11 条 `2025-2026学年第一学期` + 13 条第二学期），
+  与既有 Case A `completed = 24` 的记录数一致（⚠️ 这不能替代 Reviewer 的逐字段验收；
+  真实成绩单**不入库**，校核只在本机进行）。
+- 最新后端回归（UTF-8 模式，本分支 c75b6da 工作树）：**3033 tests · 3029 passed · 2 failed · 2 skipped**。
+  两类失败均为**既有环境性差异**，与本次改动无关：ZIP 成员名中的字面反斜杠、
+  以及含 `\x00` 的路径（Windows 路径语义）。⛔ 本次改动**未新增任何失败**。
+  本分支新增用例：PDF 解析 **18** · Case A PDF 集成 **9** · PDF 接口 **25** = **52 passed**。
 - 人工 Office 文件到 Provider 的计算链路已验证。真实 D2/D3、真实规则和真实端到端结果尚未验收，官方 Word 格式仍须按实物核对映射。
 
 ## 判定时点与已知环境差异

@@ -13,6 +13,11 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 jsonschema>=4.20
 
+# 成绩单 PDF 读取（Case A 主路径）所需的**运行期**依赖。
+# 纯本地解析：不联网、不执行 PDF 内嵌脚本；环境缺少该库时 PDF 入口 fail closed
+# 并返回明确错误，⛔ 不会静默降级成别的数据来源。
+pymupdf>=1.24
+
 # --- 以下仅测试需要 ---
 pytest>=8.0
 httpx>=0.27
