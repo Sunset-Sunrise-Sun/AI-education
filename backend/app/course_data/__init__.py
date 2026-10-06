@@ -40,6 +40,22 @@ list[CourseOffering]
    合并后的 complete OfferingSnapshot（唯一维度 = (semester, course_id, class_id)）
 ```
 
+⚠️ **full-semester acceptance（Gate A）**：`sharded_capture` 要求调用方提供**一份
+complete 的 baseline 快照**，而真实采集侧只有**总量证据**。因此在其之上新增
+**更高层** orchestration（⛔ 未改动 `merge_offering_snapshots()` 的低层语义）：
+
+```text
+5 份 raw Capture Bundle + baseline_before/baseline_after（总量证据）
+        ↓  exact five-shard 校验 + 每个 raw-byte SHA-256
+        ↓  baseline_before == baseline_after（否则 snapshot_window_unstable）
+        ↓  Σ shard reported_total == 稳定 baseline（否则 shard_coverage_mismatch）
+        ↓  merge_offering_snapshots(...)
+   merged complete OfferingSnapshot + canonical manifest + manifest SHA-256
+```
+
+`manifest_sha256 = acceptance record identity / integrity ≠ acquisition provenance proof`；
+⛔ 没有 `--skip-north` / `--allow-partial-semester` / `--force-complete` 这类逃生参数。
+
 ⚠️ **本包是 Course Data 的内部实现，不是跨模块公共契约。**
 
 - 公共边界**只有** `CourseDataProvider.get_course_offerings(semester)`
@@ -102,6 +118,22 @@ from app.course_data.captured_pages import (
     validate_capture_bundle,
 )
 from app.course_data.errors import CourseDataNormalizationError
+from app.course_data.full_semester_acceptance import (
+    APPROVED_FULL_SEMESTER_SHARDS,
+    FULL_SEMESTER_ACCEPTANCE_FORMAT,
+    FULL_SEMESTER_ACCEPTANCE_TOOL,
+    FULL_SEMESTER_ACCEPTANCE_VERSION,
+    FullSemesterAcceptance,
+    FullSemesterAcceptanceError,
+    FullSemesterShard,
+    FullSemesterShardRecord,
+    ShardArtifact,
+    accept_full_semester_capture_set,
+    canonical_manifest_bytes,
+    compute_manifest_sha256,
+    full_semester_scope,
+    full_semester_source,
+)
 from app.course_data.importer import import_opening_courses_response
 from app.course_data.normalization import build_course_offering, expand_weeks
 from app.course_data.pagination import (
@@ -145,6 +177,7 @@ from app.course_data.store import (
 
 __all__ = [
     "ALLOWED_SCOPE_KINDS",
+    "APPROVED_FULL_SEMESTER_SHARDS",
     "APPROVED_SHARD_IDS",
     "CAPTURE_FORMAT",
     "CapturedPagesFetcher",
@@ -152,24 +185,37 @@ __all__ = [
     "CourseDataNormalizationError",
     "CourseDataProvenance",
     "CourseDataStoreError",
+    "FULL_SEMESTER_ACCEPTANCE_FORMAT",
+    "FULL_SEMESTER_ACCEPTANCE_TOOL",
+    "FULL_SEMESTER_ACCEPTANCE_VERSION",
+    "FullSemesterAcceptance",
+    "FullSemesterAcceptanceError",
+    "FullSemesterShard",
+    "FullSemesterShardRecord",
     "OfferingSnapshot",
     "OpeningCoursesPageFetcher",
     "ParsedScheduleSegment",
     "SCOPE_KIND_CAMPUS",
     "SCOPE_KIND_FULL_SEMESTER",
     "SHARDED_CAPTURE_SOURCE",
+    "ShardArtifact",
     "ShardedCaptureError",
     "ShardedCaptureSet",
     "ShardSource",
     "SnapshotCourseDataProvider",
     "SnapshotScope",
+    "accept_full_semester_capture_set",
     "build_course_offering",
+    "canonical_manifest_bytes",
     "collect_captured_pages_snapshot",
     "collect_opening_courses_snapshot",
     "collect_sharded_capture_set",
     "compute_artifact_sha256",
+    "compute_manifest_sha256",
     "expand_weeks",
     "extract_meetings",
+    "full_semester_scope",
+    "full_semester_source",
     "import_offering_snapshot",
     "import_opening_courses_response",
     "initialize_course_data_store",

@@ -2966,3 +2966,59 @@
   两个既有 Windows-only Curriculum failure ⛔ 不修不 skip；
 - **边界**：⛔ 未 merge main、⛔ 未改 PR #39、⛔ 未改 runtime / public Schema /
   frozen Provider contract、⛔ 未发真实教务请求、⛔ 未读 cookie/token、⛔ 未处理真实 artifact。
+
+### 2026-10-06 - Gate A：Five-shard Full-Semester Acceptance
+
+- **分支**：从 main `1cd08e0`（PR #41 merge）新建
+  `feature/full-semester-course-data-acceptance`；⛔ 未 merge main、⛔ 未改 PR #39；
+- **新增内部模块** `backend/app/course_data/full_semester_acceptance.py`：
+  `accept_full_semester_capture_set(...)` + `ShardArtifact` + `FullSemesterShardRecord`
+  + `FullSemesterAcceptance` + `canonical_manifest_bytes()` / `compute_manifest_sha256()` /
+  `full_semester_scope()` / `full_semester_source()`；
+  ⛔ **未改** `merge_offering_snapshots()` / Capture Bundle format / public Schema /
+  frozen Provider contract；
+- **A1 baseline**：真实采集侧只有**总量证据** ⇒ 不要求 baseline `OfferingSnapshot`；
+  `baseline_before == baseline_after`（否则 `snapshot_window_unstable`）+
+  `Σ shard reported_total == 稳定 baseline`（否则 `shard_coverage_mismatch`）；
+  ⛔ 未用 `page_count` 推导 completeness；
+- **A2 exact five-shard**：slug 白名单 + `openingSchoolNumber` 单一真源；
+  缺 / 多 / 重复 / 别名一律 reject；⛔ 未提供任何逃生参数；
+  与 collector `APPROVED_SHARDS` 的一致性由测试逐项强制（东 5063559 / 南 5062201 /
+  深圳 333291143 / 珠海 5062203 / 北 5062202）；
+- **A3 merge**：identity `(semester, course_id, class_id)`；先做**跨 shard 独立扫描**，
+  载荷一致 ⇒ `duplicate_identity_across_shards`，载荷不一致 ⇒
+  `conflicting_identity_across_shards`；之后仍调用已 Review 的底层 merge，
+  并对**物化结果**重新计数（行数 / unique identity）；
+- **A4 manifest**：canonical（`sort_keys` + `(",", ":")` + UTF-8）+ manifest SHA-256
+  作为 acceptance identity；`shards[]` 只含结构性计数与 raw bundle SHA-256；
+  ⛔ 无 token / 用户信息 / raw row / 课程取值；
+  顺序固定为已批准顺序 ⇒ 传入顺序不影响 digest（有测试）；
+- **A5 SQLite**：`SnapshotScope(full_semester, semester)` + manifest SHA →
+  `import_offering_snapshot` → provenance read-back 逐项核对 +
+  `inserted+updated+unchanged` 对账；⛔ 单 campus CLI 不能表达 `full_semester`；
+- **A6 CLI** `tools/accept_full_semester_course_data.py`：
+  `--semester` / `--baseline-before` / `--baseline-after` /
+  `--east|--south|--shenzhen|--zhuhai|--north`（全部 **required**）/
+  `--expected-manifest-sha256` / `--output-manifest` / `--sqlite`；
+  ⛔ 无 `--scope-kind` / `--source`（source 由 semester 完全决定 ⇒ 调用方无法自选）；
+  失败输出只含 `status / stage / category / exception_type`（+ 结构性 `shard_id`），
+  ⛔ 不打印异常文本 / 路径 / 文件名 / 取值；manifest 原子写入 + 落盘后复算 digest；
+  事务 caveat 写入模块 docstring（import commit 与 read-back 非同一事务）；
+- **A7 tests**：`test_course_data_full_semester_acceptance.py` +
+  `test_full_semester_acceptance_cli.py` = **88 passed**，覆盖
+  happy path / 缺任一 shard / 缺两个 / 重复 shard / 6 个 shard / 别名 /
+  baseline 漂移 / 和小于与大于 baseline / 非整数 baseline / 零 baseline /
+  缺文件 / digest gate（错误 digest 与非字符串）/ 非法 bundle / semester 错配 /
+  partial shard（含"总和仍等式"变体）/ empty shard / 跨 shard 重复与冲突 identity /
+  merge 失败 / 物化计数复核 / 验收期间 artifact 被改写 / manifest 确定性（含传入顺序无关）/
+  canonical 形式 / digest 随 raw bytes 变化 /
+  SQLite import + read-back + 幂等重入 + 失败前不写库 / 既有库不产生 full_semester 记录 /
+  逃生参数不存在 / campus scope 不可表达 / 失败阶段与退出码一一对应 /
+  shard 表与 collector 表一致 / 隐私（manifest 与错误均不含取值）；
+- **mutation sweep**（workspace-only `mutate_full_semester_acceptance.py`，
+  34 处唯一锚点变异、逐文件、按字节还原并核对 SHA-256）：**29 killed / 5 survived**；
+  5 个 survivor = **可证等价**的冗余防御子句（A04 / A05 / A06 / A07 / A14），
+  已在代码内逐条注明"冗余但保留"，⛔ 未删除、⛔ 未计为 killed；
+- **边界**：⛔ 未 merge main、⛔ 未改 PR #39 / runtime / public Schema /
+  frozen Provider contract、⛔ 未发真实教务请求、⛔ 未读 cookie/token、
+  ⛔ 未处理真实 artifact、⛔ 未声明 Real E2E（继续 **LEVEL0**）。
