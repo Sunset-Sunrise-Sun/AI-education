@@ -95,3 +95,12 @@ GitHub Draft/base/head核实：#46 19970db base main；#47 0727902 base #46；ma
 - 独立XLSX24pass/2fail；existing XLSX140pass；Curriculum/orchestrator/runtime/API1208pass。
 - Cross-stack BLOCK；full backend/compileall按用户条件等修复后运行；不merge不改production。
 - Auth与Real X-Data-Source仅non-blocking hardening；Formal Real E2E仍LEVEL0。
+
+## PR #47 focused closure — c904312
+
+Latest report `reviewer/full_semester/PR47_CONTENT_LENGTH_CLOSURE.md` supersedes prior47BLOCK。
+PR46仍frozen PASS，未复审。PR47新HEAD c904312只复查Content-Length修复。
+独立30passed：missing/empty/Unicode/空白/符号格式411；max+1/万位ASCII413且不进int；
+真实8MiB workbook200；streamoverflow413；mismatch/invalid400；直接ASGI无transport依赖。
+Final XLSX174、Curriculum/integration/runtime1208、fullbackend2889/2skip、frontend134passed；
+typecheck/build/compileall/nodecheck PASS。PR47/cross-stack PASS，ready，顺序46→47，未merge。

@@ -104,3 +104,13 @@ ASGI应用自身文档化输入边界。最小修复ASCII校验+转换前有限�
 剩余两个确认实现缺陷，无xfail。报告与strict reviewer test已保存；#47/cross-stackBLOCK。
 按用户条件未启动最终fullbackend/compileall；Windows敏感两个reader文件相对main无diff，
 本Linux targeted包含它们并全通过。无secret/artifact新增，无merge/production改动/学校访问。
+
+## 2026-10-06 PR47 Content-Length final closure
+
+Fetch确认GitHubPR47 base#46/head c904312。严格按用户限缩范围，不重审冻结PR46。
+Independent30探针通过：实际ASGI所有非法CL411，万位decimal/max+1为413、巨型不调用int，
+max恰好8MiB真实工作簿成功200，stream二块超限413且不读三块，mismatch/invalid400，隐私安全。
+Parser AST明确isascii/isdigit/no strip。Schema/Provider/runtime/store/plan无diff。
+指定finalreg全部完成：XLSX174，Curriculum/orchestrator/runtime1208，full2889/2skip，
+frontend134，typecheck/build/compileall/nodecheck通过；Windows敏感reader测试文件未变，
+本Linux没有已知两failure。PR47/cross-stack PASS ready，推荐46→47，未merge不改production。
