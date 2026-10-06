@@ -20,6 +20,7 @@ PlanResult（公共 Schema 校验通过；前端按同一形状渲染）
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -30,9 +31,18 @@ from fastapi.testclient import TestClient
 
 from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
 from app.course_data import (
+    SCOPE_KIND_CAMPUS,
     ShardArtifact,
+    SnapshotScope,
     accept_full_semester_capture_set,
+    build_capture_inventory,
+    campus_source_label,
+    capture_inventory_bytes,
+    collect_captured_pages_snapshot,
     import_offering_snapshot,
+    initialize_course_data_store,
+    load_capture_bundle_bytes,
+    load_capture_inventory,
 )
 from app.curriculum.case_a_decisions import (
     AS_OF_TERM,
@@ -56,6 +66,14 @@ SHARD_IDS = (
     "zhuhai-campus",
     "north-campus",
 )
+
+SHARD_NUMBERS = {
+    "east-campus": "5063559",
+    "south-campus": "5062201",
+    "shenzhen-campus": "333291143",
+    "zhuhai-campus": "5062203",
+    "north-campus": "5062202",
+}
 
 #: shard → 该 shard 携带的 (course_id, class_id, 排课串或 None)。
 SHARD_ROWS: dict[str, tuple[str, str, str | None]] = {
@@ -139,9 +157,32 @@ def _write_bundle(directory: Path) -> dict[str, Path]:
 
 
 def _accepted_store(tmp_path: Path) -> tuple[Path, str]:
-    """五 shard → 正式 full-semester acceptance → SQLite；返回 (路径, manifest SHA)。"""
+    """五 shard → campus acceptance + 已批准 inventory → full-semester → SQLite。"""
 
     paths = _write_bundle(tmp_path / "captures")
+
+    digests = {
+        shard_id: hashlib.sha256(path.read_bytes()).hexdigest()
+        for shard_id, path in paths.items()
+    }
+    inventory = build_capture_inventory(SEMESTER, digests)
+    inventory_path = tmp_path / "capture-inventory.json"
+    inventory_path.write_bytes(capture_inventory_bytes(inventory))
+
+    campus_store = tmp_path / "campus-acceptances.sqlite3"
+    for shard_id, path in paths.items():
+        number = SHARD_NUMBERS[shard_id]
+        snapshot = collect_captured_pages_snapshot(
+            load_capture_bundle_bytes(path.read_bytes()),
+            source=campus_source_label(SEMESTER, number),
+        )
+        import_offering_snapshot(
+            campus_store,
+            snapshot,
+            artifact_sha256=digests[shard_id],
+            scope=SnapshotScope(scope_kind=SCOPE_KIND_CAMPUS, scope_id=number),
+        )
+
     acceptance = accept_full_semester_capture_set(
         expected_semester=SEMESTER,
         baseline_before=len(SHARD_IDS),
@@ -150,6 +191,8 @@ def _accepted_store(tmp_path: Path) -> tuple[Path, str]:
             ShardArtifact(shard_id=shard_id, bundle_path=paths[shard_id])
             for shard_id in SHARD_IDS
         ],
+        inventory=load_capture_inventory(inventory_path),
+        campus_store_path=campus_store,
     )
 
     sqlite_path = tmp_path / "course-data.sqlite3"
@@ -160,6 +203,75 @@ def _accepted_store(tmp_path: Path) -> tuple[Path, str]:
         scope=acceptance.scope,
     )
     return sqlite_path, acceptance.manifest_sha256
+
+
+def _campus_only_store(tmp_path: Path) -> Path:
+    """只有 campus acceptance 的库（⛔ 不得被 runtime 当作学期数据）。"""
+
+    paths = _write_bundle(tmp_path / "campus-captures")
+    campus_store = tmp_path / "campus-only.sqlite3"
+
+    for shard_id, path in paths.items():
+        number = SHARD_NUMBERS[shard_id]
+        snapshot = collect_captured_pages_snapshot(
+            load_capture_bundle_bytes(path.read_bytes()),
+            source=campus_source_label(SEMESTER, number),
+        )
+        import_offering_snapshot(
+            campus_store,
+            snapshot,
+            artifact_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            scope=SnapshotScope(scope_kind=SCOPE_KIND_CAMPUS, scope_id=number),
+        )
+
+    return campus_store
+
+
+def _missing_acceptance_store(tmp_path: Path) -> Path:
+    """建好 Course Data 库（含表）但**没有任何 acceptance**。"""
+
+    store = tmp_path / "empty-course-data.sqlite3"
+    initialize_course_data_store(store)
+    return store
+
+
+def _write_bundle_row(tmp_path: Path, class_id: str) -> Path:
+    """单行 synthetic bundle（用于制造只有 campus provenance 的陈旧行）。"""
+
+    path = tmp_path / "stale" / f"{class_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(
+        json.dumps(
+            {
+                "format": "sysu-opening-courses-capture-v1",
+                "semester": SEMESTER,
+                "first_page_no": 1,
+                "page_size": 200,
+                "pages": [
+                    {
+                        "page_no": 1,
+                        "response": {
+                            "code": 200,
+                            "data": {
+                                "total": 1,
+                                "rows": [
+                                    _row(
+                                        "SYN-STALE",
+                                        class_id,
+                                        schedule=CONCRETE_SCHEDULE,
+                                    )
+                                ],
+                            },
+                        },
+                    }
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    )
+    return path
 
 
 def _case_payload() -> dict[str, object]:
@@ -663,6 +775,177 @@ def test_empty_preference_is_accepted(client: TestClient, tmp_path: Path, monkey
     # 没有 preference 字段被激活 ⇒ 不出现那条 preference 的 manual_confirmation，
     # 但其它待确认项（容量等）照旧如实报告。
     assert "Preference 字段" not in _messages(payload)
+
+
+# --------------------------------------------------------------------------- #
+# D6 — red-team matrix negatives (wrong digest / campus-only / deleted / tampered)
+# --------------------------------------------------------------------------- #
+
+
+def _configure_with_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    sqlite_path: Path,
+    digest: str,
+) -> None:
+    _configure(
+        monkeypatch,
+        {
+            "APP_REAL_CASE_A_ENABLED": "1",
+            "APP_CASE_A_CURRICULUM_CASE_PATH": str(_write_case(tmp_path)),
+            "APP_COURSE_DATA_SQLITE_PATH": str(sqlite_path),
+            "APP_COURSE_DATA_SEMESTER": SEMESTER,
+            "APP_COURSE_DATA_ACCEPTANCE_SHA256": digest,
+        },
+    )
+
+
+def _expect_503(client: TestClient, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    response = client.post(PLAN_PATH, json=_frontend_request())
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "real_pipeline_not_configured"
+    assert MOCK_DATA_SOURCE_HEADER not in response.headers
+    assert "selected_classes" not in response.text
+    assert MOCK_DATA_SOURCE_VALUE not in response.text
+
+
+def test_wrong_pinned_acceptance_sha_returns_503(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sqlite_path, _digest = _accepted_store(tmp_path)
+    _configure_with_store(
+        monkeypatch, tmp_path, sqlite_path=sqlite_path, digest="b" * 64
+    )
+
+    _expect_503(client, monkeypatch, tmp_path)
+
+
+def test_campus_only_store_returns_503(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campus_store = _campus_only_store(tmp_path)
+    _configure_with_store(
+        monkeypatch,
+        tmp_path,
+        sqlite_path=campus_store,
+        digest=hashlib.sha256(b"campus-only").hexdigest(),
+    )
+
+    _expect_503(client, monkeypatch, tmp_path)
+
+
+def test_store_without_acceptance_returns_503(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    empty_store = _missing_acceptance_store(tmp_path)
+    _configure_with_store(
+        monkeypatch,
+        tmp_path,
+        sqlite_path=empty_store,
+        digest=hashlib.sha256(b"missing").hexdigest(),
+    )
+
+    _expect_503(client, monkeypatch, tmp_path)
+
+
+def test_deleted_acceptance_returns_503(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """构造一次成功之后删除 acceptance 记录 ⇒ 下一次请求仍然 503（每请求重新装配）。"""
+
+    sqlite_path, digest = _accepted_store(tmp_path)
+    _configure_with_store(
+        monkeypatch, tmp_path, sqlite_path=sqlite_path, digest=digest
+    )
+
+    assert client.post(PLAN_PATH, json=_frontend_request()).status_code == 200
+
+    connection = sqlite3.connect(str(sqlite_path))
+    connection.execute("DELETE FROM course_data_acceptance")
+    connection.commit()
+    connection.close()
+
+    _expect_503(client, monkeypatch, tmp_path)
+
+
+def test_tampered_row_payload_returns_503(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同数量 / 同身份的**内容替换** ⇒ 503（BLOCK B3 + B4）。"""
+
+    sqlite_path, digest = _accepted_store(tmp_path)
+    _configure_with_store(
+        monkeypatch, tmp_path, sqlite_path=sqlite_path, digest=digest
+    )
+
+    assert client.post(PLAN_PATH, json=_frontend_request()).status_code == 200
+
+    connection = sqlite3.connect(str(sqlite_path))
+    connection.execute(
+        "UPDATE course_offering SET course_name = ? WHERE class_id = ?",
+        ("内容被替换", "east-000"),
+    )
+    connection.commit()
+    connection.close()
+
+    _expect_503(client, monkeypatch, tmp_path)
+
+
+def test_stale_campus_extra_row_is_never_returned(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A/B/C（campus）先入库、D 后入库 ⇒ 只返回 D 接受的那批行，⛔ 不做 semester union。"""
+
+    sqlite_path, digest = _accepted_store(tmp_path)
+
+    # 先塞两条只有 campus provenance 的陈旧行（同一学期）。
+    for class_id in ("stale-000", "stale-001"):
+        import_offering_snapshot(
+            sqlite_path,
+            collect_captured_pages_snapshot(
+                load_capture_bundle_bytes(
+                    _write_bundle_row(tmp_path, class_id).read_bytes()
+                ),
+                source=campus_source_label(SEMESTER, SHARD_NUMBERS["east-campus"]),
+            ),
+            artifact_sha256=hashlib.sha256(class_id.encode("utf-8")).hexdigest(),
+            scope=SnapshotScope(
+                scope_kind=SCOPE_KIND_CAMPUS,
+                scope_id=SHARD_NUMBERS["east-campus"],
+            ),
+        )
+
+    _configure_with_store(
+        monkeypatch, tmp_path, sqlite_path=sqlite_path, digest=digest
+    )
+
+    # Planner 只应收到 5 条被接受的行。
+    orchestrator = get_planning_orchestrator()
+    assert orchestrator is not None
+    bound = orchestrator.course_data.get_course_offerings(SEMESTER)
+    assert len(bound) == len(SHARD_IDS)
+    assert {offering.class_id for offering in bound} == {
+        class_id for _course_id, class_id, _schedule in SHARD_ROWS.values()
+    }
+    assert "stale-000" not in {offering.class_id for offering in bound}
+
+    payload = client.post(PLAN_PATH, json=_frontend_request()).json()
+    assert payload["status"] == "partially_feasible"
+    assert "stale-000" not in json.dumps(payload)
 
 
 def test_runtime_assembly_is_shared_by_the_api_dependency(
