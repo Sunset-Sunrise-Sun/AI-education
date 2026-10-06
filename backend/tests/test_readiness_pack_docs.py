@@ -25,6 +25,7 @@ if str(BACKEND_ROOT) not in sys.path:
 from app.course_data import APPROVED_FULL_SEMESTER_SHARDS  # noqa: E402
 
 E2E_DOCS = REPOSITORY_ROOT / "docs" / "e2e"
+TOOL_PATH = REPOSITORY_ROOT / "tools" / "prepare_real_case_a_runtime.py"
 EXECUTION_MAP = E2E_DOCS / "REAL_DATA_EXECUTION_MAP.md"
 RUNBOOK = E2E_DOCS / "REAL_CAPTURE_AND_RUNTIME_RUNBOOK.md"
 EVIDENCE_PROTOCOL = E2E_DOCS / "REAL_E2E_EVIDENCE_PROTOCOL.md"
@@ -37,6 +38,7 @@ REQUIRED_STEP_IDS = (
     "campus_acceptance",
     "draft_inventory",
     "handoff",
+    "curriculum_evidence",
     "accept",
     "import",
     "provenance_verification",
@@ -98,11 +100,13 @@ def test_execution_map_marks_which_steps_need_a_human() -> None:
     chain = _json_block(EXECUTION_MAP)
     by_id = {step["id"]: step for step in chain["steps"]}
 
-    # 采集 / 批准 inventory / 批准 handoff / 配置 env / 启动 / 探针 / 前端 / 证据需要人工；其余全自动。
+    # 采集 / 批准 inventory / 批准 handoff / 批准 curriculum 证据 / 配置 env / 启动 / 探针 /
+    # 前端 / 证据需要人工；其余全自动。
     for step_id in (
         "capture",
         "draft_inventory",
         "handoff",
+        "curriculum_evidence",
         "configure",
         "start",
         "probe",
@@ -185,21 +189,49 @@ def test_evidence_protocol_forbids_personal_data_and_defines_both_levels() -> No
 
 
 def test_evidence_protocol_has_the_real_source_provenance_gate() -> None:
-    """LEVEL2 必须含 real-source 硬门（六条），且 LEVEL3 继承。"""
+    """LEVEL2 必须含两半硬门（Course Data + Curriculum），且 LEVEL3 继承。"""
 
     protocol = EVIDENCE_PROTOCOL.read_text(encoding="utf-8")
 
-    assert "REAL-SOURCE-PROVENANCE" in protocol
+    assert "COURSE-DATA-REAL-SOURCE-PROVENANCE" in protocol
+    assert "CURRICULUM-REAL-SOURCE-PROVENANCE" in protocol
     assert "level2_eligible" in protocol
+    assert "L2-0A" in protocol and "L2-0B" in protocol
     for condition in (
-        "approved",
         "handoff.semester == acceptance.semester",
         "已批准的五个 shard",
         "五个 raw bundle SHA-256",
         "non-synthetic",
         "没有跳过 North",
+        "handoff_approval_identity_missing",
+        "curriculum_artifact_sha256",
+        "curriculum_digest_mismatch",
     ):
         assert condition in protocol, condition
+
+
+def test_runbook_has_no_overwrite_option_and_documents_the_curriculum_gate() -> None:
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+
+    # ⛔ overwrite 选项已删除：文档不得再建议它
+    assert "--overwrite-env" not in runbook
+    assert "不存在** overwrite 选项" in runbook or "⛔ **不存在** overwrite 选项" in runbook
+    assert "新路径" in runbook
+
+    assert "--curriculum-provenance" in runbook
+    assert "--draft-curriculum-provenance-out" in runbook
+    assert "curriculum_artifact_sha256" in runbook or "case digest" in runbook
+    assert "final_readiness_verification" in runbook
+    assert "level2_eligible" in runbook
+
+
+def test_tool_help_exposes_no_overwrite_option() -> None:
+    """源码级：工具⛔ 不得再声明任何 overwrite / force 选项。"""
+
+    source = TOOL_PATH.read_text(encoding="utf-8")
+    assert '"--overwrite-env"' not in source
+    assert '"--force"' not in source
+    assert '"--overwrite"' not in source
 
 
 def test_runbook_defines_sharded_before_first_use() -> None:
@@ -226,7 +258,7 @@ def test_runbook_documents_the_handoff_and_env_overwrite_semantics() -> None:
 
     assert "--draft-handoff-out" in runbook and "--handoff" in runbook
     assert "handoff_state" in runbook and "approved" in runbook
-    assert "--overwrite-env" in runbook and "独占创建" in runbook
+    assert "独占创建" in runbook
     assert "level2_eligible" in runbook
     assert "store_binding" in runbook
 

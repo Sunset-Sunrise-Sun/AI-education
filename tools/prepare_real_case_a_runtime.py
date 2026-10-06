@@ -43,11 +43,22 @@ status = "ready"  当且仅当：
 ## env 文件写入（BLOCKER 2）
 
 ```text
-默认：目标不存在 ⇒ 原子独占创建成功；目标已存在 ⇒ fail closed（⛔ 不静默覆盖、⛔ 无 TOCTOU 预检）
+默认且**唯一**的行为：目标不存在 ⇒ 原子独占创建成功；目标已存在 ⇒ fail closed
+（⛔ 不静默覆盖、⛔ 无 TOCTOU 预检、⛔ **不存在**任何 overwrite 选项）
 实现：同目录临时文件写全量 + fsync，再用 `os.link` **无覆盖**发布（不支持时退回 O_EXCL 独占创建）
      发布失败 / 中途失败 ⇒ 清理临时文件，绝不留下"看起来有效"的半截 env 文件
 父目录不存在 ⇒ 直接失败（⛔ 不自动创建目录）
---overwrite-env ⇒ 显式操作员动作（原子 replace）；⛔ 默认不开启
+需要重新生成 ⇒ 操作员自己挑一个**新路径**，或**在工具之外**手动删除旧文件
+```
+
+## READY 的**最后一步**：发布之后再验证一次
+
+```text
+写 env 文件（若有）之后，ready 之前，必须：
+  1. 从**刚写入的 env 文件**里解析 DB 路径 / acceptance SHA / semester
+  2. 断言它们与已验证 store 一致（路径解析后相等、SHA 相等）
+  3. **重新打开该 store** 并再次跑 provider 级权威验证（行数 / membership / trust chain）
+  4. 任何在"验证之后、ready 之前"发生的库篡改 ⇒ ⛔ 不输出 ready
 ```
 
 ## real-capture handoff（BLOCKER 3）
@@ -73,6 +84,30 @@ handoff.authorized_user_session == true
 并给出 `level2_blockers`。⛔ 本工具**不创造** "real provenance"：
 它只把人工批准的 handoff 与**被接受**的 artifact digest 绑定/对账；
 ⛔ synthetic handoff 永远无法满足 real-source gate。
+
+**批准元数据是硬门**：`handoff_state=approved` 还不够 —— `approved_by` 必须是非空字符串
+（strip 后非空）、`approved_at` 必须是**带时区**的 RFC3339/ISO8601 时间戳；
+否则即使数据链路 ready，也会得到 `level2_eligible: false` 与明确 blocker：
+
+```text
+handoff_approval_identity_missing      approved_by 缺失 / 空 / 纯空白
+handoff_approval_timestamp_missing     approved_at 缺失 / 空
+handoff_approval_timestamp_invalid     approved_at 不可解析 / 无时区
+```
+
+## Curriculum real-source evidence（BLOCKER 2B）
+
+LEVEL2 还必须绑定**runtime 实际消费的 Curriculum 输入**（`APP_CASE_A_CURRICULUM_CASE_PATH`）：
+
+```text
+--draft-curriculum-provenance-out  → 草稿（curriculum_artifact_sha256 = **本地计算**的 case 文件 SHA-256）
+人工批准（approval_state=approved + approved_by/approved_at）
+--curriculum-provenance <approved.json> + --curriculum-case <同一个 case 文件>
+  → 工具对**该文件**重新计算 SHA-256 并与记录比对（⛔ 不靠 data_source / case 名 / 自由文本）
+```
+
+Curriculum 门不成立（缺席 / 未批准 / synthetic / digest 缺失或不符 / 批准元数据无效）⇒
+`level2_eligible = false`（`curriculum_*` blockers）。
 
 ## 两种模式
 
@@ -106,6 +141,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -140,6 +176,7 @@ EXIT_PROVIDER_READBACK = 6
 EXIT_ENV_OUTPUT = 7
 EXIT_STORE_BINDING = 8
 EXIT_HANDOFF = 9
+EXIT_CURRICULUM_PROVENANCE = 10
 
 #: shard slug → CLI 选项名（与既有 acceptance CLI 一致；⛔ 不接受别名）。
 _SHARD_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -192,8 +229,8 @@ _HANDOFF_KEYS = frozenset(
 _HANDOFF_SHARD_KEYS = frozenset({"shard_id", "openingSchoolNumber", "raw_bundle_sha256"})
 _HANDOFF_WINDOW_KEYS = frozenset({"started_at", "ended_at"})
 
-#: LEVEL2 的 real-source 证据门（六条；缺一即 `level2_eligible = false`）。
-LEVEL2_GATE_CONDITIONS: tuple[str, ...] = (
+#: LEVEL2 的 Course Data real-source 证据门（六条）。
+COURSE_DATA_GATE_CONDITIONS: tuple[str, ...] = (
     "approved_real_capture_handoff_exists",
     "handoff_semester_matches_acceptance_semester",
     "handoff_contains_exactly_the_approved_five_shards",
@@ -201,6 +238,55 @@ LEVEL2_GATE_CONDITIONS: tuple[str, ...] = (
     "handoff_marked_approved_and_not_synthetic",
     "no_north_skip",
 )
+
+#: LEVEL2 的 Curriculum real-source 证据门（六条）。
+CURRICULUM_GATE_CONDITIONS: tuple[str, ...] = (
+    "approved_curriculum_provenance_exists",
+    "curriculum_is_case_a_and_not_synthetic",
+    "curriculum_provenance_approved",
+    "curriculum_approval_identity_and_timestamp_valid",
+    "curriculum_artifact_sha256_present_and_well_formed",
+    "curriculum_artifact_sha256_matches_the_case_consumed_by_runtime",
+)
+
+#: 批准元数据的 blocker 码（⛔ 空 / 非法批准元数据绝不允许 level2_eligible=true）。
+BLOCKER_APPROVAL_IDENTITY_MISSING = "handoff_approval_identity_missing"
+BLOCKER_APPROVAL_TIMESTAMP_MISSING = "handoff_approval_timestamp_missing"
+BLOCKER_APPROVAL_TIMESTAMP_INVALID = "handoff_approval_timestamp_invalid"
+
+#: curriculum provenance（本地证据产物；⛔ 不是公共 API Schema）。
+CURRICULUM_PROVENANCE_FORMAT = "sysu-real-curriculum-provenance-v1"
+CURRICULUM_PROVENANCE_VERSION = 1
+CURRICULUM_APPROVAL_STATE_APPROVED = "approved"
+
+_CURRICULUM_PROVENANCE_KEYS = frozenset(
+    {
+        "curriculum_provenance_format",
+        "curriculum_provenance_version",
+        "curriculum_source_kind",
+        "curriculum_case_id",
+        "curriculum_target_version_id",
+        "curriculum_applicable_term",
+        "curriculum_artifact_sha256",
+        "curriculum_format",
+        "curriculum_format_version",
+        "loader_commit",
+        "synthetic",
+        "approval_state",
+        "approved_by",
+        "approved_at",
+        "approval_note",
+    }
+)
+_CURRICULUM_REQUIRED_TEXT_KEYS = (
+    "curriculum_source_kind",
+    "curriculum_case_id",
+    "curriculum_target_version_id",
+    "curriculum_applicable_term",
+    "curriculum_format",
+    "curriculum_format_version",
+)
+_SHA256_HEX = re.compile(r"\A[0-9a-f]{64}\Z")
 
 
 class CliArgumentError(ValueError):
@@ -415,8 +501,33 @@ def _build_parser() -> SafeArgumentParser:
     )
     parser.add_argument(
         "--curriculum-case",
-        help="optional curriculum case path; echoed into the env output, never read here",
+        help=(
+            "the approved Case A curriculum case path. It is hashed (and echoed into the env "
+            "output as its resolved absolute path) so the curriculum provenance digest can be "
+            "compared with the exact input consumed by runtime"
+        ),
     )
+    parser.add_argument(
+        "--curriculum-provenance",
+        help=(
+            "approved curriculum provenance JSON (approval_state=approved, synthetic=false); "
+            "required for LEVEL2 eligibility"
+        ),
+    )
+    parser.add_argument(
+        "--draft-curriculum-provenance-out",
+        help="write the curriculum provenance DRAFT (digest computed locally) and stop",
+    )
+    parser.add_argument("--curriculum-case-id", help="Case A identifier recorded in the provenance draft")
+    parser.add_argument(
+        "--curriculum-target-version-id", help="target curriculum version id (e.g. case-a-new)"
+    )
+    parser.add_argument(
+        "--curriculum-applicable-term", help="the applicable term recorded in the provenance draft"
+    )
+    parser.add_argument("--curriculum-format", help="curriculum case document format (recorded as-is)")
+    parser.add_argument("--curriculum-format-version", help="curriculum case document format version")
+    parser.add_argument("--loader-commit", help="optional curriculum loader/parser commit to record")
     parser.add_argument(
         "--allow-existing-store",
         action="store_true",
@@ -424,14 +535,6 @@ def _build_parser() -> SafeArgumentParser:
             "allow reusing an existing target --sqlite (immutability rules still apply: "
             "identical acceptance is idempotent, different content fails closed). "
             "The intermediate --campus-store may always be reused."
-        ),
-    )
-    parser.add_argument(
-        "--overwrite-env",
-        action="store_true",
-        help=(
-            "EXPLICIT operator action: replace an existing --env-out atomically. "
-            "Off by default; the default is fail closed when the env file already exists."
         ),
     )
     parser.add_argument(
@@ -550,6 +653,44 @@ def _build_handoff(
         "approved_at": approved_at,
         "approval_note": approval_note,
     }
+
+
+def _parse_rfc3339(value: object) -> datetime | None:
+    """解析**带时区**的 RFC3339 / ISO8601 时间戳；⛔ 天真（naive）时间戳不接受。"""
+
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text[-1] in {"Z", "z"}:
+        text = f"{text[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None or parsed.tzinfo.utcoffset(parsed) is None:
+        return None
+    return parsed
+
+
+def _approval_blockers(
+    *, approved_by: object, approved_at: object, prefix: str
+) -> list[str]:
+    """批准元数据硬门：⛔ 空 approver / 缺失或非法时间戳都产生明确 blocker。"""
+
+    blockers: list[str] = []
+    if not isinstance(approved_by, str) or not approved_by.strip():
+        blockers.append(
+            BLOCKER_APPROVAL_IDENTITY_MISSING if prefix == "" else f"{prefix}_identity_missing"
+        )
+    if not isinstance(approved_at, str) or not approved_at.strip():
+        blockers.append(
+            BLOCKER_APPROVAL_TIMESTAMP_MISSING if prefix == "" else f"{prefix}_timestamp_missing"
+        )
+    elif _parse_rfc3339(approved_at) is None:
+        blockers.append(
+            BLOCKER_APPROVAL_TIMESTAMP_INVALID if prefix == "" else f"{prefix}_timestamp_invalid"
+        )
+    return blockers
 
 
 def _require_handoff_shape(document: object) -> dict[str, object]:
@@ -697,7 +838,136 @@ def _validate_handoff(
         "approved_by": handoff["approved_by"],
         "approved_at": handoff["approved_at"],
         "approval_note": handoff["approval_note"],
+        # ⛔ 批准元数据是硬门：空 approver / 缺失或非法（含无时区）时间戳都进 blockers。
+        "approval_blockers": _approval_blockers(
+            approved_by=handoff["approved_by"], approved_at=handoff["approved_at"], prefix=""
+        ),
     }
+
+
+# --------------------------------------------------------------------------- #
+# curriculum real-source provenance（BLOCKER 2B：本地证据产物，⛔ 不加公共 Schema）
+# --------------------------------------------------------------------------- #
+
+
+def _build_curriculum_provenance(
+    *,
+    case_path: Path,
+    case_id: str,
+    target_version_id: str,
+    applicable_term: str,
+    curriculum_format: str,
+    curriculum_format_version: str,
+    loader_commit: str | None,
+    approval_state: str = "draft",
+    approved_by: str | None = None,
+    approved_at: str | None = None,
+    approval_note: str | None = None,
+) -> dict[str, object]:
+    """构造 curriculum provenance 文档；digest 由**本地**对该 case 文件求 SHA-256 得到。"""
+
+    return {
+        "curriculum_provenance_format": CURRICULUM_PROVENANCE_FORMAT,
+        "curriculum_provenance_version": CURRICULUM_PROVENANCE_VERSION,
+        "curriculum_source_kind": "case_a_approved_case_json",
+        "curriculum_case_id": case_id,
+        "curriculum_target_version_id": target_version_id,
+        "curriculum_applicable_term": applicable_term,
+        "curriculum_artifact_sha256": _sha256_file(case_path),
+        "curriculum_format": curriculum_format,
+        "curriculum_format_version": curriculum_format_version,
+        "loader_commit": loader_commit,
+        "synthetic": False,
+        "approval_state": approval_state,
+        "approved_by": approved_by,
+        "approved_at": approved_at,
+        "approval_note": approval_note,
+    }
+
+
+def _validate_curriculum_provenance(
+    document: object, *, case_path: Path | None
+) -> tuple[dict[str, object], list[str]]:
+    """Curriculum real-source 门：返回 (summary, blockers)；⛔ 结构与格式错误才硬失败。"""
+
+    if not isinstance(document, dict):
+        _fail(
+            EXIT_CURRICULUM_PROVENANCE,
+            _payload(
+                stage="curriculum_provenance",
+                category="curriculum_provenance_invalid",
+                message="curriculum provenance must be a JSON object",
+            ),
+        )
+    unknown = set(document) - _CURRICULUM_PROVENANCE_KEYS
+    if unknown:
+        # ⛔ 未知键可能夹带凭据 / 原始文档 / 个人数据（不回显键名）。
+        _fail(
+            EXIT_CURRICULUM_PROVENANCE,
+            _payload(
+                stage="curriculum_provenance",
+                category="curriculum_provenance_shape_invalid",
+                unknown_key_count=len(unknown),
+            ),
+        )
+    if (
+        document.get("curriculum_provenance_format") != CURRICULUM_PROVENANCE_FORMAT
+        or document.get("curriculum_provenance_version") != CURRICULUM_PROVENANCE_VERSION
+    ):
+        _fail(
+            EXIT_CURRICULUM_PROVENANCE,
+            _payload(stage="curriculum_provenance", category="curriculum_provenance_format_unsupported"),
+        )
+
+    blockers: list[str] = []
+
+    for key in _CURRICULUM_REQUIRED_TEXT_KEYS:
+        value = document.get(key)
+        if not isinstance(value, str) or not value.strip():
+            blockers.append(f"curriculum_field_missing::{key}")
+
+    digest = document.get("curriculum_artifact_sha256")
+    if not isinstance(digest, str) or not digest.strip():
+        blockers.append("curriculum_digest_missing")
+    elif _SHA256_HEX.fullmatch(digest.strip()) is None:
+        blockers.append("curriculum_digest_invalid")
+    elif case_path is None:
+        blockers.append("curriculum_case_path_missing")
+    elif _sha256_file(case_path) != digest.strip():
+        blockers.append("curriculum_digest_mismatch")
+
+    if document.get("synthetic") is not False:
+        blockers.append("curriculum_evidence_synthetic")
+    if document.get("approval_state") != CURRICULUM_APPROVAL_STATE_APPROVED:
+        blockers.append("curriculum_evidence_not_approved")
+    blockers.extend(
+        _approval_blockers(
+            approved_by=document.get("approved_by"),
+            approved_at=document.get("approved_at"),
+            prefix="curriculum",
+        )
+    )
+
+    summary = {
+        "curriculum_provenance_format": document.get("curriculum_provenance_format"),
+        "curriculum_provenance_version": document.get("curriculum_provenance_version"),
+        "curriculum_source_kind": document.get("curriculum_source_kind"),
+        "curriculum_case_id": document.get("curriculum_case_id"),
+        "curriculum_target_version_id": document.get("curriculum_target_version_id"),
+        "curriculum_applicable_term": document.get("curriculum_applicable_term"),
+        "curriculum_artifact_sha256": digest.strip() if isinstance(digest, str) else None,
+        "curriculum_consumed_case_sha256": _sha256_file(case_path) if case_path is not None else None,
+        "curriculum_format": document.get("curriculum_format"),
+        "curriculum_format_version": document.get("curriculum_format_version"),
+        "loader_commit": document.get("loader_commit"),
+        "synthetic": document.get("synthetic"),
+        "approval_state": document.get("approval_state"),
+        "approved_by": document.get("approved_by"),
+        "approved_at": document.get("approved_at"),
+        "approval_note": document.get("approval_note"),
+        "curriculum_blockers": blockers,
+    }
+    return summary, blockers
 
 
 # --------------------------------------------------------------------------- #
@@ -892,7 +1162,7 @@ def _provider_read_back(
 
 
 def _runtime_environment(
-    *, store: VerifiedStore, curriculum_case: str | None
+    *, store: VerifiedStore, curriculum_case: str | Path | None
 ) -> dict[str, str]:
     """从**已验证 store 对象**派生 env（⛔ 不存在第二个 DB 路径 / SHA 参数）。"""
 
@@ -903,7 +1173,7 @@ def _runtime_environment(
         "APP_COURSE_DATA_ACCEPTANCE_SHA256": store.acceptance_sha256,
     }
     if curriculum_case:
-        environment["APP_CASE_A_CURRICULUM_CASE_PATH"] = curriculum_case
+        environment["APP_CASE_A_CURRICULUM_CASE_PATH"] = str(curriculum_case)
     return environment
 
 
@@ -986,8 +1256,12 @@ def _assert_ready_binding(
         )
 
 
-def _write_env_file(path: Path, environment: dict[str, str], *, overwrite: bool) -> None:
-    """原子写 env 文件：默认**独占创建**（已存在 ⇒ fail closed），⛔ 不留半截文件。"""
+def _write_env_file(path: Path, environment: dict[str, str]) -> None:
+    """原子写 env 文件：**只**独占创建（已存在 ⇒ fail closed），⛔ 不留半截文件。
+
+    ⛔ 不存在任何 overwrite 选项：需要重新生成时，操作员必须挑一个新路径，
+    或在**工具之外**手动删除旧文件 —— READY 语义不允许"替换已发布配置"。
+    """
 
     lines = [
         "# 本文件由 tools/prepare_real_case_a_runtime.py 生成：⛔ 不含任何凭据。",
@@ -998,17 +1272,13 @@ def _write_env_file(path: Path, environment: dict[str, str], *, overwrite: bool)
     ]
     content = "\n".join(lines).encode("utf-8")
 
-    if overwrite:
-        _replace_bytes_atomically(path, content)
-        return
-
     _write_bytes_exclusive(
         path, content, exit_code=EXIT_ENV_OUTPUT, already_exists_category="env_out_already_exists"
     )
 
 
-def _assert_env_file_binding(*, path: Path, store: VerifiedStore, semester: str) -> None:
-    """**读回**刚写入的 env 文件，断言它指向同一个已验证 store 与同一个 acceptance digest。"""
+def _read_env_bindings(path: Path) -> dict[str, str]:
+    """读回**刚写入的** env 文件并解析成键值（⛔ 不信任内存里的副本）。"""
 
     try:
         text = path.read_text(encoding="utf-8")
@@ -1028,59 +1298,71 @@ def _assert_env_file_binding(*, path: Path, store: VerifiedStore, semester: str)
             continue
         name, value = line.split("=", 1)
         parsed[name.strip()] = value.strip()
+    return parsed
 
-    if _resolve(parsed.get("APP_COURSE_DATA_SQLITE_PATH", "")) != store.path:
+
+def _final_readiness_verification(
+    *, store: VerifiedStore, semester: str, env_path: Path | None
+) -> dict[str, object]:
+    """ready 之前的**最后一步**（BLOCKER 1）。
+
+    ```text
+    1. 若有 env 文件：从**文件**里解析 DB 路径 / acceptance SHA / semester
+    2. 断言文件里的绑定 == 已验证 store
+    3. **重新打开该 store**，再跑一次 provider 级权威验证
+    4. 任何在"验证之后、ready 之前"发生的库篡改 ⇒ fail closed（⛔ 不输出 ready）
+     ```
+    """
+
+    if env_path is not None:
+        parsed = _read_env_bindings(env_path)
+        file_db_path = parsed.get("APP_COURSE_DATA_SQLITE_PATH", "")
+        file_sha = parsed.get("APP_COURSE_DATA_ACCEPTANCE_SHA256", "")
+        file_semester = parsed.get("APP_COURSE_DATA_SEMESTER", "")
+        if not file_db_path or _resolve(file_db_path) != store.path:
+            _fail(
+                EXIT_STORE_BINDING,
+                _payload(stage="env_output", category="env_file_db_path_not_verified_store"),
+            )
+        if file_sha != store.acceptance_sha256:
+            _fail(
+                EXIT_STORE_BINDING,
+                _payload(stage="env_output", category="env_file_acceptance_sha_not_verified"),
+            )
+        if file_semester != semester:
+            _fail(
+                EXIT_STORE_BINDING,
+                _payload(stage="env_output", category="env_file_semester_mismatch"),
+            )
+        target_path = _resolve(file_db_path)
+    else:
+        target_path = store.path
+
+    # ⛔ 发布之后再验证一次：此刻库若被篡改 / 破坏，必须 fail closed。
+    recheck = _provider_read_back(
+        sqlite=target_path,
+        semester=semester,
+        acceptance_sha256=store.acceptance_sha256,
+        merged_offering_count=store.offering_count,
+    )
+    if (
+        recheck.path != store.path
+        or recheck.acceptance_sha256 != store.acceptance_sha256
+        or recheck.offering_count != store.offering_count
+        or recheck.member_count != store.member_count
+    ):
         _fail(
             EXIT_STORE_BINDING,
-            _payload(stage="env_output", category="env_file_db_path_not_verified_store"),
-        )
-    if parsed.get("APP_COURSE_DATA_ACCEPTANCE_SHA256") != store.acceptance_sha256:
-        _fail(
-            EXIT_STORE_BINDING,
-            _payload(stage="env_output", category="env_file_acceptance_sha_not_verified"),
-        )
-    if parsed.get("APP_COURSE_DATA_SEMESTER") != semester:
-        _fail(
-            EXIT_STORE_BINDING,
-            _payload(stage="env_output", category="env_file_semester_mismatch"),
+            _payload(stage="ready_binding", category="final_store_reverification_mismatch"),
         )
 
-
-def _replace_bytes_atomically(path: Path, content: bytes) -> None:
-    """显式 `--overwrite-env` 路径：同目录临时文件 + 原子 replace。"""
-
-    directory = path.parent
-    if not directory.is_dir():
-        _fail(
-            EXIT_ENV_OUTPUT,
-            _payload(
-                stage="env_output",
-                category="parent_directory_missing",
-                message="parent directory must exist; this tool never creates directories",
-            ),
-        )
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=directory)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    except OSError as exc:
-        _fail(
-            EXIT_ENV_OUTPUT,
-            _payload(
-                stage="env_output",
-                category="env_out_write_failed",
-                exception_type=type(exc).__name__,
-            ),
-        )
-    finally:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
+    return {
+        "final_store_reverified": True,
+        "final_store_path": str(recheck.path),
+        "final_store_acceptance_sha256": recheck.acceptance_sha256,
+        "final_store_offering_count": recheck.offering_count,
+        "env_file_read_back": env_path is not None,
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1098,7 +1380,11 @@ def _orchestrate(
     draft_inventory_out: Path | None,
     handoff: Path | None,
     draft_handoff_out: Path | None,
+    curriculum_provenance: Path | None,
+    draft_curriculum_provenance_out: Path | None,
     collector_commit: str | None,
+    loader_commit: str | None,
+    curriculum_identity: dict[str, str | None],
     capture_window: tuple[str | None, str | None],
     campus_store: Path,
     sqlite: Path,
@@ -1106,11 +1392,12 @@ def _orchestrate(
     env_out: Path | None,
     curriculum_case: str | None,
     allow_existing_store: bool,
-    overwrite_env: bool,
 ) -> dict[str, object]:
     # ⚠️ 所有 store 路径在这里**解析一次**，之后全链路只用解析后的绝对路径。
     resolved_sqlite = _resolve(sqlite)
     resolved_campus_store = _resolve(campus_store)
+    # ⚠️ curriculum case 路径同样解析一次：digest 与 env 都指向**同一个**被解析文件。
+    resolved_curriculum_case = _resolve(curriculum_case) if curriculum_case else None
 
     if resolved_sqlite.exists() and not allow_existing_store:
         _fail(
@@ -1133,7 +1420,11 @@ def _orchestrate(
     )
 
     # ---- 草稿步骤（产出草稿；没有已批准 inventory 时到此为止） ---------- #
-    if draft_inventory_out is not None or draft_handoff_out is not None:
+    if (
+        draft_inventory_out is not None
+        or draft_handoff_out is not None
+        or draft_curriculum_provenance_out is not None
+    ):
         draft_payload: dict[str, object] = {
             "status": (
                 "draft_inventory_written"
@@ -1191,10 +1482,64 @@ def _orchestrate(
                 },
             }
 
+        if draft_curriculum_provenance_out is not None:
+            if resolved_curriculum_case is None or not resolved_curriculum_case.is_file():
+                _fail(
+                    EXIT_ARGUMENTS,
+                    _payload(
+                        stage="arguments",
+                        category="curriculum_case_path_missing",
+                        message="--draft-curriculum-provenance-out requires an existing --curriculum-case",
+                    ),
+                )
+            missing_identity = [
+                flag
+                for flag, value in (
+                    ("--curriculum-case-id", curriculum_identity["case_id"]),
+                    ("--curriculum-target-version-id", curriculum_identity["target_version_id"]),
+                    ("--curriculum-applicable-term", curriculum_identity["applicable_term"]),
+                    ("--curriculum-format", curriculum_identity["curriculum_format"]),
+                    ("--curriculum-format-version", curriculum_identity["format_version"]),
+                )
+                if not value or not str(value).strip()
+            ]
+            if missing_identity:
+                _fail(
+                    EXIT_ARGUMENTS,
+                    _payload(
+                        stage="arguments",
+                        category="curriculum_identity_incomplete",
+                        missing_flags=missing_identity,
+                    ),
+                )
+            document = _build_curriculum_provenance(
+                case_path=resolved_curriculum_case,
+                case_id=str(curriculum_identity["case_id"]),
+                target_version_id=str(curriculum_identity["target_version_id"]),
+                applicable_term=str(curriculum_identity["applicable_term"]),
+                curriculum_format=str(curriculum_identity["curriculum_format"]),
+                curriculum_format_version=str(curriculum_identity["format_version"]),
+                loader_commit=loader_commit,
+            )
+            _write_json_document(
+                draft_curriculum_provenance_out,
+                document,
+                exit_code=EXIT_CURRICULUM_PROVENANCE,
+                already_exists_category="curriculum_provenance_draft_already_exists",
+            )
+            draft_payload["draft_curriculum_provenance"] = {
+                "curriculum_provenance_format": document["curriculum_provenance_format"],
+                "curriculum_case_id": document["curriculum_case_id"],
+                "curriculum_artifact_sha256": document["curriculum_artifact_sha256"],
+                "approval_state": document["approval_state"],
+                "path": str(draft_curriculum_provenance_out),
+            }
+
         if inventory is None:
             draft_payload["next_step"] = (
-                "approve the draft(s) out of band (handoff: set handoff_state=approved and fill "
-                "approved_by/approved_at), then rerun with --inventory and --handoff "
+                "approve the draft(s) out of band (handoff: handoff_state=approved + approved_by/"
+                "approved_at; curriculum provenance: approval_state=approved + approved_by/"
+                "approved_at), then rerun with --inventory, --handoff and --curriculum-provenance "
                 "(this tool cannot prove any approval)"
             )
             return draft_payload
@@ -1228,6 +1573,38 @@ def _orchestrate(
             )
         if document["semester"] != semester:
             _fail(EXIT_HANDOFF, _payload(stage="handoff", category="handoff_semester_mismatch"))
+
+    # ---- curriculum provenance 预检（同样在被接受数据之前 fail closed） -- #
+    curriculum_summary: dict[str, object] | None = None
+    curriculum_document: object | None = None
+    if curriculum_provenance is not None:
+        try:
+            curriculum_document = json.loads(Path(curriculum_provenance).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            _fail(
+                EXIT_CURRICULUM_PROVENANCE,
+                _payload(stage="curriculum_provenance", category="curriculum_provenance_unreadable"),
+            )
+        if not isinstance(curriculum_document, dict) or (
+            curriculum_document.get("curriculum_provenance_format") != CURRICULUM_PROVENANCE_FORMAT
+        ):
+            _fail(
+                EXIT_CURRICULUM_PROVENANCE,
+                _payload(
+                    stage="curriculum_provenance",
+                    category="curriculum_provenance_format_unsupported",
+                ),
+            )
+        unknown = set(curriculum_document) - _CURRICULUM_PROVENANCE_KEYS
+        if unknown:
+            _fail(
+                EXIT_CURRICULUM_PROVENANCE,
+                _payload(
+                    stage="curriculum_provenance",
+                    category="curriculum_provenance_shape_invalid",
+                    unknown_key_count=len(unknown),
+                ),
+            )
 
     acceptance = _run_acceptance(
         _acceptance_argv(
@@ -1265,7 +1642,15 @@ def _orchestrate(
             acceptance_shards=acceptance.get("shards"),
         )
 
-    environment = _runtime_environment(store=store, curriculum_case=curriculum_case)
+    curriculum_blockers: list[str] = []
+    if curriculum_document is None:
+        curriculum_blockers.append("curriculum_provenance_missing")
+    else:
+        curriculum_summary, curriculum_blockers = _validate_curriculum_provenance(
+            curriculum_document, case_path=resolved_curriculum_case
+        )
+
+    environment = _runtime_environment(store=store, curriculum_case=resolved_curriculum_case)
 
     # ---- READY 绑定断言（⛔ 在任何 ready 输出 / env 写入之前） ------------ #
     _assert_ready_binding(
@@ -1275,14 +1660,25 @@ def _orchestrate(
         semester=semester,
     )
 
+    # ---- env 独占创建（⛔ 无 overwrite 选项） --------------------------- #
+    env_written = False
     if env_out is not None:
-        _write_env_file(env_out, environment, overwrite=overwrite_env)
-        # ⛔ 写文件**不得**改变 DB 路径或 acceptance digest ⇒ 读回文件再断言一次。
-        _assert_env_file_binding(path=env_out, store=store, semester=semester)
+        _write_env_file(env_out, environment)
+        env_written = True
+
+    # ---- ready 之前的**最后一步**：从文件读回 + 重新打开 store 再验证 --- #
+    final_verification = _final_readiness_verification(
+        store=store,
+        semester=semester,
+        env_path=env_out if env_written else None,
+    )
 
     blockers: list[str] = []
     if handoff_summary is None:
         blockers.append("real_source_handoff_missing")
+    else:
+        blockers.extend(handoff_summary.get("approval_blockers", []))  # type: ignore[arg-type]
+    blockers.extend(curriculum_blockers)
     if store.offering_count <= 0:
         blockers.append("no_accepted_offerings")
     level2_eligible = not blockers
@@ -1301,13 +1697,27 @@ def _orchestrate(
             "env_acceptance_sha_equals_verified_store": True,
             "env_db_path_semantics": "derived_from_the_verified_store_never_caller_supplied",
         },
+        "curriculum_binding": {
+            "resolved_curriculum_case_path": (
+                str(resolved_curriculum_case) if resolved_curriculum_case is not None else None
+            ),
+            "env_curriculum_case_path_equals_resolved_input": resolved_curriculum_case is not None,
+            "curriculum_case_digest_bound_to_evidence": bool(
+                curriculum_summary is not None and not curriculum_blockers
+            ),
+            "curriculum_case_path_semantics": "resolved_once_and_echoed_into_env_never_caller_supplied",
+        },
+        "final_readiness_verification": final_verification,
         "runtime_environment": environment,
         "env_out": str(env_out) if env_out is not None else None,
-        "env_out_semantics": (
-            "created_atomically_and_only_if_absent" if not overwrite_env else "atomically_replaced_by_explicit_--overwrite-env"
-        ),
+        # ⛔ 不存在 overwrite 选项：env 只能"独占创建"，已存在即 fail closed。
+        "env_out_semantics": "created_atomically_and_only_if_absent_no_overwrite_option",
         "real_source_provenance": handoff_summary,
-        "level2_gate_conditions": list(LEVEL2_GATE_CONDITIONS),
+        "curriculum_provenance": curriculum_summary,
+        "level2_gate_conditions": {
+            "course_data": list(COURSE_DATA_GATE_CONDITIONS),
+            "curriculum": list(CURRICULUM_GATE_CONDITIONS),
+        },
         "level2_eligible": level2_eligible,
         "level2_blockers": blockers,
         "next_steps": [
@@ -1347,7 +1757,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         handoff = Path(args.handoff) if args.handoff else None
         draft_handoff_out = Path(args.draft_handoff_out) if args.draft_handoff_out else None
+        curriculum_provenance = (
+            Path(args.curriculum_provenance) if args.curriculum_provenance else None
+        )
+        draft_curriculum_provenance_out = (
+            Path(args.draft_curriculum_provenance_out)
+            if args.draft_curriculum_provenance_out
+            else None
+        )
         collector_commit = args.collector_commit
+        loader_commit = args.loader_commit
+        curriculum_identity = {
+            "case_id": args.curriculum_case_id,
+            "target_version_id": args.curriculum_target_version_id,
+            "applicable_term": args.curriculum_applicable_term,
+            "curriculum_format": args.curriculum_format,
+            "format_version": args.curriculum_format_version,
+        }
         capture_window = (args.capture_window_start, args.capture_window_end)
 
         if args.preflight:
@@ -1366,7 +1792,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             env_out = None
             curriculum_case = None
             allow_existing_store = False
-            overwrite_env = False
         else:
             semester = (args.semester or "").strip()
             if not semester:
@@ -1410,7 +1835,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             env_out = Path(args.env_out) if args.env_out else None
             curriculum_case = args.curriculum_case
             allow_existing_store = args.allow_existing_store
-            overwrite_env = args.overwrite_env
 
         # preflight 也需要 inventory：先生成草稿，再用它跑正式 acceptance（同真实两步流程）。
         if args.preflight:
@@ -1440,7 +1864,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             draft_inventory_out=None if args.preflight else draft_inventory_out,
             handoff=handoff,
             draft_handoff_out=draft_handoff_out,
+            curriculum_provenance=curriculum_provenance,
+            draft_curriculum_provenance_out=draft_curriculum_provenance_out,
             collector_commit=collector_commit,
+            loader_commit=loader_commit,
+            curriculum_identity=curriculum_identity,
             capture_window=capture_window,
             campus_store=campus_store,
             sqlite=sqlite,
@@ -1448,7 +1876,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             env_out=env_out,
             curriculum_case=curriculum_case,
             allow_existing_store=allow_existing_store,
-            overwrite_env=overwrite_env,
         )
     except StageFailure as failure:
         print(json.dumps(failure.payload, ensure_ascii=False, sort_keys=True), file=sys.stderr)

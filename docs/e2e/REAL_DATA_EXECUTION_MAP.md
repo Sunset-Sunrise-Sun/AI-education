@@ -111,6 +111,23 @@
       "user_interaction_note": "人工批准：把 handoff_state 改成 approved 并填 approved_by/approved_at（唯一的必要人工编辑；SHA 由工具计算）"
     },
     {
+      "id": "curriculum_evidence",
+      "actor": "tool + user",
+      "tool": "tools/prepare_real_case_a_runtime.py",
+      "command": "python tools/prepare_real_case_a_runtime.py ... --curriculum-case <case-a.json> --draft-curriculum-provenance-out <curriculum.draft.json>",
+      "inputs": [
+        "已批准的 Case A case 文件（只读取其字节以计算 SHA-256）",
+        "--curriculum-case-id / --curriculum-target-version-id / --curriculum-applicable-term（等身份字段）"
+      ],
+      "outputs": [
+        "curriculum provenance 草稿（Case A 身份 + curriculum_artifact_sha256 + 格式/版本 + loader commit + 批准字段）"
+      ],
+      "invariant": "digest 由本地对该 case 文件计算；工具只做 digest 绑定（⛔ 不靠 data_source / case 名 / 自由文本）；⛔ 记录不含凭据 / 原始文档 / 个人数据；未知键一律拒绝",
+      "failure_mode": "缺身份字段或 case 文件不存在 ⇒ exit 2；格式/版本不支持或出现未知键 ⇒ exit 10；未批准 / synthetic / digest 缺失或不符 / 批准元数据无效 ⇒ level2_eligible = false",
+      "user_interaction": "required",
+      "user_interaction_note": "人工批准：approval_state → approved 并填 approved_by / approved_at（带时区时间戳）"
+    },
+    {
       "id": "accept",
       "actor": "tool",
       "tool": "tools/accept_full_semester_course_data.py",

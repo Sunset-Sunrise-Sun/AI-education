@@ -107,16 +107,18 @@ window.XuehangSysuCollector.toDiagnosticsJson(sharded)        // → 存为 diag
 **唯一需要你人工编辑**的动作（批准，属于决策记录，不是数据处理）：
 
 ```text
-在 handoff 草稿里把 handoff_state 从 "draft" 改成 "approved"，
-并填 approved_by / approved_at（可选 approval_note）。
-⛔ 不要改任何 SHA / shard / semester —— 那些由工具计算；改了就会 fail closed。
-inventory 草稿同样需要人工批准（out-of-band 审查后原样交回）。
+handoff 草稿：handoff_state "draft" → "approved"，填 approved_by / approved_at
+              （approved_at 必须是**带时区**的 RFC3339，例如 2026-10-06T12:00:00+00:00；
+               ⛔ 空 approver / 空或非法时间戳 ⇒ level2_eligible = false）
+curriculum 草稿：approval_state "draft" → "approved"，填 approved_by / approved_at（同上）
+inventory 草稿：out-of-band 审查后原样交回
+⛔ 不要改任何 SHA / shard / semester / case digest —— 那些由工具计算；改了就会 fail closed。
 ```
 
 ## 2. 采集之后的一条命令（对齐 R2/R4）
 
 ```powershell
-# 第一步：逐校区校验 + campus acceptance + inventory 草稿 + handoff 草稿（不产出 acceptance）
+# 第一步：逐校区校验 + campus acceptance + 三份草稿（不产出 acceptance）
 python tools/prepare_real_case_a_runtime.py `
   --semester 2026-1 `
   --baseline-before <diagnostics.baseline_before> `
@@ -128,14 +130,23 @@ python tools/prepare_real_case_a_runtime.py `
   --sqlite       <本地目录>/course-data.sqlite3 `
   --draft-inventory-out <本地目录>/inventory.draft.json `
   --draft-handoff-out   <本地目录>/handoff.draft.json `
-  --collector-commit <采集器 commit（可选）>
+  --collector-commit <采集器 commit（可选）> `
+  --curriculum-case <已批准的 case-a.json> `
+  --draft-curriculum-provenance-out <本地目录>/curriculum.draft.json `
+  --curriculum-case-id case-a `
+  --curriculum-target-version-id case-a-new `
+  --curriculum-applicable-term 2025-2 `
+  --curriculum-format sysu-curriculum-case-v1 `
+  --curriculum-format-version 1 `
+  --loader-commit <loader commit（可选）>
 ```
 
 ```text
-→ 人工批准两份草稿（out-of-band）：
+→ 人工批准三份草稿（out-of-band）：
    · inventory.draft.json：审查后原样交回
-   · handoff.draft.json：把 handoff_state 改成 approved，填 approved_by / approved_at
-   ⛔ 不要改任何 SHA / shard / semester（改了会 fail closed）
+   · handoff.draft.json：handoff_state → approved，填 approved_by / approved_at（带时区时间戳）
+   · curriculum.draft.json：approval_state → approved，填 approved_by / approved_at
+   ⛔ 不要改任何 SHA / shard / semester / case digest（改了会 fail closed 或 level2_eligible=false）
 ```
 
 ```powershell
@@ -149,9 +160,10 @@ python tools/prepare_real_case_a_runtime.py `
   --sqlite       <本地目录>/course-data.sqlite3 `
   --inventory <本地目录>/inventory.draft.json `
   --handoff   <本地目录>/handoff.draft.json `
+  --curriculum-provenance <本地目录>/curriculum.draft.json `
+  --curriculum-case <已批准的 case-a.json> `
   --output-manifest <本地目录>/manifest.json `
-  --env-out <本地目录>/runtime.env `
-  --curriculum-case <已批准的 case-a.json>
+  --env-out <本地目录>/runtime.env
 ```
 
 期望最后一行 `{"status": "ready", ...}`，并且：
@@ -159,11 +171,16 @@ python tools/prepare_real_case_a_runtime.py `
 ```text
 provider_read_back.provider_offering_count == acceptance.merged_offering_count
 store_binding.resolved_verified_store_path == runtime_environment.APP_COURSE_DATA_SQLITE_PATH
-level2_eligible == true            （仅当 --handoff 是 approved 且五个 digest 与 acceptance 逐条一致）
+final_readiness_verification.final_store_reverified == true   （发布 env 之后又重开库验证过一次）
+curriculum_binding.resolved_curriculum_case_path == runtime_environment.APP_CASE_A_CURRICULUM_CASE_PATH
+level2_eligible == true   （仅当 Course Data 门 AND Curriculum 门都通过：
+                           handoff approved + 批准元数据有效 + 五个 digest 一致，
+                           且 curriculum provenance approved + digest == 被消费的 case 文件）
 ```
 
-⚠️ env 文件默认**独占创建**：已存在 ⇒ fail closed（exit 7）。
-确需替换时用显式 `--overwrite-env`（原子 replace）；⛔ 默认不开启。
+⚠️ env 文件**只能独占创建**：目标已存在 ⇒ fail closed（exit 7）。
+⛔ **不存在** overwrite 选项 —— 需要重新生成时，请换一个**新路径**，
+或在**工具之外**手动删除旧文件（READY 语义不允许替换已发布的配置）。
 ⚠️ 父目录必须已存在（⛔ 本工具不自动建目录）。
 ⚠️ `--sqlite` 已存在 ⇒ 默认拒绝（exit 3）；确需复用加 `--allow-existing-store`
 （immutable acceptance 规则照旧：同 identity 幂等、不同内容 fail closed）。
