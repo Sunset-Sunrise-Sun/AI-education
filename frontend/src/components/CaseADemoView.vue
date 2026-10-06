@@ -28,14 +28,27 @@ const result = ref<CaseADemoResponse | null>(null)
 const loading = ref(false)
 const error = ref('')
 const searchQuery = ref('')
+const campusFilter = ref('')
+const weekdayFilter = ref('')
 const manualOpen = ref(false)
 
 const manualCount = computed(() => manualScheduleOfferingCount(form.value))
 const normalizedQuery = computed(() => searchQuery.value.trim().toLocaleLowerCase())
 
+const campusOptions = computed(() => {
+  const campuses = new Set<string>()
+  for (const item of offerings.value) {
+    for (const meeting of item.meetings) {
+      if (meeting.campus?.trim()) campuses.add(meeting.campus.trim())
+    }
+  }
+  return [...campuses].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+})
+
 const filteredOfferings = computed(() => {
   const query = normalizedQuery.value
   if (!query) return []
+
   return offerings.value
     .filter((item) => {
       const haystack = [
@@ -44,9 +57,43 @@ const filteredOfferings = computed(() => {
         item.class_id,
         item.teacher ?? '',
       ].join(' ').toLocaleLowerCase()
-      return haystack.includes(query)
+
+      if (!haystack.includes(query)) return false
+      if (
+        campusFilter.value &&
+        !item.meetings.some((meeting) => meeting.campus === campusFilter.value)
+      ) {
+        return false
+      }
+      if (
+        weekdayFilter.value &&
+        !item.meetings.some((meeting) => String(meeting.weekday) === weekdayFilter.value)
+      ) {
+        return false
+      }
+      return true
     })
     .slice(0, SEARCH_LIMIT)
+})
+
+const groupedOfferings = computed(() => {
+  const groups = new Map<string, { key: string; courseId: string; courseName: string; credit: number | null; items: CourseOffering[] }>()
+  for (const item of filteredOfferings.value) {
+    const key = `${item.course_id}::${item.course_name}`
+    const existing = groups.get(key)
+    if (existing) {
+      existing.items.push(item)
+      continue
+    }
+    groups.set(key, {
+      key,
+      courseId: item.course_id,
+      courseName: item.course_name,
+      credit: item.credit ?? null,
+      items: [item],
+    })
+  }
+  return [...groups.values()]
 })
 
 const resultCourseNames = computed(() => {
@@ -102,6 +149,13 @@ function addManual(payload: { offering: CourseOffering; entries: ManualScheduleE
 function removeOffering(offering: CourseOffering): void {
   const next = removeCurrentScheduleOffering(form.value.currentSchedule, offering)
   form.value = invalidateManualAttestation(form.value, next).form
+}
+
+function teacherText(offering: CourseOffering): string {
+  const value = offering.teacher?.trim()
+  if (!value) return '任课教师：待核验'
+  if (value.toLocaleLowerCase() === 'redacted') return '任课教师：信息已脱敏'
+  return `任课教师：${value}`
 }
 
 function meetingText(offering: CourseOffering): string {
@@ -186,42 +240,95 @@ onMounted(loadOfferings)
         :subtitle="`已加载真实教学班数据 ${offerings.length} 条；数据范围为南校园 + 深圳校区。`"
       >
         <div class="case-a-schedule">
-          <label class="case-a-search">
-            <span>搜索你已经选中的课程</span>
-            <input
-              v-model="searchQuery"
-              data-testid="case-a-offering-search"
-              class="input-text"
-              type="search"
-              placeholder="搜索课程名称、课程号或教学班号"
-            />
-          </label>
+          <div class="case-a-search-panel">
+            <label class="case-a-search">
+              <span>搜索你已经选中的课程</span>
+              <input
+                v-model="searchQuery"
+                data-testid="case-a-offering-search"
+                class="input-text"
+                type="search"
+                placeholder="搜索课程名称、课程号、任课教师或教学班号"
+              />
+            </label>
 
-          <p v-if="!normalizedQuery" class="case-a-empty">请输入课程名称开始搜索，不需要浏览全部教学班。</p>
-          <p v-else-if="filteredOfferings.length === 0" class="case-a-empty">没有找到匹配的教学班，可尝试课程号或手工添加。</p>
+            <div class="case-a-filters">
+              <label>
+                <span>校区</span>
+                <select v-model="campusFilter" data-testid="case-a-campus-filter" class="input-text">
+                  <option value="">全部校区</option>
+                  <option v-for="campus in campusOptions" :key="campus" :value="campus">{{ campus }}</option>
+                </select>
+              </label>
+              <label>
+                <span>上课日</span>
+                <select v-model="weekdayFilter" data-testid="case-a-weekday-filter" class="input-text">
+                  <option value="">全部上课日</option>
+                  <option value="1">周一</option>
+                  <option value="2">周二</option>
+                  <option value="3">周三</option>
+                  <option value="4">周四</option>
+                  <option value="5">周五</option>
+                  <option value="6">周六</option>
+                  <option value="7">周日</option>
+                </select>
+              </label>
+            </div>
+          </div>
 
-          <div v-if="filteredOfferings.length > 0" class="case-a-search-results">
-            <article
-              v-for="item in filteredOfferings"
-              :key="keyOf(item)"
-              class="case-a-offering"
-              data-testid="case-a-search-result"
+          <p v-if="!normalizedQuery" class="case-a-empty">请输入课程名称、课程号或任课教师开始搜索，不需要浏览全部教学班。</p>
+          <p v-else-if="filteredOfferings.length === 0" class="case-a-empty">没有找到匹配的教学班，可调整筛选条件或手工添加。</p>
+
+          <div v-if="groupedOfferings.length > 0" class="case-a-course-groups">
+            <section
+              v-for="group in groupedOfferings"
+              :key="group.key"
+              class="case-a-course-group"
+              data-testid="case-a-course-group"
             >
-              <div class="case-a-offering__main">
-                <strong>{{ item.course_name }}</strong>
-                <span>{{ item.course_id }} · 教学班 {{ item.class_id }}</span>
-                <span>{{ item.teacher || '教师信息待核验' }} · {{ meetingText(item) }}</span>
-              </div>
-              <button
-                class="button button--small"
-                type="button"
-                :disabled="isSelected(item)"
-                @click="addAcceptedOffering(item)"
+              <header class="case-a-course-group__head">
+                <div>
+                  <h3>{{ group.courseName }}</h3>
+                  <div class="case-a-course-meta">
+                    <span>{{ group.courseId }}</span>
+                    <span v-if="group.credit !== null">{{ group.credit }} 学分</span>
+                    <span>{{ group.items.length }} 个匹配教学班</span>
+                  </div>
+                </div>
+              </header>
+
+              <article
+                v-for="item in group.items"
+                :key="keyOf(item)"
+                class="case-a-class-row"
+                data-testid="case-a-search-result"
               >
-                {{ isSelected(item) ? '已加入' : '加入当前课表' }}
-              </button>
-            </article>
-            <p class="case-a-secondary">最多显示 {{ SEARCH_LIMIT }} 条匹配结果，请继续输入关键词缩小范围。</p>
+                <div class="case-a-class-main">
+                  <div class="case-a-class-title">
+                    <strong>教学班 {{ item.class_id }}</strong>
+                    <span class="case-a-teacher">{{ teacherText(item) }}</span>
+                  </div>
+                  <p>{{ meetingText(item) }}</p>
+                  <div class="case-a-class-extra">
+                    <span v-if="item.remaining_capacity !== null && item.remaining_capacity !== undefined">
+                      剩余容量：{{ item.remaining_capacity }}
+                    </span>
+                    <span v-if="item.capacity !== null && item.capacity !== undefined">
+                      容量：{{ item.capacity }}
+                    </span>
+                  </div>
+                </div>
+                <button
+                  class="button button--small"
+                  type="button"
+                  :disabled="isSelected(item)"
+                  @click="addAcceptedOffering(item)"
+                >
+                  {{ isSelected(item) ? '已加入' : '加入当前课表' }}
+                </button>
+              </article>
+            </section>
+            <p class="case-a-secondary">最多显示 {{ SEARCH_LIMIT }} 个匹配教学班，请继续输入关键词缩小范围。</p>
           </div>
 
           <div class="case-a-selected">
@@ -238,6 +345,7 @@ onMounted(loadOfferings)
               <div>
                 <strong>{{ item.course_name }}</strong>
                 <p>{{ item.course_id }} · 教学班 {{ item.class_id }}</p>
+                <p>{{ teacherText(item) }}</p>
                 <p>{{ meetingText(item) }}</p>
                 <p v-if="item.source === 'manual-entry://current-schedule'" class="case-a-warning">
                   该课程信息由你本人填写，未经学校系统核验。
@@ -338,7 +446,7 @@ onMounted(loadOfferings)
 
 <style scoped>
 .case-a-page {
-  background: #f6f8fb;
+  background: #f4f7fb;
 }
 
 .case-a-hero {
@@ -346,9 +454,9 @@ onMounted(loadOfferings)
   justify-content: space-between;
   gap: 28px;
   padding: 30px 32px;
-  border: 1px solid var(--border);
+  border: 1px solid #dbe6f5;
   border-radius: var(--radius-lg);
-  background: linear-gradient(135deg, #ffffff 0%, #f5f8ff 100%);
+  background: linear-gradient(135deg, #ffffff 0%, #eef5ff 100%);
   box-shadow: var(--shadow-sm);
 }
 
@@ -364,12 +472,13 @@ onMounted(loadOfferings)
 .case-a-secondary,
 .case-a-empty,
 .case-a-submit-wrap p,
-.case-a-selected-item p {
+.case-a-selected-item p,
+.case-a-class-main p {
   margin: 0;
 }
 
 .case-a-eyebrow {
-  color: var(--accent);
+  color: #2f72dc;
   font-size: 12px;
   font-weight: 700;
   letter-spacing: .08em;
@@ -425,17 +534,49 @@ onMounted(loadOfferings)
   line-height: 1.6;
 }
 
+.case-a-search-panel {
+  display: flex;
+  align-items: end;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 14px;
+  background: #f8fbff;
+  border: 1px solid #d9e6f7;
+  border-radius: var(--radius);
+}
+
 .case-a-search {
   display: flex;
+  flex: 1 1 520px;
   flex-direction: column;
   gap: 8px;
   font-weight: 600;
 }
 
 .case-a-search .input-text {
-  max-width: 720px;
+  width: 100%;
   padding: 11px 14px;
   font-size: 14px;
+}
+
+.case-a-filters {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.case-a-filters label {
+  display: flex;
+  min-width: 130px;
+  flex-direction: column;
+  gap: 6px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.case-a-filters .input-text {
+  padding: 9px 30px 9px 10px;
 }
 
 .case-a-empty {
@@ -446,36 +587,104 @@ onMounted(loadOfferings)
   border-radius: var(--radius-sm);
 }
 
-.case-a-search-results {
+.case-a-course-groups {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
 }
 
-.case-a-offering,
-.case-a-selected-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 12px 14px;
-  border: 1px solid var(--border);
+.case-a-course-group {
+  overflow: hidden;
+  border: 1px solid #d8e3f0;
   border-radius: var(--radius);
   background: #fff;
 }
 
-.case-a-offering__main {
+.case-a-course-group__head {
   display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px 16px;
+  background: #f6f9fd;
+  border-bottom: 1px solid #e2e8f0;
 }
 
-.case-a-offering__main span,
-.case-a-selected-item p {
-  color: var(--text-muted);
+.case-a-course-group__head h3 {
+  margin: 0;
+  color: #3276df;
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.case-a-course-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.case-a-course-meta span {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef4fd;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.case-a-class-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 13px 16px;
+  border-bottom: 1px solid #edf1f6;
+}
+
+.case-a-class-row:last-child {
+  border-bottom: 0;
+}
+
+.case-a-class-row:hover {
+  background: #fbfdff;
+}
+
+.case-a-class-main {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.case-a-class-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.case-a-class-title strong {
+  color: #1e293b;
+}
+
+.case-a-teacher {
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.case-a-class-main p {
+  color: #64748b;
   font-size: 12px;
-  line-height: 1.5;
+  line-height: 1.6;
+}
+
+.case-a-class-extra {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: #64748b;
+  font-size: 11px;
 }
 
 .case-a-selected {
@@ -487,6 +696,23 @@ onMounted(loadOfferings)
 .case-a-selected__head h3 {
   margin: 0;
   font-size: 16px;
+}
+
+.case-a-selected-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.case-a-selected-item p {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .case-a-warning {
@@ -560,11 +786,23 @@ onMounted(loadOfferings)
 
 @media (max-width: 760px) {
   .case-a-hero,
-  .case-a-offering,
+  .case-a-class-row,
   .case-a-selected-item,
   .case-a-submit-wrap {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .case-a-search-panel {
+    align-items: stretch;
+  }
+
+  .case-a-filters {
+    width: 100%;
+  }
+
+  .case-a-filters label {
+    flex: 1 1 130px;
   }
 
   .case-a-coverage {
