@@ -155,3 +155,15 @@ Curriculum path/digest/approval recheck recorded, no runtime semantic change req
 Targeted565/full2960+2skip/frontend134/type/build/compile/node allpass. Linux nohistorical
 Windows Curriculum failures; unchanged Curriculum code/tests. ENV/HANDOFFPASS, C/D/PR48BLOCK,
 usercaptureNO/mergenotready. Independent tests/docs/status only, reportPR48_FINAL_2e76e04.md.
+
+## 2026-10-06 — PR48 e684b87 focused final invariant
+
+Fetched all/pruned/full refs, GitHub PR metadata/pull/head agree. Single-agent/local synthetic
+review: immutable VerifiedCurriculum suppliesenv; actual finalfile replace/delete/envredirect/
+directory/symlink/directoryrebind and corruptStore reject/no ready. Approvalfinal reevaluation
+rejects invalid metadata. Combined staticLEVEL2AND PASS, preflightLEVEL1false, docsL3inherits.
+One strict blocker remains: noCurr provenance returns statusready finalCurriculumfalse,
+contradicting explicit universalREADYbothtrue userrequirement. Correctly suppresses caseenv
+and falseeligibility; minimal partialstatus distinction, no frozen backend changes.
+Independent13pass/1fail; targeted576/full2971+2skip/frontend134/type/build/compile/nodePASS.
+Report PR48_FINAL_e684b87.md. PR48BLOCK/captureNO/notready, no productionedit/merge/school.

@@ -135,3 +135,14 @@ CURRICULUM PROVENANCE / COMBINED LEVEL2 / PR48 BLOCK. Report:
 reviewer/full_semester/PR48_FINAL_2e76e04.md. Independent37PASS/2strictFAIL;
 targeted565PASS; fullbackend2960PASS/2skip; frontend134/type/build/compile/nodePASS.
 No frozen production/public Schema diff. North suspended; user captureNO; merge not ready.
+
+## PR48 final Curriculum TOCTOU — e684b87
+
+Exact fetched/GitHub PR48 HEAD e684b87ee663c3550725a2ff689dd38fcecff548 verified.
+VerifiedCurriculum immutable/derived env and final bytes/path/symlink attacks closed.
+COMBINED LEVEL2 PASS. PR48/CURRICULUM FINAL REVERIFICATION BLOCK solely for user-required
+READY semantics: missing provenance still statusready with finalCurriculumfalse. Casepath
+correctly suppressed/eligibilityfalse; need separate partial-preparation status/no fullready.
+Report reviewer/full_semester/PR48_FINAL_e684b87.md. Independent13pass/1strictfail;
+targeted576/full2971+2skip/frontend134/type/build/compile/nodePASS. No production edits,
+merge or school access; North suspended/usercaptureNO/mergenotready.
