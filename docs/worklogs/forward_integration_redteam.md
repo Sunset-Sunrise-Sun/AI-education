@@ -64,3 +64,17 @@ stale非成员不进实际Planner均通过；无关construction ValueError被fac
 违反用户内部程序错误非503要求。R-ERROR-CLASSIFICATION BLOCK，exact reproduction/comment
 保存LATEST_CLOSURE_REVIEW.md。未进入Phase3新E2E；不运行allGatesPASS前提下的finalfullbackend/
 compileall/前端回归。只有reviewer docs/tests修改，无production或merge。
+
+## 2026-10-06 Runtime/Synthetic final closure
+
+刷新远端并独立审查Runtime b0931d7 / Synthetic8fc18b9。Provider ec8ab6f冻结PASS，
+Course Data diff为空，因此不复审。Reviewer扩展真实HTTP异常注入矩阵，六类内部错误
+在CourseData/Curriculum/Planner构造和Provider/Planner/Orchestrator请求六边界均500；
+预期领域/配置失败和构造后撤销503。Runtime51 passed，旧ValueError分类BLOCK关闭。
+独立Synthetic10 passed，完整A/B同SHA攻击拒绝B，随后HTTP仍为A；直接篡改503，
+stale campus非member不入Planner，课表/Preference exact，UNKNOWN/manual_confirmation保留。
+初始独立断言错误把SelectedClass当CourseOffering、复制stale保留accepted provenance，
+按公共response形状及campus provenance修正fixture后通过，没有修改production。
+传播版本Runtime+E2E61 passed。指定targeted1054 passed；full backend2823 passed/2 skipped；
+compileall exit0。报告RUNTIME_E2E_FINAL_CLOSURE.md记录命令、HEAD、局限和Gate E/F/G边界。
+仅tests/docs更改，未merge、未访问学校，Formal Real E2E仍LEVEL0。

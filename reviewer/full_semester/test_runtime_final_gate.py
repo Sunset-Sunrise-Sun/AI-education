@@ -114,16 +114,60 @@ def test_request_time_acceptance_error_maps_to_503(runtime, monkeypatch):
     assert response.json()["detail"]["error"] == "real_pipeline_not_configured"
 
 
-@pytest.mark.parametrize("error_type", [RuntimeError, TypeError, ValueError])
-@pytest.mark.parametrize("stage", ["construction", "request"])
+@pytest.mark.parametrize("error_type", [RuntimeError, TypeError, ValueError, KeyError, AttributeError, OSError])
+@pytest.mark.parametrize("stage", ["construction", "curriculum-construction", "planner-construction", "request", "planner-request", "orchestrator-request"])
 def test_unrelated_internal_error_is_not_swallowed_as_readiness(runtime, monkeypatch, error_type, stage):
     def internal_bug(*args, **kwargs):
         raise error_type("synthetic unrelated programming defect")
     if stage == "construction":
         monkeypatch.setattr(planning_runtime, "build_course_data_provider", internal_bug)
+    elif stage == "curriculum-construction":
+        monkeypatch.setattr(planning_runtime, "build_curriculum_provider", internal_bug)
+    elif stage == "planner-construction":
+        monkeypatch.setattr(planning_runtime, "build_planner_provider", internal_bug)
+    elif stage == "orchestrator-request":
+        monkeypatch.setattr(planning_runtime.PlanningOrchestrator, "build_plan", internal_bug)
+    elif stage == "planner-request":
+        monkeypatch.setattr(RestrictedPlannerProvider, "plan", internal_bug)
     else:
         monkeypatch.setattr(StoreBackedCourseDataProvider, "get_course_offerings", internal_bug)
     with TestClient(app, raise_server_exceptions=False) as client:
         response = client.post("/api/v1/plan", json=REQUEST)
     assert response.status_code == 500, (
         f"{stage} {error_type.__name__} incorrectly classified as {response.status_code}: {response.text}")
+
+
+@pytest.mark.parametrize("case", ["missing-db", "invalid-sha", "disabled", "missing-config", "construction-acceptance"])
+def test_explicit_domain_and_config_readiness(runtime, tmp_path, monkeypatch, case):
+    if case == "missing-db":
+        monkeypatch.setenv("APP_COURSE_DATA_SQLITE_PATH", str(tmp_path / "absent.sqlite"))
+    elif case == "invalid-sha":
+        monkeypatch.setenv("APP_COURSE_DATA_ACCEPTANCE_SHA256", "invalid")
+    elif case == "disabled":
+        monkeypatch.setenv("APP_REAL_CASE_A_ENABLED", "0")
+    elif case == "missing-config":
+        monkeypatch.delenv("APP_COURSE_DATA_SEMESTER")
+    else:
+        def domain_failure(*args, **kwargs):
+            raise CourseDataAcceptanceError("explicit construction acceptance refusal")
+        monkeypatch.setattr(planning_runtime, "build_course_data_provider", domain_failure)
+    with TestClient(app) as client:
+        guard_mock(monkeypatch)
+        response = client.post("/api/v1/plan", json=REQUEST)
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "real_pipeline_not_configured"
+
+
+def test_constructed_orchestrator_request_time_revocation(runtime, monkeypatch):
+    path, _, _ = runtime
+    original = planning_runtime.build_planning_runtime
+    def construct_then_revoke(environment):
+        inspection = original(environment)
+        assert inspection.orchestrator is not None
+        change(path, "DELETE FROM course_data_acceptance")
+        return inspection
+    monkeypatch.setattr(planning_runtime, "build_planning_runtime", construct_then_revoke)
+    with TestClient(app) as client:
+        guard_mock(monkeypatch)
+        response = client.post("/api/v1/plan", json=REQUEST)
+    assert response.status_code == 503

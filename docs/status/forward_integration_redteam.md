@@ -64,3 +64,14 @@ Provider ef910e3fd3c68b10d9d9ed42a39698f5e8a21f36；Runtime a67ba96；E2E f8675e
   但construction无关ValueError被宽泛catch转503，期望500。独立14passed/1failed；targeted65passed。
 - E2E6fa155c：已fetch，因Runtime未PASS本轮未执行。Full backend/compileall条件不成立未运行。
 - Provider branch可进入其Gate PR review；Runtime/E2E没有完整PASS。未merge、未改production。
+
+## Final Runtime/E2E closure — b0931d7 / 8fc18b9
+
+本节优先于以上历史 BLOCK：`reviewer/full_semester/RUNTIME_E2E_FINAL_CLOSURE.md`。
+- Provider ec8ab6f frozen PASS；Runtime 未改 Course Data，不复审。
+- RUNTIME GATE PASS：独立HTTP51 passed，六类无关错误跨六边界均500；领域/配置失败503。
+- SYNTHETIC E2E GATE PASS：独立10 passed；传播版本重跑Runtime51 passed。
+  精确课表/Preference传递、UNKNOWN/manual_confirmation保留、stale隔离、篡改503。
+- 指定targeted1054 passed；full backend2823 passed/2 skipped；compileall通过。
+- Runtime/E2E可进入formal PR review；Gate E/F/G可恢复各自准备与验收，不代表它们PASS。
+- LEVEL1 synthetic wiring only；Formal Real E2E仍LEVEL0。未merge、未改production、未访问学校。
