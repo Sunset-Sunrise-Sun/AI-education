@@ -208,3 +208,47 @@
 - 失败说明：2 项失败为**既有 Windows 环境性差异**（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），基线上同样失败；未 skip / xfail / 删除测试。
 - 使用数据：真实 D4 与两份培养方案仅在本地受控目录只读使用，未提交、未复制进仓库；仓库内文件不含姓名/学号/成绩/GPA/排名，也不含私有 DOCX。
 - 下一步：等待 Architecture Review 对该 Case A 输入与首次打通结果的复核；**不 push、不开 PR、不 merge main**。
+
+### 2026-10-06 - Gate F：已修课程 XLSX 导入入口（通用摄取能力，backend only）
+
+- 触发：Core MVP Autonomous Run 的 Gate F —— 把"前端选择 XLSX"推进成
+  `XLSX → backend validate → completed-course normalization → 既有 Curriculum pipeline`。
+- 分支：`feature/xlsx-completed-courses-import`，base = `feature/frontend-real-path-readiness-final @ 19970db`。
+- **新增接口**：`POST /api/v1/completed-courses/import`（原始 `.xlsx` 字节；
+  ⛔ 不用 multipart ⇒ ⛔ 不新增运行期依赖，⛔ 请求里没有"文件名"参与判定）。
+  成功返回归一化统计 + `completed_input`（**恰好**是 case `completed.records` 的输入形状）；
+  `source_id` 由**内容摘要**派生（`upload:sha256:<16 hex>`）。
+- **文件安全（F2）**：媒体类型白名单（官方 XLSX MIME / `application/octet-stream`）；
+  `Content-Length` 必填（缺失 ⇒ 411，声明超限 ⇒ 413）；流式读取全程限长
+  （`MAX_UPLOAD_BYTES = 8 MiB`，⛔ 不信任声明的长度）；空文件 ⇒ 400；
+  malformed zip / 结构不符 ⇒ 400；记录条数上限 2000；
+  ⛔ 公式单元格直接拒绝（⛔ 无 openpyxl、⛔ 不评估公式）；宏部件被忽略且⛔ 永不执行；
+  只接受唯一批准的 worksheet `已修课程_脱敏`；
+  临时文件只用进程自己的临时目录并在 `finally` 无条件删除（成功/失败两条路径都有测试）；
+  ⛔ 不信任文件名（`Content-Disposition` / `X-File-Name` 被忽略，有测试）。
+- **复用（F3）**：worksheet 抽取 / 字段映射 / 结构校验继续由既有
+  `app/curriculum/xlsx_reader.py`，归一化继续由既有 `completed_courses.py`；
+  ⛔ **未**新增 Curriculum Diff / equivalence / recognition / makeup priority / prerequisite
+  逻辑（`matching.py` 零改动）。
+- **synthetic fixtures（F4）**：新增 `backend/tests/xlsx_fixtures.py`（自建最小 OOXML）——
+  valid / empty（仅表头）/ wrong headers / duplicate rows / malformed / missing course id /
+  numeric-string 混合单元格 / 公式单元格 / 未批准 worksheet / 超大 XML 部件 /
+  超大上传 / Unicode 课程名 / 宏部件；
+  ⛔ 未提交任何真实成绩单（真实 D4 仍只在本地受控目录）。
+- **隐私（F5）**：错误响应只含通用文案 + 行列位置；有测试断言
+  单元格取值 / 原始 XML / `Traceback` / 本地路径 / `.xlsx` 文件名 / 临时文件名
+  **一律不出现**；成功响应**不回传 `备注` 自由文本**（只回传 `notes_present_count`）；
+  本模块不打印任何 worksheet / cell 内容。
+- **集成证明（F6）**：把 demo case 的已修课程事实写成 XLSX 上传，再走**同一条**既有管线
+  （`normalize_curriculum_case` → `CurriculumCaseProvider.get_makeup_tasks()`），
+  结果与直接用 `records` 的原生 case **逐条一致**；并断言
+  `planning_runtime.py`（Case A fixed case）源码里**不存在**任何上传适配器引用
+  ⇒ fixed-case 路径与通用摄取能力**明确分离**。
+- 测试：`tests/test_completed_courses_import_api.py` **32 passed**；
+  既有 `test_curriculum_xlsx_reader.py` 等 Curriculum 套件未受影响。
+- 文档：新增 `docs/data/XLSX_COMPLETED_COURSES_IMPORT.md`（两条路径的区别 + 安全/隐私表），
+  并在 `docs/status/curriculum.md` 记录。
+- 是否修改 public Schema：**否**（⛔ `/schemas/` 零改动；新响应模型定义在 API 模块内）。
+  是否修改 frozen Provider contract：**否**。是否改 `/api/v1/plan` 请求契约：**否**（有 OpenAPI 断言）。
+- 仍未做：前端接线（前端成绩文件仍只"选择"、不上传）、鉴权（与现有 `/api/v1/plan` 一致）、
+  真实成绩单（⛔ 不接真实学生数据）。

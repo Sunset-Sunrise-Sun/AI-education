@@ -26,6 +26,16 @@
 - 公共输出仍为 `MakeupTask[]`，公共契约未修改；`MakeupScope`、`ConfirmedScopeDecision`、`ConfirmedGroupScopeDecision` 均属 Curriculum 内部对象，Provider 签名、Integration 与 Planner 均不感知。
 - 自动测试使用合成数据；真实 D4 本地读取及独立逐字段核对已通过。真实文件和逐行输出不入库。
 - **DOCX 导入支持两种显式模式**：原有 `header` 模式（要求 `header_row` + 逐字匹配的 `expected_headers`）行为**完全未变**；新增 `positional` 模式用于**没有列标题行**的真实培养方案（`data_start_row` + 位置式 `columns`）。两种模式字段互不混用，未知文档 / 无 profile / header 模式读无表头文档一律 reject，**没有自动回退**。
+- **Gate F：通用已修课程 XLSX 摄取入口（✅ 已实现，backend only）**：
+  `POST /api/v1/completed-courses/import` 接受**原始 .xlsx 字节**（⛔ 不用 multipart、⛔ 不读文件名），
+  在媒体类型 / `Content-Length` / 大小上限 / 空文件校验之后交给**既有的**
+  `load_completed_courses_xlsx`（worksheet 抽取 + 字段映射 + 结构校验）与
+  `normalize_completed_courses`；返回归一化统计与**可直接回灌 case `completed` 的 `records` 片段**。
+  ⛔ 本 Gate **未新增**任何 Curriculum Diff / 等价性 / 认定 / 优先级 / 先修判断
+  （`matching.py` 未改）；⛔ 未改 public Schema（新响应模型定义在 API 模块内）；
+  ⛔ **未接入**已冻结的 Case A fixed-case runtime（有回归测试锁定 runtime 源码不含上传适配器）；
+  ⛔ 不回传 `备注` 自由文本；⛔ 不执行公式 / 宏；临时文件在请求结束无条件删除。
+  详见 `docs/data/XLSX_COMPLETED_COURSES_IMPORT.md`。
 - **positional 模式的结构守卫**：行宽必须覆盖全部映射列；数据行物理列不得超过声明的 `column_count`（学校改版整体移列时失败而非错列读取）；`identity` 锚点必须在指定（已映射）列命中；横向合并覆盖映射列时失败。`course_name_lines` 显式声明双语名称单元格保留前 N 行。
 - **行选择 fail closed（不得成为绕过结构校验的旁路）**：先由 `row_kind` 判别器（仅支持 numeric）判定是否为课程行，再判结构 —— 判别器不命中 → 明确非课程行 skip；判别器命中但 selector 列物理缺失 → 结构损坏，fail closed；判别器命中且全部 selector 命中 → 进入完整结构校验；判别器不命中但**其余 identifying selectors 全部命中**（course_id 有值且 credit 为数字）→ 视为**判别器本身损坏**，**fail closed**（不得 skip）；只有判别器不命中且其余 selectors 未全部命中才是真实分区行可 skip。单元格"存在但为空"与"物理缺失"在 positional 下语义相同。selector 只能读标识性列（`course_id` / `credit` / `recommended_term_text` / `sequence`），映射到可选列的 selector 直接拒绝。真实 Case A selector = `sequence` numeric + `course_id` nonempty + `credit` numeric。
 - **真实 Case A 两份培养方案现已可导入**：`遥感方案.docx` 84 条课程条目、`网安方案.docx` 94 条，均 0 issue，可转成 `CurriculumVersion`。声明式 profile 见 `backend/app/curriculum/plan_profiles.py`（不含真实文件、路径或隐私字段）。真实文档仍在受控本地，未入库。
