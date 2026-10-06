@@ -53,6 +53,8 @@ __all__ = [
     "SOURCE_ID_PREFIX",
     "XLSX_MEDIA_TYPE",
     "import_completed_courses_xlsx_bytes",
+    "normalize_media_type",
+    "parse_declared_content_length",
 ]
 
 #: 官方 XLSX 媒体类型。
@@ -172,6 +174,46 @@ def normalize_media_type(value: object) -> str:
             "只接受 .xlsx（OOXML 工作簿）；其它媒体类型一律拒绝。",
         )
     return media_type
+
+
+#: `Content-Length` 的**最大位数**（= `MAX_UPLOAD_BYTES` 的十进制位数）。
+#: ⚠️ 先比位数再 `int()`：CPython 对超长十进制字符串的 `int()` 会抛
+#: `ValueError: Exceeds the limit (4300 digits)`，那会变成 **500**，违反 fail-closed 约定。
+_MAX_LENGTH_DIGITS = len(str(MAX_UPLOAD_BYTES))
+
+
+def parse_declared_content_length(raw: object) -> int:
+    """把 `Content-Length` 头解析成字节数；⛔ 任何异常输入都必须 fail closed。
+
+    接受格式**仅限**纯 ASCII 十进制数字（`0-9`，⛔ 无前后空白、⛔ 无符号、
+    ⛔ 无小数点、⛔ 无指数、⛔ 无十六进制、⛔ 无千分位逗号、
+    ⛔ 无 Unicode 数字如全角 `８` / 阿拉伯-印度数字 `١`）：
+
+    ```text
+    缺失 / 非字符串 / 空串 / 非 ASCII / 非纯数字  → 411 completed_courses_upload_length_required
+    纯 ASCII 数字但位数 > len(str(MAX)) 或数值 > MAX → 413 completed_courses_upload_too_large
+    合法                                          → 该整数
+    ```
+
+    ⚠️ 位数先于 `int()` 判定：超长纯数字（数千位）**直接**判 413，
+    ⛔ 不构造任意大整数、⛔ 不冒 `ValueError` 变成 500。
+    """
+
+    if not isinstance(raw, str) or not raw:
+        _reject(ERROR_LENGTH_REQUIRED, "上传必须显式声明 Content-Length。")
+    # ⚠️ 不做 `strip()`：带空白的值属于**格式非法**，不是"可容忍的写法"。
+    if not raw.isascii() or not raw.isdigit():
+        _reject(
+            ERROR_LENGTH_REQUIRED,
+            "Content-Length 必须是纯 ASCII 十进制数字（⛔ 不接受空白 / 符号 / 小数 / Unicode 数字）。",
+        )
+    if len(raw) > _MAX_LENGTH_DIGITS:
+        # ⛔ 此处**绝不**调用 int()：超长十进制字符串会让 int() 抛 ValueError。
+        _reject(ERROR_TOO_LARGE, "上传文件超过大小上限。")
+    value = int(raw)
+    if value > MAX_UPLOAD_BYTES:
+        _reject(ERROR_TOO_LARGE, "上传文件超过大小上限。")
+    return value
 
 
 def import_completed_courses_xlsx_bytes(

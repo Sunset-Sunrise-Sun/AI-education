@@ -13,6 +13,7 @@ XLSX → POST /api/v1/completed-courses/import
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import tempfile
@@ -471,3 +472,242 @@ def test_plan_endpoint_contract_is_unchanged() -> None:
     model = schema["components"]["schemas"][reference.rsplit("/", 1)[-1]]
     assert set(model["properties"]) == {"semester", "current_schedule", "preference"}
     assert model.get("additionalProperties") is False
+
+
+# --------------------------------------------------------------------------- #
+# Content-Length 严格校验（PR #47 BLOCK：⛔ 任何输入都不得 500）
+#
+# 约定（与 `docs/data/XLSX_COMPLETED_COURSES_IMPORT.md` 一致）：
+#   缺失 / 非 ASCII / 非纯数字（空白 · 符号 · 小数 · 指数 · 十六进制 · 逗号 · Unicode 数字）
+#       ⇒ 411 completed_courses_upload_length_required
+#   纯 ASCII 十进制但位数超长或数值 > 8 MiB        ⇒ 413 completed_courses_upload_too_large
+#   实际 streamed 字节数 > 8 MiB                    ⇒ 413
+#   声明长度 ≠ 实际字节数                            ⇒ 400 length_mismatch
+# ⚠️ 位数判定**先于** int()：超长十进制串⛔ 不触发 CPython 的
+#    `ValueError: Exceeds the limit (4300 digits)`（那会变成 500）。
+# --------------------------------------------------------------------------- #
+
+INVALID_CONTENT_LENGTHS = [
+    pytest.param(" 32", id="leading-space"),
+    pytest.param("32 ", id="trailing-space"),
+    pytest.param("\t32", id="tab"),
+    pytest.param("+123", id="plus-sign"),
+    pytest.param("-1", id="minus-sign"),
+    pytest.param("1.0", id="decimal"),
+    pytest.param("1e3", id="exponent"),
+    pytest.param("0x20", id="hex"),
+    pytest.param("1,000", id="comma"),
+    pytest.param("1_000", id="underscore"),
+    pytest.param("", id="empty-string"),
+    pytest.param("32abc", id="trailing-letters"),
+]
+
+
+def _post_via_raw_asgi(value: str, body: bytes = b"x") -> tuple[int, str]:
+    """直接用**裸 ASGI** 调 app（绕过任何客户端 header 编码限制）。
+
+    ⚠️ 这是"ASGI app 必须自身安全"的证明：即使客户端/服务器把非法 header
+    原样送来，app 也必须返回稳定状态码，⛔ 不得抛异常变成 500。
+    """
+
+    headers = [
+        (b"host", b"testserver"),
+        (b"content-type", XLSX_TYPE.encode("ascii")),
+        (b"content-length", value.encode("latin-1", "replace")),
+    ]
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": IMPORT_PATH,
+        "raw_path": IMPORT_PATH.encode("ascii"),
+        "query_string": b"",
+        "root_path": "",
+        "headers": headers,
+        "client": ("127.0.0.1", 12345),
+        "server": ("testserver", 80),
+    }
+    messages: list[dict] = [{"type": "http.request", "body": body, "more_body": False}]
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return messages.pop(0) if messages else {"type": "http.disconnect"}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    asyncio.run(app(scope, receive, send))
+
+    start = next(message for message in sent if message["type"] == "http.response.start")
+    payload = b"".join(
+        message.get("body", b"") for message in sent if message["type"] == "http.response.body"
+    )
+    return int(start["status"]), payload.decode("utf-8", "replace")
+
+
+def test_probe_1_missing_content_length_is_411(client) -> None:
+    """probe 1：分块传输（无 `Content-Length`）⇒ 411，⛔ 不读 body。"""
+
+    response = client.post(
+        IMPORT_PATH,
+        content=iter([fx.valid_bytes()]),
+        headers={"Content-Type": XLSX_TYPE},
+    )
+
+    assert response.status_code == 411
+    assert _error(response) == ingest.ERROR_LENGTH_REQUIRED
+
+
+def test_probe_2_normal_valid_length_still_succeeds(client) -> None:
+    """probe 2：合法长度不受影响（回归）。"""
+
+    response = _post(client, fx.valid_bytes())
+
+    assert response.status_code == 200, response.text
+    assert response.json()["record_count"] == 3
+
+
+def test_probe_3_exactly_max_size_is_not_rejected_as_too_large(client) -> None:
+    """probe 3：**恰好等于** 8 MiB 的实际上传不被判 413（边界本身合法）。"""
+
+    payload = b"\x00" * ingest.MAX_UPLOAD_BYTES  # 内容不是工作簿 ⇒ 后续 400，但⛔ 不是 413
+
+    response = _post(client, payload)
+
+    assert response.status_code == 400
+    assert _error(response) == ingest.ERROR_INVALID
+
+
+@pytest.mark.parametrize("extra", [1, 1024])
+def test_probe_4_max_plus_one_is_413(client, extra: int) -> None:
+    """probe 4：超过上限一个字节即 413。"""
+
+    response = _post(client, b"\x00" * (ingest.MAX_UPLOAD_BYTES + extra))
+
+    assert response.status_code == 413
+    assert _error(response) == ingest.ERROR_TOO_LARGE
+
+
+def test_probe_5_very_long_ascii_digits_is_413_not_500(client) -> None:
+    """probe 5：数千位纯 ASCII 数字 ⇒ 413，⛔ 不得 500。
+
+    修复前实测：endpoint 返回 `500 Internal Server Error`，
+    且异常 `ValueError: Exceeds the limit (4300 digits) for integer string conversion`
+    直接从 ASGI app 抛出。
+    """
+
+    digits = "9" * 5000
+
+    response = _post(client, b"x", headers={"Content-Length": digits})
+    assert response.status_code == 413, response.text
+    assert _error(response) == ingest.ERROR_TOO_LARGE
+
+    raw_status, raw_body = _post_via_raw_asgi(digits)
+    assert raw_status == 413, raw_body
+    assert "Exceeds the limit" not in raw_body
+
+
+@pytest.mark.parametrize(
+    "digits",
+    [
+        pytest.param("８３８８６０９", id="full-width"),
+        pytest.param("١٢٣٤٥", id="arabic-indic"),
+        pytest.param("٣٢", id="arabic-indic-short"),
+        pytest.param("９" * 100, id="full-width-long"),
+    ],
+)
+def test_probe_6_7_unicode_digits_fail_closed(digits: str) -> None:
+    """probe 6/7：Unicode 数字（全角 / 阿拉伯-印度）必须 fail closed。
+
+    ⚠️ 这里直接喂**生产解析函数**（不经 httpx 的 header 编码），
+    因此不受客户端编码限制影响：Unicode 数字⛔ 不被当成合法长度。
+    """
+
+    with pytest.raises(ingest.CompletedCoursesImportRejected) as error:
+        ingest.parse_declared_content_length(digits)
+
+    assert error.value.code == ingest.ERROR_LENGTH_REQUIRED
+
+    # 同一字符串走**裸 ASGI** 也必须 fail closed 且⛔ 不 500。
+    status, body = _post_via_raw_asgi(digits)
+    assert status == 411, body
+    assert "length_required" in body
+
+
+def test_probe_6_7_unicode_digits_via_endpoint_fail_closed(client) -> None:
+    """probe 6/7（endpoint 侧）：能到达 app 的 Unicode 数字同样 fail closed。"""
+
+    with pytest.raises(UnicodeEncodeError):
+        # httpx 自身拒绝非 ASCII header：客户端侧就失败，⛔ 不会产生 500 响应。
+        _post(client, b"x", headers={"Content-Length": "８３８８６０９"})
+
+
+@pytest.mark.parametrize("value", INVALID_CONTENT_LENGTHS)
+def test_probe_8_to_11_malformed_content_length_is_411(client, value: str) -> None:
+    """probe 8–11：空白 / 符号 / 小数 / 指数 / 十六进制 / 逗号 一律 411（⛔ 不 500）。"""
+
+    response = _post(client, b"x", headers={"Content-Length": value})
+
+    assert response.status_code == 411, response.text
+    assert _error(response) == ingest.ERROR_LENGTH_REQUIRED
+
+    raw_status, raw_body = _post_via_raw_asgi(value)
+    assert raw_status == 411, raw_body
+
+
+def test_probe_12_actual_body_over_limit_with_lower_declared_length_is_413(client) -> None:
+    """probe 12：声明长度撒谎（更小）但实际 body 超限 ⇒ 流式上限先判 413。"""
+
+    response = _post(
+        client,
+        b"\x00" * (ingest.MAX_UPLOAD_BYTES + 4096),
+        headers={"Content-Length": "16"},
+    )
+
+    assert response.status_code == 413, response.text
+    assert _error(response) == ingest.ERROR_TOO_LARGE
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0", 0),
+        ("32", 32),
+        ("0000007", 7),
+        (str(ingest.MAX_UPLOAD_BYTES), ingest.MAX_UPLOAD_BYTES),
+    ],
+)
+def test_content_length_validator_accepts_only_bounded_ascii_decimals(
+    raw: str, expected: int
+) -> None:
+    """正向：合法 ASCII 十进制（含前导零）按字面解析；位数有界时才 int()。"""
+
+    assert ingest.parse_declared_content_length(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["", None, 32, b"32", "8" * 4301])
+def test_content_length_validator_rejects_non_string_and_over_long_inputs(raw) -> None:
+    """非字符串 / 空串 / 超过最大位数的输入 ⇒ 明确拒绝（⛔ 无异常泄漏）。"""
+
+    with pytest.raises(ingest.CompletedCoursesImportRejected) as error:
+        ingest.parse_declared_content_length(raw)
+
+    assert error.value.code in {
+        ingest.ERROR_LENGTH_REQUIRED,
+        ingest.ERROR_TOO_LARGE,
+    }
+
+
+def test_content_length_digit_boundary_matches_the_documented_length() -> None:
+    """位数阈值必须与 `MAX_UPLOAD_BYTES` 的十进制位数一致（⛔ 不写死字面量）。"""
+
+    assert ingest._MAX_LENGTH_DIGITS == len(str(ingest.MAX_UPLOAD_BYTES))
+
+    # 最大合法位数、但数值超限 ⇒ 413（仍走有界 int()）。
+    over = str(ingest.MAX_UPLOAD_BYTES + 1)
+    assert len(over) == ingest._MAX_LENGTH_DIGITS
+    with pytest.raises(ingest.CompletedCoursesImportRejected) as error:
+        ingest.parse_declared_content_length(over)
+    assert error.value.code == ingest.ERROR_TOO_LARGE

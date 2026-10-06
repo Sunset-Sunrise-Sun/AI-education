@@ -252,3 +252,28 @@
   是否修改 frozen Provider contract：**否**。是否改 `/api/v1/plan` 请求契约：**否**（有 OpenAPI 断言）。
 - 仍未做：前端接线（前端成绩文件仍只"选择"、不上传）、鉴权（与现有 `/api/v1/plan` 一致）、
   真实成绩单（⛔ 不接真实学生数据）。
+
+### 2026-10-06 - PR #47 BLOCK 修复：`Content-Length` 严格校验（⛔ 不得 500）
+
+- 触发：reviewer 独立探针指出 `POST /api/v1/completed-courses/import` 的
+  `Content-Length` 解析在 ASGI app 路径上会 **500**：超长十进制数字、非 ASCII 数字字符。
+- **复现（修复前实测，`probe_content_length_500.py`）**：
+  - 5000 位纯 ASCII 数字 ⇒ endpoint 返回 `500 Internal Server Error`，
+    且 `ValueError: Exceeds the limit (4300 digits) for integer string conversion`
+    直接从 ASGI app 抛出（裸 ASGI 调用可复现）；
+  - 全角 `８３８８６０９` / 阿拉伯-印度 `١٢٣٤٥` 在裸 ASGI 上落到 411，
+    但那是**偶然**（latin-1 解码把字节变成非数字），⛔ 不是显式 ASCII 校验；
+  - `" 32"` 反而被 `strip()` 容忍 ⇒ 落到 400 mismatch，与"非法格式"语义不符。
+- **修复**：新增纯函数 `completed_courses_ingest.parse_declared_content_length()`
+  （API 边界全部委托给它）：
+  缺失 / 非字符串 / 空串 / 非 ASCII / 非纯数字 ⇒ **411**；
+  纯 ASCII 数字但**位数 > `len(str(MAX_UPLOAD_BYTES))`** 或数值 > 8 MiB ⇒ **413**（位数先于 `int()`，
+  ⛔ 不构造任意大整数）；合法 ⇒ 返回整数。⛔ 不再 `strip()`。
+- **状态映射（与接口文档一致）**：缺失/非法 411 · 数值或位数超限 413 ·
+  实际 streamed 字节超限 413 · 声明 ≠ 实际 400 · 空文件 400。
+- **测试**：`tests/test_completed_courses_import_api.py` 32 → **66 passed**，
+  覆盖 mandate 的 12 个 probe（含"恰好等于 8 MiB 边界不判 413"、"5000 位 ⇒ 413 不 500"、
+  Unicode 数字 fail closed、空白/符号/小数/指数/十六进制/逗号 ⇒ 411、
+  声明撒谎但实际超限 ⇒ 413），并对关键用例同时走**真实 endpoint** 与**裸 ASGI**。
+- 边界：⛔ 未扩 API（同一 endpoint、同一错误模型，只是把解析变严格）；
+  ⛔ 未改 public Schema / frozen Provider contract；⛔ 未触碰 Gate E 与已合并 runtime/store stack。

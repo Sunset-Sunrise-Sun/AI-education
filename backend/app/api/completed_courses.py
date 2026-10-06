@@ -22,13 +22,16 @@ POST /api/v1/completed-courses/import
 | 状态码 | `detail.error` | 含义 |
 | --- | --- | --- |
 | 415 | `completed_courses_upload_unsupported_media_type` | 不是受支持的 XLSX 媒体类型 |
-| 411 | `completed_courses_upload_length_required` | 缺少 / 非法 `Content-Length` |
+| 411 | `completed_courses_upload_length_required` | 缺少 / 非法 `Content-Length`（⛔ 严格 ASCII 十进制：空白 / 符号 / 小数 / 指数 / 十六进制 / 逗号 / Unicode 数字**一律拒绝**） |
+| 413 | `completed_courses_upload_too_large` | 合法 ASCII 十进制但**数值超限**，或**纯数字位数超长**（⛔ 不构造任意大整数），或流式读取的实际字节数超限 |
 | 400 | `completed_courses_upload_length_mismatch` | 字节数与声明长度不一致 |
-| 413 | `completed_courses_upload_too_large` | 超过上传大小上限 |
 | 400 | `completed_courses_upload_empty` | 空文件 |
 | 400 | `completed_courses_invalid` | 不是合格的工作簿 / 布局不符 / 含公式单元格 |
 | 400 | `completed_courses_empty` | 工作簿里没有任何数据行 |
 | 400 | `completed_courses_too_many_records` | 记录条数超过上限 |
+
+⛔ 上述任一路径都**不得**返回 500：`Content-Length` 解析在**转换之前**做严格校验，
+且位数先于 `int()` 判定（避免 CPython 的十进制字符串转换上限抛 `ValueError`）。
 
 ⚠️ 本接口是**通用摄取能力**，⛔ 不接入已冻结的 Case A fixed-case runtime；
 ⛔ 未修改任何 `/schemas/*.schema.json`（新接口的响应模型定义在本模块内）。
@@ -52,6 +55,7 @@ from app.services.completed_courses_ingest import (
     CompletedCoursesImportRejected,
     import_completed_courses_xlsx_bytes,
     normalize_media_type,
+    parse_declared_content_length,
 )
 
 router = APIRouter(tags=["curriculum"])
@@ -128,15 +132,16 @@ def _reject(code: str, message: str) -> None:
 
 
 def _declared_length(request: Request) -> int:
-    """读 `Content-Length`；⛔ 缺失 / 非法 ⇒ 411，⛔ 超限 ⇒ 413（都在读 body 之前）。"""
+    """读 `Content-Length`；⛔ 缺失 / 非法 ⇒ 411，⛔ 超限 ⇒ 413（都在读 body 之前）。
 
-    raw = request.headers.get("content-length")
-    if raw is None or not raw.strip().isdigit():
-        _reject(ERROR_LENGTH_REQUIRED, "上传必须显式声明 Content-Length。")
-    declared = int(raw.strip())
-    if declared > MAX_UPLOAD_BYTES:
-        _reject(ERROR_TOO_LARGE, "上传文件超过大小上限。")
-    return declared
+    ⚠️ 解析**全部**委托给 `parse_declared_content_length()`：严格 ASCII 十进制、
+    位数先于 `int()` 判定，因此超长数字串与 Unicode 数字都**不会**冒异常变成 500。
+    """
+
+    try:
+        return parse_declared_content_length(request.headers.get("content-length"))
+    except CompletedCoursesImportRejected as exc:
+        _reject(exc.code, exc.message)
 
 
 async def _read_limited_body(request: Request) -> bytes:

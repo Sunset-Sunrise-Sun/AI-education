@@ -82,7 +82,7 @@ Content-Length: <必填>
 | 项 | 做法 |
 | --- | --- |
 | 只允许明确支持的 XLSX | 媒体类型白名单（官方 XLSX MIME / `application/octet-stream`）+ **唯一**批准的 worksheet `已修课程_脱敏` + A:J 固定列头校验 |
-| 文件大小限制 | `MAX_UPLOAD_BYTES = 8 MiB`（声明长度先拒、流式读取再拒，⛔ 不信任 `Content-Length`）；单部件 16 MiB / 解压总量 64 MiB 由既有 reader 把关 |
+| 文件大小限制 | `MAX_UPLOAD_BYTES = 8 MiB`（声明长度先拒、流式读取再拒，⛔ 不信任 `Content-Length`）；⛔ 不把超长十进制串交给 `int()`（先比位数）；单部件 16 MiB / 解压总量 64 MiB 由既有 reader 把关 |
 | 空文件拒绝 | `Content-Length: 0` ⇒ 400 `completed_courses_upload_empty`；只有表头没有数据行 ⇒ 400 `completed_courses_empty` |
 | malformed ZIP/XLSX | fail closed ⇒ 400 `completed_courses_invalid`（⛔ 不静默跳过） |
 | 禁止执行公式 | reader 遇到 `<f>` / 错误单元格**直接拒绝**（⛔ 无 openpyxl，⛔ 不评估公式） |
@@ -98,14 +98,37 @@ Content-Length: <必填>
 
 ```text
 415 completed_courses_upload_unsupported_media_type
-411 completed_courses_upload_length_required
+411 completed_courses_upload_length_required      ← 缺失 / 非法（见下方严格格式）
 400 completed_courses_upload_length_mismatch
-413 completed_courses_upload_too_large
+413 completed_courses_upload_too_large            ← 数值超限 / 位数超长 / 实际字节数超限
 400 completed_courses_upload_empty
 400 completed_courses_invalid
 400 completed_courses_empty
 400 completed_courses_too_many_records
 ```
+
+### `Content-Length` 严格校验（⛔ 任何输入都不得 500）
+
+接受格式**仅限纯 ASCII 十进制数字**（`0-9`）：
+
+```text
+缺失 / 非字符串 / 空串            → 411
+非 ASCII（Unicode 数字 ８ / ١ …）  → 411
+空白（前导 / 尾随 / tab）          → 411
+符号（+123 / -1）                  → 411
+小数 / 指数（1.0 / 1e3）           → 411
+十六进制 / 下划线 / 逗号（0x20 / 1_000 / 1,000） → 411
+纯 ASCII 数字但位数 > len("8388608") = 7 或数值 > 8 MiB → 413
+实际 streamed 字节数 > 8 MiB       → 413
+声明长度 ≠ 实际字节数              → 400 length_mismatch
+```
+
+⚠️ **位数判定先于 `int()`**：数千位的纯数字**直接**判 413，
+⛔ 不构造任意大整数 —— 否则 CPython 会抛
+`ValueError: Exceeds the limit (4300 digits) for integer string conversion`，
+在 ASGI app 路径上变成 **500**（这与本接口的 fail-closed 约定冲突）。
+ASGI app 自身负责该安全边界：⛔ 不依赖 Uvicorn / h11 提前拒绝。
+
 
 ## 4. 复用（⛔ 不重复实现 Curriculum 逻辑）
 
