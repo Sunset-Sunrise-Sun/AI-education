@@ -660,6 +660,54 @@ weeks | weekday | location | REDACTED | activity
 - ⚠️ **`f3_matching_raw_fields` 为空映射**同样**不**等于"f3 不是任何字段的值"：
   只表示"在本次 10 个候选所在 raw row 的（未被排除的）字符串字段中，没有严格相等的取值"。
 
+**分段续跑（safe segmented resume）：❌ 未实现 —— fail closed，等 Architecture Review 裁定**
+
+- **触发**：负责人报告 —— 连续两次真实诊断都在**第 6 页**返回 `401 Unauthorized`；
+  现有行为正确（立即整体停止，⛔ 不重试 / ⛔ 不读认证 / ⛔ 不绕过登录）。
+  根因是**一次 6 页扫描的耗时可能超过会话寿命**：第 6 个请求必然落在
+  5 请求批次冷却（300 s）之后 ⇒ 整轮约 7–8 分钟。
+- **结论**：在"checkpoint 零敏感 + 不重读 + 语义不变"三条约束下，
+  **分段结果不可能与 one-shot 完全等价** ⇒ 按裁定 **fail closed**：
+  ⛔ 未新增任何 API、⛔ 未实现近似结果、⛔ 未降低语义。
+- **证明（机器校验）**：`prove_segmented_impossibility.mjs`（工作区脚本，⛔ 未入 Git）
+  用**真实实现**构造两个世界：
+
+  ```text
+  世界 A：part1 候选 f3 == 第 6 页 provider token      → one-shot f3_in_set = 1
+  世界 B：part1 候选 f3 在语料中不存在                  → one-shot f3_in_set = 0
+  两世界的 part1 **安全聚合投影逐字节相同**      : true
+  两世界的第 6 页 rows **逐字节相同**            : true
+  ```
+
+  ⇒ `finalize(state1, rows6)` 在两个世界中**输入完全相同、正确答案不同**
+  ⇒ **任何**确定性 finalize 都不可能同时正确。
+  即：token 级 join（候选 token ↔ provider token）必须跨会话存在，
+  而"零敏感 checkpoint"按定义不能携带它。
+- **另一半（重读路线同样不成立）**：集合需要**全语料**的已确认 activity 槽位，
+  而 1071 行 / `pageSize <= 200` ⇒ **至少 6 页**；
+  无法在不读某页的前提下证明该页没有 provider ⇒ 任何精确评估都必须让
+  **provider 与 candidate 在同一会话内存中共存**，即该会话要读完整个语料
+  （≥ 6 次请求，仍然越过 401 窗口）⇒ 重读方案**不解决** 401，只是换一种扫全量。
+- **可选项（均需裁定，⛔ 未擅自实施）**：
+
+  ```text
+  A. HMAC 摘要 + **密钥不放进 checkpoint**（用户另行保管/粘贴）
+     → 语义可精确 ✓；但密钥与摘要若同处一个本地文件，短 CJK activity token
+       可被离线枚举 ⇒ 无法证明"不可逆字典"，与裁定默认不接受的条件冲突；
+       ⚠️ 还需要 async crypto.subtle 与"用户携带 256-bit 秘密"的新交互。
+  B. 重读式分段 → 见上：不解决 401 ✗。
+  C. 调整**诊断专用**的 pacing / 批次冷却（运营策略变更，需批准）
+     → 6 次请求 @30 s ≈ 3 分钟，落在"30 s 间隔连续 7 次成功后才出现 HTTP 600"
+       的已观测包络内；但这是对既有安全常量的修改 ⇒ 只能由 Review 决定。
+  D. 分段模式**省略**两个 activity-membership 计数（⛔ 不是近似值，而是不提供）
+     → checkpoint 零敏感且精确；但"降低诊断语义"同样需要 Review 明确批准；
+       对**当前**问题（f3 的 raw 字段来源）而言，`f3_matching_raw_fields` 与
+       两个 `*_equals_teaching_name` 都是**逐行本地**计数，本身可精确分段。
+  ```
+
+- ⛔ **仍未获批准**：Layout B parser / 4 字段 redaction / East 重抓 / 分段续跑 API；
+  当前**唯一**支持的诊断路径仍是**一次 6 页 one-shot**（需要在会话存活期内跑完）。
+
 **2 字段（无 teacher）**：
 
 真实证据：`1-17周/实验实践环节`（**plain**）与 `12-19周校外/实验实践环节`（**qualified**）。

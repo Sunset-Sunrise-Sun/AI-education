@@ -2502,3 +2502,41 @@
   Planner / Curriculum / frontend；⛔ 真实材料未入 Git；**真实请求数 0**。
 - 下一步：真实运行前的 Blocker 已清除 ⇒ 等负责人明天跑那条唯一真实命令并回传
   `f3_matching_raw_fields`。
+
+### 2026-10-05 - 分段续跑（safe segmented resume）：**判定为不可实现，fail closed**
+
+- **触发**：负责人报告 —— 连续**两次**真实诊断都在**第 6 页**返回 `401 Unauthorized`。
+  现有行为正确（立刻整体停止：⛔ 不重试 / ⛔ 不读认证 / ⛔ 不绕过登录）；
+  根因是**一次 6 页扫描的耗时超过会话寿命**：第 6 个请求必然落在 5 请求批次冷却
+  （300 s）之后 ⇒ 整轮约 7–8 分钟。
+- **裁定要求的方案与其结论**：
+  - **方案 A（keyed digest）**：语义可精确，但按裁定"checkpoint 同时含 key + 摘要 ⇒
+    短 CJK token 可被离线枚举 ⇒ 默认不接受"；把 key 移出 checkpoint 又需要
+    "用户额外保管 256-bit 秘密"的新交互与 async `crypto.subtle` 路径 ⇒ **未实施，需裁定**；
+  - **方案 B（避免持久化 token-equivalence state）**：经分析与机器校验**不成立**（见下），
+    重读式分段只是换一种扫全量，**不解决** 401 ⇒ 拒绝实施。
+- **不可能性证明（机器校验，`prove_segmented_impossibility.mjs`，工作区脚本 ⛔ 未入 Git）**：
+  用**真实实现**构造两个世界（第 1..5 页只差"候选 f3 的取值"、第 6 页完全一致）：
+  - 世界 A：part1 候选 `f3` == 第 6 页 provider token → one-shot `f3_in_set = 1`；
+  - 世界 B：part1 候选 `f3` 在语料中不存在 → one-shot `f3_in_set = 0`；
+  - 两世界的 **part1 安全聚合投影逐字节相同**（`true`）、**第 6 页 rows 逐字节相同**（`true`）。
+  ⇒ `finalize(state1, rows6)` 在两个世界中**输入相同、正确答案不同**
+  ⇒ 任何确定性 finalize 都不可能同时正确 ⇒ **token-free checkpoint 无法与 one-shot 等价**。
+- **重读路线的对称论证**：集合需要**全语料**的已确认 activity 槽位；1071 行 /
+  `pageSize <= 200` ⇒ 至少 6 页，且无法在不读某页的前提下证明该页没有 provider
+  ⇒ 任何精确评估都必须让 provider 与 candidate 在同一会话内存中共存 ⇒ 该会话需要读完
+  整个语料（≥ 6 请求，仍越过 401 窗口）。
+- **本轮交付**：⛔ **没有新增任何 API / 代码 / 测试**（没有实现就没有可测对象，
+  裁定所列的分段等价性 / merge 顺序 / tamper / 隐私 / mutation 用例**无法**编写）；
+  ✅ 只记录 fail-closed 结论、证明与可选项（A / B / C / D 见 `docs/status/course_data.md`）。
+  ⛔ **未做任何近似实现**，⛔ **未降低任何诊断语义**。
+- **回归（本轮零代码改动）**：`node --check` exit 0；collector node **124 passed**；
+  守卫 **102 passed**；targeted **592 passed**；full backend
+  **2 failed / 2411 passed / 2 skipped**（两个为**既有** Windows Curriculum 用例）；
+  `compileall app` exit 0；mutation **39/39 变红**（沿用上轮结果，脚本未改）。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未改 Layout B parser / 4 字段 redaction /
+  production collect·collectApprovedShard·collectSharded / Capture Bundle format /
+  `captured_pages.py` / store / public Schema / runtime wiring / Planner / Curriculum /
+  frontend；⛔ 真实材料未入 Git；**真实请求数 0**。
+- 下一步：等待 Architecture Review 对 A / C / D 中任一路线（或"接受不续跑"）的裁定；
+  ⛔ 在此之前不实现分段诊断。
