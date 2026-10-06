@@ -1628,3 +1628,82 @@ course_data_import（artifact 级审计；同一 (artifact, semester, scope) 只
 - **full_semester acceptance = 未实现**（本 Gate 明确延后，由独立 five-shard /
   full-semester Gate 承担）；**PR #39 = frozen / do not merge**；formal Real E2E = **LEVEL0**；
 - 使用说明：`docs/data/ARTIFACT_ACCEPTANCE_CLI.md`。
+
+## Five-shard Full-Semester Acceptance（Gate A，✅ 已收口）
+
+- **PR #41 = merged**（merge `1cd08e043b89a6da0a5f04a1b8981b59fae3b035`）；
+  本 Gate 从 main `1cd08e0` 新建 `feature/full-semester-course-data-acceptance`
+  （⛔ 未 merge main、⛔ 未改 PR #39）；
+- 新增**内部** orchestration `backend/app/course_data/full_semester_acceptance.py`
+  与**独立** CLI `tools/accept_full_semester_course_data.py`：
+  ⛔ **未**把 single-bundle campus CLI 扩宽到 `full_semester`（两个入口互不替代）；
+- **baseline 语义（A1）**：真实采集侧只有**总量证据**
+  `baseline_before` / `baseline_after`，⛔ **不要求** baseline `OfferingSnapshot`；
+  `baseline_before != baseline_after` ⇒ `snapshot_window_unstable`；
+  `Σ shard reported_total != 稳定 baseline` ⇒ `shard_coverage_mismatch`；
+  ⛔ **不得**用 `page_count` 推导 completeness（仍由现有分页证据链判定）；
+- **exact five-shard（A2）**：只有
+  `east-campus` / `south-campus` / `shenzhen-campus` / `zhuhai-campus` / `north-campus`；
+  缺 / 多 / 重复 / 别名（中文校区名、大小写、空格变体）一律 reject；
+  ⛔ **没有** `--skip-north` / `--allow-partial-semester` / `--force-complete`；
+  每个 shard 的 `openingSchoolNumber` 与 collector `APPROVED_SHARDS` 逐项一致
+  （由测试强制，⛔ 不允许两侧悄悄漂移）；
+- **merge 不变量（A3）**：identity = `(semester, course_id, class_id)`；
+  跨 shard 重复 ⇒ `duplicate_identity_across_shards`，载荷不一致 ⇒
+  `conflicting_identity_across_shards`（⛔ 都不静默去重）；合并后**物化重新计数**；
+  ⛔ **未改** `merge_offering_snapshots()` 的通用低层语义（它继续信任调用方 baseline），
+  只在其上新增更高层 acceptance orchestration；
+- **canonical manifest（A4）**：`format / manifest_version / tool / semester /
+  scope_kind / scope_id / source / baseline_before / baseline_after /
+  merged_offering_count / shards[]`（每 shard：`shard_id` / `scope_id` /
+  `raw_bundle_sha256` / `page_count` / `loaded_count` / `reported_total`）+ `*_semantics`；
+  序列化固定（`sort_keys` + 紧凑分隔符 + UTF-8）；**原子写入**，已存在且内容不同 ⇒ fail closed；
+  **manifest 文件字节的 SHA-256 = acceptance identity / integrity**
+  （⛔ 不是 acquisition provenance proof；每个 shard 的 raw bundle SHA-256 才是字节证据）；
+- **SQLite full_semester（A5）**：`SnapshotScope(full_semester, semester)` +
+  manifest SHA → import → provenance read-back 逐项核对
+  （digest / semester / scope_kind / scope_id / source / completeness /
+  `loaded_count` / `reported_total` / `offering_count`）+ `inserted+updated+unchanged` 对账；
+  ⛔ **单 campus CLI 无法**创建 `full_semester`；
+  `merged_offering_count`（本次 acceptance）与 `db_semester_offering_count`（整学期库内总数）
+  已用 `*_semantics` 区分；
+- **North**：`allowlisted` + `operationally suspended` ⇒ 真实阶段**没有**第五份输入
+  ⇒ **当前不可能产生真实 full-semester acceptance**，runtime 继续 fail closed；
+  代码本身**可以**接受未来合法取得的 North artifact，但⛔ **没有**任何"没有 North 也算过"的路径；
+- **测试**：module + CLI **88 passed**（synthetic / zero-network）；
+  mutation sweep **29/34 killed**，5 个 survivor **全部为可证等价**的冗余防御子句
+  （已在代码内注明，⛔ 未删除、⛔ 未计为 killed）；
+- ⚠️ **事务 caveat 继续成立**：import commit 与 read-back 非同一事务 ⇒
+  ⛔ 不得声称"非零退出 == SQLite 零变化"；
+- 使用说明：`docs/data/FULL_SEMESTER_ACCEPTANCE.md`；
+  ⛔ 尚未处理任何真实 artifact；**PR #39 = frozen / do not merge**；formal Real E2E = **LEVEL0**。
+
+## Forward Red-Team 四个 BLOCK 的修复（✅ 已修）
+
+Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semester/REVIEW.md`），
+被审计 HEAD：acceptance `c01b7c9` / provider `13c5556`。
+
+- **B1 —— digest 与解析必须同源**：新增 `captured_pages.load_capture_bundle_bytes(raw)`；
+  full-semester `_read_shard_bundle_once()` 与 campus CLI 都改为**只读一次**，
+  digest 与 JSON 解析吃**同一批** bytes（复读只作额外变动探测）；⛔ 不复制 parser / validator；
+- **B2 —— artifact 与 campus scope 独立绑定**：正式 acceptance 必须同时消费
+  ①**已批准 capture inventory**（`(semester, shard_id, openingSchoolNumber, raw_bundle_sha256)`，
+  exact five-shard / 号码等于批准值 / canonical / 五个 digest 两两不同）与
+  ②**已导入的 campus acceptance 记录**（digest / scope / canonical source / counts /
+  **内容 digest** 逐项一致）⇒ ⛔ "调用方自称 East" 不再是证据；
+  ⛔ 同一批字节不得声明成两个校区；⛔ 不从文件名推 scope、⛔ 不从 rows 猜 campus；
+- **B3 —— exact accepted dataset content-bound**：新增内部 `offering_digest.py`
+  （`offering_payload_sha256` / `offering_set_sha256`：canonical 序列化 + 按 identity 稳定排序）；
+  manifest 记录 `merged_offering_set_sha256` 与每 shard `campus_offering_set_sha256`；
+  ⛔ 只用 `CourseOffering` 现有公共字段，⛔ 未改 public Schema；
+- **B4 —— Provider 持续验证**：store 新增 content-bound 平面
+  （`course_data_acceptance` + `course_data_acceptance_member`，与 rows 同一事务写入），
+  Provider **不缓存** metadata / rows，每次读取都在一个一致读事务里重新核对
+  两个平面 / scope / 计数 / membership / 逐行内容指纹 / 整批 digest；
+- **内部 DB schema**：允许修改（⛔ public Schema / frozen Provider contract 未动）；
+  旧库缺 acceptance 表时明确要求重建（⛔ 不自动迁移、⛔ 不降级读取）；
+- **测试**：acceptance module + CLI **119 passed**；store **78 passed**；
+  full backend **2623 passed**（2 个既有 Windows-only Curriculum failure，⛔ 未修未 skip）；
+- 逐条映射：`docs/data/FORWARD_REDTEAM_RESPONSE.md`（Reviewer 20-case 矩阵 + runtime/E2E 矩阵）；
+- ⛔ **未声称** physical immutability（专用 immutable acceptance DB 属后续 Architecture Decision）；
+  ⛔ 未处理真实 artifact、⛔ 未 merge main。

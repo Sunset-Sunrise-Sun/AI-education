@@ -38,8 +38,11 @@ from app.course_data import (
     compute_artifact_sha256,
     import_offering_snapshot,
     initialize_course_data_store,
+    load_accepted_offerings,
+    load_course_data_acceptances,
     load_course_data_provenance,
     load_course_offerings,
+    offering_set_sha256,
 )
 from app.models.contracts import CourseOffering, DataSource, Meeting
 
@@ -1070,3 +1073,298 @@ def test_schema_holds_no_global_completeness_column(store_path: Path) -> None:
             lowered = column.lower()
             for token in ("global", "semester_complete", "full_complete", "is_full"):
                 assert token not in lowered, f"{table}.{column} 命中禁止字段：{token}"
+
+
+# ---------------------------------------------------------------------------
+# 10. content-bound acceptance 平面（BLOCK B3 / B4）
+# ---------------------------------------------------------------------------
+
+
+def _full_snapshot(offerings: list[CourseOffering]) -> OfferingSnapshot:
+    return _snapshot(offerings)
+
+
+def test_import_writes_the_content_bound_acceptance_plane(store_path: Path) -> None:
+    offerings = [
+        _offering(course_id="SYN-A", class_id="A-01"),
+        _offering(course_id="SYN-B", class_id="B-01"),
+    ]
+    snapshot = _full_snapshot(offerings)
+
+    _import(store_path, snapshot, artifact_sha256=OTHER_ARTIFACT, scope=FULL_SCOPE)
+
+    records = load_course_data_acceptances(store_path, semester=SEMESTER)
+    assert len(records) == 1
+    assert records[0].artifact_sha256 == OTHER_ARTIFACT
+    assert records[0].scope_kind == SCOPE_KIND_FULL_SEMESTER
+    assert records[0].scope_id == SEMESTER
+    assert records[0].offering_count == 2
+    assert records[0].offering_set_sha256 == offering_set_sha256(snapshot.offerings)
+
+    dataset = load_accepted_offerings(
+        store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+    )
+    assert dataset.member_count == 2
+    assert [offering.course_id for offering in dataset.offerings] == ["SYN-A", "SYN-B"]
+    assert dataset.acceptance.offering_set_sha256 == records[0].offering_set_sha256
+
+
+def test_accepted_read_requires_both_planes(store_path: Path) -> None:
+    _import(
+        store_path,
+        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+
+    connection = sqlite3.connect(str(store_path))
+    connection.execute("DELETE FROM course_data_import WHERE artifact_sha256 = ?", (OTHER_ARTIFACT,))
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(CourseDataStoreError) as missing_provenance:
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        )
+    assert "两个平面" in str(missing_provenance.value) or "导入记录" in str(
+        missing_provenance.value
+    )
+
+
+def test_accepted_read_requires_the_acceptance_record(store_path: Path) -> None:
+    """B4：acceptance 记录被删除 ⇒ 下一次读取必须 fail closed（⛔ 不靠缓存）。"""
+
+    _import(
+        store_path,
+        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+
+    connection = sqlite3.connect(str(store_path))
+    connection.execute(
+        "DELETE FROM course_data_acceptance WHERE artifact_sha256 = ?", (OTHER_ARTIFACT,)
+    )
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(CourseDataStoreError):
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        )
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("course_name", "被替换的课程名"),
+        ("course_id", "SYN-SUBSTITUTED"),
+        ("class_id", "SUBSTITUTED-01"),
+        ("source", "capture://tampered"),
+        ("meetings_json", "[]"),
+        ("credit", 9.0),
+    ],
+)
+def test_same_count_content_substitution_is_detected(
+    store_path: Path, column: str, value: object
+) -> None:
+    """B3：同数量 / 同身份下的**内容替换**必须被读路径发现。"""
+
+    _import(
+        store_path,
+        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+
+    connection = sqlite3.connect(str(store_path))
+    connection.execute(f"UPDATE course_offering SET {column} = ?", (value,))
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(CourseDataStoreError):
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        )
+
+
+def test_deleted_or_extra_member_is_detected(store_path: Path) -> None:
+    offerings = [
+        _offering(course_id="SYN-A", class_id="A-01"),
+        _offering(course_id="SYN-B", class_id="B-01"),
+    ]
+    _import(
+        store_path,
+        _full_snapshot(offerings),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+
+    connection = sqlite3.connect(str(store_path))
+    connection.execute("DELETE FROM course_offering WHERE class_id = ?", ("B-01",))
+    connection.commit()
+    connection.close()
+
+    with pytest.raises(CourseDataStoreError):
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        )
+
+
+def test_stale_rows_and_other_semesters_are_never_returned(store_path: Path) -> None:
+    _import(
+        store_path,
+        _full_snapshot([_offering(course_id="SYN-STALE", class_id="STALE-01")]),
+        artifact_sha256=ARTIFACT,
+        scope=CAMPUS_SCOPE,
+    )
+    _import(
+        store_path,
+        _snapshot(
+            [_offering(semester=OTHER_SEMESTER, class_id="OTHER-01")],
+            semester=OTHER_SEMESTER,
+        ),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=OTHER_FULL_SCOPE,
+    )
+    _import(
+        store_path,
+        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+
+    dataset = load_accepted_offerings(
+        store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+    )
+    assert [offering.course_id for offering in dataset.offerings] == ["SYN-A"]
+    # 整学期查询仍然能看到陈旧行 ⇒ 两者语义确实不同。
+    assert len(load_course_offerings(store_path, SEMESTER)) == 2
+
+
+def test_later_campus_overwrite_invalidates_the_full_acceptance(store_path: Path) -> None:
+    _import(
+        store_path,
+        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+    # 后来的 campus import 覆盖同一行的 provenance（内容相同也不行）。
+    _import(
+        store_path,
+        _snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
+        artifact_sha256=ARTIFACT,
+        scope=CAMPUS_SCOPE,
+    )
+
+    with pytest.raises(CourseDataStoreError):
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        )
+
+
+def test_accepted_read_is_scope_parameterized(store_path: Path) -> None:
+    _import(
+        store_path,
+        _snapshot([_offering(course_id="SYN-C", class_id="C-01")]),
+        artifact_sha256=ARTIFACT,
+        scope=CAMPUS_SCOPE,
+    )
+
+    campus_dataset = load_accepted_offerings(
+        store_path,
+        semester=SEMESTER,
+        acceptance_sha256=ARTIFACT,
+        scope=CAMPUS_SCOPE,
+    )
+    assert [offering.course_id for offering in campus_dataset.offerings] == ["SYN-C"]
+
+    # ⛔ 同一批字节不能以 full_semester 语义读回。
+    with pytest.raises(CourseDataStoreError):
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=ARTIFACT
+        )
+
+
+def test_reimport_with_different_content_under_one_identity_fails_closed(
+    store_path: Path,
+) -> None:
+    """同一 acceptance identity 被以**不同内容**重复导入 ⇒ 两个平面不一致 ⇒ 拒绝。"""
+
+    _import(
+        store_path,
+        _full_snapshot([_offering(course_id="SYN-A", class_id="A-01")]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+    first = load_accepted_offerings(
+        store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+    )
+    assert first.member_count == 1
+
+    _import(
+        store_path,
+        _full_snapshot(
+            [
+                _offering(course_id="SYN-A", class_id="A-01"),
+                _offering(course_id="SYN-B", class_id="B-01"),
+            ]
+        ),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+
+    # 历史审计记录保留**首次**导入的计数（声明平面），content-bound 平面记录最新内容
+    # ⇒ 两者不一致 ⇒ fail closed（⛔ 不会悄悄采用其中一边）。
+    with pytest.raises(CourseDataStoreError):
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        )
+
+
+def test_identical_reimport_keeps_the_acceptance_readable(store_path: Path) -> None:
+    offerings = [
+        _offering(course_id="SYN-A", class_id="A-01"),
+        _offering(course_id="SYN-B", class_id="B-01"),
+    ]
+    for _ in range(2):
+        _import(
+            store_path,
+            _full_snapshot(offerings),
+            artifact_sha256=OTHER_ARTIFACT,
+            scope=FULL_SCOPE,
+        )
+
+    dataset = load_accepted_offerings(
+        store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+    )
+    assert dataset.member_count == 2
+    assert len(load_course_data_provenance(store_path, semester=SEMESTER)) == 1
+
+
+def test_accepted_read_rejects_unreadable_store(store_path: Path) -> None:
+    with pytest.raises(CourseDataStoreError):
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256="not-a-digest"
+        )
+
+    with pytest.raises(CourseDataStoreError):
+        load_accepted_offerings(
+            store_path, semester="   ", acceptance_sha256=OTHER_ARTIFACT
+        )
+
+
+def test_empty_acceptance_is_rejected_by_the_read_path(store_path: Path) -> None:
+    """零行 acceptance 不得被装配（⛔ 不做"有一些行就启动"）。"""
+
+    _import(
+        store_path,
+        _full_snapshot([]),
+        artifact_sha256=OTHER_ARTIFACT,
+        scope=FULL_SCOPE,
+    )
+
+    with pytest.raises(CourseDataStoreError):
+        load_accepted_offerings(
+            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
+        )

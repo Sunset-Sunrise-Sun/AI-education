@@ -168,6 +168,52 @@ load_course_data_provenance("course-data.sqlite")                # 审计记录
 ⛔ 不完整（`partial`）快照**不入库**；⛔ 导入失败后**不得**假设数据库零写入
 （事务边界见 `backend/tests/test_course_data_store.py`）。
 
+> 单 campus CLI（`tools/validate_course_data_artifact.py`）**只能**声明
+> `scope_kind = campus`；这四份 artifact 导入后得到的是**四个 campus acceptance**，
+> **不是** full-semester acceptance。
+
+---
+
+## E2. 五 shard → full-semester acceptance（Agent 执行；⛔ 五份齐备才可能）
+
+```bash
+python tools/accept_full_semester_course_data.py \
+  --semester 2026-1 \
+  --baseline-before <采集窗口前的 total> \
+  --baseline-after  <采集窗口后的 total> \
+  --east east-campus.capture.json --south south-campus.capture.json \
+  --shenzhen shenzhen-campus.capture.json --zhuhai zhuhai-campus.capture.json \
+  --north north-campus.capture.json \
+  --inventory ./capture-inventory.json \
+  --campus-store ./campus-acceptances.sqlite \
+  --output-manifest ./full-semester-acceptance-manifest.json \
+  --sqlite ./course-data.sqlite
+```
+
+- **五个 `--<campus>` 参数全部必填**：⛔ 没有 `--skip-north` /
+  `--allow-partial-semester` / `--force-complete`；
+- **`--campus-store` 必填**：五个校区必须先各自跑一次 **campus CLI**
+  （§E）把 artifact 以 `campus` scope 正式入库 —— 这是 B2 的独立 scope 绑定来源，
+  ⛔ "调用方说这是 East" 本身不是证据；
+- **`--inventory` 必填**：一份**经审核**的 capture inventory
+  （`(semester, shard_id, openingSchoolNumber, raw_bundle_sha256)`）。
+  可以先让本工具生成**草稿**（⛔ 草稿不是批准，只记录 digest）：
+
+  ```bash
+  python tools/accept_full_semester_course_data.py \
+    --semester 2026-1 --east … --south … --shenzhen … --zhuhai … --north … \
+    --draft-inventory ./capture-inventory.json
+  ```
+
+  草稿由人 / Review 核对（对照 §D 手工记录的 SHA-256）后再用于正式 acceptance；
+  ⛔ 工具无法证明某个 inventory 被批准过；
+- `baseline-before` / `baseline-after` = collector 报告的**全学期总数**（⛔ 不是快照）；
+  两者必须相等，且必须等于**五份** shard 的 `reported_total` 之和；
+- 成功输出 `manifest_sha256`（acceptance identity）与 `merged_offering_set_sha256`
+  （规范化内容的确定性 digest）；manifest 文件字节的 SHA-256 **就是** acceptance identity；
+- ⛔ **North 当前拿不到** ⇒ 这一步**现在无法完成**；
+- 细节与失败类别（退出码 2–10）：`docs/data/FULL_SEMESTER_ACCEPTANCE.md`。
+
 ---
 
 ## F. 401 / 403 / HTTP 600 / malformed / total 漂移 时如何停止
@@ -194,6 +240,8 @@ East + South + Shenzhen + Zhuhai 四个校区 complete
   导入时必须声明 `scope_kind="campus"`；⛔ **不得**声称为 `full_semester`。
 - ⛔ **不得**把 North 缺失伪装成 full-semester complete；
   如需学期级 complete，只能等 North 可采集，或由 Architecture Review 正式裁定口径。
+- **full_semester 的唯一入口** = `tools/accept_full_semester_course_data.py`
+  （五个 `--<campus>` 全必填；⛔ 无逃生参数）；单 campus CLI 无法表达 `full_semester`。
 
 ---
 
