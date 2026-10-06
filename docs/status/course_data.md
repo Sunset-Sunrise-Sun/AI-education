@@ -1755,6 +1755,29 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
   **13 killed / 1 可证等价 / 0 survived**；
 - ⛔ 未改 public Schema / frozen Provider contract、⛔ 未 merge main。
 
+## Real E2E Readiness Pack（R1–R10，⛔ 不改语义）
+
+> 目标：真实数据一旦完成授权采集，从 `campus shards → full-semester acceptance → SQLite →
+> runtime → Real /api/v1/plan → 前端` 可用**最短命令序列**跑完，且**不需要新的架构工作**。
+
+- **执行链审计**：`docs/e2e/REAL_DATA_EXECUTION_MAP.md`（11 步依赖图，机器可检：
+  步骤字段 / 工具路径 / 五校区表 / 历史计数标注 / North 禁令，均由
+  `backend/tests/test_readiness_pack_docs.py` 断言）；
+- **采集与启动**：`docs/e2e/REAL_CAPTURE_AND_RUNTIME_RUNBOOK.md`
+  （用户只做 6 步；runtime env 契约与**三种 digest 的明确命名**；失败矩阵 503/500）；
+- **证据协议**：`docs/e2e/REAL_E2E_EVIDENCE_PROTOCOL.md`（LEVEL 2 / LEVEL 3 逐条证据，⛔ 不含个人数据）；
+- **决策记录**：`docs/e2e/READINESS_DECISION_NOTES.md`（XLSX 入口鉴权 / `X-Data-Source` 标记 /
+  North 诊断计划与停止条件）；
+- **编排 CLI**：`tools/prepare_real_case_a_runtime.py`（五 bundle → campus acceptance →
+  inventory 草稿 → full-semester acceptance → SQLite → provider read-back → env 值；
+  ⛔ 不弱化规则、⛔ 不重复 parser、⛔ 不推断 provenance、⛔ 不覆盖已有 DB（除 `--allow-existing-store`））；
+- **synthetic preflight（LEVEL 1，⛔ 不是 Real）**：`python tools/prepare_real_case_a_runtime.py --preflight`；
+- **文档纠正**：`docs/e2e/REAL_CASE_A_ACCEPTANCE.md` 的验收条件已从被取代的
+  `SnapshotCourseDataProvider` / 单 bundle 快照模型更新为当前 `StoreBackedCourseDataProvider`
+  + full-semester acceptance；LEVEL 0 的原因改为"真实受控输入尚未采集"（⛔ 不是"factory 恒返回 None"）；
+- ⛔ **等级不变**：formal Real E2E 仍 **LEVEL 0**；North 仍 **suspended** ⇒ 真实 full-semester
+  acceptance 仍不可产出；⛔ 不跳过 / 不合成 / 不推断 North。
+
 ## BLOCK R-SNAPSHOT：单一 consistent read snapshot（✅ 已修）
 
 第三个 Codex BLOCK：`load_accepted_offerings()` 的验证序列是**多次 SELECT**
