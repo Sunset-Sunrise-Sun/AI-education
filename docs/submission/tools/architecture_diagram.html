@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>学航·转衔 — 架构（实际执行路径与输入来源）</title>
+    <style>
+      /* 比赛截图用静态架构图（构建产物目录，⛔ 不入库；语义与 docs/architecture/COMPETITION_ARCHITECTURE.md 一致）。 */
+      * { box-sizing: border-box; }
+      html, body { margin: 0; padding: 0; background: #f1f5f9; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: #0f172a; }
+      .page { width: 1600px; height: 900px; padding: 26px 32px 18px; display: flex; flex-direction: column; gap: 14px; }
+      h1 { font-size: 27px; margin: 0; }
+      .sub { font-size: 14px; color: #475569; margin-top: 4px; }
+      .axes { display: grid; grid-template-columns: 1.55fr 1fr; gap: 16px; flex: 1; }
+      .panel { background: #fff; border: 1px solid #cbd5e1; border-radius: 12px; padding: 14px 16px; }
+      .panel h2 { font-size: 16px; margin: 0 0 4px; }
+      .panel .hint { font-size: 12px; color: #64748b; margin-bottom: 10px; }
+      .chain { display: flex; flex-direction: column; gap: 8px; }
+      .node { border: 2px solid #1f5f9f; background: #e8f4ff; border-radius: 10px; padding: 9px 12px; }
+      .node strong { font-size: 14px; display: block; }
+      .node span { font-size: 12px; color: #334155; }
+      .providers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+      .provider { border: 2px solid #1f5f9f; background: #f5faff; border-radius: 10px; padding: 8px 10px; }
+      .provider strong { font-size: 13px; display: block; }
+      .provider span { font-size: 11px; color: #334155; }
+      .arrow { text-align: center; color: #1f5f9f; font-size: 15px; line-height: 1; }
+      .inputs { display: flex; flex-direction: column; gap: 10px; }
+      .input { border: 2px dashed #94a3b8; background: #f8fafc; border-radius: 10px; padding: 9px 12px; }
+      .input--synth { border-color: #b58a00; background: #fffbeb; }
+      .input--mock { border-color: #7a4fb5; background: #faf5ff; }
+      .input strong { font-size: 13px; display: block; }
+      .input span { font-size: 11px; color: #334155; }
+      .planned { border: 2px dotted #b0b0b0; background: #fff; border-radius: 10px; padding: 12px 14px; }
+      .planned strong { font-size: 14px; color: #475569; display: block; }
+      .planned span { font-size: 12px; color: #64748b; }
+      .legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 12px; color: #334155; }
+      .legend i { display: inline-block; width: 26px; height: 10px; margin-right: 6px; vertical-align: middle; border-radius: 3px; }
+      .sw-exec { border: 2px solid #1f5f9f; background: #e8f4ff; }
+      .sw-input { border: 2px dashed #94a3b8; background: #f8fafc; }
+      .sw-synth { border: 2px dashed #b58a00; background: #fffbeb; }
+      .sw-mock { border: 2px dashed #7a4fb5; background: #faf5ff; }
+      .sw-planned { border: 2px dotted #b0b0b0; background: #fff; }
+      .footer { font-size: 12px; color: #475569; display: flex; justify-content: space-between; gap: 12px; }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <div>
+        <h1>学航·转衔 —— 架构：实际执行的代码 vs 输入来源（两条独立轴）</h1>
+        <div class="sub">固定工具编排原型（AI 增强待接入）｜面向转专业学生的学业路径重构</div>
+      </div>
+
+      <div class="axes">
+        <div class="panel">
+          <h2>IMPLEMENTED NOW · 实际执行的代码</h2>
+          <div class="hint">以下组件在仓库中真实存在并执行；⛔ 代码执行**不证明**输入数据来自学校。</div>
+          <div class="chain">
+            <div class="node"><strong>前端 · Vue 3 + Vite 单页应用</strong><span>输入区 + 展示区块 + 来源声明（本地代码执行）</span></div>
+            <div class="arrow">▼</div>
+            <div class="node"><strong>后端 FastAPI</strong><span>POST /api/v1/plan（实际代码计算）｜GET /api/v1/mock/demo（回放）</span></div>
+            <div class="arrow">▼</div>
+            <div class="node"><strong>PlanningOrchestrator · 固定工具编排</strong><span>只编排调用顺序，不产生业务结论，不调用模型</span></div>
+            <div class="arrow">▼</div>
+            <div class="providers">
+              <div class="provider"><strong>CurriculumProvider</strong><span>培养方案解析 · 差异 · 补修判定</span></div>
+              <div class="provider"><strong>CourseDataProvider</strong><span>已验收教学班供给（Store 绑定）</span></div>
+              <div class="provider"><strong>RestrictedPlannerProvider</strong><span>受限确定性时间检查 + 替代候选评估</span></div>
+            </div>
+            <div class="arrow">▼</div>
+            <div class="node"><strong>PlanResult</strong><span>建议课表 · 变更记录 · 风险 · 未决事项 → 人工确认回路</span></div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 14px">
+          <div class="panel" style="flex: 1">
+            <h2>输入来源 · DISCLOSED</h2>
+            <div class="hint">来源须**分别**披露与核验；⛔ 不存在"只有教学班是 Synthetic、其余全部真实"。</div>
+            <div class="inputs">
+              <div class="input">
+                <strong>Case A manifest · 外部本地输入</strong>
+                <span>不在 Git 中；真实学校来源须由绑定 artifact 字节的批准 provenance 证明</span>
+              </div>
+              <div class="input input--synth">
+                <strong>教学班 CourseOffering · Synthetic 演示快照</strong>
+                <span>教学班数据：演示快照（Synthetic）｜比赛演示供给</span>
+              </div>
+              <div class="input input--mock">
+                <strong>Mock 回放通道 · mock_data/*.json</strong>
+                <span>GET /api/v1/mock/demo｜回放预置对象，不执行上游业务计算</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel" style="flex: 0 0 auto">
+            <h2>AI ENHANCEMENT PLANNED</h2>
+            <div class="planned">
+              <strong>LLM / RAG / GraphRAG · 自然语言偏好解析</strong>
+              <span>尚未接入，<b>不在当前执行路径上</b>；偏好当前来自结构化表单。</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="legend">
+        <span><i class="sw-exec"></i>实际执行代码</span>
+        <span><i class="sw-input"></i>外部本地输入（来源须证明）</span>
+        <span><i class="sw-synth"></i>Synthetic 演示快照</span>
+        <span><i class="sw-mock"></i>Mock 回放通道</span>
+        <span><i class="sw-planned"></i>规划中能力（未接入）</span>
+      </div>
+
+      <div class="footer">
+        <span>正式 Real E2E 证据等级：LEVEL 0（无真实教务登录、无真实全量 artifact）｜ready ≠ LEVEL2</span>
+        <span>⛔ 不声称已接入 LLM/RAG/GraphRAG；⛔ 不声称全局最优、自动选课或自动换班</span>
+      </div>
+    </div>
+  </body>
+</html>
