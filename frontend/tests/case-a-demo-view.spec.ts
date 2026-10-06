@@ -42,7 +42,7 @@ describe('Case A 学生端页面', () => {
     expect(wrapper.text()).toContain('第三步：设置排课偏好')
     expect(wrapper.findAll('[data-testid="case-a-search-result"]')).toHaveLength(0)
     expect(wrapper.find('[data-testid="case-a-manual-form"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('已加载真实教学班数据：4069 条')
+    expect(wrapper.text()).toContain('已加载真实教学班数据 4069 条')
   })
 
   it('搜索结果最多 20 条，可加入并从当前课表移除', async () => {
