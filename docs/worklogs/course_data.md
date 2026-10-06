@@ -16,7 +16,85 @@
 
 ---
 
-### 2026-09-30 - Phase 2B-2A：Course Data Normalization Core
+### 2026-10-06 - 分支 `feature/case-a-course-data-current-schedule`：Case A scoped（南 + 深圳）+ 当前课表
+- 本次目标：今晚把 **Case A 学期执行输入**跑通：南校园 + 深圳校区的**教学班数据**
+  与**学生当前课表**，并验证既有 `RestrictedPlanner` 能正确收到这两样输入。
+- 已完成：
+  - **Phase 1 复用性结论（先查再写）**：
+    - 既有 `campus` acceptance（`validate_course_data_artifact.py --scope-id <openingSchoolNumber>`）
+      可以**直接复用**，无需新建信任框架；
+    - `load_accepted_offerings()` 在**一次一致读事务**里核对 acceptance 平面 + membership +
+      逐行 `offering_payload_sha256` + 整批 `offering_set_sha256` ⇒ 两个校区各自 content-bound；
+    - ⛔ **不需要**新的 runtime / Provider 路径：production runtime 仍然**只**认
+      `full_semester` acceptance；Case A 数据集**不落库**，因此不会被误读为 production 供给。
+  - **Phase 2 Case A scoped 数据集**：`backend/app/course_data/case_a_scope.py`
+    （本次之前已存在但**未提交**，本轮补齐 CLI + 测试 + 文档并纳入本分支）：
+    - 校区白名单**不重复写死**：从 `APPROVED_FULL_SEMESTER_SHARDS` 按 `shard_id` 过滤
+      （`south-campus` / `shenzhen-campus`），两侧不可能漂移；
+    - ⛔ **不调用** `accept_full_semester_capture_set()`、⛔ **不产生** manifest、
+      ⛔ **不写** `full_semester` scope 的任何行；
+    - 输出**同时**带正向标签（`case-a-scoped:south+shenzhen`）与反向断言
+      （`is_full_semester / is_whole_school / is_all_campus / is_level2_real_dataset = false`）；
+    - 跨校区合并按 canonical identity：**同 identity + 同内容 → 去重并如实计数**；
+      **同 identity + 不同内容 → fail closed**（⛔ 不静默取第一条）；
+    - ⛔ 没有单校区 fallback：缺 acceptance / 记录不唯一 / 内容绑定不符 / 学期不符 ⇒ 直接失败。
+  - **Phase 3 操作员手册**：`docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md`
+    （既有 `collectApprovedShard({semester, shardId})` 的精确命令、期望产物与安全元数据、
+    校验/落库命令、停止条件；⛔ 不涉及凭据，Builder 未访问学校）。
+  - **Phase 4 当前课表**：`frontend/src/state/manualSchedule.ts` +
+    `frontend/src/components/ManualScheduleForm.vue`：
+    - **结构化录入**（课程号 / 课程名称 / 教学班号 / 学期 / 星期 / 节次 / 周次 / 校区 / 教室），
+      ⛔ 不要求用户写 JSON；
+    - **全有或全无**：任一必填字段缺失或非法 ⇒ 明确报错，课表**不被修改**；
+    - 同一 identity 重复 / 同一课程第二个教学班 ⇒ 明确拒绝（⛔ 不静默去重、⛔ 不静默取一个）；
+    - 周次解析 `1-16` / `1-16,18` / `1,3,5-7`（含中文标点与"周"字）；
+      ⛔ 不解释单双周等未确认写法；
+    - `data_source` **默认 `mock`** ⇒ provenance 门禁仍**阻止**提交 Real Planning
+      （⛔ 手工录入不冒充学校系统来源）；只有负责人显式设置
+      `VITE_MANUAL_SCHEDULE_PROVENANCE=student_attested_real` 时才记 `real`。
+  - **Phase 6 Planner 连通性 smoke**：`tools/case_a_course_data.py smoke`
+    —— Case A scoped offerings + 手工 `current_schedule` + Preference
+    → **既有** `RestrictedPlannerProvider`（⛔ 未改 Planner）。
+- 修改文件：
+  - `backend/app/course_data/case_a_scope.py`（本次之前已在工作区，本轮纳入提交）
+  - `backend/app/course_data/__init__.py`（导出 Case A scope 内部对象）
+  - `backend/tests/test_case_a_course_data_scope.py`（新增，30 items）
+  - `tools/case_a_course_data.py`（新增）
+  - `frontend/src/state/manualSchedule.ts`、`frontend/src/components/ManualScheduleForm.vue`（新增）
+  - `frontend/src/state/userInput.ts`、`frontend/src/components/CurrentScheduleInput.vue`、
+    `frontend/src/components/UserInputPanel.vue`、`frontend/src/config.ts`、
+    `frontend/src/vite-env.d.ts`、`frontend/.env.example`、`frontend/src/styles/base.css`
+  - `frontend/tests/manual-current-schedule.spec.ts`（新增，19 tests）
+  - `docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md`（新增）、`docs/status/course_data.md`
+- 测试：
+  - `cd backend && python -m pytest tests/test_case_a_course_data_scope.py` → **30 passed**；
+  - `cd backend && python -m pytest tests`（排除另一个 Builder 正在改的 curriculum 文件）
+    → **2798 passed, 2 skipped**；
+  - `cd frontend && npx vitest run` → **161 passed（11 files）**；`npx vue-tsc --noEmit` → exit 0。
+- 使用数据：**Mock / synthetic（零网络、零真实 artifact）**。
+  ⛔ 本轮未登录 SYSU、未发任何真实请求、未生成任何真实数据文件、未提交任何真实取值。
+- 已知问题：
+  - `course_offering` 表的主键是 `(semester, course_id, class_id)`（**不含 scope**）：
+    同一教学班若被两个 campus acceptance 都收录，后一次导入会刷新该行 scope
+    ⇒ 前一个 acceptance 的 membership 计数不再自洽而 fail closed。
+    这是**既有行为**（fail closed 是对的），因此跨校区去重规则由 `_merge_case_a_offerings()`
+    直接覆盖测试，而不靠硬造一个真实信任链里不成立的 fixture。
+  - 两个校区的**真实** acceptance 需要负责人今晚执行采集后才会存在；
+    在那之前 `verify` / `smoke` 只能跑 synthetic 数据集。
+- 需要人工确认：
+  - ⛔ **不需要**改公共 Schema / 冻结 Provider 契约 / Store 白名单。
+  - ⚠️ **待 Architecture Lead 裁定的唯一一点**：是否允许"学生手工确认的当前课表"在
+    **默认配置**下就标记 `real` 并提交 Real Planning（会改变现有 fail-closed provenance 门禁）。
+    本分支**未**默认放宽；只提供了必须显式设置的环境变量开关 + 页面逐字标注。
+- 对其他模块影响：
+  - ⛔ 未改 Curriculum / Planner / Integration / production runtime 装配；
+  - `UserInputForm` 新增一个前端内部字段 `manualScheduleEntries`（⛔ 不是公共契约、
+    ⛔ 不进入任何请求体）。
+- 下一步：负责人按 `docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md` §2 采集南校园 +
+  深圳校区 → §3 校验落库 → §4 `verify` → §5 录入当前课表 → §6 `smoke`。
+
+---
+
 - 本次目标：实现"**已确认 SYSU 字段 → 确定性转换 / 校验 → `CourseOffering` →
   带 completeness 的内部 snapshot → `CourseDataProvider.get_course_offerings(semester)`**"
   这条**纯本地、零网络**链路。**不抓数据、不猜未确认字段格式。**
