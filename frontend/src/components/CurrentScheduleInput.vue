@@ -1,28 +1,55 @@
 <script setup lang="ts">
+import ManualScheduleForm from './ManualScheduleForm.vue'
+import type { ManualScheduleEntry } from '../state/userInput'
 import type { CourseOffering } from '../types/contracts'
 import { EMPTY_MEETINGS_DATA_TEXT, formatMeetingLine } from '../utils/labels'
 
 /**
  * 当前课表输入（`current_schedule: CourseOffering[]`）。
  *
+ * 两条**并行**的录入路径：
+ * 1. 从**已加载的教学班**里勾选"我当前已选的班"；
+ * 2. 页面列表里找不到时，用 `ManualScheduleForm` **结构化录入**（⛔ 不需要写裸 JSON）。
+ *
  * 边界（DG-03 语义 + 本轮范围）：
- * - 只做一件事：让用户从**已加载的教学班**里勾选"我当前已选的班"；
  * - 勾选结果严格是 `CourseOffering[]`（复用公共类型，不新增 Schema）；
  * - ⛔ **不做冲突检测、不判断 feasible、不做 Path Repair、不计算学分**；
  * - ⛔ 不用 `Preference.avoid_times[]` 冒充当前课表；
  * - 允许为空：空数组是合法输入，是否需要更多信息由后端决定。
  */
-const props = defineProps<{
-  /** 来源教学班（学校供给），当前来自 Mock 演示通道。 */
-  offerings: CourseOffering[]
-  /** 用户已勾选的当前课表。 */
-  selected: CourseOffering[]
-  /** 数据来源标记，用于如实说明当前是 Mock 还是 Real。 */
-  dataSourceLabel?: string | null
-}>()
+const props = withDefaults(
+  defineProps<{
+    /** 来源教学班（学校供给），当前来自 Mock 演示通道。 */
+    offerings: CourseOffering[]
+    /** 用户已勾选的当前课表。 */
+    selected: CourseOffering[]
+    /**
+     * 手工录入行（由页面持有）。
+     *
+     * ⚠️ 默认空数组：调用方暂时不传时，手工录入区只是空的，
+     * ⛔ 不会让整个当前课表区渲染失败。
+     */
+    manualEntries?: ManualScheduleEntry[]
+    /** 表单当前学期（手工录入新增行时带入）。 */
+    semester: string
+    /** 手工录入的来源说明（⛔ 逐字可见）。 */
+    manualProvenanceLabel: string
+    /** 数据来源标记，用于如实说明当前是 Mock 还是 Real。 */
+    dataSourceLabel?: string | null
+  }>(),
+  {
+    manualEntries: () => [],
+    dataSourceLabel: null,
+    manualProvenanceLabel: '',
+  },
+)
 
 const emit = defineEmits<{
   (event: 'toggle', offering: CourseOffering): void
+  (event: 'update:manualEntries', value: ManualScheduleEntry[]): void
+  (event: 'add-manual-row', semester: string): void
+  (event: 'manual-add-confirmed', payload: { offering: CourseOffering; entries: ManualScheduleEntry[] }): void
+  (event: 'remove', offering: CourseOffering): void
 }>()
 
 function keyOf(offering: CourseOffering): string {
@@ -82,5 +109,17 @@ function firstMeetingText(offering: CourseOffering): string {
       已选 {{ selected.length }} 个教学班（<code class="mono">current_schedule</code> 将以
       <code class="mono">CourseOffering[]</code> 原样输出）。
     </p>
+
+    <ManualScheduleForm
+      :entries="manualEntries"
+      :selected="selected"
+      :semester="semester"
+      :current-semester="semester"
+      :provenance-label="manualProvenanceLabel"
+      @update:entries="emit('update:manualEntries', $event)"
+      @add-row="emit('add-manual-row', $event)"
+      @add-confirmed="emit('manual-add-confirmed', $event)"
+      @remove="emit('remove', $event)"
+    />
   </div>
 </template>

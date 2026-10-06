@@ -1,5 +1,42 @@
 # Course Data 当前状态
 
+## 🆕 Case A scoped（南校园 + 深圳校区）+ 当前课表（2026-10-06，Builder B）
+
+> **新增交付**（分支 `feature/case-a-course-data-current-schedule`）：
+> **Case A scoped 教学班数据集 + `current_schedule` 手工结构化录入**。
+> ⛔ **未改** full_semester acceptance 语义、⛔ 未改公共 Schema、⛔ 未改 Planner、
+> ⛔ 未改 production runtime 装配口径、⛔ 未联网、⛔ Builder 未访问学校系统。
+
+```text
+已验收 campus acceptance（南校园 5062201 / 深圳校区 333291143）
+        ↓  build_case_a_dataset()          ← 复用既有 campus acceptance 信任链
+Case A scoped 教学班数据集（**demo scope**，⛔ 不是 full_semester）
+        ↓  CaseAScopedCourseDataProvider.get_course_offerings(semester)
+CourseOffering[]  +  手工录入 current_schedule  +  Preference
+        ↓  RestrictedPlannerProvider（未改动）
+PlanResult
+```
+
+| 项 | 状态 |
+| --- | --- |
+| `backend/app/course_data/case_a_scope.py` | ✅ Case A scoped 数据集（只读、派生、显式反向断言 `is_full_semester = False`） |
+| `tools/case_a_course_data.py` | ✅ `verify` / `export` / `smoke`（零网络；⛔ 不写库、⛔ 不新增信任框架） |
+| `frontend/src/state/manualSchedule.ts` | ✅ 手工录入结构化字段 → 公共 `CourseOffering`（纯函数） |
+| `frontend/src/components/ManualScheduleForm.vue` | ✅ 手工录入界面（⛔ 不需要用户写 JSON） |
+| 公共 Schema / Provider 契约 / Planner | ✅ **未修改** |
+| `StoreBackedCourseDataProvider`（production） | ✅ **未修改**：仍**只**认 full_semester acceptance |
+| `ALLOWED_SCOPE_KINDS`（Store 白名单） | ✅ **未修改**：`case_scoped` **不**入白名单 ⇒ Case A 数据集**不可能**落进 trust store |
+| `full_semester` 五校区 acceptance | ✅ **未修改、未调用、未产出** |
+| 真实校区采集 | ⏳ 待负责人执行（操作手册见 `docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md`） |
+
+⚠️ **手工录入的 `data_source` 口径（⛔ 不得简化）**：
+手工录入**不是**学校系统的授权查询结果，默认记 `mock` ⇒ provenance 门禁
+**阻止**把它提交 Real Planning（**正确行为**）。只有负责人在 `.env.local` 显式设置
+`VITE_MANUAL_SCHEDULE_PROVENANCE=student_attested_real` 时才记 `real`。
+⛔ 默认放宽该门禁属于 provenance 语义变更，**需 Architecture Lead 裁定**（本分支未改）。
+
+## ⚠️ 另一条路径的既有状态（原样保留）
+
 > 最后更新：2026-10-05（**DG-07B — Course Data Empty-Meeting Normalization 已实施 / REVIEWED**：
 > **只有** Raw row **没有** `teachingTimePlaceStr` 这个 key 时才产出 `meetings = []`；
 > `null` / 空串 / 其它类型 / malformed / 解析失败**继续 fail closed**；

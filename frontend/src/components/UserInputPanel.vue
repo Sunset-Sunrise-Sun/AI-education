@@ -6,15 +6,17 @@ import type { E2EDebugInfo } from './E2EDebugPanel.vue'
 import PreferenceForm from './PreferenceForm.vue'
 import StudentContextForm from './StudentContextForm.vue'
 import SubmissionActions from './SubmissionActions.vue'
-import { MAJOR_OPTIONS } from '../config'
+import { MAJOR_OPTIONS, MANUAL_SCHEDULE_PROVENANCE_LABEL } from '../config'
 import type { PlanResultSource } from '../config'
 import type { CourseOffering } from '../types/contracts'
-import type { StudentContext, UserInputForm } from '../state/userInput'
+import type { ManualScheduleEntry, StudentContext, UserInputForm } from '../state/userInput'
 import {
   GRADE_FILE_PENDING_NOTICE,
   XLSX_EXTENSION,
+  addManualScheduleEntry,
   isSupportedGradeFile,
   isFormValid,
+  removeCurrentScheduleOffering,
   toggleCurrentScheduleOffering,
 } from '../state/userInput'
 
@@ -113,6 +115,44 @@ function onToggleOffering(offering: CourseOffering): void {
   })
 }
 
+function onUpdateManualEntries(entries: ManualScheduleEntry[]): void {
+  emit('update:form', { ...props.form, manualScheduleEntries: entries })
+}
+
+function onAddManualRow(semester: string): void {
+  emit('update:form', {
+    ...props.form,
+    manualScheduleEntries: addManualScheduleEntry(props.form.manualScheduleEntries, semester),
+  })
+}
+
+/**
+ * 手工录入行校验通过后，由子组件回传"已构造好的 `CourseOffering` + 清空后的录入行"。
+ *
+ * ⚠️ 两者必须在**同一个** `update:form` 里一起应用：分开两次 emit 会让第二次
+ * 更新基于**旧**的 form 快照重建表单，从而把刚加入的课表条目丢掉。
+ *
+ * 这里只做"加入课表"这一件事：⛔ 不判断冲突、⛔ 不判断可行、
+ * ⛔ 不重新构造对象（构造与校验都在 `state/manualSchedule.ts` 的纯函数里完成）。
+ */
+function onManualOfferingAdded(payload: {
+  offering: CourseOffering
+  entries: ManualScheduleEntry[]
+}): void {
+  emit('update:form', {
+    ...props.form,
+    currentSchedule: [...props.form.currentSchedule, payload.offering],
+    manualScheduleEntries: payload.entries,
+  })
+}
+
+function onRemoveOffering(offering: CourseOffering): void {
+  emit('update:form', {
+    ...props.form,
+    currentSchedule: removeCurrentScheduleOffering(props.form.currentSchedule, offering),
+  })
+}
+
 function onGradeFileChange(event: Event): void {
   const input = event.target as HTMLInputElement
   const file = input.files && input.files.length > 0 ? input.files[0] : null
@@ -200,8 +240,15 @@ function clearGradeFile(): void {
       <CurrentScheduleInput
         :offerings="offerings"
         :selected="form.currentSchedule"
+        :manual-entries="form.manualScheduleEntries"
+        :semester="form.semester"
+        :manual-provenance-label="MANUAL_SCHEDULE_PROVENANCE_LABEL"
         :data-source-label="dataSourceLabel"
         @toggle="onToggleOffering"
+        @update:manual-entries="onUpdateManualEntries"
+        @add-manual-row="onAddManualRow"
+        @manual-add-confirmed="onManualOfferingAdded"
+        @remove="onRemoveOffering"
       />
     </section>
 

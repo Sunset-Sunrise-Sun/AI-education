@@ -1813,6 +1813,77 @@ code.mono {
   overflow-wrap: anywhere;
 }
 
+/* -------------------------------------------------------------------------- */
+/* 当前课表：手工结构化录入（Case A 今晚可用路径）                              */
+/* -------------------------------------------------------------------------- */
+
+.uig-manual-schedule {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.uig-manual-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.uig-manual-row__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.uig-manual-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.uig-manual-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 10px;
+}
+
+.uig-manual-selected {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.uig-manual-selected__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.uig-manual-selected__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 10px;
+  font-size: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
 .uig-empty {
   padding: 12px;
   font-size: 12px;

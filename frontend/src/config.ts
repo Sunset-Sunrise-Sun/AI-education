@@ -8,8 +8,9 @@
  * 这样本地联调不需要后端开启 CORS，也就不必改动 Phase 1 的后端代码。
  */
 
-const rawBaseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
+import type { DataSource } from './types/contracts'
 
+const rawBaseUrl = import.meta.env.VITE_API_BASE_URL ?? ''
 /** 后端基地址；空字符串表示"同源，由 Vite 代理转发"。 */
 export const API_BASE_URL: string = rawBaseUrl.replace(/\/+$/, '')
 
@@ -114,3 +115,27 @@ export type PlanResultSource = 'mock' | 'real'
 export function initialDataMode(): PlanResultSource {
   return 'mock'
 }
+
+/**
+ * **手工录入**当前课表时写入的 `data_source`。
+ *
+ * ⚠️ 为什么需要显式配置（⛔ 不得简化成"直接写 real"）：
+ *
+ * - `data_source` 是**契约 / 来源声明**（只有 `mock` / `real` 两个取值），
+ *   ⛔ **不是** provenance 证明；
+ * - 手工录入**不是**学校系统的授权查询结果，因此它**不能**默认声称 `real`：
+ *   默认记 `mock` ⇒ provenance 门禁会**阻止**把它提交到 Real Planning（**正确**行为）；
+ * - 只有负责人**显式**设置
+ *   `VITE_MANUAL_SCHEDULE_PROVENANCE=student_attested_real`
+ *   （明确声明"这些条目由学生本人提供、代表其真实已选课程"）时才记 `real`。
+ *
+ * ⛔ 这不是静默 fallback：默认关闭、必须显式设置、页面上如实标注来源。
+ */
+export const MANUAL_SCHEDULE_PROVENANCE: DataSource =
+  import.meta.env.VITE_MANUAL_SCHEDULE_PROVENANCE === 'student_attested_real' ? 'real' : 'mock'
+
+/** 手工录入课表在页面上显示的来源说明（⛔ 逐字可见，不得隐藏）。 */
+export const MANUAL_SCHEDULE_PROVENANCE_LABEL: string =
+  MANUAL_SCHEDULE_PROVENANCE === 'real'
+    ? '手工录入（负责人显式声明为学生本人提供，data_source = real）'
+    : '手工录入（未经学校系统核验，data_source = mock ⇒ 不能提交 Real Planning）'

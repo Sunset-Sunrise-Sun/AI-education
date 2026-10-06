@@ -9,7 +9,14 @@
  */
 
 import type { AvoidTime, CourseOffering, Preference } from '../types/contracts'
-import { CASE_A_CONTEXT } from '../config'
+import { CASE_A_CONTEXT, MANUAL_SCHEDULE_PROVENANCE } from '../config'
+import {
+  buildOfferingFromManualEntry,
+  createManualScheduleEntry,
+  type ManualScheduleEntry,
+} from './manualSchedule'
+
+export type { ManualScheduleEntry } from './manualSchedule'
 
 /** 学生转专业上下文（本轮只作为 Case context 展示与输入，不声称已影响后端 Planner）。 */
 export interface StudentContext {
@@ -141,6 +148,13 @@ export interface UserInputForm {
   }
   currentSchedule: CourseOffering[]
   /**
+   * **手工录入**的当前课表行（结构化输入，⛔ 用户不需要写裸 JSON）。
+   *
+   * ⚠️ 这些行**在用户点击"加入当前课表"之前**不进入 `currentSchedule`：
+   * 校验失败时既不产出半个对象、也不修改已确认的课表。
+   */
+  manualScheduleEntries: ManualScheduleEntry[]
+  /**
    * 当前处于"用户输入了非法值"状态的字段。
    *
    * ⚠️ 这是区分两种情况的**必要条件**：
@@ -170,6 +184,7 @@ export function createDefaultUserInputForm(): UserInputForm {
       notes: null,
     },
     currentSchedule: [],
+    manualScheduleEntries: [],
     invalidFields: [],
   }
 }
@@ -292,6 +307,129 @@ export function toggleCurrentScheduleOffering(
   }
 
   return [...current, offering]
+}
+
+/* -------------------------------------------------------------------------- */
+/* 当前课表：手工结构化录入                                                      */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 追加一条空白手工录入行（学期默认取当前表单学期）。
+ *
+ * 纯函数：不修改入参、不触碰 `currentSchedule`。
+ */
+export function addManualScheduleEntry(
+  entries: readonly ManualScheduleEntry[],
+  semester: string,
+): ManualScheduleEntry[] {
+  return [...entries, createManualScheduleEntry(semester)]
+}
+
+/** 更新一条手工录入行的部分字段；`key` 不存在时返回等值新数组。 */
+export function updateManualScheduleEntry(
+  entries: readonly ManualScheduleEntry[],
+  key: number,
+  patch: Partial<Omit<ManualScheduleEntry, 'key'>>,
+): ManualScheduleEntry[] {
+  return entries.map((entry) => (entry.key === key ? { ...entry, ...patch } : entry))
+}
+
+/** 删除一条手工录入行。 */
+export function removeManualScheduleEntry(
+  entries: readonly ManualScheduleEntry[],
+  key: number,
+): ManualScheduleEntry[] {
+  return entries.filter((entry) => entry.key !== key)
+}
+
+/**
+ * 字段名 → 界面文案（⛔ 只用于展示，不参与任何业务判断）。
+ */
+export const MANUAL_SCHEDULE_FIELD_LABEL: Record<string, string> = {
+  courseId: '课程号',
+  courseName: '课程名称',
+  classId: '教学班号',
+  semester: '学期',
+  weekday: '星期',
+  sections: '节次',
+  weeks: '周次',
+}
+
+export interface ManualScheduleAddResult {
+  /** 加入后的完整当前课表（失败时为**原课表**，⛔ 不做部分加入）。 */
+  currentSchedule: CourseOffering[]
+  /** 是否成功加入。 */
+  added: boolean
+  /** 失败原因（成功时为空字符串）。 */
+  error: string
+}
+
+/**
+ * 把一条手工录入行加入 `currentSchedule`（**全有或全无**）。
+ *
+ * 失败路径（⛔ 一律不修改课表、⛔ 不补默认值、⛔ 不猜测取值）：
+ *
+ * - 字段缺失 / 非法 ⇒ 明确错误，课表不变；
+ * - 同一 `(semester, course_id, class_id)` 已在课表中 ⇒ 明确报重复，课表不变
+ *   （Planner 的输入契约要求 identity 唯一，前端不替它去重）。
+ *
+ * ⚠️ 这里**不做**冲突检测、不判断可行性、不做 Path Repair。
+ */
+export function addManualScheduleEntryToSchedule(
+  current: readonly CourseOffering[],
+  entry: ManualScheduleEntry,
+): ManualScheduleAddResult {
+  const { offering, errors } = buildOfferingFromManualEntry(entry, MANUAL_SCHEDULE_PROVENANCE)
+
+  if (offering === null) {
+    const detail = errors
+      .map((item) => `${MANUAL_SCHEDULE_FIELD_LABEL[item.field] ?? item.field}：${item.message}`)
+      .join('；')
+    return { currentSchedule: [...current], added: false, error: detail }
+  }
+
+  const duplicated = current.some(
+    (item) =>
+      item.semester === offering.semester &&
+      item.course_id === offering.course_id &&
+      item.class_id === offering.class_id,
+  )
+  if (duplicated) {
+    return {
+      currentSchedule: [...current],
+      added: false,
+      error: '该教学班（同一学期 + 课程号 + 教学班号）已经在当前课表中，未重复加入。',
+    }
+  }
+
+  // Planner 输入要求同一课程只有一个已选班；这里显式阻止，⛔ 不静默取一个。
+  const sameCourse = current.find((item) => item.course_id === offering.course_id)
+  if (sameCourse !== undefined) {
+    return {
+      currentSchedule: [...current],
+      added: false,
+      error:
+        `课程 ${offering.course_id} 已有已选教学班 ${sameCourse.class_id}；` +
+        '同一课程只能有一个已选班，请先移除后再加入。',
+    }
+  }
+
+  return { currentSchedule: [...current, offering], added: true, error: '' }
+}
+
+/** 删除一个已加入的当前课表条目（按 identity）。 */
+export function removeCurrentScheduleOffering(
+  current: readonly CourseOffering[],
+  offering: CourseOffering,
+): CourseOffering[] {
+  return current.filter(
+    (item) =>
+      !(
+        item.semester === offering.semester &&
+        item.course_id === offering.course_id &&
+        item.class_id === offering.class_id
+      ),
+  )
 }
 
 /**
