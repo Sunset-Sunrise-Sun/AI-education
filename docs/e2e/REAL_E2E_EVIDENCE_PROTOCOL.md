@@ -58,13 +58,30 @@
  (4) 批准元数据有效：`approved_by` 非空、`approved_at` 是带时区时间戳
  (5) 记录格式/版本受支持，且⛔ 无未知键
 
+**发布后再验证（TOCTOU 硬门）** —— 在 env 写出之后、ready 之前必须再做一遍：
+
+ (6) 从**刚写出的 env 文件**重新读出 `APP_CASE_A_CURRICULUM_CASE_PATH`
+ (7) **再次解析**该路径（follow symlink）并与已验证的 canonical 路径比较
+ (8) 该路径此刻必须仍存在且是**常规文件**
+ (9) 对该路径下**此刻真实可达的字节**重算 SHA-256，必须仍等于已批准 provenance digest
+ (10) 重新评估批准门（non-synthetic / approved / approver / 带时区时间戳 / 稳定格式版本）
+     ⇒ `final_readiness_verification.final_curriculum_reverified == true`
+
 机器可读：`curriculum_provenance.curriculum_blockers == []`
           + `level2_gate_conditions.curriculum` 六条
+          + `final_readiness_verification.final_curriculum_reverified == true`
 若不成立 ⇒ blocker：curriculum_provenance_missing / curriculum_digest_missing /
     curriculum_digest_invalid / curriculum_digest_mismatch / curriculum_case_path_missing /
     curriculum_evidence_synthetic / curriculum_evidence_not_approved /
     curriculum_identity_missing / curriculum_timestamp_missing / curriculum_timestamp_invalid
     ⇒ `level2_eligible = false`（LEVEL 2 = FAIL）
+若**发布之后**发生变化（字节替换 / 删除 / 路径重绑定 / symlink 重定向 / env 路径被改写 /
+批准证据失效）⇒ **硬失败、⛔ 不输出 ready**，类别：
+    curriculum_final_path_mismatch / curriculum_final_path_missing /
+    curriculum_final_digest_mismatch / curriculum_final_approval_invalid
+
+⚠️ env 里**只**会出现通过该门的 curriculum 路径（`curriculum_binding.curriculum_path_emitted`）；
+没有通过门时该变量**不写出**，`readiness_scope = "course_data_only"` 且 `level2_eligible = false`。
 ```
 
 ⚠️ 两门都⛔ 不是"数据自证来源"：它们是**人工批准**的本地证据记录，工具只做

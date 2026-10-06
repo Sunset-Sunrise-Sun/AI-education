@@ -432,8 +432,9 @@ def test_runtime_environment_has_no_independent_store_inputs() -> None:
     """结构性：env 只能由**已验证 store 对象**派生（⛔ 不存在第二个 DB 路径 / SHA 参数）。"""
 
     parameters = set(inspect.signature(TOOL._runtime_environment).parameters)
-    assert parameters == {"store", "curriculum_case"}
+    assert parameters == {"store", "curriculum"}
     assert "sqlite" not in parameters and "acceptance_sha256" not in parameters
+    assert "curriculum_case" not in parameters
 
 
 def test_assert_ready_binding_rejects_a_different_store_path(tmp_path: Path) -> None:
@@ -524,8 +525,8 @@ def test_forced_env_db_path_mismatch_fails_before_ready(capsys, tmp_path, monkey
     inventory = _approved_inventory(capsys, tmp_path, bundles)
     original = TOOL._runtime_environment
 
-    def _redirected(*, store, curriculum_case):
-        environment = original(store=store, curriculum_case=curriculum_case)
+    def _redirected(*, store, curriculum):
+        environment = original(store=store, curriculum=curriculum)
         environment["APP_COURSE_DATA_SQLITE_PATH"] = str(tmp_path / "b.sqlite3")
         return environment
 
@@ -547,8 +548,8 @@ def test_forced_env_acceptance_sha_mismatch_fails_before_ready(capsys, tmp_path,
     inventory = _approved_inventory(capsys, tmp_path, bundles)
     original = TOOL._runtime_environment
 
-    def _redirected(*, store, curriculum_case):
-        environment = original(store=store, curriculum_case=curriculum_case)
+    def _redirected(*, store, curriculum):
+        environment = original(store=store, curriculum=curriculum)
         environment["APP_COURSE_DATA_ACCEPTANCE_SHA256"] = "d" * 64
         return environment
 
@@ -1253,3 +1254,362 @@ def test_drafting_curriculum_provenance_requires_identity_and_existing_case(caps
     assert document["approval_state"] == "draft"
     assert document["curriculum_artifact_sha256"] == hashlib.sha256(case_path.read_bytes()).hexdigest()
     assert document["approved_by"] is None
+
+
+# --------------------------------------------------------------------------- #
+# PR #48 final · Curriculum provenance TOCTOU（发布后路径重绑定 / 字节替换 / 批准失效）
+#
+# 窗口：env 发布之后、status=ready 之前。所有用例都在这个窗口里做手脚，
+# 并且断言 **绝不输出** `"status": "ready"`。
+# --------------------------------------------------------------------------- #
+
+
+def _curriculum_run(
+    capsys,
+    tmp_path: Path,
+    *,
+    after_publish=None,
+    case_name: str = "case-a.json",
+    name: str = "final",
+) -> tuple[int, dict, str]:
+    """跑一次「approved handoff + approved curriculum」，可选在 env 发布后注入变化。"""
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    handoff = _write_handoff(tmp_path, bundles, name=f"{name}.handoff.json")
+    case_path = _case_file(tmp_path, case_name)
+    curriculum = _curriculum_provenance(tmp_path, case_path, name=f"{name}.curriculum.json")
+    env_out = tmp_path / f"{name}.env"
+
+    original_writer = TOOL._write_env_file
+
+    def _writer(path, environment):
+        original_writer(path, environment)
+        if after_publish is not None:
+            after_publish(env_path=path, case_path=case_path)
+
+    if after_publish is not None:
+        import pytest as _pytest
+
+        monkeypatch = _pytest.MonkeyPatch()
+        monkeypatch.setattr(TOOL, "_write_env_file", _writer)
+    else:
+        monkeypatch = None
+
+    try:
+        code, payload, out, _err = _run_capture(
+            capsys,
+            [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+             "--sqlite", str(tmp_path / f"{name}.sqlite3"), "--inventory", str(inventory),
+             "--handoff", str(handoff), "--curriculum-provenance", str(curriculum),
+             "--curriculum-case", str(case_path), "--env-out", str(env_out)],
+        )
+    finally:
+        if monkeypatch is not None:
+            monkeypatch.undo()
+    return code, payload, out
+
+
+def test_final_curriculum_verification_passes_for_an_unchanged_approved_case(capsys, tmp_path: Path) -> None:
+    """用例 1：approved curriculum 未变 ⇒ final_curriculum_reverified=true。"""
+
+    code, payload, _out = _curriculum_run(capsys, tmp_path, name="unchanged")
+
+    assert code == TOOL.EXIT_OK, payload
+    assert payload["status"] == "ready"
+    assert payload["level2_eligible"] is True, payload["level2_blockers"]
+    final = payload["final_readiness_verification"]
+    assert final["final_store_reverified"] is True
+    assert final["final_curriculum_reverified"] is True
+    assert final["readiness_scope"] == "course_data_and_curriculum"
+    assert final["final_curriculum_sha256"] == payload["curriculum_provenance"]["curriculum_artifact_sha256"]
+    assert payload["curriculum_binding"]["curriculum_path_emitted"] is True
+
+
+def test_replaced_curriculum_contents_after_publication_yield_no_ready(capsys, tmp_path: Path) -> None:
+    """用例 2/6：同一个路径下**字节被替换** ⇒ 无 ready（digest mismatch）。"""
+
+    def _replace(env_path: Path, case_path: Path) -> None:
+        case_path.write_text('{"demo": "REPLACED after env publication"}', encoding="utf-8")
+
+    code, payload, out = _curriculum_run(capsys, tmp_path, after_publish=_replace, name="replaced")
+
+    assert code == TOOL.EXIT_CURRICULUM_BINDING
+    assert payload["category"] == "curriculum_final_digest_mismatch"
+    assert '"status": "ready"' not in out
+
+
+def test_deleted_curriculum_after_publication_yields_no_ready(capsys, tmp_path: Path) -> None:
+    """用例 3：case 文件被删除 ⇒ 无 ready（path missing）。"""
+
+    def _delete(env_path: Path, case_path: Path) -> None:
+        case_path.unlink()
+
+    code, payload, out = _curriculum_run(capsys, tmp_path, after_publish=_delete, name="deleted")
+
+    assert code == TOOL.EXIT_CURRICULUM_BINDING
+    assert payload["category"] == "curriculum_final_path_missing"
+    assert '"status": "ready"' not in out
+
+
+def test_env_curriculum_path_swapped_to_another_valid_file_yields_no_ready(capsys, tmp_path: Path) -> None:
+    """用例 4：把 env 里的 curriculum 路径改成**另一个合法文件** ⇒ 无 ready。"""
+
+    other = tmp_path / "other-case.json"
+    other.write_text('{"demo": "another valid case file"}', encoding="utf-8")
+
+    def _swap_env(env_path: Path, case_path: Path) -> None:
+        text = env_path.read_text(encoding="utf-8")
+        lines = [
+            f"APP_CASE_A_CURRICULUM_CASE_PATH={other}" if line.startswith("APP_CASE_A_CURRICULUM_CASE_PATH=") else line
+            for line in text.splitlines()
+        ]
+        env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    code, payload, out = _curriculum_run(capsys, tmp_path, after_publish=_swap_env, name="swapped")
+
+    assert code == TOOL.EXIT_CURRICULUM_BINDING
+    assert payload["category"] in {
+        "curriculum_final_path_mismatch",
+        "curriculum_final_digest_mismatch",
+    }
+    assert '"status": "ready"' not in out
+
+
+def test_path_rebinding_after_publication_yields_no_ready(capsys, tmp_path: Path) -> None:
+    """用例 5（平台无关版）：**路径重绑定** —— 同一字面路径现在指向另一个文件。"""
+
+    approved_dir = tmp_path / "slot"
+    approved_dir.mkdir()
+    approved_file = approved_dir / "case.json"
+    approved_file.write_text('{"demo": "approved case bytes"}', encoding="utf-8")
+
+    replacement_dir = tmp_path / "replacement"
+    replacement_dir.mkdir()
+    (replacement_dir / "case.json").write_text('{"demo": "replacement bytes"}', encoding="utf-8")
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    handoff = _write_handoff(tmp_path, bundles, name="rebind.handoff.json")
+    curriculum = _curriculum_provenance(tmp_path, approved_file, name="rebind.curriculum.json")
+    env_out = tmp_path / "rebind.env"
+
+    original_writer = TOOL._write_env_file
+
+    def _writer(path, environment):
+        original_writer(path, environment)
+        # "重绑定"：把 slot 目录换成指向另一份文件的目录（等价于 symlink 目标被改写）。
+        approved_dir.rename(tmp_path / "slot-old")
+        replacement_dir.rename(approved_dir)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(TOOL, "_write_env_file", _writer)
+    try:
+        code, payload, out, _err = _run_capture(
+            capsys,
+            [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+             "--sqlite", str(tmp_path / "rebind.sqlite3"), "--inventory", str(inventory),
+             "--handoff", str(handoff), "--curriculum-provenance", str(curriculum),
+             "--curriculum-case", str(approved_file), "--env-out", str(env_out)],
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert code == TOOL.EXIT_CURRICULUM_BINDING
+    assert payload["category"] == "curriculum_final_digest_mismatch"
+    assert '"status": "ready"' not in out
+
+
+def test_symlink_retarget_is_simulated_at_resolve_level_and_fails_closed(capsys, tmp_path: Path) -> None:
+    """用例 5（symlink 版）：本平台不允许创建 symlink（WinError 1314），
+    因此用 **resolve 级模拟**注入"同一字面路径解析到另一个 canonical 目标"这一事实。"""
+
+    target_b = (tmp_path / "case-b.json").resolve()
+    target_b.write_text('{"demo": "symlink retarget target"}', encoding="utf-8")
+
+    original_resolve = TOOL._resolve
+    state = {"retargeted": False, "case_path": None}
+
+    def _resolve_with_retarget(value):
+        resolved = original_resolve(value)
+        if state["retargeted"] and state["case_path"] is not None and resolved == state["case_path"]:
+            return target_b
+        return resolved
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    handoff = _write_handoff(tmp_path, bundles, name="symlink.handoff.json")
+    case_path = _case_file(tmp_path, "symlink-case.json")
+    state["case_path"] = case_path.resolve()
+    curriculum = _curriculum_provenance(tmp_path, case_path, name="symlink.curriculum.json")
+    env_out = tmp_path / "symlink.env"
+
+    original_writer = TOOL._write_env_file
+
+    def _writer(path, environment):
+        original_writer(path, environment)
+        state["retargeted"] = True  # ← 发布之后 symlink 目标被改写
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(TOOL, "_write_env_file", _writer)
+    monkeypatch.setattr(TOOL, "_resolve", _resolve_with_retarget)
+    try:
+        code, payload, out, _err = _run_capture(
+            capsys,
+            [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+             "--sqlite", str(tmp_path / "symlink.sqlite3"), "--inventory", str(inventory),
+             "--handoff", str(handoff), "--curriculum-provenance", str(curriculum),
+             "--curriculum-case", str(case_path), "--env-out", str(env_out)],
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert code == TOOL.EXIT_CURRICULUM_BINDING
+    assert payload["category"] == "curriculum_final_path_mismatch"
+    assert '"status": "ready"' not in out
+
+
+def test_identical_filename_wrong_digest_yields_no_ready(capsys, tmp_path: Path) -> None:
+    """用例 7：文件名相同但字节不同（digest 不符）⇒ 无 ready。"""
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    handoff = _write_handoff(tmp_path, bundles, name="dupname.handoff.json")
+
+    approved_dir = tmp_path / "approved"
+    approved_dir.mkdir()
+    approved_case = approved_dir / "case-a.json"
+    approved_case.write_text('{"demo": "approved"}', encoding="utf-8")
+    curriculum = _curriculum_provenance(tmp_path, approved_case, name="dupname.curriculum.json")
+
+    # 同名文件、不同目录、不同字节：provenance digest 与之不符。
+    impostor_dir = tmp_path / "impostor"
+    impostor_dir.mkdir()
+    impostor = impostor_dir / "case-a.json"
+    impostor.write_text('{"demo": "impostor with the same filename"}', encoding="utf-8")
+
+    env_out = tmp_path / "dupname.env"
+    original_writer = TOOL._write_env_file
+
+    def _writer(path, environment):
+        original_writer(path, environment)
+        text = env_path_text = path.read_text(encoding="utf-8")
+        lines = [
+            f"APP_CASE_A_CURRICULUM_CASE_PATH={impostor}"
+            if line.startswith("APP_CASE_A_CURRICULUM_CASE_PATH=")
+            else line
+            for line in text.splitlines()
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(TOOL, "_write_env_file", _writer)
+    try:
+        code, payload, out, _err = _run_capture(
+            capsys,
+            [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+             "--sqlite", str(tmp_path / "dupname.sqlite3"), "--inventory", str(inventory),
+             "--handoff", str(handoff), "--curriculum-provenance", str(curriculum),
+             "--curriculum-case", str(approved_case), "--env-out", str(env_out)],
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert code == TOOL.EXIT_CURRICULUM_BINDING
+    assert payload["category"] == "curriculum_final_path_mismatch"
+    assert '"status": "ready"' not in out
+
+
+def _noop(_env_path: Path, _case_path: Path) -> None:  # pragma: no cover - 占位
+    return None
+
+
+def test_valid_store_with_invalid_final_curriculum_yields_no_ready(capsys, tmp_path: Path) -> None:
+    """用例 8：Store 完好，但 Curriculum 在发布后被换 ⇒ 无 ready（不是 level2=false + ready）。"""
+
+    def _replace(env_path: Path, case_path: Path) -> None:
+        case_path.write_bytes(case_path.read_bytes() + b" ")
+
+    code, payload, out = _curriculum_run(capsys, tmp_path, after_publish=_replace, name="store-ok-cp-bad")
+
+    assert code == TOOL.EXIT_CURRICULUM_BINDING
+    assert '"status": "ready"' not in out
+
+
+def test_invalid_store_with_valid_curriculum_yields_no_ready(capsys, tmp_path: Path) -> None:
+    """用例 9：Curriculum 完好，但 Store 在发布后被破坏 ⇒ 无 ready。"""
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    handoff = _write_handoff(tmp_path, bundles, name="cp-ok-cd-bad.handoff.json")
+    case_path = _case_file(tmp_path, "cp-ok-cd-bad.json")
+    curriculum = _curriculum_provenance(tmp_path, case_path, name="cp-ok-cd-bad.curriculum.json")
+    sqlite = tmp_path / "cp-ok-cd-bad.sqlite3"
+    env_out = tmp_path / "cp-ok-cd-bad.env"
+    original_writer = TOOL._write_env_file
+
+    def _writer(path, environment):
+        original_writer(path, environment)
+        import sqlite3
+
+        connection = sqlite3.connect(str(sqlite))
+        try:
+            connection.execute("DELETE FROM course_data_acceptance")
+            connection.commit()
+        finally:
+            connection.close()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(TOOL, "_write_env_file", _writer)
+    try:
+        code, payload, out, _err = _run_capture(
+            capsys,
+            [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+             "--sqlite", str(sqlite), "--inventory", str(inventory), "--handoff", str(handoff),
+             "--curriculum-provenance", str(curriculum), "--curriculum-case", str(case_path),
+             "--env-out", str(env_out)],
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert code == TOOL.EXIT_PROVIDER_READBACK
+    assert '"status": "ready"' not in out
+
+
+def test_both_valid_emits_ready_and_level2(capsys, tmp_path: Path) -> None:
+    """用例 10：两边都好 ⇒ ready + level2_eligible=true + 两边都 reverified。"""
+
+    code, payload, out = _curriculum_run(capsys, tmp_path, name="both-good")
+
+    assert code == TOOL.EXIT_OK, payload
+    assert payload["status"] == "ready"
+    assert '"status": "ready"' in out
+    final = payload["final_readiness_verification"]
+    assert final["final_store_reverified"] is True
+    assert final["final_curriculum_reverified"] is True
+    assert payload["level2_eligible"] is True
+    assert payload["level2_blockers"] == []
+
+
+def test_curriculum_path_is_withheld_when_no_provenance_was_verified(capsys, tmp_path: Path) -> None:
+    """没有 curriculum provenance ⇒ env 里**不出现** curriculum 路径（⛔ 不发出未验证路径）。"""
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    env_out = tmp_path / "no-provenance.env"
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "no-provenance.sqlite3"), "--inventory", str(inventory),
+         "--curriculum-case", str(_case_file(tmp_path)), "--env-out", str(env_out)],
+    )
+
+    assert code == TOOL.EXIT_OK, payload
+    assert payload["status"] == "ready"
+    assert payload["readiness_scope"] == "course_data_only"
+    assert payload["curriculum_binding"]["curriculum_path_emitted"] is False
+    assert "APP_CASE_A_CURRICULUM_CASE_PATH" not in env_out.read_text(encoding="utf-8")
+    assert payload["final_readiness_verification"]["final_curriculum_reverified"] is False
+    assert payload["level2_eligible"] is False
+    assert "curriculum_provenance_missing" in payload["level2_blockers"]

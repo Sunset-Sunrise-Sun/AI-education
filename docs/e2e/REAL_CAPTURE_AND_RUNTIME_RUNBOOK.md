@@ -172,11 +172,20 @@ python tools/prepare_real_case_a_runtime.py `
 provider_read_back.provider_offering_count == acceptance.merged_offering_count
 store_binding.resolved_verified_store_path == runtime_environment.APP_COURSE_DATA_SQLITE_PATH
 final_readiness_verification.final_store_reverified == true   （发布 env 之后又重开库验证过一次）
-curriculum_binding.resolved_curriculum_case_path == runtime_environment.APP_CASE_A_CURRICULUM_CASE_PATH
+curriculum_binding.curriculum_path_emitted == true
+runtime_environment.APP_CASE_A_CURRICULUM_CASE_PATH == curriculum_binding.resolved_curriculum_case_path
+final_readiness_verification.final_curriculum_reverified == true
+    （发布 env 之后**再次解析**该路径、对**此刻真实可达的字节**重算 SHA-256，
+      并重新评估批准门；⛔ 期间被替换 / 删除 / 重绑定 / 批准失效 ⇒ 不输出 ready）
+readiness_scope == "course_data_and_curriculum"
 level2_eligible == true   （仅当 Course Data 门 AND Curriculum 门都通过：
                            handoff approved + 批准元数据有效 + 五个 digest 一致，
                            且 curriculum provenance approved + digest == 被消费的 case 文件）
 ```
+
+⚠️ 若没有通过 Curriculum 门的 provenance 记录，env 里**不会**写出
+`APP_CASE_A_CURRICULUM_CASE_PATH`（⛔ 绝不发出未经验证的路径），
+`readiness_scope = "course_data_only"` 且 `level2_eligible = false`。
 
 ⚠️ env 文件**只能独占创建**：目标已存在 ⇒ fail closed（exit 7）。
 ⛔ **不存在** overwrite 选项 —— 需要重新生成时，请换一个**新路径**，

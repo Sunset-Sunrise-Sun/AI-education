@@ -177,6 +177,7 @@ EXIT_ENV_OUTPUT = 7
 EXIT_STORE_BINDING = 8
 EXIT_HANDOFF = 9
 EXIT_CURRICULUM_PROVENANCE = 10
+EXIT_CURRICULUM_BINDING = 11
 
 #: shard slug → CLI 选项名（与既有 acceptance CLI 一致；⛔ 不接受别名）。
 _SHARD_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -887,8 +888,13 @@ def _build_curriculum_provenance(
 
 def _validate_curriculum_provenance(
     document: object, *, case_path: Path | None
-) -> tuple[dict[str, object], list[str]]:
-    """Curriculum real-source 门：返回 (summary, blockers)；⛔ 结构与格式错误才硬失败。"""
+) -> tuple[dict[str, object], list[str], "VerifiedCurriculum | None"]:
+    """Curriculum real-source 门：返回 (summary, blockers, verified)。
+
+    ⛔ `verified` **只**在记录结构合法、无 blocker、且 `case_path` 存在时构建；
+    它是 env 里 curriculum 路径的**唯一来源**（外部无法再注入第二个路径 / digest）。
+    ⛔ 结构与格式错误才硬失败（exit 10）。
+    """
 
     if not isinstance(document, dict):
         _fail(
@@ -967,7 +973,24 @@ def _validate_curriculum_provenance(
         "approval_note": document.get("approval_note"),
         "curriculum_blockers": blockers,
     }
-    return summary, blockers
+
+    verified: VerifiedCurriculum | None = None
+    if not blockers and case_path is not None and isinstance(digest, str):
+        verified = VerifiedCurriculum(
+            resolved_path=case_path,
+            artifact_sha256=digest.strip(),
+            case_id=str(document.get("curriculum_case_id")),
+            target_version_id=str(document.get("curriculum_target_version_id")),
+            applicable_term=str(document.get("curriculum_applicable_term")),
+            curriculum_format=str(document.get("curriculum_format")),
+            curriculum_format_version=str(document.get("curriculum_format_version")),
+            loader_commit=document.get("loader_commit") if isinstance(document.get("loader_commit"), str) else None,
+            approval_state=str(document.get("approval_state")),
+            approved_by=str(document.get("approved_by")),
+            approved_at=str(document.get("approved_at")),
+            synthetic=document.get("synthetic") is True,
+        )
+    return summary, blockers, verified
 
 
 # --------------------------------------------------------------------------- #
@@ -1111,6 +1134,49 @@ class VerifiedStore:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class VerifiedCurriculum:
+    """**刚通过 provenance 门**的 Curriculum 输入（env 里 curriculum 路径的唯一来源）。
+
+    ⛔ READY 语义：env 里出现的 curriculum 路径必须能**再次**解析到同一个 canonical 文件、
+    且该文件此刻的字节摘要仍等于 `artifact_sha256`（见 `_final_readiness_verification`）。
+    """
+
+    resolved_path: Path
+    artifact_sha256: str
+    case_id: str
+    target_version_id: str
+    applicable_term: str
+    curriculum_format: str
+    curriculum_format_version: str
+    loader_commit: str | None
+    approval_state: str
+    approved_by: str
+    approved_at: str
+    synthetic: bool
+
+    def summary(self) -> dict[str, object]:
+        return {
+            "resolved_path": str(self.resolved_path),
+            "artifact_sha256": self.artifact_sha256,
+            "case_id": self.case_id,
+            "target_version_id": self.target_version_id,
+            "applicable_term": self.applicable_term,
+            "curriculum_format": self.curriculum_format,
+            "curriculum_format_version": self.curriculum_format_version,
+            "loader_commit": self.loader_commit,
+            "approval_state": self.approval_state,
+            "approved_by": self.approved_by,
+            "approved_at": self.approved_at,
+            "synthetic": self.synthetic,
+        }
+
+    def approval_blockers(self) -> list[str]:
+        return _approval_blockers(
+            approved_by=self.approved_by, approved_at=self.approved_at, prefix="curriculum"
+        )
+
+
 def _provider_read_back(
     *, sqlite: Path, semester: str, acceptance_sha256: str, merged_offering_count: object
 ) -> VerifiedStore:
@@ -1162,9 +1228,13 @@ def _provider_read_back(
 
 
 def _runtime_environment(
-    *, store: VerifiedStore, curriculum_case: str | Path | None
+    *, store: VerifiedStore, curriculum: VerifiedCurriculum | None
 ) -> dict[str, str]:
-    """从**已验证 store 对象**派生 env（⛔ 不存在第二个 DB 路径 / SHA 参数）。"""
+    """从**已验证对象**派生 env（⛔ 不存在第二个 DB / curriculum 路径或 digest 参数）。
+
+    ⛔ `APP_CASE_A_CURRICULUM_CASE_PATH` **只**在存在 `VerifiedCurriculum` 时才出现：
+    env 里绝不会出现"未被 provenance 门验证过"的 curriculum 路径。
+    """
 
     environment = {
         "APP_REAL_CASE_A_ENABLED": "1",
@@ -1172,8 +1242,8 @@ def _runtime_environment(
         "APP_COURSE_DATA_SEMESTER": store.semester,
         "APP_COURSE_DATA_ACCEPTANCE_SHA256": store.acceptance_sha256,
     }
-    if curriculum_case:
-        environment["APP_CASE_A_CURRICULUM_CASE_PATH"] = str(curriculum_case)
+    if curriculum is not None:
+        environment["APP_CASE_A_CURRICULUM_CASE_PATH"] = str(curriculum.resolved_path)
     return environment
 
 
@@ -1302,16 +1372,27 @@ def _read_env_bindings(path: Path) -> dict[str, str]:
 
 
 def _final_readiness_verification(
-    *, store: VerifiedStore, semester: str, env_path: Path | None
+    *,
+    store: VerifiedStore,
+    curriculum: VerifiedCurriculum | None,
+    semester: str,
+    env_path: Path | None,
 ) -> dict[str, object]:
-    """ready 之前的**最后一步**（BLOCKER 1）。
+    """ready 之前的**最后一步**（BLOCKER 1 + 最终 Curriculum TOCTOU 修复）。
 
     ```text
-    1. 若有 env 文件：从**文件**里解析 DB 路径 / acceptance SHA / semester
-    2. 断言文件里的绑定 == 已验证 store
-    3. **重新打开该 store**，再跑一次 provider 级权威验证
-    4. 任何在"验证之后、ready 之前"发生的库篡改 ⇒ fail closed（⛔ 不输出 ready）
-     ```
+    Store 半边：
+      1. 若有 env 文件：从**文件**里解析 DB 路径 / acceptance SHA / semester
+      2. 断言文件里的绑定 == 已验证 store
+      3. **重新打开该 store**，再跑一次 provider 级权威验证
+    Curriculum 半边（仅当有 VerifiedCurriculum；即 env 里确实带了 curriculum 路径）：
+      4. 从**刚写出的 env 文件**重新读出 APP_CASE_A_CURRICULUM_CASE_PATH
+      5. **再次解析**该路径（follow symlink）并与已验证的 canonical 路径比较
+      6. 断言文件仍存在且是常规文件
+      7. 对**当前该路径下真实可达的字节**重算 SHA-256，与已批准 provenance digest 比较
+      8. 重新评估批准门（non-synthetic / approved / approver / 带时区时间戳 / 格式版本）
+    ⛔ 任何一步不成立 ⇒ fail closed（⛔ 不输出 ready）。
+    ```
     """
 
     if env_path is not None:
@@ -1335,8 +1416,10 @@ def _final_readiness_verification(
                 _payload(stage="env_output", category="env_file_semester_mismatch"),
             )
         target_path = _resolve(file_db_path)
+        file_curriculum_path = parsed.get("APP_CASE_A_CURRICULUM_CASE_PATH")
     else:
         target_path = store.path
+        file_curriculum_path = None
 
     # ⛔ 发布之后再验证一次：此刻库若被篡改 / 破坏，必须 fail closed。
     recheck = _provider_read_back(
@@ -1356,12 +1439,91 @@ def _final_readiness_verification(
             _payload(stage="ready_binding", category="final_store_reverification_mismatch"),
         )
 
+    # ---- Curriculum 半边：路径重绑定 / 字节替换 / 批准证据失效 ⇒ 无 ready ---- #
+    final_curriculum_reverified = False
+    final_curriculum_path: str | None = None
+    final_curriculum_sha256: str | None = None
+
+    if curriculum is None:
+        if file_curriculum_path is not None:
+            # env 里出现了**未被 provenance 门验证过**的 curriculum 路径 ⇒ 拒绝。
+            _fail(
+                EXIT_CURRICULUM_BINDING,
+                _payload(
+                    stage="curriculum_final",
+                    category="curriculum_final_path_mismatch",
+                    message="env carries a curriculum path that was never verified",
+                ),
+            )
+    else:
+        if env_path is not None:
+            if not file_curriculum_path:
+                _fail(
+                    EXIT_CURRICULUM_BINDING,
+                    _payload(stage="curriculum_final", category="curriculum_final_path_missing"),
+                )
+            candidate = _resolve(file_curriculum_path)
+            if candidate != curriculum.resolved_path:
+                # symlink 重定向 / 目录重绑定 / env 路径被改写都会落在这里。
+                _fail(
+                    EXIT_CURRICULUM_BINDING,
+                    _payload(
+                        stage="curriculum_final",
+                        category="curriculum_final_path_mismatch",
+                        resolved_path_matches_verified=False,
+                    ),
+                )
+        else:
+            candidate = curriculum.resolved_path
+
+        if not candidate.is_file():
+            _fail(
+                EXIT_CURRICULUM_BINDING,
+                _payload(stage="curriculum_final", category="curriculum_final_path_missing"),
+            )
+
+        current_digest = _sha256_file(candidate)
+        if current_digest != curriculum.artifact_sha256:
+            _fail(
+                EXIT_CURRICULUM_BINDING,
+                _payload(
+                    stage="curriculum_final",
+                    category="curriculum_final_digest_mismatch",
+                    digest_matches_approved_provenance=False,
+                ),
+            )
+
+        if (
+            curriculum.synthetic
+            or curriculum.approval_state != CURRICULUM_APPROVAL_STATE_APPROVED
+            or curriculum.approval_blockers()
+            or not curriculum.curriculum_format.strip()
+            or not curriculum.curriculum_format_version.strip()
+            or not curriculum.case_id.strip()
+            or not curriculum.target_version_id.strip()
+            or not curriculum.applicable_term.strip()
+        ):
+            _fail(
+                EXIT_CURRICULUM_BINDING,
+                _payload(stage="curriculum_final", category="curriculum_final_approval_invalid"),
+            )
+
+        final_curriculum_reverified = True
+        final_curriculum_path = str(candidate)
+        final_curriculum_sha256 = current_digest
+
     return {
         "final_store_reverified": True,
         "final_store_path": str(recheck.path),
         "final_store_acceptance_sha256": recheck.acceptance_sha256,
         "final_store_offering_count": recheck.offering_count,
+        "final_curriculum_reverified": final_curriculum_reverified,
+        "final_curriculum_path": final_curriculum_path,
+        "final_curriculum_sha256": final_curriculum_sha256,
         "env_file_read_back": env_path is not None,
+        "readiness_scope": (
+            "course_data_and_curriculum" if curriculum is not None else "course_data_only"
+        ),
     }
 
 
@@ -1643,14 +1805,19 @@ def _orchestrate(
         )
 
     curriculum_blockers: list[str] = []
+    verified_curriculum: VerifiedCurriculum | None = None
     if curriculum_document is None:
         curriculum_blockers.append("curriculum_provenance_missing")
     else:
-        curriculum_summary, curriculum_blockers = _validate_curriculum_provenance(
+        (
+            curriculum_summary,
+            curriculum_blockers,
+            verified_curriculum,
+        ) = _validate_curriculum_provenance(
             curriculum_document, case_path=resolved_curriculum_case
         )
 
-    environment = _runtime_environment(store=store, curriculum_case=resolved_curriculum_case)
+    environment = _runtime_environment(store=store, curriculum=verified_curriculum)
 
     # ---- READY 绑定断言（⛔ 在任何 ready 输出 / env 写入之前） ------------ #
     _assert_ready_binding(
@@ -1669,6 +1836,7 @@ def _orchestrate(
     # ---- ready 之前的**最后一步**：从文件读回 + 重新打开 store 再验证 --- #
     final_verification = _final_readiness_verification(
         store=store,
+        curriculum=verified_curriculum,
         semester=semester,
         env_path=env_out if env_written else None,
     )
@@ -1681,7 +1849,9 @@ def _orchestrate(
     blockers.extend(curriculum_blockers)
     if store.offering_count <= 0:
         blockers.append("no_accepted_offerings")
-    level2_eligible = not blockers
+    level2_eligible = bool(
+        blockers == [] and final_verification["final_curriculum_reverified"]
+    )
 
     return {
         "status": "ready",
@@ -1699,14 +1869,16 @@ def _orchestrate(
         },
         "curriculum_binding": {
             "resolved_curriculum_case_path": (
-                str(resolved_curriculum_case) if resolved_curriculum_case is not None else None
+                str(verified_curriculum.resolved_path) if verified_curriculum is not None else None
             ),
-            "env_curriculum_case_path_equals_resolved_input": resolved_curriculum_case is not None,
-            "curriculum_case_digest_bound_to_evidence": bool(
-                curriculum_summary is not None and not curriculum_blockers
+            "curriculum_path_emitted": verified_curriculum is not None,
+            "env_curriculum_case_path_equals_resolved_input": verified_curriculum is not None,
+            "curriculum_case_digest_bound_to_evidence": verified_curriculum is not None,
+            "curriculum_case_path_semantics": (
+                "resolved_once_from_verified_curriculum_only_and_final_reverified"
             ),
-            "curriculum_case_path_semantics": "resolved_once_and_echoed_into_env_never_caller_supplied",
         },
+        "readiness_scope": final_verification["readiness_scope"],
         "final_readiness_verification": final_verification,
         "runtime_environment": environment,
         "env_out": str(env_out) if env_out is not None else None,

@@ -206,6 +206,13 @@ def test_evidence_protocol_has_the_real_source_provenance_gate() -> None:
         "handoff_approval_identity_missing",
         "curriculum_artifact_sha256",
         "curriculum_digest_mismatch",
+        # final Curriculum TOCTOU 硬门
+        "final_curriculum_reverified",
+        "curriculum_final_path_mismatch",
+        "curriculum_final_digest_mismatch",
+        "curriculum_final_path_missing",
+        "curriculum_final_approval_invalid",
+        "readiness_scope",
     ):
         assert condition in protocol, condition
 
