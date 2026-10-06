@@ -32,6 +32,7 @@ from fastapi.testclient import TestClient
 from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
 from app.course_data import (
     SCOPE_KIND_CAMPUS,
+    SCOPE_KIND_FULL_SEMESTER,
     ShardArtifact,
     SnapshotScope,
     accept_full_semester_capture_set,
@@ -201,6 +202,8 @@ def _accepted_store(tmp_path: Path) -> tuple[Path, str]:
         acceptance.merged,
         artifact_sha256=acceptance.manifest_sha256,
         scope=acceptance.scope,
+        # ⛔ immutable acceptance identity（canonical manifest 与 rows 同事务落库）。
+        canonical_manifest=acceptance.manifest,
     )
     return sqlite_path, acceptance.manifest_sha256
 
@@ -235,11 +238,16 @@ def _missing_acceptance_store(tmp_path: Path) -> Path:
     return store
 
 
-def _write_bundle_row(tmp_path: Path, class_id: str) -> Path:
-    """单行 synthetic bundle（用于制造只有 campus provenance 的陈旧行）。"""
+def _write_bundle_row(
+    tmp_path: Path, class_id: str, *, course_name: str | None = None
+) -> Path:
+    """单行 synthetic bundle（用于制造陈旧行 / 内容被替换的行）。"""
 
-    path = tmp_path / "stale" / f"{class_id}.json"
+    path = tmp_path / "stale" / f"{class_id}-{course_name or 'default'}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
+    row = _row("SYN-STALE", class_id, schedule=CONCRETE_SCHEDULE)
+    if course_name is not None:
+        row["courseName"] = course_name
     path.write_bytes(
         json.dumps(
             {
@@ -252,16 +260,7 @@ def _write_bundle_row(tmp_path: Path, class_id: str) -> Path:
                         "page_no": 1,
                         "response": {
                             "code": 200,
-                            "data": {
-                                "total": 1,
-                                "rows": [
-                                    _row(
-                                        "SYN-STALE",
-                                        class_id,
-                                        schedule=CONCRETE_SCHEDULE,
-                                    )
-                                ],
-                            },
+                            "data": {"total": 1, "rows": [row]},
                         },
                     }
                 ],
@@ -946,6 +945,88 @@ def test_stale_campus_extra_row_is_never_returned(
     payload = client.post(PLAN_PATH, json=_frontend_request()).json()
     assert payload["status"] == "partially_feasible"
     assert "stale-000" not in json.dumps(payload)
+
+
+def _stored_manifest(sqlite_path: Path, digest: str) -> dict[str, object]:
+    connection = sqlite3.connect(str(sqlite_path))
+    try:
+        row = connection.execute(
+            "SELECT canonical_manifest_json FROM course_data_acceptance "
+            "WHERE artifact_sha256 = ?",
+            (digest,),
+        ).fetchone()
+    finally:
+        connection.close()
+    return json.loads(row[0])
+
+
+def test_same_acceptance_sha_cannot_be_replaced_end_to_end(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex 攻击的端到端回归：同一个 acceptance SHA 不得被 Dataset B 顶替。
+
+    ① 200 之后用**同一个 SHA** 导入同数量 / 同 identity 但 payload 不同的 B ⇒ 导入失败；
+    ② 端到端仍然返回**原来的** A（⛔ 不返回 B）；
+    ③ 若 DB 被绕过 API 直接 rewrite canonical manifest，则下一次请求 503。
+    """
+
+    sqlite_path, digest = _accepted_store(tmp_path)
+    _configure_with_store(
+        monkeypatch, tmp_path, sqlite_path=sqlite_path, digest=digest
+    )
+
+    first = client.post(PLAN_PATH, json=_frontend_request())
+    assert first.status_code == 200
+    baseline_summary = first.json()["objective_summary"]
+
+    manifest = _stored_manifest(sqlite_path, digest)
+    snapshot_b = collect_captured_pages_snapshot(
+        load_capture_bundle_bytes(
+            _write_bundle_row(tmp_path, "east-000", course_name="TAMPERED").read_bytes()
+        ),
+        source=campus_source_label(SEMESTER, SHARD_NUMBERS["east-campus"]),
+    )
+    with pytest.raises(Exception) as conflict:
+        import_offering_snapshot(
+            sqlite_path,
+            snapshot_b,
+            artifact_sha256=digest,
+            scope=SnapshotScope(
+                scope_kind=SCOPE_KIND_FULL_SEMESTER, scope_id=SEMESTER
+            ),
+            canonical_manifest=manifest,
+        )
+    assert "manifest" in str(conflict.value) or "SHA" in str(conflict.value)
+
+    second = client.post(PLAN_PATH, json=_frontend_request())
+    assert second.status_code == 200
+    assert second.json()["objective_summary"] == baseline_summary
+
+    connection = sqlite3.connect(str(sqlite_path))
+    tampered = json.loads(
+        connection.execute(
+            "SELECT canonical_manifest_json FROM course_data_acceptance "
+            "WHERE artifact_sha256 = ?",
+            (digest,),
+        ).fetchone()[0]
+    )
+    tampered["inventory_sha256"] = "c" * 64
+    connection.execute(
+        "UPDATE course_data_acceptance SET canonical_manifest_json = ? "
+        "WHERE artifact_sha256 = ?",
+        (
+            json.dumps(
+                tampered, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+            ),
+            digest,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    _expect_503(client, monkeypatch, tmp_path)
 
 
 def test_runtime_assembly_is_shared_by_the_api_dependency(
