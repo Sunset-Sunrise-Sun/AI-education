@@ -126,3 +126,54 @@ The supported classification is therefore:
 - Formal Real E2E remains **LEVEL 0**.
 
 No further North probing is required to establish this operational classification.
+
+
+## pageSize=150 bounded transport diagnostic
+
+A later bounded diagnostic tested whether reducing page size could bypass the North pagination failure.
+
+### North page 2 at pageSize 150
+
+- openingSchoolNumber: `5062202`
+- pageSize: `150`
+- pageNo: `2`
+- offset: `150`
+- HTTP: `200`
+- response code: `200`
+- reported total: `405`
+
+### North page 3 at pageSize 150
+
+After at least 30 seconds:
+
+- openingSchoolNumber: `5062202`
+- pageSize: `150`
+- pageNo: `3`
+- offset: `300`
+- HTTP: `600`
+- response code: `50015000`
+- reported total: unavailable
+- message: `系统异常`
+
+The diagnostic stopped immediately after the failure.
+
+## Final operational interpretation
+
+The observations now show:
+
+- offset `150` is reachable;
+- offset `200` failed repeatedly at pageSize 200;
+- offset `300` fails at pageSize 150.
+
+This **strongly supports** an offset-threshold/result-window failure model around offsets at or above 200 for the North filtered query, but it does not prove that every possible offset >=200 must fail.
+
+Operationally, the important conclusion is already sufficient:
+
+- changing page size does **not** provide a usable path to complete all 405 North rows;
+- the pageSize workaround is rejected;
+- North remains **suspended**;
+- no further live probing is required for the current architecture decision;
+- no real full-semester acceptance can be produced from the current acquisition path;
+- Formal Real E2E remains **LEVEL 0**.
+
+HTTP 600 / code 50015000 remains an abnormal server/application response and is **not** classified as rate limiting.
