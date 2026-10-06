@@ -1,11 +1,7 @@
 import { CASE_A_DEMO_OFFERINGS_ENDPOINT, CASE_A_DEMO_PLAN_ENDPOINT } from '../config'
-import type {
-  CourseOffering,
-  FutureRoadmap,
-  MakeupTask,
-  PlanResult,
-  Preference,
-} from '../types/contracts'
+// ⚠️ roadmap 是**前端集成类型**（见 caseAPlanning.ts），⛔ 不是公共契约。
+import type { FutureRoadmap } from '../types/caseAPlanning'
+import type { CourseOffering, MakeupTask, PlanResult, Preference } from '../types/contracts'
 
 export interface CaseADemoResponse {
   transcript: {

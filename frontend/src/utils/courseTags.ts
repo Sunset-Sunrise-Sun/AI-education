@@ -5,12 +5,19 @@
  *
  * | 标签 | 依据 |
  * | --- | --- |
- * | 当前 | 教学班身份（`course_id + class_id`）出现在**已提交**的 `current_schedule` 中 |
+ * | 当前 | 教学班身份（**`semester + course_id + class_id`**）出现在**已提交**的 `current_schedule` 中 |
  * | 意向 | `course_id` 出现在 `Preference.preferredCourses` 中 |
- * | 补修 | `course_id` 出现在 `MakeupTask[]` 中，且该任务可明确识别为补修要求 |
+ * | 补修 | `course_id` 命中 `MakeupTask[]`，且该任务状态**严格为 `required`** |
  *
- * ⛔ 来源无法唯一确定时**不给标签**（例如同一门课既是补修又是意向 → 两个标签都成立，
- * 这时如实给两个，而不是猜一个）；⛔ 不新增业务分类、⛔ 不做等价/优先级推断。
+ * ⚠️ 教学班身份必须带 `semester`：`(course_id, class_id)` 在不同学期可能完全相同，
+ * 只按后两者匹配会把别的学期的教学班误当成"当前课表里的那个班"。
+ *
+ * ⛔ 只有 `MakeupStatus.REQUIRED` 才配 `补修` 标签：
+ * `possibly_equivalent` / `manual_confirmation` 都是"待确认"，`satisfied` 是"已满足"，
+ * 三者都**不得**被呈现为已确认的补修。
+ *
+ * ⛔ 来源无法唯一确定时**不给标签**；同一门课同时满足多个条件时如实给多个标签，
+ * 而不是猜一个。⛔ 不新增业务分类、⛔ 不做等价/优先级推断。
  */
 
 import type { CourseOffering, MakeupTask } from '../types/contracts'
@@ -23,10 +30,12 @@ export const COURSE_TAG_LABEL: Record<CourseTag, string> = {
   preferred: '意向',
 }
 
-/** 可明确识别为"需要补修"的 MakeupTask 状态（⛔ 不改写该语义，仅读）。 */
-const MAKEUP_REQUIREMENT_STATUSES = new Set(['required', 'possibly_equivalent', 'manual_confirmation'])
+/** 唯一可标注为"补修"的状态：Curriculum 明确输出 `required`。 */
+const CONFIRMED_MAKEUP_STATUS = 'required'
 
 export interface CourseTagInput {
+  /** 该课程 / 教学班所属学期（教学班身份的一部分）。 */
+  semester: string
   /** `selected_classes` / 教学班所属的课程号。 */
   courseId: string
   /** 该课程对应的教学班号；判断"当前"时需要（课表按教学班记录）。 */
@@ -39,28 +48,27 @@ export interface CourseTagInput {
   preferredCourses?: readonly string[]
 }
 
+/** `semester + course_id + class_id` —— 与 `weeklySchedule.ts` 使用同一身份口径。 */
+function identity(semester: string, courseId: string, classId: string): string {
+  return `${semester}::${courseId}::${classId}`
+}
+
 function currentIdentities(currentSchedule: readonly CourseOffering[] | undefined): Set<string> {
   const keys = new Set<string>()
   for (const offering of currentSchedule ?? []) {
-    keys.add(`${offering.course_id}::${offering.class_id}`)
+    keys.add(identity(offering.semester, offering.course_id, offering.class_id))
   }
   return keys
 }
 
 /**
  * 返回这门课**确实成立**的标签集合。
- *
- * 判定顺序与来源：
- * - 当前：教学班身份命中已提交课表；
- * - 意向：课程号命中所选意向课程；
- * - 补修：课程号命中后端 `MakeupTask[]` 中状态属于"需要补修"的条目
- *   （`satisfied` 表示已满足，⛔ 不算补修要求）。
  */
 export function courseTags(input: CourseTagInput): CourseTag[] {
   const tags: CourseTag[] = []
 
   const identities = currentIdentities(input.currentSchedule)
-  if (input.classId && identities.has(`${input.courseId}::${input.classId}`)) {
+  if (input.classId && identities.has(identity(input.semester, input.courseId, input.classId))) {
     tags.push('current')
   }
 
@@ -68,26 +76,27 @@ export function courseTags(input: CourseTagInput): CourseTag[] {
     tags.push('preferred')
   }
 
-  const isMakeup = (input.makeupTasks ?? []).some(
-    (task) => task.course_id === input.courseId && MAKEUP_REQUIREMENT_STATUSES.has(task.status),
+  // ⛔ 只有 `required` 才是已确认的补修要求；其余状态一律不加此标签。
+  const isConfirmedMakeup = (input.makeupTasks ?? []).some(
+    (task) => task.course_id === input.courseId && task.status === CONFIRMED_MAKEUP_STATUS,
   )
-  if (isMakeup) {
+  if (isConfirmedMakeup) {
     tags.push('makeup')
   }
 
   return tags
 }
 
-/** 为一批课程号批量求标签（课表块 / 列表可共用）。 */
+/** 为一批课程 / 教学班批量求标签（课表块 / 列表可共用）。 */
 export function courseTagMap(
-  entries: readonly { courseId: string; classId?: string }[],
-  context: Omit<CourseTagInput, 'courseId' | 'classId'>,
+  entries: readonly { semester: string; courseId: string; classId?: string }[],
+  context: Omit<CourseTagInput, 'semester' | 'courseId' | 'classId'>,
 ): Map<string, CourseTag[]> {
   const result = new Map<string, CourseTag[]>()
   for (const entry of entries) {
     result.set(
-      `${entry.courseId}::${entry.classId ?? ''}`,
-      courseTags({ ...context, courseId: entry.courseId, classId: entry.classId }),
+      identity(entry.semester, entry.courseId, entry.classId ?? ''),
+      courseTags({ ...context, ...entry }),
     )
   }
   return result

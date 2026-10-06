@@ -21,16 +21,24 @@ import type { CourseOffering, MakeupTask, PlanResult } from '../types/contracts'
 const props = defineProps<{
   planResult: PlanResult | null
   offerings: readonly CourseOffering[]
+  /**
+   * **本学期的显式规划学期**（来自 Case A 表单 / 请求上下文）。
+   *
+   * 公共 `SelectedClass` 没有 `semester` 字段，而教学班身份是
+   * `semester + course_id + class_id`，因此这里必须显式传入，⛔ 不从系统日期推断。
+   */
+  semester: string
   currentSchedule: readonly CourseOffering[]
   makeupTasks: readonly MakeupTask[]
   preferredCourses: readonly string[]
 }>()
 
-const view = computed(() => buildWeeklySchedule(props.planResult, props.offerings))
+const view = computed(() => buildWeeklySchedule(props.planResult, props.offerings, props.semester))
 const isEmpty = computed(() => weeklyScheduleIsEmpty(view.value))
 
 function tagsFor(block: ScheduleBlock): CourseTag[] {
   return courseTags({
+    semester: props.semester,
     courseId: block.courseId,
     classId: block.classId,
     currentSchedule: props.currentSchedule,

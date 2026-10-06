@@ -57,20 +57,38 @@ export interface WeeklyScheduleView {
 }
 
 function identityOf(offering: CourseOffering): string {
-  // `selected_classes` 只有 course_id + class_id（公共 Schema 没有 semester），
-  // 因此身份键就用这两项；教学班身份在 Case A 的单学期范围内唯一。
-  return `${offering.course_id}::${offering.class_id}`
+  return teachingClassIdentity(offering.semester, offering.course_id, offering.class_id)
+}
+
+/**
+ * 教学班身份 = **semester + course_id + class_id**。
+ *
+ * ⚠️ 必须带 `semester`：`(course_id, class_id)` 在不同学期可以完全相同，
+ * 只按后两者匹配会把**别的学期的教学班**误当成同一门课。
+ * 公共 `SelectedClass` 没有 `semester` 字段，因此调用方必须显式传入
+ * 本学期（Case A 当前的规划学期）。
+ */
+export function teachingClassIdentity(
+  semester: string,
+  courseId: string,
+  classId: string,
+): string {
+  return `${semester}::${courseId}::${classId}`
 }
 
 /**
  * 由 `PlanResult.selected_classes` 与本学期真实教学班构造周课表。
  *
- * 匹配键为 `course_id + class_id`（教学班身份），**不是**课程号：
+ * 匹配键为 **semester + course_id + class_id**（教学班身份），**不是**课程号：
  * 同一门课可以只被建议其中一个教学班。
+ *
+ * `semester` 必须是**本学期的显式规划学期**（Case A 表单 / 请求上下文），
+ * ⛔ 不从系统日期推断。
  */
 export function buildWeeklySchedule(
   planResult: PlanResult | null,
   offerings: readonly CourseOffering[],
+  semester: string,
 ): WeeklyScheduleView {
   const byIdentity = new Map<string, CourseOffering>()
   for (const offering of offerings) {
@@ -82,7 +100,10 @@ export function buildWeeklySchedule(
   const unmatched: { courseId: string; classId: string }[] = []
 
   for (const selected of planResult?.selected_classes ?? []) {
-    const offering = byIdentity.get(`${selected.course_id}::${selected.class_id}`)
+    // 用显式本学期拼出完整身份；只有**同一学期**的教学班才算同一个班。
+    const offering = byIdentity.get(
+      teachingClassIdentity(semester, selected.course_id, selected.class_id),
+    )
 
     if (!offering) {
       unmatched.push({ courseId: selected.course_id, classId: selected.class_id })

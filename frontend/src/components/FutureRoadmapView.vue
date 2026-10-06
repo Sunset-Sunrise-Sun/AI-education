@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { FutureRoadmap, FutureRoadmapSemester } from '../types/contracts'
+import type { FutureRoadmap, FutureRoadmapSemester } from '../types/caseAPlanning'
 
 /**
  * 未来学期修读路径（**可接入式展示壳**）。

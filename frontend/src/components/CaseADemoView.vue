@@ -475,6 +475,7 @@ onMounted(loadOfferings)
           <WeeklyScheduleView
             :plan-result="result.plan_result"
             :offerings="result.course_offerings"
+            :semester="form.semester"
             :current-schedule="form.currentSchedule"
             :makeup-tasks="result.makeup_tasks"
             :preferred-courses="preferredCourses"

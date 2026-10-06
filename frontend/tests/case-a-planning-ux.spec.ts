@@ -36,10 +36,12 @@ vi.mock('@/api/caseADemo', () => ({
   runCaseADemo: (...args: unknown[]) => runCaseADemo(...args),
 }))
 
-function offering(overrides: Partial<CourseOffering> & { course_id: string; class_id: string }): CourseOffering {
+function offering(
+  overrides: Partial<CourseOffering> & { course_id: string; class_id: string },
+): CourseOffering {
   return {
     course_name: '示例课程',
-    semester: '2026-1',
+    semester: overrides.semester ?? '2026-1',
     credit: 3,
     meetings: [
       { weekday: 1, start_section: 1, end_section: 2, weeks: [1, 2, 3], campus: '南校园', classroom: 'A101' },
@@ -157,6 +159,7 @@ describe('本学期周课表', () => {
       props: {
         planResult,
         offerings: OFFERINGS,
+        semester: '2026-1',
         currentSchedule: [],
         makeupTasks: [],
         preferredCourses: [],
@@ -184,6 +187,7 @@ describe('本学期周课表', () => {
           unresolved: [],
         },
         offerings: OFFERINGS,
+        semester: '2026-1',
         currentSchedule: [],
         makeupTasks: [],
         preferredCourses: [],
@@ -201,6 +205,7 @@ describe('本学期周课表', () => {
           unresolved: [],
         },
         offerings: OFFERINGS,
+        semester: '2026-1',
         currentSchedule: [],
         makeupTasks: [],
         preferredCourses: [],
@@ -214,6 +219,7 @@ describe('本学期周课表', () => {
       props: {
         planResult,
         offerings: OFFERINGS,
+        semester: '2026-1',
         currentSchedule: [],
         makeupTasks: [],
         preferredCourses: [],
@@ -234,7 +240,7 @@ describe('本学期周课表', () => {
           unresolved: [],
         },
         offerings: OFFERINGS,
-        // 该教学班身份出现在已提交的当前课表中
+        semester: '2026-1',
         currentSchedule: [OFFERINGS[0]],
         makeupTasks: [makeupTask('CSE201')],
         preferredCourses: ['CSE201'],
@@ -257,6 +263,7 @@ describe('本学期周课表', () => {
           unresolved: [],
         },
         offerings: OFFERINGS,
+        semester: '2026-1',
         currentSchedule: [],
         makeupTasks: [makeupTask('CSE201', 'satisfied')],
         preferredCourses: [],
@@ -264,6 +271,143 @@ describe('本学期周课表', () => {
     })
     const tags = wrapper.findAll('[data-testid="case-a-weekly-tag"]').map((node) => node.text())
     expect(tags).not.toContain('补修')
+  })
+})
+
+describe('教学班身份 = semester + course_id + class_id', () => {
+  /** 同一 (course_id, class_id) 在**两个不同学期**各有一条完全相同的记录。 */
+  const crossSemesterOfferings: CourseOffering[] = [
+    offering({ course_id: 'CSE201', class_id: '01', semester: '2026-1', course_name: 'Python 程序设计' }),
+    offering({ course_id: 'CSE201', class_id: '01', semester: '2026-2', course_name: 'Python 程序设计' }),
+  ]
+
+  const selected: PlanResult = {
+    status: 'partially_feasible',
+    selected_classes: [{ course_id: 'CSE201', class_id: '01' }],
+    changes: [],
+    risks: [],
+    unresolved: [],
+  }
+
+  it('不同学期的同名教学班不会互相匹配（本学期 2026-2 不得取到 2026-1 的班）', () => {
+    const wrongSemester = mount(WeeklyScheduleView, {
+      props: {
+        planResult: selected,
+        offerings: crossSemesterOfferings,
+        semester: '2026-2',
+        currentSchedule: [],
+        makeupTasks: [],
+        preferredCourses: [],
+      },
+    })
+    // 本学期的班必须画出来（证明匹配本身是通的）
+    expect(wrongSemester.findAll('[data-testid="case-a-weekly-block"]')).toHaveLength(1)
+
+    // 换成本学期 2026-1 时，只有 2026-1 的那条会被取到
+    const rightSemester = mount(WeeklyScheduleView, {
+      props: {
+        planResult: selected,
+        offerings: crossSemesterOfferings,
+        semester: '2026-1',
+        currentSchedule: [],
+        makeupTasks: [],
+        preferredCourses: [],
+      },
+    })
+    expect(rightSemester.findAll('[data-testid="case-a-weekly-block"]')).toHaveLength(1)
+  })
+
+  it('本学期没有任何该教学班时不得回退到别的学期（保持未匹配）', () => {
+    const wrapper = mount(WeeklyScheduleView, {
+      props: {
+        planResult: selected,
+        offerings: crossSemesterOfferings,
+        // 该学期在数据中根本不存在
+        semester: '2027-1',
+        currentSchedule: [],
+        makeupTasks: [],
+        preferredCourses: [],
+      },
+    })
+    expect(wrapper.findAll('[data-testid="case-a-weekly-block"]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('未能在已返回的教学班数据中匹配到')
+  })
+
+  it('“当前”标签必须整条学期身份一致：别的学期的同一个班不算当前', () => {
+    // 已提交的当前课表里是 **2026-2** 的这个班
+    const currentSchedule = [crossSemesterOfferings[1]]
+
+    // 本学期 2026-1：即使 course_id + class_id 相同，也**不是**当前那个班
+    const otherSemester = mount(WeeklyScheduleView, {
+      props: {
+        planResult: selected,
+        offerings: crossSemesterOfferings,
+        semester: '2026-1',
+        currentSchedule,
+        makeupTasks: [],
+        preferredCourses: [],
+      },
+    })
+    const otherTags = otherSemester
+      .findAll('[data-testid="case-a-weekly-tag"]')
+      .map((node) => node.text())
+    expect(otherTags).not.toContain('当前')
+
+    // 本学期 2026-2：整条学期身份一致 → 才有“当前”标签
+    const sameSemester = mount(WeeklyScheduleView, {
+      props: {
+        planResult: selected,
+        offerings: crossSemesterOfferings,
+        semester: '2026-2',
+        currentSchedule,
+        makeupTasks: [],
+        preferredCourses: [],
+      },
+    })
+    const sameTags = sameSemester
+      .findAll('[data-testid="case-a-weekly-tag"]')
+      .map((node) => node.text())
+    expect(sameTags).toContain('当前')
+  })
+})
+
+describe('补修标签语义：只有 required 才算补修', () => {
+  const planResult: PlanResult = {
+    status: 'partially_feasible',
+    selected_classes: [{ course_id: 'CSE201', class_id: '01' }],
+    changes: [],
+    risks: [],
+    unresolved: [],
+  }
+
+  function tagsForStatus(status: MakeupStatus): string[] {
+    const wrapper = mount(WeeklyScheduleView, {
+      props: {
+        planResult,
+        offerings: OFFERINGS,
+        semester: '2026-1',
+        currentSchedule: [],
+        makeupTasks: [makeupTask('CSE201', status)],
+        preferredCourses: [],
+      },
+    })
+    return wrapper.findAll('[data-testid="case-a-weekly-tag"]').map((node) => node.text())
+  }
+
+  it('required → 显示“补修”', () => {
+    expect(tagsForStatus('required')).toContain('补修')
+  })
+
+  it('possibly_equivalent → 不显示“补修”', () => {
+    expect(tagsForStatus('possibly_equivalent')).not.toContain('补修')
+  })
+
+  it('manual_confirmation → 不显示“补修”', () => {
+    expect(tagsForStatus('manual_confirmation')).not.toContain('补修')
+  })
+
+  it('satisfied → 不显示“补修”', () => {
+    expect(tagsForStatus('satisfied')).not.toContain('补修')
   })
 })
 

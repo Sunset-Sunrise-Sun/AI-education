@@ -143,31 +143,3 @@ export interface DemoPayload {
   preference: Preference
   plan_result: PlanResult
 }
-
-/**
- * 未来学期修读路径（**尚未成为公共契约**）。
- *
- * ⚠️ 后端目前**不返回** roadmap。这里只登记前端展示所需的**只读**形状，
- * 属于 Case A 前端 Phase 1 为接入预留的类型，⛔ 不是新的公共 Schema、
- * ⛔ 不写进 `/schemas/`、⛔ 不改变任何现有契约。
- *
- * 未来学期只做**课程级**规划，因此本类型刻意**不含** `class_id` / `teacher` /
- * `weekday` / `section` / `classroom` / `capacity`：具体教学班需以届时教务系统实际开课为准。
- */
-export interface FutureRoadmapCourse {
-  course_id: string
-  course_name: string
-  credit?: number | null
-}
-
-export interface FutureRoadmapSemester {
-  semester: string
-  required?: FutureRoadmapCourse[]
-  makeup?: FutureRoadmapCourse[]
-  elective?: FutureRoadmapCourse[]
-  expected_credit?: number | null
-}
-
-export interface FutureRoadmap {
-  semesters: FutureRoadmapSemester[]
-}
