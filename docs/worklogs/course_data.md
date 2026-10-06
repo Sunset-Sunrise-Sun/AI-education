@@ -3127,3 +3127,20 @@
   read snapshot **8** = **240 passed**；
 - **边界**：⛔ 未改 journal mode、⛔ 未改 public Schema / frozen Provider contract、
   ⛔ 未 merge main、⛔ 未处理真实 artifact；formal Real E2E 继续 **LEVEL0**。
+
+### 2026-10-06 - Gate D：Synthetic Production E2E（LEVEL1）
+
+- **分支**：rebase 到 runtime successor tip（`3e0a7c3`）之上，纯 synthetic、零网络；
+- **真实链路**：前端三键请求体 → `POST /api/v1/plan`（真实 dependency，⛔ 不用 override 替换
+  production factory / acceptance 验证）→ `build_planning_runtime(env)` →
+  `CurriculumCaseProvider` + `StoreBackedCourseDataProvider` + `RestrictedPlannerProvider`；
+- **覆盖**：valid exact set（唯一 CLEAR 建议来自 store）、current_schedule 原值保留
+  （只报 `selection_required`、⛔ 不替换）、Preference 全字段透传、
+  `meetings=[]` ⇒ `schedule_unknown`（两条来源分别报告、⛔ 无"无冲突"文案）、
+  manual_confirmation ⛔ 不自动加入、缺 acceptance / 错 digest / campus-only /
+  删除 acceptance / 内容替换 ⇒ 503、陈旧 campus 行 ⛔ 不返回、`X-Data-Source` 审计、
+  多余键 422、`current_schedule` 必须 real；
+- **测试**：`test_synthetic_production_e2e.py` **19 passed**；
+  mutation sweep **9 killed / 0 survived**；
+- **边界**：⛔ 只声明 **LEVEL1 synthetic production wiring capability**；
+  ⛔ 不声明 Real LEVEL2 / LEVEL3；⛔ 未处理真实 artifact、⛔ 未 merge main。

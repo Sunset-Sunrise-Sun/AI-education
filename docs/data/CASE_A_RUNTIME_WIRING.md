@@ -153,3 +153,42 @@ mutation sweep（`mutate_planning_runtime.py`，development-only）：**16 kille
 - ⛔ 未给真实 API 增加 `X-Data-Source: real` 响应头（属接口面变更，仍需裁定）；
 - ⛔ 未在 runtime 中硬编码 "Case A 的计划学期"：学期由 `APP_COURSE_DATA_SEMESTER` 显式给出，
   并由 acceptance 绑定强制（operator 必须配置与已批准 acceptance 一致的学期）。
+
+
+## Synthetic production E2E（Gate D，✅ LEVEL1 wiring capability）
+
+测试：`backend/tests/test_synthetic_production_e2e.py`（**19 passed**，synthetic / zero-network）。
+⛔ 本文件**不**声明 Real E2E（LEVEL2 / LEVEL3）：没有真实教务请求、没有真实 artifact、没有真实登录。
+
+```text
+frontend RealPlanRequest（只有 semester / current_schedule / preference 三个键）
+        ↓  POST /api/v1/plan（真实 dependency：`get_planning_orchestrator`）
+build_planning_runtime(env) → CurriculumCaseProvider（真实 case 文件）
+                            + StoreBackedCourseDataProvider（已验收 full_semester SQLite）
+                            + RestrictedPlannerProvider
+        ↓  PlanningOrchestrator.build_plan(...)
+PlanResult（公共 Schema 校验通过）
+```
+
+覆盖：
+
+| 项 | 断言 |
+| --- | --- |
+| valid exact set | 200；唯一的 CLEAR 建议班来自 store；`missing_data` 如实报告 |
+| current_schedule | 原值保留；只报告 `selection_required`，⛔ **不执行替换** |
+| Preference | 每个已启用字段都出现在 Planner 的待确认说明里（未被丢弃 / 改写） |
+| meetings=[] | `schedule_unknown`（当前班 + 候选两条来源分别报告）；⛔ 不出现"无冲突 / 可执行"文案 |
+| manual_confirmation | 歧义任务被如实报告，⛔ 不被自动加入 |
+| no Mock fallback | 未装配 ⇒ 503 且响应体不含任何 PlanResult / Mock 数据；mock 通道仍独立带 `X-Data-Source: mock` |
+| missing acceptance | 503 + `real_pipeline_not_configured`（前端可识别的形状），⛔ 不调用 Planner |
+| wrong pinned SHA | 503；⛔ 不去读别的 acceptance |
+| campus-only DB | 503（即使 counts 正好相等） |
+| deleted acceptance | 先 200，删除记录后下一次请求 503（每请求重新装配） |
+| tampered row payload | 先 200，替换内容后 503（B3 content binding） |
+| stale extra campus row | ⛔ 不被返回：Planner 只收到被接受的那批行 |
+| X-Data-Source 审计 | `X-Data-Source` 仍**只**由 Mock 通道设置（⛔ 未擅自扩 API） |
+| request shape | 多余键 422；`current_schedule` 必须 `data_source=real` |
+
+mutation sweep（`mutate_synthetic_e2e.py`，只跑本 E2E suite）：**9 killed / 0 survived / 0 errors**
+—— Store 的 acceptance 查询、Planner 的 UNKNOWN / manual_confirmation / selection_required 报告、
+API 的 503 契约、Mock 头、以及内容绑定都会被这套端到端断言打红。

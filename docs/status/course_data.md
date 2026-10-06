@@ -1780,6 +1780,18 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
   read snapshot **8** = **240 passed**；
 - ⛔ 未改 journal mode、⛔ 未改 public Schema / frozen Provider contract、⛔ 未 merge main。
 
+## Gate D：Synthetic Production E2E（✅ LEVEL1 wiring capability）
+
+- `backend/tests/test_synthetic_production_e2e.py`：**19 passed**（synthetic / zero-network）；
+  路径 = 前端请求形状 → `POST /api/v1/plan`（真实 dependency）→ runtime factory →
+  Curriculum → **已验收的 Store-backed CourseData** → RestrictedPlanner → PlanResult；
+- 负例矩阵（全部 503 / fail closed）：缺 acceptance、错 digest、campus-only 库、
+  **构造后删除 acceptance**、**同数量内容替换**、多余键 422；
+  另断言陈旧 campus 行**不会**被返回、`X-Data-Source` 仍只由 Mock 通道设置；
+- mutation sweep **9/9 killed**（Store acceptance 查询 / Planner UNKNOWN /
+  manual_confirmation / selection_required / API 503 / Mock 头 / 内容绑定）；
+- ⛔ **只声明 LEVEL1 synthetic production wiring**，⛔ 不声明 Real LEVEL2 / LEVEL3。
+
 ## Gate C：Store provider 已接入 runtime factory（✅ 已收口）
 
 - `backend/app/services/planning_runtime.py` 现在按**五个显式环境变量**装配
