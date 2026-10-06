@@ -206,6 +206,15 @@
   var REDACTED_TEACHER = "REDACTED";
 
   /**
+   * **opaque（语义未知）槽位**的脱敏占位符（Architecture Review 裁定）。
+   *
+   * ⚠️ 已批准的 4 字段 non-concrete **layout B** = `weeks | location | opaque | activity`；
+   * opaque 槽位**语义未知**，⛔ 不得解释成 teacher / 地点 / 活动 / 其它业务字段，
+   * 因此只做**结构性脱敏**（Parser 侧精确识别该常量）。
+   */
+  var REDACTED_OPAQUE = "REDACTED_OPAQUE";
+
+  /**
    * 明确判定为 location 所需的**最少非空 `-` 分段数**。
    *
    * ⚠️ 只用于 **5 字段的二义判别**；6 字段的语义已由字段数确定，不受此门槛约束。
@@ -521,7 +530,29 @@
     }
 
     if (fieldCount === 4) {
-      // 4 字段：weeks / weekday / sections / activity —— 没有 teacher，不做替换。
+      // 4 字段有两种已确认形态（Architecture Review 裁定）：
+      //   concrete：weeks / weekday  / sections / activity  → 无 teacher，原样保留
+      //   layout B：weeks / location / **opaque** / activity → opaque 槽位必须脱敏
+      //
+      // ⚠️ opaque 槽位的**语义未知**（⛔ 不是 teacher / 地点 / 活动 / 其它业务字段）：
+      //    因此**只**把它替换成结构性占位符 `REDACTED_OPAQUE`，
+      //    ⛔ 不做姓名 / CJK / 长度启发式，⛔ 不注入 row 级 teachingName。
+      // ⛔ 只对**精确** Layout B（f2 是严格 location）脱敏，⛔ 不泛化到所有 4 字段。
+      // ⛔ 其余 4 字段形态保持原状，由 Python parser 决定是否 fail closed。
+      if (countNonEmptyDashSegments(fields[1].trim()) >= MIN_LOCATION_SEGMENTS) {
+        var opaque4 = fields[2];
+        if (typeof opaque4 !== "string" || opaque4.trim() === "") {
+          fail(
+            "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+              "是 4 字段 layout B，但其 opaque 槽位为空或不是字符串。" +
+              "本采集器不写入占位符来掩盖该问题，已整体停止（不回显该字段取值）。"
+          );
+        }
+        fields[2] = REDACTED_OPAQUE;
+        return fields.join(FIELD_SEPARATOR);
+      }
+
+      // concrete 4 字段（f2 是 weekday）或其它未归类形态：不做替换。
       return segment;
     }
 

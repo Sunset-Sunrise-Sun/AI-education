@@ -2598,3 +2598,53 @@
   ⛔ 真实材料未入 Git；**真实请求数 0**。
 - 下一步：负责人按两段流程跑真实诊断（pages 1..5 → 重新登录 → page 6 + previousState）
   并回传六个结果字段。
+
+### 2026-10-05 - Phase 1-2：Layout B（4 字段 opaque）production 收口 + 完整回归
+
+- **裁定**：Layout B = `weeks | location | **opaque** | activity`；
+  f3 是 **opaque / unmodeled** 槽位（⛔ 不得解释成 teacher / 地点 / 活动 / 其它业务字段）；
+  collector 侧脱敏为 `REDACTED_OPAQUE`，parser 侧精确识别 → `meeting = None` → `meetings = []`
+  （schedule UNKNOWN）。**Layout A 冻结**、concrete layout 不变、public Schema 不变。
+- **Collector（`tools/sysu_course_offering_collector.js`）**：
+  - 新增常量 `REDACTED_OPAQUE = "REDACTED_OPAQUE"`（与 teacher 的 `REDACTED` **互相独立**）；
+  - 4 字段分支新增**精确** Layout B 判定：`f2` 是**严格** location
+    （复用既有 `countNonEmptyDashSegments(...) >= MIN_LOCATION_SEGMENTS`）时，
+    把 `fields[2]` 写为 `REDACTED_OPAQUE`；
+  - ⛔ **不泛化**：concrete 4 字段与未归类 4 字段**保持原状**（⛔ 不新增 fail closed 分支）；
+  - ⛔ 替换**前**校验 opaque 非空（空 / 非字符串 → 整体失败，⛔ 不用占位符掩盖），错误不回显取值；
+  - ⛔ 无姓名 / CJK / 长度启发式，⛔ 不注入 `teachingName`。
+- **Parser（`backend/app/course_data/schedule_parser.py`）**：
+  - 新增 `_REDACTED_OPAQUE_PLACEHOLDER` / `_LAYOUT_B_NON_CONCRETE_FIELD_COUNT = 4` /
+    `_try_parse_four_field_non_concrete_layout_b()`：四条精确准入
+    （weeks / 严格 location / **精确** `REDACTED_OPAQUE` / activity 非空）；
+  - 判定插在 `parse_weekday(fields[1])` **之前**（否则永远到不了）；返回
+    `ParsedScheduleSegment(meeting=None, teacher=None, activity=..., schedule_weeks=weeks)`；
+  - ⛔ **不解释 opaque**；⛔ 原始（未脱敏）取值**不被接受** ⇒ fail closed；
+  - ✅ 复用既有 `build_course_offering_from_non_concrete_schedule()` → `meetings = []`；
+  - ✅ Layout A / concrete 路径**未改动**。
+- **测试**：parser **183 → 222**（layout B 合法 / 已批准 weeks 五形态 / 混排不丢段 /
+  **20 个近邻形态 fail closed**：未脱敏原始取值、占位符前后缀 / 小写 / 前后空白 / 空、
+  f1 非 weeks / 区间非法、f2 非 location / 两段 / weekday / sections / 空、
+  f4 空 / 全空白、字段换位 ×2、5 字段近似、占位符互不通用 / concrete 4 字段不受影响）；
+  importer **78 → 81**（`meetings == []` 端到端 + 与 concrete 共存 + 原始 opaque 整体失败）；
+  collector node **145 → 150**（opaque 脱敏 / 只对精确 Layout B / 混排 / 空槽位 fail closed /
+  序列化 bundle 不含 synthetic opaque secret）；守卫 **109 → 114**（占位符两侧一致、
+  只对精确 Layout B 脱敏、parser 四条准入且不解释 opaque、判定早于 concrete 路径、
+  Layout A / concrete 未变）。
+- ⚠️ **自查纠正**：`test_layout_b_near_misses` 初版把"3 字段 `weeks/location/activity`"
+  当成 Layout B 近邻 —— 它其实是**另一条已确认** layout（有自己的 grammar）⇒ 已从近邻清单移除
+  并加注说明（⛔ 不改实现）。
+- **Phase 2 完整回归**：`node --check` exit 0；collector node **150 passed**；
+  守卫 **114 passed**；targeted（parser+normalization+importer+pagination+guard，
+  `-W error::SyntaxWarning`）**636 passed**；full backend
+  **2 failed / 2455 passed / 2 skipped**（两个为**既有** Windows-only Curriculum 用例，
+  按要求⛔ 不修不 skip）；`compileall app` exit 0；mutation **64 → 72 个变异 72/72 全部变红**
+  （新增 N40 泛化脱敏 / N41 不脱敏 / N42 去除空值校验；P27 接受任意 f3 / P28 放宽 f2 /
+  P29 把 opaque 当 teacher / P30 放宽 Layout A / P31 两侧占位符漂移），
+  collector 与 parser 两个文件 SHA-256 前后一致并字节级还原。
+- ⚠️ **变异脚本扩展**：为 parser 侧变异新增**按文件定位**（target = collector / parser），
+  并继续强制**锚点唯一**（>1 处即 `AMB`）。
+- **边界**：⛔ **未 merge main**；⛔ 未改 public Schema / frozen Provider contract /
+  Planner / Curriculum 语义 / runtime 架构；⛔ 未做真实登录或教务请求；⛔ 真实材料未入 Git。
+- 下一步：Phase 3 consolidation、Phase 4 CLI 集成、Phase 5 真实操作包、Phase 6 push + PR。
+

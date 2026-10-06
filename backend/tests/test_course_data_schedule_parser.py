@@ -1459,12 +1459,12 @@ def test_layout_a_near_misses_still_fail_closed(label: str, text: str) -> None:
         parse_teaching_time_place(text)
 
 
-def test_layout_b_four_field_is_still_refused() -> None:
-    """⛔ Layout B（4 字段）本轮**禁止处理**：继续 fail closed。
+def test_layout_b_unredacted_four_field_is_still_refused() -> None:
+    """⛔ **未脱敏**的原始 opaque 取值**不得**被 parser 接受（必须继续 fail closed）。
 
-    ⚠️ 它**不会**落到 `unsupported_sections_shape`：4 字段的 concrete 路径先解析
-    f2 为 weekday，而 Layout B 的 f2 是 location 形态 ⇒ 先在 weekday 处失败。
-    本轮**只**要求"仍然 fail closed"，⛔ 不要求（也⛔ 不允许）调整 Layout B 的处理。
+    ⚠️ 只有采集器已脱敏的 `REDACTED_OPAQUE` 才匹配 layout B（见下方 layout B 用例）；
+    原始 token 落回 concrete 路径后先在 weekday 处失败。
+    ⛔ 本 parser **不**解释 opaque 槽位，也⛔ 不接受"任意非空 token"。
     """
 
     text = "/".join(["1-5周", LOCATION, "示例文本", ACTIVITY])
@@ -1500,3 +1500,148 @@ def test_layout_a_does_not_touch_confirmed_five_field_concrete_paths() -> None:
         assert segment.meeting is not None
         assert segment.meeting.start_section == 5
         assert len(extract_meetings([segment])) == 1
+
+
+# ---------------------------------------------------------------------------
+# 4 字段 non-concrete **layout B**（Architecture Review 裁定）
+#   weeks | location | REDACTED_OPAQUE | activity
+#
+# ⛔ opaque 槽位语义未知：⛔ 不称其为 teacher / 地点 / 活动 / 其它业务字段。
+# ---------------------------------------------------------------------------
+
+#: collector 的 opaque 槽位脱敏占位符（已知常量）。
+REDACTED_OPAQUE = "REDACTED_OPAQUE"
+
+
+def _layout_b(
+    *,
+    weeks: str = "1-5周",
+    location: str = LOCATION,
+    opaque: str = REDACTED_OPAQUE,
+    activity: str = ACTIVITY,
+) -> str:
+    return "/".join([weeks, location, opaque, activity])
+
+
+def test_layout_b_is_parsed_as_non_concrete_without_meeting() -> None:
+    """✅ 四条准入全满足 → non-concrete：`meeting = None`、周次保留、**不设 teacher**。"""
+
+    (segment,) = parse_teaching_time_place(_layout_b())
+
+    assert segment.meeting is None, "⛔ 该 layout 没有 weekday / sections，不得生成 Meeting"
+    assert segment.schedule_weeks == [1, 2, 3, 4, 5]
+    assert segment.activity == ACTIVITY
+    assert segment.schedule_qualifier is None
+    assert segment.teacher is None, "⛔ opaque 槽位不是 teacher，⛔ 也不塞占位符冒充 teacher"
+    assert extract_meetings([segment]) == []
+
+
+@pytest.mark.parametrize(
+    ("weeks", "expected_weeks"),
+    [
+        ("1-5周", [1, 2, 3, 4, 5]),
+        ("1-17单周", [1, 3, 5, 7, 9, 11, 13, 15, 17]),
+        ("3-4双周", [4]),
+        ("1-5周校外", [1, 2, 3, 4, 5]),
+        ("1-5周校内(户外)", [1, 2, 3, 4, 5]),
+    ],
+)
+def test_layout_b_accepts_the_approved_weeks_grammar(
+    weeks: str, expected_weeks: list[int]
+) -> None:
+    """✅ f1 走**现有** weeks parser：已批准的全部 weeks 形态都可用。"""
+
+    (segment,) = parse_teaching_time_place(_layout_b(weeks=weeks))
+
+    assert segment.meeting is None
+    assert segment.schedule_weeks == expected_weeks
+
+
+def test_layout_b_keeps_segment_not_dropped_in_mixed_text() -> None:
+    """⛔ layout B **不是**静默丢段：与 concrete / layout A 混排时仍全部保留。"""
+
+    text = ",".join(
+        [
+            _layout_b(),
+            _four_field("1-8周", "星期三", "第1-2节"),
+            _layout_a(),
+        ]
+    )
+
+    segments = parse_teaching_time_place(text)
+
+    assert len(segments) == 3
+    assert segments[0].meeting is None
+    assert segments[1].meeting is not None
+    assert segments[2].meeting is None
+    assert len(extract_meetings(segments)) == 1
+
+
+@pytest.mark.parametrize(
+    ("label", "text"),
+    [
+        ("f1 非 weeks", "/".join(["abc", LOCATION, REDACTED_OPAQUE, ACTIVITY])),
+        ("f1 缺周字", "/".join(["1-5", LOCATION, REDACTED_OPAQUE, ACTIVITY])),
+        ("f1 区间非法（M < N）", "/".join(["5-3周", LOCATION, REDACTED_OPAQUE, ACTIVITY])),
+        ("f2 非 location（无连字符）", "/".join(["1-5周", "示例地点", REDACTED_OPAQUE, ACTIVITY])),
+        ("f2 两段 token（非明确 location）", "/".join(["1-5周", "示例-教室", REDACTED_OPAQUE, ACTIVITY])),
+        ("f2 是 weekday", "/".join(["1-5周", "星期五", REDACTED_OPAQUE, ACTIVITY])),
+        ("f2 是 sections", "/".join(["1-5周", "第1-2节", REDACTED_OPAQUE, ACTIVITY])),
+        ("f2 空", "/".join(["1-5周", "", REDACTED_OPAQUE, ACTIVITY])),
+        ("f3 原始取值（未脱敏）", "/".join(["1-5周", LOCATION, "示例原始值", ACTIVITY])),
+        ("f3 占位符前缀", "/".join(["1-5周", LOCATION, "REDACTED_OPAQUE_X", ACTIVITY])),
+        ("f3 占位符后缀", "/".join(["1-5周", LOCATION, "X_REDACTED_OPAQUE", ACTIVITY])),
+        ("f3 小写占位符", "/".join(["1-5周", LOCATION, "redacted_opaque", ACTIVITY])),
+        ("f3 带前导空白", "/".join(["1-5周", LOCATION, " REDACTED_OPAQUE", ACTIVITY])),
+        ("f3 带尾随空白", "/".join(["1-5周", LOCATION, "REDACTED_OPAQUE ", ACTIVITY])),
+        ("f3 空", "/".join(["1-5周", LOCATION, "", ACTIVITY])),
+        ("f4 空", "/".join(["1-5周", LOCATION, REDACTED_OPAQUE, ""])),
+        ("f4 全空白", "/".join(["1-5周", LOCATION, REDACTED_OPAQUE, "   "])),
+        ("字段换位（location 在 f3）", "/".join(["1-5周", REDACTED_OPAQUE, LOCATION, ACTIVITY])),
+        ("字段换位（opaque 在 f4）", "/".join(["1-5周", LOCATION, ACTIVITY, REDACTED_OPAQUE])),
+        ("5 字段近似形态", _layout_b() + "/多一列"),
+    ],
+)
+def test_layout_b_near_misses_still_fail_closed(label: str, text: str) -> None:
+    """⛔ 四条准入任一不满足 → **继续 fail closed**（⛔ 不泛化为任意 4 字段）。
+
+    ⚠️ 3 字段（`weeks / teacher / activity`）是**另一条已确认** layout，有它自己的
+    grammar（见既有用例），因此**不**在本清单里 —— 它不是 Layout B 的"近似形态"。
+    """
+
+    with pytest.raises(CourseDataNormalizationError):
+        parse_teaching_time_place(text)
+
+
+def test_layout_b_does_not_touch_confirmed_four_field_concrete_paths() -> None:
+    """✅ 已确认的 concrete 4 字段（f2 是 weekday）**不受影响**：仍生成 Meeting。"""
+
+    (segment,) = parse_teaching_time_place(_four_field("1-8周", "星期三", "第1-2节"))
+
+    assert segment.meeting is not None
+    assert segment.meeting.weekday == 3
+    assert segment.meeting.start_section == 1
+    assert len(extract_meetings([segment])) == 1
+
+
+def test_layout_b_does_not_change_the_public_meeting_or_the_placeholder() -> None:
+    """⛔ 未新增公共字段；且 layout B 与 layout A 的占位符**互相独立**。"""
+
+    (layout_b_segment,) = parse_teaching_time_place(_layout_b())
+
+    # Layout A 的占位符不能用在本 layout 上
+    with pytest.raises(CourseDataNormalizationError):
+        parse_teaching_time_place(_layout_b(opaque=REDACTED))
+    # 本 layout 的占位符也不能用在 Layout A 上
+    with pytest.raises(CourseDataNormalizationError):
+        parse_teaching_time_place(_layout_a(teacher=REDACTED_OPAQUE))
+
+    assert layout_b_segment.meeting is None
+    assert set(Meeting.model_fields) == {
+        "weekday",
+        "start_section",
+        "end_section",
+        "weeks",
+        "campus",
+        "classroom",
+    }

@@ -2591,3 +2591,126 @@ def test_field_source_reuses_the_same_predicates_as_the_full_diagnostic(
     # 读排课字段走 `row[SCHEDULE_FIELD]`：⛔ 段内不出现字面量
     assert "teachingTimePlaceStr" not in section
 
+
+# ---------------------------------------------------------------------------
+# Layout B（4 字段 opaque）：collector ⇄ parser 一致性
+#
+# 已批准：`weeks | location | REDACTED_OPAQUE | activity`（f3 = opaque / unmodeled）
+# ⛔ 不解释 f3；⛔ 只对精确 Layout B 脱敏；⛔ Layout A / concrete 不变。
+# ---------------------------------------------------------------------------
+
+PARSER_PATH = _REPO_ROOT / "backend" / "app" / "course_data" / "schedule_parser.py"
+
+
+def parser_source() -> str:
+    return PARSER_PATH.read_text(encoding="utf-8")
+
+
+def test_layout_b_placeholder_matches_between_collector_and_parser() -> None:
+    """⛔ 两侧占位符必须**逐字符**一致（单一真源在 collector）。"""
+
+    assert 'var REDACTED_OPAQUE = "REDACTED_OPAQUE";' in (
+        COLLECTOR_PATH.read_text(encoding="utf-8")
+    )
+    assert '_REDACTED_OPAQUE_PLACEHOLDER = "REDACTED_OPAQUE"' in parser_source()
+
+    # 既有 teacher 占位符同样保持两侧一致
+    assert 'var REDACTED_TEACHER = "REDACTED";' in (
+        COLLECTOR_PATH.read_text(encoding="utf-8")
+    )
+    assert '_REDACTED_TEACHER_PLACEHOLDER = "REDACTED"' in parser_source()
+
+    # ⛔ 两个占位符必须互相独立（不得复用 / 不得前缀包含）
+    assert "REDACTED_OPAQUE" not in 'var REDACTED_TEACHER = "REDACTED";'
+
+
+def test_collector_redacts_opaque_only_for_exact_layout_b(collector_source: str) -> None:
+    """collector：4 字段分支**只**在 f2 是严格 location 时脱敏 f3。"""
+
+    branch_start = collector_source.index("    if (fieldCount === 4) {")
+    branch_end = collector_source.index("    if (fieldCount === 5) {", branch_start)
+    branch = _collector_code_only(collector_source[branch_start:branch_end])
+
+    # 条件：复用既有严格 location 门槛（>= 3 个非空 '-' 分段）
+    assert "countNonEmptyDashSegments(fields[1].trim()) >= MIN_LOCATION_SEGMENTS" in branch
+    # 先校验非空，再写占位符（⛔ 不用占位符掩盖空值）
+    assert "opaque 槽位为空" in collector_source
+    assert branch.index("opaque 槽位为空") < branch.index("fields[2] = REDACTED_OPAQUE;")
+    assert "fields[2] = REDACTED_OPAQUE;" in branch
+    # ⛔ 不注入 row 级教师名、⛔ 不做启发式
+    for forbidden in ("teachingName", "charCodeAt", "codePointAt", "\\u4e00", ".length ==="):
+        assert forbidden not in branch, f"⛔ 4 字段分支不得出现：{forbidden}"
+
+    # ⛔ 不得泛化成"所有 4 字段都脱敏"：无条件 return 前必须有 location 判定
+    assert "return segment;" in branch
+
+
+def test_parser_layout_b_is_exact_and_does_not_interpret_opaque() -> None:
+    """parser：Layout B 的**四条精确准入** + ⛔ 不解释 opaque 槽位。"""
+
+    source = parser_source()
+
+    start = source.index("def _try_parse_four_field_non_concrete_layout_b(")
+    end = source.index("def parse_teaching_time_place(", start)
+    function = source[start:end]
+
+    # 四条准入
+    assert "_LAYOUT_B_NON_CONCRETE_FIELD_COUNT" in function
+    assert "expand_weeks(fields[0].strip())" in function
+    assert "_classify_five_field_token(fields[1].strip()) != _FIVE_FIELD_LOCATION" in function
+    assert "if fields[2] != _REDACTED_OPAQUE_PLACEHOLDER:" in function
+    assert 'if not isinstance(activity, str) or activity.strip() == "":' in function
+
+    # meeting=None 且 **teacher=None**（⛔ 不塞占位符冒充 teacher）
+    assert "meeting=None," in function
+    assert "teacher=None," in function
+    assert "schedule_qualifier=None," in function
+    assert "schedule_weeks=weeks," in function
+
+    # ⛔ 不解释 opaque：**代码体**不得出现 teacher 注入 / 姓名启发式 / 转义启发式
+    #    （docstring 里会以"⛔ 不得…"的形式提到这些词，因此只看 docstring 之后的代码）
+    docstring_end = function.index('"""', function.index('"""') + 3) + 3
+    body = function[docstring_end:]
+    for forbidden in ("teachingName", "charCodeAt", "codePointAt", "\\u4e00"):
+        assert forbidden not in body, f"⛔ Layout B 代码不得出现：{forbidden}"
+
+
+def test_parser_checks_layout_b_before_the_concrete_four_field_path() -> None:
+    """⛔ 判定必须发生在 `parse_weekday(fields[1])` **之前**（否则永远到不了）。"""
+
+    source = parser_source()
+
+    layout_b = source.index("_try_parse_four_field_non_concrete_layout_b(fields, offset)")
+    weekday = source.index("weekday = parse_weekday(fields[1])")
+    sections = source.index("start_section, end_section = parse_sections(fields[2])")
+
+    assert layout_b < weekday, "Layout B 判定必须早于 concrete 路径的 weekday 解析"
+    assert layout_b < sections
+
+    # Layout A 冻结：其判定与调用点仍在（5 字段）
+    assert "_try_parse_five_field_non_concrete_layout_a(fields, offset)" in source
+    assert source.index("_try_parse_five_field_non_concrete_layout_a(fields, offset)") < sections
+
+
+def test_layout_a_and_concrete_paths_are_unchanged_by_layout_b(
+    collector_source: str,
+) -> None:
+    """⛔ Layout A / concrete 均未因 Layout B 改动。"""
+
+    source = parser_source()
+
+    # Layout A 的五条准入仍在
+    layout_a_start = source.index("def _try_parse_five_field_non_concrete_layout_a(")
+    layout_a_end = source.index("def _try_parse_four_field_non_concrete_layout_b(", layout_a_start)
+    layout_a = source[layout_a_start:layout_a_end]
+    for required in (
+        "_LAYOUT_A_NON_CONCRETE_FIELD_COUNT",
+        "_classify_five_field_token(fields[2].strip()) != _FIVE_FIELD_LOCATION",
+        "if fields[3] != _REDACTED_TEACHER_PLACEHOLDER:",
+    ):
+        assert required in layout_a, f"Layout A 准入丢失：{required}"
+
+    # concrete 4 字段（weeks / weekday / sections / activity）仍走原路径
+    assert "if field_count == FIELDS_WITHOUT_LOCATION_WITHOUT_TEACHER:" in source
+    assert "campus, classroom, teacher = None, None, None" in source
+

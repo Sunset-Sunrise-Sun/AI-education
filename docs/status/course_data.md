@@ -345,6 +345,16 @@ Frontend / Mock + tests，且须经 Reviewer 验收）；**本轮未开始任何
   **不得**用 `REDACTED` 静默掩盖（那会让下游 Python parser 误以为记录合法）；
   错误信息**不回显** teacher 取值；
   ⛔ 非 5/6 字段、多个 trailing comma、中间空 segment → **整体失败，不生成 bundle**
+- ✅ **opaque 槽位脱敏（4 字段 non-concrete layout B；Architecture Review 裁定）**：
+  已批准 `weeks | location | **opaque** | activity` 中的第 3 项替换为 `REDACTED_OPAQUE`；
+  ⛔ **只**对**精确** Layout B（f2 是**严格** location：`>= 3` 个非空 `-` 分段）生效，
+  ⛔ **不泛化**到所有 4 字段（concrete `weeks/weekday/sections/activity` 与未归类 4 字段**保持原状**）；
+  ⛔ **不解释** opaque 槽位（⛔ 不称其为 teacher / 地点 / 活动 / 其它业务字段），
+  ⛔ 不做姓名 / CJK / 长度启发式，⛔ 不注入 row 级 `teachingName`；
+  ⛔ **替换前必须验证原 opaque 非空**（空 / 非字符串 → **整体失败**，⛔ 不用占位符掩盖）；
+  错误信息**不回显**该取值；
+  ⚠️ 两个占位符**互相独立**：`REDACTED`（teacher）与 `REDACTED_OPAQUE`（opaque），
+  ⛔ 不可互相替代、⛔ 不可前缀包含
 - ✅ **结果导出**：`toJson(result)` 输出的**顶层就是裸 Capture Bundle**
   （`format` / `semester` / `first_page_no` / `page_size` / `pages`），
   可直接交给 Python 的 `load_capture_bundle(...)`；
@@ -441,6 +451,10 @@ segment separator = ","      field separator = "/"
 5 字段 A（有地点、无教师）：weeks / weekday / sections / location / activity
 5 字段 B（无地点、有教师）：weeks / weekday / sections / teacher / activity
 6 字段（有地点、有教师）：weeks / weekday / sections / location / teacher / activity
+4 字段 layout B（**opaque**；Architecture Review 裁定）：
+                          weeks / location / REDACTED_OPAQUE / activity
+                          第 2 项是 **location**（不是 weekday），第 3 项是 **opaque / unmodeled**
+                          ⇒ 没有 weekday / sections ⇒ **不生成 Meeting**（`meetings = []`）
 ```
 
 ⚠️ **2026-1 真实证据确认：teacher 并不总是在 `teachingTimePlaceStr` 中出现**
@@ -542,10 +556,37 @@ weeks | weekday | location | REDACTED | activity
   （⛔ **未新增** empty-meeting 路径）；✅ `schedule_weeks` / `teacher`（占位符）/ `activity` 保留；
 - ⚠️ **语义仍是 `meetings = []` = schedule UNKNOWN**，⛔ **不表示** conflict-free、
   ⛔ 不表示无课、⛔ 不表示异步；
-- ⛔ **Layout B（4 字段）仍未批准处理**：parser **继续 fail closed**
-  （当前先在 weekday 解析处失败，且错误已是安全分类）；
-  ✅ 本轮**只**扩展"**一次性、零留存 Layout B 诊断**"（见下），⛔ **未改 Layout B parser**、
-  ⛔ **未做 4 字段 teacher 脱敏**、⛔ 未重抓。
+- ✅ **Layout B（4 字段 opaque）已按裁定实现 production 收口**（parser 侧，见下节）。
+
+**4 字段 non-concrete layout B（opaque；Architecture Review 裁定；✅ 已实现）**：
+
+```text
+weeks | location | REDACTED_OPAQUE | activity
+```
+
+- **精确准入（四条全部满足才走这条路，否则落回原有 concrete 路径继续 fail closed）**：
+
+  ```text
+  f1：现有 weeks parser（expand_weeks）成功
+  f2：现有**严格** location 判别器（_classify_five_field_token）判定为 location（>= 3 个非空 '-' 分段）
+  f3：**精确等于** collector 的 REDACTED_OPAQUE 占位符（⛔ 无 strip / 前缀 / 通配 / 空白容忍）
+  f4：现有 activity 规则（非空）通过
+  ```
+
+- ⛔ **不解释 opaque 槽位**：它**不是** teacher、**不是**地点、**不是**活动、
+  **不是**任何其它业务字段；⛔ 不注入 row 级 `teachingName`；
+  ⛔ 不做姓名 / CJK / 长度启发式；
+- ⛔ **未脱敏的原始 opaque 取值不被接受**（只有采集器已吐出的 `REDACTED_OPAQUE` 才匹配）
+  ⇒ 旧 artifact（含原始取值）在本 parser 下**必然**在 Layout B 处 fail closed ⇒ 需要 **East 重抓**；
+- ⛔ **不生成 `Meeting`**（`meeting = None`）：该 layout 没有 weekday / sections；
+- ✅ 复用**现有** `build_course_offering_from_non_concrete_schedule()` → `meetings = []`
+  （⛔ **未新增** empty-meeting 路径）；✅ `schedule_weeks` / `activity` 保留；
+  ⛔ `teacher` 保持 `None`（⛔ 不塞占位符冒充 teacher）；⛔ `schedule_qualifier` 保持 `None`；
+- ⚠️ **语义仍是 `meetings = []` = schedule UNKNOWN**，⛔ **不表示** conflict-free、
+  ⛔ 不表示无课、⛔ 不表示异步、⛔ 不表示可直接执行；
+- ✅ **Layout A（5 字段）冻结**：⛔ 未改动其任何准入条件；
+- ✅ **concrete 4 / 5 / 6 字段不变**：仍正常生成 `Meeting`；
+- ⛔ **public Schema 未改**：`meetings` 仍复用既有 `minItems = 0` 契约。
 
 **一次性 Layout B 诊断（零留存；Architecture Review 裁定 2026-10-05）**：
 

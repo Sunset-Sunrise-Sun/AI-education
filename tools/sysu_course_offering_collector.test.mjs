@@ -3075,6 +3075,67 @@ test("分段诊断：超过 smoke 上限的 part 先确认；取消 → 不发�
   assert.equal(cancelled.confirms.length, 1);
 });
 
+// ---------------------------------------------------------------------------
+// Layout B：4 字段 non-concrete（weeks | location | opaque | activity）
+//
+// Architecture Review 裁定：opaque 槽位**语义未知** ⇒ 只做**结构性**脱敏
+// REDACTED_OPAQUE（⛔ 不解释成 teacher / 地点 / 活动 / 其它业务字段，
+// ⛔ 不做姓名 / CJK / 长度启发式），且**只**对精确 Layout B 生效。
+// ---------------------------------------------------------------------------
+
+const REDACTED_OPAQUE = "REDACTED_OPAQUE";
+const OPAQUE_RAW = "SECRET-OPAQUE-OMEGA";
+
+test("Layout B：opaque 槽位替换为 REDACTED_OPAQUE，其余字段原样保留", async () => {
+  const text = `1-5周/${LOCATION}/${OPAQUE_RAW}/${ACTIVITY}`;
+
+  const out = await collectSingle(text);
+
+  assert.equal(out, `1-5周/${LOCATION}/${REDACTED_OPAQUE}/${ACTIVITY}`);
+  assert.ok(!out.includes(OPAQUE_RAW), "⛔ 原始 opaque 取值不得进入 Capture Bundle");
+  assert.ok(!out.split("/").includes("REDACTED"), "⛔ 不得误用 teacher 占位符（两者独立）");
+});
+
+test("Layout B：只有精确 Layout B 被脱敏（concrete / 未归类 4 字段不变）", async () => {
+  const concrete = `1-8周/星期五/第5-6节/${ACTIVITY}`;
+  // f2 只有两个 '-' 分段 ⇒ 不是严格 location ⇒ 不视为 Layout B（保持既有行为）
+  const unclassified = `1-8周/${CAMPUS}-2108/${TEACHER}/${ACTIVITY}`;
+
+  for (const text of [concrete, unclassified]) {
+    const out = await collectSingle(text);
+    assert.equal(out, text, "⛔ 只允许对精确 Layout B 脱敏");
+    assert.ok(!out.includes(REDACTED_OPAQUE));
+  }
+});
+
+test("Layout B：与 concrete segment 混排时逐段正确处理", async () => {
+  const text = `1-8周/星期三/第1-2节/${ACTIVITY},1-5周/${LOCATION}/${OPAQUE_RAW}/${ACTIVITY}`;
+
+  const out = await collectSingle(text);
+
+  assert.ok(out.includes(REDACTED_OPAQUE));
+  assert.ok(!out.includes(OPAQUE_RAW));
+  assert.ok(out.startsWith("1-8周/星期三/第1-2节/"), "concrete 段必须原样保留");
+});
+
+test("Layout B：opaque 槽位为空 → fail closed（⛔ 不用占位符掩盖）", async () => {
+  const { collector } = loadCollector([rawRow(`1-5周/${LOCATION}//${ACTIVITY}`)]);
+
+  await assert.rejects(() => collector.collect({ semester: SEMESTER }), /opaque 槽位为空/);
+});
+
+test("Layout B：synthetic opaque secret 不得出现在序列化 bundle 中", async () => {
+  const { collector } = loadCollector([
+    rawRow(`1-5周/${LOCATION}/${OPAQUE_RAW}/${ACTIVITY}`),
+  ]);
+
+  const result = await collector.collect({ semester: SEMESTER });
+  const serialized = collector.toJson(result);
+
+  assert.ok(!serialized.includes(OPAQUE_RAW), "⛔ 原始 opaque 取值不得进入 bundle");
+  assert.ok(serialized.includes(REDACTED_OPAQUE));
+});
+
 test("分段诊断：加载脚本不自动调用新接口", async () => {
   const harness = newFieldSourceHarness(fsCorpus());
   assert.deepEqual(harness.calls, []);
