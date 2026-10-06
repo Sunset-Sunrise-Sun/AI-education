@@ -1,5 +1,7 @@
 # OPC 提交就绪审计
 
+> 2026-10-06 PR51/PR52交叉审计更新：[权威truth table](OPC_CROSS_PR_TRUTH_TABLE.md)。下文基于main c75b6da的原库存为历史基线；PR51已补README、演示脚本、架构图、启动和恢复指南，不再列为缺失。当前尚需修正来源/计算话术与LEVEL2说明，并完成成品视频、slides、截图、赛规核对及彩排。以truth table的Mode1回放/Mode2实际计算及Planner受限能力为最新口径。
+
 审计日期：2026-10-06（Asia/Shanghai）。审计对象：main `c75b6da8101d9323160ee99beb51d57b1526e02d`，已合入 PR48。独立 reviewer，仅文档交付，不改生产、不 merge、不访问学校。新增材料都是审计草稿，尚不等于负责人批准的最终提交件。
 
 ## 结论与 scorecard
