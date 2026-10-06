@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -104,11 +105,18 @@ def _base_argv(
 def _run(capsys, argv: list[str]) -> tuple[int, dict]:
     """跑 CLI 并把**聚合 JSON** 解析出来（成功在 stdout，失败在 stderr）。"""
 
+    code, payload, _out, _err = _run_capture(capsys, argv)
+    return code, payload
+
+
+def _run_capture(capsys, argv: list[str]) -> tuple[int, dict, str, str]:
+    """同上，但**同时**返回 stdout / stderr 原文（用于断言"绝不输出 ready"）。"""
+
     code = TOOL.main(argv)
     captured = capsys.readouterr()
     text = captured.out.strip() or captured.err.strip()
     payload = json.loads(text) if text else {}
-    return code, payload
+    return code, payload, captured.out, captured.err
 
 
 # --------------------------------------------------------------------------- #
@@ -322,7 +330,7 @@ def test_env_out_is_never_overwritten_without_force(capsys, tmp_path: Path) -> N
     assert env_out.read_text(encoding="utf-8") == "KEEP=1\n"
 
     code, payload = _run(
-        capsys, [*common, "--sqlite", str(tmp_path / "third.sqlite3"), "--force"]
+        capsys, [*common, "--sqlite", str(tmp_path / "third.sqlite3"), "--overwrite-env"]
     )
     assert code == TOOL.EXIT_OK, payload
     assert env_out.read_text(encoding="utf-8") != "KEEP=1\n"
@@ -381,3 +389,508 @@ def test_missing_required_real_mode_arguments_fail_closed(capsys, tmp_path: Path
 
     assert code == TOOL.EXIT_ARGUMENTS
     assert payload["status"] == "failed"
+
+
+# --------------------------------------------------------------------------- #
+# BLOCKER 1：env 输出必须绑定到**刚验证过的**那一个 SQLite
+# --------------------------------------------------------------------------- #
+
+
+def _verified_store(*, path: Path, sha: str = "a" * 64, semester: str = SEMESTER) -> object:
+    return TOOL.VerifiedStore(
+        path=path.resolve(),
+        acceptance_sha256=sha,
+        semester=semester,
+        offering_count=1,
+        member_count=1,
+        offering_set_sha256="b" * 64,
+        expected_offering_count=1,
+    )
+
+
+def test_runtime_environment_has_no_independent_store_inputs() -> None:
+    """结构性：env 只能由**已验证 store 对象**派生（⛔ 不存在第二个 DB 路径 / SHA 参数）。"""
+
+    parameters = set(inspect.signature(TOOL._runtime_environment).parameters)
+    assert parameters == {"store", "curriculum_case"}
+    assert "sqlite" not in parameters and "acceptance_sha256" not in parameters
+
+
+def test_assert_ready_binding_rejects_a_different_store_path(tmp_path: Path) -> None:
+    """单元级：env 指向 B.sqlite 而验证的是 A.sqlite ⇒ 必须 fail closed。"""
+
+    store = _verified_store(path=tmp_path / "a.sqlite3")
+    environment = {
+        "APP_REAL_CASE_A_ENABLED": "1",
+        "APP_COURSE_DATA_SQLITE_PATH": str(tmp_path / "b.sqlite3"),
+        "APP_COURSE_DATA_SEMESTER": SEMESTER,
+        "APP_COURSE_DATA_ACCEPTANCE_SHA256": store.acceptance_sha256,
+    }
+
+    code, payload = _expect_stage_failure(
+        lambda: TOOL._assert_ready_binding(
+            store=store,
+            environment=environment,
+            acceptance_manifest_sha256=store.acceptance_sha256,
+            semester=SEMESTER,
+        )
+    )
+
+    assert code == TOOL.EXIT_STORE_BINDING
+    assert payload["category"] == "env_db_path_not_the_verified_store"
+
+
+def test_assert_ready_binding_rejects_a_mismatched_acceptance_sha(tmp_path: Path) -> None:
+    store = _verified_store(path=tmp_path / "a.sqlite3")
+    environment = {
+        "APP_REAL_CASE_A_ENABLED": "1",
+        "APP_COURSE_DATA_SQLITE_PATH": str(store.path),
+        "APP_COURSE_DATA_SEMESTER": SEMESTER,
+        "APP_COURSE_DATA_ACCEPTANCE_SHA256": "c" * 64,  # ⛔ 与已验证 store 不符
+    }
+
+    code, payload = _expect_stage_failure(
+        lambda: TOOL._assert_ready_binding(
+            store=store,
+            environment=environment,
+            acceptance_manifest_sha256=store.acceptance_sha256,
+            semester=SEMESTER,
+        )
+    )
+
+    assert code == TOOL.EXIT_STORE_BINDING
+    assert payload["category"] == "env_acceptance_sha_not_verified"
+
+
+def _expect_stage_failure(call) -> tuple[int, dict]:
+    with pytest.raises(TOOL.StageFailure) as failure:
+        call()
+    return failure.value.exit_code, failure.value.payload
+
+
+def test_env_file_binds_to_the_resolved_verified_store(capsys, tmp_path: Path) -> None:
+    """env 文件里的 DB 路径 == 已验证 store 的**解析后**路径（含 `..` 也归一化）。"""
+
+    bundles = _write_bundles(tmp_path)
+    (tmp_path / "sub").mkdir()
+    unresolved = tmp_path / "sub" / ".." / "course-data.sqlite3"
+    env_out = tmp_path / "runtime.env"
+    manifest = tmp_path / "manifest.json"
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(unresolved), "--inventory", str(_approved_inventory(capsys, tmp_path, bundles)),
+         "--output-manifest", str(manifest), "--env-out", str(env_out)],
+    )
+
+    assert code == TOOL.EXIT_OK, payload
+    resolved = unresolved.resolve()
+    assert payload["store_binding"]["resolved_verified_store_path"] == str(resolved)
+    assert payload["store_binding"]["env_db_path_equals_verified_store"] is True
+    assert payload["runtime_environment"]["APP_COURSE_DATA_SQLITE_PATH"] == str(resolved)
+    assert payload["provider_read_back"]["verified_store_path"] == str(resolved)
+
+    text = env_out.read_text(encoding="utf-8")
+    assert f"APP_COURSE_DATA_SQLITE_PATH={resolved}" in text
+    assert f"APP_COURSE_DATA_ACCEPTANCE_SHA256={payload['acceptance']['manifest_sha256']}" in text
+    assert str(unresolved) not in text  # ⛔ 不能写未解析路径
+
+
+def test_forced_env_db_path_mismatch_fails_before_ready(capsys, tmp_path, monkeypatch) -> None:
+    """对抗性：验证 A.sqlite 但把 env 强行指向 B.sqlite ⇒ 绝不输出 ready。"""
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    original = TOOL._runtime_environment
+
+    def _redirected(*, store, curriculum_case):
+        environment = original(store=store, curriculum_case=curriculum_case)
+        environment["APP_COURSE_DATA_SQLITE_PATH"] = str(tmp_path / "b.sqlite3")
+        return environment
+
+    monkeypatch.setattr(TOOL, "_runtime_environment", _redirected)
+
+    code, payload, out, _err = _run_capture(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "a.sqlite3"), "--inventory", str(inventory)],
+    )
+
+    assert code == TOOL.EXIT_STORE_BINDING
+    assert payload["category"] == "env_db_path_not_the_verified_store"
+    assert '"status": "ready"' not in out
+
+
+def test_forced_env_acceptance_sha_mismatch_fails_before_ready(capsys, tmp_path, monkeypatch) -> None:
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    original = TOOL._runtime_environment
+
+    def _redirected(*, store, curriculum_case):
+        environment = original(store=store, curriculum_case=curriculum_case)
+        environment["APP_COURSE_DATA_ACCEPTANCE_SHA256"] = "d" * 64
+        return environment
+
+    monkeypatch.setattr(TOOL, "_runtime_environment", _redirected)
+
+    code, payload, out, _err = _run_capture(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "a.sqlite3"), "--inventory", str(inventory)],
+    )
+
+    assert code == TOOL.EXIT_STORE_BINDING
+    assert payload["category"] == "env_acceptance_sha_not_verified"
+    assert '"status": "ready"' not in out
+
+
+def test_env_file_redirected_after_verification_fails_before_ready(capsys, tmp_path, monkeypatch) -> None:
+    """对抗性：写 env 文件时把 DB 路径改到别处 ⇒ 读回文件即 fail closed。"""
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    env_out = tmp_path / "runtime.env"
+    other = (tmp_path / "b.sqlite3").resolve()
+    original_writer = TOOL._write_env_file
+
+    def _tampered_writer(path, environment, *, overwrite):
+        tampered = dict(environment)
+        tampered["APP_COURSE_DATA_SQLITE_PATH"] = str(other)
+        original_writer(path, tampered, overwrite=False)
+
+    monkeypatch.setattr(TOOL, "_write_env_file", _tampered_writer)
+
+    code, payload, out, _err = _run_capture(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "a.sqlite3"), "--inventory", str(inventory),
+         "--env-out", str(env_out)],
+    )
+
+    assert code == TOOL.EXIT_STORE_BINDING
+    assert payload["category"] == "env_file_db_path_not_verified_store"
+    assert '"status": "ready"' not in out
+
+
+# --------------------------------------------------------------------------- #
+# BLOCKER 2：env 文件的原子无覆盖创建
+# --------------------------------------------------------------------------- #
+
+
+def test_env_write_is_atomic_exclusive_create(tmp_path: Path) -> None:
+    """默认路径：独占创建 + 无覆盖发布（`os.link` 无覆盖语义）。"""
+
+    path = tmp_path / "runtime.env"
+    TOOL._write_env_file(path, {"APP_REAL_CASE_A_ENABLED": "1"}, overwrite=False)
+    first = path.read_text(encoding="utf-8")
+    assert "APP_REAL_CASE_A_ENABLED=1" in first
+
+    code, payload = _expect_stage_failure(
+        lambda: TOOL._write_env_file(path, {"APP_REAL_CASE_A_ENABLED": "0"}, overwrite=False)
+    )
+    assert code == TOOL.EXIT_ENV_OUTPUT
+    assert payload["category"] == "env_out_already_exists"
+    assert path.read_text(encoding="utf-8") == first  # ⛔ 未被覆盖
+
+
+def test_competitor_creating_the_env_file_at_publish_boundary_fails_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """发布边界竞争：对手在 `os.link` 之前创建目标 ⇒ fail closed，对手文件不被覆盖。"""
+
+    path = tmp_path / "runtime.env"
+    real_link = TOOL.os.link
+    competitor = b"COMPETITOR=1\n"
+
+    def _racing_link(source, destination, *args, **kwargs):
+        Path(destination).write_bytes(competitor)  # 对手抢先创建
+        return real_link(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(TOOL.os, "link", _racing_link)
+
+    code, payload = _expect_stage_failure(
+        lambda: TOOL._write_env_file(path, {"APP_REAL_CASE_A_ENABLED": "1"}, overwrite=False)
+    )
+
+    assert code == TOOL.EXIT_ENV_OUTPUT
+    assert payload["category"] == "env_out_already_exists"
+    assert path.read_bytes() == competitor  # ⛔ 不覆盖对手写入的内容
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_partial_env_write_failure_leaves_no_misleading_file(tmp_path: Path, monkeypatch) -> None:
+    """中途失败（fsync 抛错）⇒ 目标不存在、⛔ 不留半截 env、⛔ 不留临时文件。"""
+
+    path = tmp_path / "runtime.env"
+
+    def _broken_fsync(fd):  # noqa: ARG001
+        raise OSError("synthetic fsync failure")
+
+    monkeypatch.setattr(TOOL.os, "fsync", _broken_fsync)
+
+    code, payload = _expect_stage_failure(
+        lambda: TOOL._write_env_file(path, {"APP_REAL_CASE_A_ENABLED": "1"}, overwrite=False)
+    )
+
+    assert code == TOOL.EXIT_ENV_OUTPUT
+    assert payload["category"] == "document_write_failed"
+    assert not path.exists()
+    assert list(tmp_path.iterdir()) == []  # 临时文件也被清理
+
+
+def test_missing_parent_directory_fails_without_creating_directories(tmp_path: Path) -> None:
+    missing = tmp_path / "does-not-exist" / "runtime.env"
+
+    code, payload = _expect_stage_failure(
+        lambda: TOOL._write_env_file(missing, {"APP_REAL_CASE_A_ENABLED": "1"}, overwrite=False)
+    )
+
+    assert code == TOOL.EXIT_ENV_OUTPUT
+    assert payload["category"] == "parent_directory_missing"
+    assert not missing.parent.exists()  # ⛔ 不自动建目录
+
+
+# --------------------------------------------------------------------------- #
+# BLOCKER 3：real-capture handoff 证据门
+# --------------------------------------------------------------------------- #
+
+
+def _approved_inventory(capsys, tmp_path: Path, bundles: dict[str, Path]) -> Path:
+    draft = tmp_path / "inventory.draft.json"
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "draft-only.sqlite3"), "--draft-inventory-out", str(draft)],
+    )
+    assert code == TOOL.EXIT_OK, payload
+    return draft
+
+
+def _write_handoff(
+    tmp_path: Path,
+    bundles: dict[str, Path],
+    *,
+    semester: str = SEMESTER,
+    state: str = TOOL.HANDOFF_STATE_APPROVED,
+    synthetic: bool = False,
+    mutate=None,
+    name: str = "handoff.json",
+) -> Path:
+    document = TOOL._build_handoff(
+        semester=semester,
+        bundles=bundles,
+        baseline_before=ROWS_PER_SHARD * len(SHARDS),
+        baseline_after=ROWS_PER_SHARD * len(SHARDS),
+        state=state,
+        synthetic=synthetic,
+        collector_commit="demo-commit",
+        window_started_at=None,
+        window_ended_at=None,
+        diagnostics_path=None,
+        approved_by="demo-operator" if state == TOOL.HANDOFF_STATE_APPROVED else None,
+        approved_at="2026-10-06T00:00:00+00:00" if state == TOOL.HANDOFF_STATE_APPROVED else None,
+    )
+    if mutate is not None:
+        mutate(document)
+    path = tmp_path / name
+    path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_handoff_contains_only_safe_metadata(capsys, tmp_path: Path) -> None:
+    bundles = _write_bundles(tmp_path)
+    draft = tmp_path / "handoff.draft.json"
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "s.sqlite3"), "--draft-inventory-out", str(tmp_path / "i.json"),
+         "--draft-handoff-out", str(draft)],
+    )
+
+    assert code == TOOL.EXIT_OK, payload
+    assert payload["status"] in {"draft_inventory_written", "draft_handoff_written"}
+    assert "draft_handoff" in payload
+    document = json.loads(draft.read_text(encoding="utf-8"))
+    assert set(document) == TOOL._HANDOFF_KEYS  # ⛔ 未知键一律不允许（防夹带凭据/个人数据）
+    assert document["handoff_state"] == TOOL.HANDOFF_STATE_DRAFT
+    assert document["synthetic"] is False
+    assert document["semester"] == SEMESTER
+    assert len(document["shards"]) == len(SHARDS)
+    for shard in document["shards"]:
+        assert set(shard) == TOOL._HANDOFF_SHARD_KEYS
+        raw = (tmp_path / f"{shard['shard_id']}.json").read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == shard["raw_bundle_sha256"]
+
+    text = draft.read_text(encoding="utf-8").lower()
+    for forbidden in ("cookie", "token", "authorization", "student", "学号", "姓名", "成绩"):
+        assert forbidden not in text
+
+
+def test_unapproved_handoff_cannot_authorize_acceptance(capsys, tmp_path: Path) -> None:
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    draft_handoff = _write_handoff(
+        tmp_path, bundles, state=TOOL.HANDOFF_STATE_DRAFT, name="handoff.draft.json"
+    )
+    sqlite = tmp_path / "s.sqlite3"
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(sqlite), "--inventory", str(inventory), "--handoff", str(draft_handoff)],
+    )
+
+    assert code == TOOL.EXIT_HANDOFF
+    assert payload["category"] == "handoff_not_approved"
+    assert not sqlite.exists()  # fail closed 发生在 acceptance 之前
+
+
+def test_synthetic_handoff_can_never_satisfy_the_real_gate(capsys, tmp_path: Path) -> None:
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    synthetic = _write_handoff(
+        tmp_path,
+        bundles,
+        state=TOOL.HANDOFF_STATE_APPROVED,
+        synthetic=True,
+        name="handoff.synthetic.json",
+    )
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "s.sqlite3"), "--inventory", str(inventory),
+         "--handoff", str(synthetic)],
+    )
+
+    assert code == TOOL.EXIT_HANDOFF
+    assert payload["category"] == "handoff_not_approved"
+
+
+def test_handoff_bundle_digest_mismatch_fails_closed(capsys, tmp_path: Path) -> None:
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    handoff = _write_handoff(
+        tmp_path,
+        bundles,
+        mutate=lambda document: document["shards"][0].__setitem__("raw_bundle_sha256", "e" * 64),
+    )
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "s.sqlite3"), "--inventory", str(inventory),
+         "--handoff", str(handoff)],
+    )
+
+    assert code == TOOL.EXIT_HANDOFF
+    assert payload["category"] == "handoff_bundle_digest_mismatch"
+
+
+def test_handoff_semester_mismatch_fails_closed(capsys, tmp_path: Path) -> None:
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    handoff = _write_handoff(tmp_path, bundles, semester="2027-1", name="handoff.other-term.json")
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "s.sqlite3"), "--inventory", str(inventory),
+         "--handoff", str(handoff)],
+    )
+
+    assert code == TOOL.EXIT_HANDOFF
+    assert payload["category"] == "handoff_semester_mismatch"
+
+
+def test_handoff_with_unknown_key_is_rejected(capsys, tmp_path: Path) -> None:
+    """⛔ 未知键 ⇒ 拒绝（防止把凭据 / 原始响应体 / 个人数据夹带进证据文件）。"""
+
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    handoff = _write_handoff(tmp_path, bundles, mutate=lambda document: document.update({"session_cookie": "x"}))
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "s.sqlite3"), "--inventory", str(inventory),
+         "--handoff", str(handoff)],
+    )
+
+    assert code == TOOL.EXIT_HANDOFF
+    assert payload["category"] == "handoff_shape_invalid"
+
+
+def test_approved_handoff_enables_level2_eligibility(capsys, tmp_path: Path) -> None:
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+    handoff = _write_handoff(tmp_path, bundles)
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "s.sqlite3"), "--inventory", str(inventory),
+         "--handoff", str(handoff)],
+    )
+
+    assert code == TOOL.EXIT_OK, payload
+    assert payload["level2_eligible"] is True
+    assert payload["level2_blockers"] == []
+    assert payload["real_source_provenance"]["handoff_state"] == "approved"
+    assert payload["real_source_provenance"]["synthetic"] is False
+    # handoff 的五个 digest 必须与 acceptance 记录的 campus artifact digest 逐条一致
+    recorded = payload["real_source_provenance"]["raw_bundle_sha256_by_shard"]
+    for shard in payload["acceptance"]["shards"]:
+        assert recorded[shard["shard_id"]] == shard["raw_bundle_sha256"]
+    assert set(payload["level2_gate_conditions"]) == set(TOOL.LEVEL2_GATE_CONDITIONS)
+
+
+def test_acceptance_without_handoff_is_ready_but_not_level2(capsys, tmp_path: Path) -> None:
+    bundles = _write_bundles(tmp_path)
+    inventory = _approved_inventory(capsys, tmp_path, bundles)
+
+    code, payload = _run(
+        capsys,
+        [*_base_argv(tmp_path, bundles=bundles), "--campus-store", str(tmp_path / "campus.sqlite3"),
+         "--sqlite", str(tmp_path / "s.sqlite3"), "--inventory", str(inventory)],
+    )
+
+    assert code == TOOL.EXIT_OK, payload
+    assert payload["status"] == "ready"
+    assert payload["level2_eligible"] is False
+    assert "real_source_handoff_missing" in payload["level2_blockers"]
+    assert payload["real_source_provenance"] is None
+
+
+def test_preflight_handoff_is_synthetic_and_cannot_satisfy_the_real_gate(capsys, tmp_path: Path) -> None:
+    code, payload, out, _err = _run_capture(capsys, ["--preflight", "--keep-dir", "--quiet"])
+
+    assert code == TOOL.EXIT_OK, payload
+    assert payload["level"] == "LEVEL1-synthetic-preflight"
+    assert payload["level2_eligible"] is False
+    assert "synthetic_preflight_handoff" in payload["level2_blockers"]
+
+    directory = Path(payload["preflight_dir"])
+    handoff_path = directory / "capture-handoff.synthetic.json"
+    try:
+        document = json.loads(handoff_path.read_text(encoding="utf-8"))
+        assert document["handoff_state"] == TOOL.HANDOFF_STATE_SYNTHETIC
+        assert document["synthetic"] is True
+
+        # ⛔ 把 synthetic handoff 拿去当"已批准的真实 handoff"必须被拒。
+        code, failure = _run(
+            capsys,
+            [*_base_argv(tmp_path, bundles=_write_bundles(tmp_path)),
+             "--campus-store", str(tmp_path / "campus.sqlite3"),
+             "--sqlite", str(tmp_path / "s.sqlite3"),
+             "--inventory", str(_approved_inventory(capsys, tmp_path, _write_bundles(tmp_path))),
+             "--handoff", str(handoff_path)],
+        )
+        assert code == TOOL.EXIT_HANDOFF
+        assert failure["category"] in {"handoff_not_approved", "handoff_is_synthetic", "handoff_semester_mismatch"}
+    finally:
+        import shutil
+
+        shutil.rmtree(directory, ignore_errors=True)

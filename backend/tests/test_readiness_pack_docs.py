@@ -36,6 +36,7 @@ REQUIRED_STEP_IDS = (
     "validate",
     "campus_acceptance",
     "draft_inventory",
+    "handoff",
     "accept",
     "import",
     "provenance_verification",
@@ -43,6 +44,7 @@ REQUIRED_STEP_IDS = (
     "start",
     "probe",
     "frontend",
+    "evidence",
 )
 REQUIRED_STEP_KEYS = {
     "id",
@@ -96,8 +98,17 @@ def test_execution_map_marks_which_steps_need_a_human() -> None:
     chain = _json_block(EXECUTION_MAP)
     by_id = {step["id"]: step for step in chain["steps"]}
 
-    # 采集 / 批准 inventory / 配置 env / 启动 / 探针 / 前端需要人工；其余全自动。
-    for step_id in ("capture", "draft_inventory", "configure", "start", "probe", "frontend"):
+    # 采集 / 批准 inventory / 批准 handoff / 配置 env / 启动 / 探针 / 前端 / 证据需要人工；其余全自动。
+    for step_id in (
+        "capture",
+        "draft_inventory",
+        "handoff",
+        "configure",
+        "start",
+        "probe",
+        "frontend",
+        "evidence",
+    ):
         assert by_id[step_id]["user_interaction"] == "required"
     for step_id in ("validate", "campus_acceptance", "accept", "import", "provenance_verification"):
         assert by_id[step_id]["user_interaction"] == "none", step_id
@@ -168,9 +179,56 @@ def test_evidence_protocol_forbids_personal_data_and_defines_both_levels() -> No
 
     assert "LEVEL 2" in protocol and "LEVEL 3" in protocol
     assert "真实学生个人数据" in protocol and "不得" in protocol
-    assert "L2-10" in protocol and "L3-10" in protocol
-    # 证据协议必须被验收文档引用
+    assert "L2-0" in protocol and "L2-10" in protocol and "L3-10" in protocol
+    # ⛔ 证据协议必须被验收文档引用
     assert EVIDENCE_PROTOCOL.name in ACCEPTANCE.read_text(encoding="utf-8")
+
+
+def test_evidence_protocol_has_the_real_source_provenance_gate() -> None:
+    """LEVEL2 必须含 real-source 硬门（六条），且 LEVEL3 继承。"""
+
+    protocol = EVIDENCE_PROTOCOL.read_text(encoding="utf-8")
+
+    assert "REAL-SOURCE-PROVENANCE" in protocol
+    assert "level2_eligible" in protocol
+    for condition in (
+        "approved",
+        "handoff.semester == acceptance.semester",
+        "已批准的五个 shard",
+        "五个 raw bundle SHA-256",
+        "non-synthetic",
+        "没有跳过 North",
+    ):
+        assert condition in protocol, condition
+
+
+def test_runbook_defines_sharded_before_first_use() -> None:
+    """`sharded` 必须在首次出现前被定义，且命令与当前代码一致。"""
+
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+
+    definition_index = runbook.index("sharded（五校区分片采集）")
+    first_use = runbook.index("collectSharded")
+    assert definition_index < first_use, "sharded 必须先定义再使用"
+
+    # 命令必须与当前采集器一致
+    assert 'window.XuehangSysuCollector.collectSharded({ semester: "2026-1", maxPages: 20 })' in runbook
+    assert 'toShardJson(sharded, "东校园")' in runbook
+    assert "toDiagnosticsJson(sharded)" in runbook
+    assert "五个互相独立的 raw Capture Bundle" in runbook
+    # ⛔ 明确禁止手工合并 / 改 label
+    assert "不要**手工合并" in runbook or "⛔ **不要**手工合并" in runbook
+    assert "改写 source label" in runbook
+
+
+def test_runbook_documents_the_handoff_and_env_overwrite_semantics() -> None:
+    runbook = RUNBOOK.read_text(encoding="utf-8")
+
+    assert "--draft-handoff-out" in runbook and "--handoff" in runbook
+    assert "handoff_state" in runbook and "approved" in runbook
+    assert "--overwrite-env" in runbook and "独占创建" in runbook
+    assert "level2_eligible" in runbook
+    assert "store_binding" in runbook
 
 
 def test_decision_notes_cover_both_hardening_items_and_north_stop_conditions() -> None:

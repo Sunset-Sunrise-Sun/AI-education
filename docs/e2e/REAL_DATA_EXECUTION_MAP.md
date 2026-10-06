@@ -32,8 +32,14 @@
       "tool": "tools/sysu_course_offering_collector.js",
       "command": "await window.XuehangSysuCollector.collectSharded({ semester: \"<semester>\", maxPages: 20 })",
       "output_command": "window.XuehangSysuCollector.toShardJson(sharded, \"东校园\")  ×5  +  toDiagnosticsJson(sharded)",
-      "inputs": ["用户自己的 SYSU 已登录浏览器会话（含 MFA）", "已批准的五校区 openingSchoolNumber 表（脚本内置）"],
-      "outputs": ["5 个各校区的 raw Capture Bundle JSON", "1 个 diagnostics JSON（baseline_before/after + 各 shard total）"],
+      "inputs": [
+        "用户自己的 SYSU 已登录浏览器会话（含 MFA）",
+        "已批准的五校区 openingSchoolNumber 表（脚本内置）"
+      ],
+      "outputs": [
+        "5 个各校区的 raw Capture Bundle JSON",
+        "1 个 diagnostics JSON（baseline_before/after + 各 shard total）"
+      ],
       "invariant": "请求顺序 baseline → 五个 shard（串行，已批准顺序）→ baseline；diagnostics 不进入任何 raw bundle",
       "failure_mode": "任一页非 200 / 结构不符 ⇒ 整个 run fail closed（⛔ 不重试风暴、⛔ 不降级）；North 深分页历史问题见 North 诊断计划",
       "user_interaction": "required"
@@ -43,8 +49,13 @@
       "actor": "tool",
       "tool": "tools/validate_course_data_artifact.py",
       "command": "python tools/validate_course_data_artifact.py --bundle <shard.json> --expected-semester <semester> --scope-id <openingSchoolNumber> --source capture://sysu/<semester>/campus/<openingSchoolNumber> --sqlite <campus-store>",
-      "inputs": ["一个校区的 raw bundle", "已批准校区号（决定 campus scope 与 canonical source label）"],
-      "outputs": ["聚合 JSON：artifact_sha256 / loaded_count / reported_total / offering_count / snapshot.is_complete / campus_acceptance_sha256"],
+      "inputs": [
+        "一个校区的 raw bundle",
+        "已批准校区号（决定 campus scope 与 canonical source label）"
+      ],
+      "outputs": [
+        "聚合 JSON：artifact_sha256 / loaded_count / reported_total / offering_count / snapshot.is_complete / campus_acceptance_sha256"
+      ],
       "invariant": "exact-byte digest 与解析吃同一批 bytes；`complete` 只在**该校区 scope** 内成立（campus complete ≠ full semester complete）",
       "failure_mode": "exit 2 参数 / 3 artifact 读取 / 4 scope 或 source label / 5 normalization / 6 incomplete / 7 sqlite / 8 empty —— 全部 fail closed",
       "user_interaction": "none",
@@ -55,8 +66,12 @@
       "actor": "tool",
       "tool": "tools/validate_course_data_artifact.py",
       "command": "（同上，`--sqlite <campus-store>` 触发导入）",
-      "inputs": ["五份 raw bundle（逐校区串行）"],
-      "outputs": ["campus store 中五条 campus acceptance（identity = 该 artifact 的 raw bytes digest，scope = campus/<number>）"],
+      "inputs": [
+        "五份 raw bundle（逐校区串行）"
+      ],
+      "outputs": [
+        "campus store 中五条 campus acceptance（identity = 该 artifact 的 raw bytes digest，scope = campus/<number>）"
+      ],
       "invariant": "每个校区一条独立 acceptance；同一 artifact 重复导入幂等（unchanged）；同 scope 不同字节产生**另一条**记录（后续由 inventory 摘要强制绑定）",
       "failure_mode": "任一校区失败 ⇒ 编排 CLI 立即停止（exit 4），⛔ 不继续 acceptance",
       "user_interaction": "none"
@@ -66,20 +81,49 @@
       "actor": "tool + user",
       "tool": "tools/prepare_real_case_a_runtime.py",
       "command": "python tools/prepare_real_case_a_runtime.py ... --draft-inventory-out <inventory.draft.json>",
-      "inputs": ["五份 raw bundle", "--baseline-before/--baseline-after（来自 diagnostics）"],
-      "outputs": ["canonical inventory **草稿**（semester + 五条 shard_id/openingSchoolNumber/raw_bundle_sha256）"],
+      "inputs": [
+        "五份 raw bundle",
+        "--baseline-before/--baseline-after（来自 diagnostics）"
+      ],
+      "outputs": [
+        "canonical inventory **草稿**（semester + 五条 shard_id/openingSchoolNumber/raw_bundle_sha256）"
+      ],
       "invariant": "草稿只是文档 identity；⛔ 工具无法证明任何 inventory 被批准（`inventory_sha256_semantics = draft_document_identity_not_an_approval`）",
       "failure_mode": "任一 bundle 不可读 / 结构不符 ⇒ exit 5（底层 category 原样保留）",
       "user_interaction": "required",
       "user_interaction_note": "人工**批准** inventory 草稿：out-of-band 审查后作为 `--inventory` 交回"
     },
     {
+      "id": "handoff",
+      "actor": "tool + user",
+      "tool": "tools/prepare_real_case_a_runtime.py",
+      "command": "python tools/prepare_real_case_a_runtime.py ... --draft-handoff-out <handoff.draft.json>",
+      "inputs": [
+        "五份 raw bundle（只读其 SHA-256）",
+        "diagnostics（可选：--capture-window-start/--capture-window-end、--collector-commit）"
+      ],
+      "outputs": [
+        "real-capture handoff 草稿（只有安全元数据：semester / 五校区号 / 五个 raw bundle SHA-256 / baseline / 采集窗口 / collector commit / 本地 session id / authorized_user_session）"
+      ],
+      "invariant": "handoff 只含 digest / 计数 / 枚举 / 时间；⛔ 不含凭据 / 会话标识 / auth header / 原始响应体 / 学生个人数据；未知键一律拒绝",
+      "failure_mode": "handoff 未被批准（draft/synthetic）、semester 不符、shard 集合不是已批准五校区、digest 与磁盘或 acceptance 不符、出现未知键 ⇒ fail closed（exit 9）",
+      "user_interaction": "required",
+      "user_interaction_note": "人工批准：把 handoff_state 改成 approved 并填 approved_by/approved_at（唯一的必要人工编辑；SHA 由工具计算）"
+    },
+    {
       "id": "accept",
       "actor": "tool",
       "tool": "tools/accept_full_semester_course_data.py",
       "command": "python tools/accept_full_semester_course_data.py --semester <semester> --baseline-before <N> --baseline-after <N> --east <e> --south <s> --shenzhen <sz> --zhuhai <z> --north <n> --inventory <approved.json> --campus-store <campus-store> [--sqlite <new.sqlite3>] [--output-manifest <manifest.json>]",
-      "inputs": ["五份 raw bundle", "**已批准** inventory", "campus store（五条 campus acceptance）", "baseline before/after（诊断证据，⛔ 不是快照）"],
-      "outputs": ["full-semester acceptance（manifest SHA-256 = acceptance identity）+ 可选 canonical manifest 文件"],
+      "inputs": [
+        "五份 raw bundle",
+        "**已批准** inventory",
+        "campus store（五条 campus acceptance）",
+        "baseline before/after（诊断证据，⛔ 不是快照）"
+      ],
+      "outputs": [
+        "full-semester acceptance（manifest SHA-256 = acceptance identity）+ 可选 canonical manifest 文件"
+      ],
       "invariant": "exact five-shard；Σ shard reported_total == baseline 且 baseline_before == baseline_after；每 shard 与 inventory 摘要、campus 记录逐项一致；merged offering set digest 可重算",
       "failure_mode": "exit 4 baseline / 5 shard set / 6 completeness / 8 manifest / 9 inventory / 10 campus binding —— 全部 fail closed；⛔ 不跳过 North、⛔ 不把四校区当 full_semester",
       "user_interaction": "none"
@@ -89,8 +133,12 @@
       "actor": "tool",
       "tool": "tools/accept_full_semester_course_data.py",
       "command": "（同上，`--sqlite <new.sqlite3>`）",
-      "inputs": ["acceptance 成功后的同一批 rows"],
-      "outputs": ["新的本地 Course Data SQLite：course_data_import + course_data_acceptance（canonical manifest）+ membership + rows"],
+      "inputs": [
+        "acceptance 成功后的同一批 rows"
+      ],
+      "outputs": [
+        "新的本地 Course Data SQLite：course_data_import + course_data_acceptance（canonical manifest）+ membership + rows"
+      ],
       "invariant": "acceptance 与 rows 在**同一事务**落库；read-back 必须读回同一条 acceptance（same manifest SHA）；immutable acceptance：同 identity 幂等、不同内容 fail closed",
       "failure_mode": "exit 7 sqlite；⛔ acceptance 失败时**不**导入（编排 CLI 断言库未产生）",
       "user_interaction": "none"
@@ -100,8 +148,14 @@
       "actor": "tool",
       "tool": "tools/prepare_real_case_a_runtime.py",
       "command": "（编排 CLI 在导入后自动执行 provider 级 read-back）",
-      "inputs": ["新 SQLite", "manifest SHA-256", "semester"],
-      "outputs": ["provider_offering_count / readback_member_count / readback_offering_set_sha256 / provider_acceptance_sha256"],
+      "inputs": [
+        "新 SQLite",
+        "manifest SHA-256",
+        "semester"
+      ],
+      "outputs": [
+        "provider_offering_count / readback_member_count / readback_offering_set_sha256 / provider_acceptance_sha256"
+      ],
       "invariant": "`StoreBackedCourseDataProvider.get_course_offerings()` 返回的行数 == merged_offering_count == membership 行数；trust chain（configured SHA → stored canonical manifest → 重算 SHA → 语义字段 → 集合 digest → 逐行 digest）全部通过",
       "failure_mode": "exit 6 provider_readback（领域失败）；⛔ 其它异常原样上抛（程序缺陷不伪装成「未就绪」）",
       "user_interaction": "none"
@@ -111,8 +165,15 @@
       "actor": "tool + user",
       "tool": "tools/prepare_real_case_a_runtime.py",
       "command": "python tools/prepare_real_case_a_runtime.py ... --env-out <runtime.env>",
-      "inputs": ["SQLite 路径（绝对路径）", "semester", "manifest SHA-256", "（可选）已批准的 curriculum case 路径"],
-      "outputs": ["APP_REAL_CASE_A_ENABLED=1 / APP_COURSE_DATA_SQLITE_PATH / APP_COURSE_DATA_SEMESTER / APP_COURSE_DATA_ACCEPTANCE_SHA256（+ 可选 APP_CASE_A_CURRICULUM_CASE_PATH）"],
+      "inputs": [
+        "SQLite 路径（绝对路径）",
+        "semester",
+        "manifest SHA-256",
+        "（可选）已批准的 curriculum case 路径"
+      ],
+      "outputs": [
+        "APP_REAL_CASE_A_ENABLED=1 / APP_COURSE_DATA_SQLITE_PATH / APP_COURSE_DATA_SEMESTER / APP_COURSE_DATA_ACCEPTANCE_SHA256（+ 可选 APP_CASE_A_CURRICULUM_CASE_PATH）"
+      ],
       "invariant": "`APP_COURSE_DATA_ACCEPTANCE_SHA256` **必须**是 full-semester manifest/acceptance digest（⛔ 不是 campus artifact digest）",
       "failure_mode": "env 文件已存在且未 `--force` ⇒ exit 7（⛔ 不静默覆盖）",
       "user_interaction": "required",
@@ -123,8 +184,12 @@
       "actor": "user",
       "tool": "backend/app/main.py",
       "command": "cd backend && python -m uvicorn app.main:app --port 8000",
-      "inputs": ["上面五个环境变量（含已批准的 curriculum case）"],
-      "outputs": ["运行中的 FastAPI（每次请求重新装配 runtime，⛔ 不缓存 orchestrator）"],
+      "inputs": [
+        "上面五个环境变量（含已批准的 curriculum case）"
+      ],
+      "outputs": [
+        "运行中的 FastAPI（每次请求重新装配 runtime，⛔ 不缓存 orchestrator）"
+      ],
       "invariant": "五个变量齐全且一致 ⇒ `ready`；任一缺失 / 不一致 ⇒ orchestrator=None ⇒ 503",
       "failure_mode": "未装配或 acceptance 失效 ⇒ `POST /api/v1/plan` 503 `real_pipeline_not_configured`；未预期内部异常 ⇒ 500",
       "user_interaction": "required",
@@ -135,8 +200,13 @@
       "actor": "user",
       "tool": "backend/app/api/plan.py",
       "command": "curl -sS -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8000/api/v1/plan -H 'Content-Type: application/json' -d '{\"semester\":\"<semester>\",\"current_schedule\":[],\"preference\":{}}'",
-      "inputs": ["运行中的 backend", "semester 必须等于 acceptance 绑定的学期"],
-      "outputs": ["HTTP 200 + PlanResult（真实数据）或 503 real_pipeline_not_configured"],
+      "inputs": [
+        "运行中的 backend",
+        "semester 必须等于 acceptance 绑定的学期"
+      ],
+      "outputs": [
+        "HTTP 200 + PlanResult（真实数据）或 503 real_pipeline_not_configured"
+      ],
       "invariant": "真实数据 + 已装配 ⇒ 200；`selected_classes` 只能来自被接受的行；⛔ 不回退 Mock、⛔ 不返回空列表代替错误",
       "failure_mode": "503 = readiness/领域失败；500 = 未预期内部错误；422 = 请求体不符合公共契约",
       "user_interaction": "required",
@@ -147,12 +217,35 @@
       "actor": "user",
       "tool": "frontend/src/api/plan.ts",
       "command": "cd frontend && VITE_PLAN_API_ENABLED=true npm run dev  （代理目标默认 http://127.0.0.1:8000）",
-      "inputs": ["同一份 backend", "`VITE_PLAN_API_ENABLED=true`"],
-      "outputs": ["前端 Real 结果区（provenance=Real；基础展示数据仍标 Mock）"],
+      "inputs": [
+        "同一份 backend",
+        "`VITE_PLAN_API_ENABLED=true`"
+      ],
+      "outputs": [
+        "前端 Real 结果区（provenance=Real；基础展示数据仍标 Mock）"
+      ],
       "invariant": "Real 请求只走 `/api/v1/plan`；⛔ 失败不回退 Mock；⛔ 不重算冲突 / 可执行性",
       "failure_mode": "503 ⇒ 明确「尚未完成装配」错误态；500 ⇒ server 态；⛔ 二者都不显示 Mock 结果",
       "user_interaction": "required",
       "user_interaction_note": "浏览器验证"
+    },
+    {
+      "id": "evidence",
+      "actor": "user",
+      "tool": "docs/e2e/REAL_E2E_EVIDENCE_PROTOCOL.md",
+      "command": "按证据协议收集 LEVEL2 / LEVEL3 证据（digest / 计数 / 状态码 / 枚举 / 布尔）",
+      "inputs": [
+        "编排 CLI 的 JSON 输出（acceptance + provider read-back + real_source_provenance + level2_eligible）",
+        "后端探针状态码",
+        "前端截图/核对清单"
+      ],
+      "outputs": [
+        "LEVEL2 证据包（后端专有）",
+        "LEVEL3 证据包（+ 前端链路）"
+      ],
+      "invariant": "LEVEL2 必须 `level2_eligible == true`（= approved real-capture handoff 的五个 digest 与 campus acceptance 输入逐条一致）；⛔ 证据不含个人数据；⛔ 跳级不允许",
+      "failure_mode": "无 approved handoff / handoff 与 acceptance 不匹配 ⇒ `level2_eligible = false` ⇒ LEVEL2 不能通过（LEVEL3 继承）",
+      "user_interaction": "required"
     }
   ]
 }

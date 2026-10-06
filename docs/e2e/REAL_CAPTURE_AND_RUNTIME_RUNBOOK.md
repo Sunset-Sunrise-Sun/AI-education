@@ -14,13 +14,13 @@
    - 打开开发者工具 Console
 4. 加载并运行已批准的采集脚本（见 §1.1）
 5. 保存采集结果：五个 shard 的 raw bundle + 一份 diagnostics（见 §1.2）
-6. 把五个文件交回项目工作流（见 §1.3）
+6. 把六个文件交回项目工作流（见 §1.3）
 ```
 
 ⛔ 你**不需要**（也不应该）做这些 —— 它们全部由仓库工具自动完成：
 
 ```text
-⛔ 手工编辑 JSON
+⛔ 手工编辑 JSON（唯一例外：在 handoff 草稿上写"批准"标记，见 §1.3）
 ⛔ 手工计算 SHA-256
 ⛔ 手工合并文件
 ⛔ 手工改写 source label
@@ -29,12 +29,31 @@
 ⛔ 自行判断"是否 complete / 完整性"
 ```
 
-### 1.1 运行采集器
+### 1.0 术语：**sharded（五校区分片采集）到底指什么**
+
+本文件里的 **sharded** 只有**一个**含义（⛔ 不要自行理解成别的）：
+
+```text
+调用**同一个**采集器的 collectSharded() 一次，
+它在**一次 run 内串行**完成：
+    baseline_before（不带校区的全量第 1 页）
+      → 五个校区分片各跑一次分页采集（顺序 = 已批准顺序）
+      → baseline_after（再取一次全量第 1 页）
+产出 = **五个互相独立的 raw Capture Bundle**（一个校区一份，⛔ 不是一份合并文件）
+     + **一份外层 diagnostics**（baseline 与各 shard 的 total）
+```
+
+⛔ sharded **不是**：
+- ⛔ 不是"把五份文件合并成一个 JSON"（合并由后端 acceptance 负责，它自己算 digest 与集合摘要）；
+- ⛔ 不是"手工拼 JSON / 手工改 source label"；
+- ⛔ 不是"多开几个标签页各跑一次"（一次 run 只有一个全局 pacing controller）。
+
+### 1.1 运行采集器（`collectSharded`）
 
 在 Console 里加载 `tools/sysu_course_offering_collector.js`（粘贴内容或通过已批准方式注入），然后：
 
 ```javascript
-await window.XuehangSysuCollector.collectSharded({ semester: "2026-1", maxPages: 20 })
+sharded = await window.XuehangSysuCollector.collectSharded({ semester: "2026-1", maxPages: 20 })
 ```
 
 说明：
@@ -45,10 +64,10 @@ await window.XuehangSysuCollector.collectSharded({ semester: "2026-1", maxPages:
 - 脚本**不会**读取 / 保存 / 打印 / 导出任何浏览器认证状态；
 - 失败即整个 run fail closed（⛔ 不要反复重试；把错误信息交给项目侧分析）。
 
-### 1.2 保存结果（五个 shard + 一份 diagnostics）
+### 1.2 保存结果（**五个独立** raw bundle + 一份 diagnostics）
 
 ```javascript
-// 每个校区各存一份（校区名必须是下列五个之一）
+// 每个校区各存一份（校区名必须是下列五个之一；顺序/命名都不影响工具，只影响你自己的核对）
 window.XuehangSysuCollector.toShardJson(sharded, "东校园")     // → 存为 east-campus.json
 window.XuehangSysuCollector.toShardJson(sharded, "南校园")     // → 存为 south-campus.json
 window.XuehangSysuCollector.toShardJson(sharded, "深圳校区")   // → 存为 shenzhen-campus.json
@@ -59,26 +78,45 @@ window.XuehangSysuCollector.toShardJson(sharded, "北校园")     // → 存为 
 window.XuehangSysuCollector.toDiagnosticsJson(sharded)        // → 存为 diagnostics.json
 ```
 
+已批准校区映射（权威来源是 `APPROVED_FULL_SEMESTER_SHARDS`；本表只是可读副本）：
+
+| 采集器里的校区名 | 建议文件名 | shard slug | `openingSchoolNumber` |
+| --- | --- | --- | --- |
+| 东校园 | `east-campus.json` | `east-campus` | `5063559` |
+| 南校园 | `south-campus.json` | `south-campus` | `5062201` |
+| 深圳校区 | `shenzhen-campus.json` | `shenzhen-campus` | `333291143` |
+| 珠海校区 | `zhuhai-campus.json` | `zhuhai-campus` | `5062203` |
+| 北校园 | `north-campus.json` | `north-campus` | `5062202` |
+
+⛔ **不要**手工合并这五份文件、⛔ **不要**手工编辑里面的 `source` / `semester` / 行内容，
+⛔ **不要**重命名成"看起来更规范"的 shard slug —— 后端按**字节**与已批准 inventory 对账，
+文件名不参与判定。
+
 ⚠️ 保存建议（⛔ 不是硬性要求，工具不依赖文件名）：
+把六个文件放在仓库**之外**的受控本地目录（真实 artifact ⛔ 不入 Git）。
 
-```text
-把六个文件放在仓库**之外**的受控本地目录（真实 artifact ⛔ 不入 Git）
-文件名任意，但请保持一致，便于你自己核对
-```
-
-### 1.3 交回项目工作流
+### 1.3 交回项目工作流（含唯一的人工编辑：批准）
 
 把六个文件的**路径**交给下一步（§2）。工具会自己：
 
 ```text
-读取五个 bundle → 逐校区 exact-byte 校验 → campus acceptance → inventory 草稿
-（草稿需要你/Reviewer 明确批准）→ full-semester acceptance → 新 SQLite → provider read-back → env 值
+读取五个 bundle → 逐校区 exact-byte 校验 → campus acceptance
+→ inventory 草稿 + real-capture handoff 草稿（只含 digest / 计数 / 时间等安全元数据）
+```
+
+**唯一需要你人工编辑**的动作（批准，属于决策记录，不是数据处理）：
+
+```text
+在 handoff 草稿里把 handoff_state 从 "draft" 改成 "approved"，
+并填 approved_by / approved_at（可选 approval_note）。
+⛔ 不要改任何 SHA / shard / semester —— 那些由工具计算；改了就会 fail closed。
+inventory 草稿同样需要人工批准（out-of-band 审查后原样交回）。
 ```
 
 ## 2. 采集之后的一条命令（对齐 R2/R4）
 
 ```powershell
-# 第一步：逐校区校验 + campus acceptance + inventory 草稿（不产出 acceptance）
+# 第一步：逐校区校验 + campus acceptance + inventory 草稿 + handoff 草稿（不产出 acceptance）
 python tools/prepare_real_case_a_runtime.py `
   --semester 2026-1 `
   --baseline-before <diagnostics.baseline_before> `
@@ -88,15 +126,20 @@ python tools/prepare_real_case_a_runtime.py `
   --north <north-campus.json> `
   --campus-store <本地目录>/campus-acceptances.sqlite3 `
   --sqlite       <本地目录>/course-data.sqlite3 `
-  --draft-inventory-out <本地目录>/inventory.draft.json
+  --draft-inventory-out <本地目录>/inventory.draft.json `
+  --draft-handoff-out   <本地目录>/handoff.draft.json `
+  --collector-commit <采集器 commit（可选）>
 ```
 
 ```text
-→ 人工/Reviewer 批准 inventory.draft.json（out-of-band；工具无法证明任何批准）
+→ 人工批准两份草稿（out-of-band）：
+   · inventory.draft.json：审查后原样交回
+   · handoff.draft.json：把 handoff_state 改成 approved，填 approved_by / approved_at
+   ⛔ 不要改任何 SHA / shard / semester（改了会 fail closed）
 ```
 
 ```powershell
-# 第二步：acceptance + 导入 + provider read-back + env 输出
+# 第二步：acceptance + 导入 + provider read-back + env 输出（bind 到刚验证的 store）
 python tools/prepare_real_case_a_runtime.py `
   --semester 2026-1 `
   --baseline-before <N> --baseline-after <N> `
@@ -105,13 +148,25 @@ python tools/prepare_real_case_a_runtime.py `
   --campus-store <本地目录>/campus-acceptances.sqlite3 `
   --sqlite       <本地目录>/course-data.sqlite3 `
   --inventory <本地目录>/inventory.draft.json `
+  --handoff   <本地目录>/handoff.draft.json `
   --output-manifest <本地目录>/manifest.json `
   --env-out <本地目录>/runtime.env `
   --curriculum-case <已批准的 case-a.json>
 ```
 
-期望最后一行是 `{"status": "ready", ...}`，其中 `provider_read_back.provider_offering_count`
-等于 `acceptance.merged_offering_count`。
+期望最后一行 `{"status": "ready", ...}`，并且：
+
+```text
+provider_read_back.provider_offering_count == acceptance.merged_offering_count
+store_binding.resolved_verified_store_path == runtime_environment.APP_COURSE_DATA_SQLITE_PATH
+level2_eligible == true            （仅当 --handoff 是 approved 且五个 digest 与 acceptance 逐条一致）
+```
+
+⚠️ env 文件默认**独占创建**：已存在 ⇒ fail closed（exit 7）。
+确需替换时用显式 `--overwrite-env`（原子 replace）；⛔ 默认不开启。
+⚠️ 父目录必须已存在（⛔ 本工具不自动建目录）。
+⚠️ `--sqlite` 已存在 ⇒ 默认拒绝（exit 3）；确需复用加 `--allow-existing-store`
+（immutable acceptance 规则照旧：同 identity 幂等、不同内容 fail closed）。
 
 ## 3. Runtime Startup Pack（R7）
 

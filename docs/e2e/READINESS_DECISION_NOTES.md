@@ -23,7 +23,7 @@
 | 当前风险 | Mock 通道响应带 `X-Data-Source: mock`（**唯一**标记），真实响应**不带**该头。这不产生"Mock 冒充 Real"的风险（标记只增不减），但**无法**用一个响应头**正向**证明"这是 Real 响应"。 |
 | 比赛 / 本地 Demo 影响 | 无：前端已按 provenance 行 + 错误态区分来源（Gate E 21 条断言锁定）。 |
 | 生产影响 | 低–中：审计方无法仅凭响应头判定数据来源；需要额外证据（本项目采用 acceptance digest + evidence protocol）。 |
-| 是否阻塞 Real E2E 证据 | **否**，只要证据协议**不**依赖该头：LEVEL 2/3 用 `manifest_sha256` + provider read-back + `selected_classes ⊆ accepted identities` + "⛔ 不带 mock 头"作为**否定式**判据。 |
+| 是否阻塞 Real E2E 证据 | **否**，只要证据协议**不**依赖该头：LEVEL 2/3 用 `manifest_sha256` + provider read-back + `selected_classes ⊆ accepted identities` + "⛔ 不带 mock 头"作为**否定式**判据，并且自 PR #48 起还要通过 **real-source handoff 硬门**（approved handoff 的五个 raw bundle digest 必须与 campus acceptance 输入逐条一致）。 |
 | 建议时机 | 属**接口面变更**（公共响应头），需 Architecture Decision；建议与"真实部署鉴权/可观测性"一并裁定。 |
 | 若裁定要做 | 只加**正向**标记（如 `X-Data-Source: real`）且**不改变** `/api/v1/plan` 请求契约与 `PlanResult` 结构；需同步更新 `docs/interfaces/*` 与前端（前端已明确不读该头）。 |
 

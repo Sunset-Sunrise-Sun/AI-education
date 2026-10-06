@@ -1771,6 +1771,12 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
 - **编排 CLI**：`tools/prepare_real_case_a_runtime.py`（五 bundle → campus acceptance →
   inventory 草稿 → full-semester acceptance → SQLite → provider read-back → env 值；
   ⛔ 不弱化规则、⛔ 不重复 parser、⛔ 不推断 provenance、⛔ 不覆盖已有 DB（除 `--allow-existing-store`））；
+  **PR #48 修复**：① env 的 DB 路径与 acceptance SHA 只能由**刚验证过的 store 对象**派生
+  （无第二路径参数；ready 前再次断言 `env_db_path == verified_store_path` 且读回文件复核）；
+  ② env 文件改为**原子独占创建**（默认不覆盖、无 TOCTOU、失败不留半截文件、
+  父目录不存在直接失败；`--overwrite-env` 为显式操作员动作）；
+  ③ 新增 **real-capture handoff** 证据门（只含安全元数据；approved + 五 digest 与
+  campus acceptance 输入逐条一致 ⇒ 才输出 `level2_eligible: true`）；
 - **synthetic preflight（LEVEL 1，⛔ 不是 Real）**：`python tools/prepare_real_case_a_runtime.py --preflight`；
 - **文档纠正**：`docs/e2e/REAL_CASE_A_ACCEPTANCE.md` 的验收条件已从被取代的
   `SnapshotCourseDataProvider` / 单 bundle 快照模型更新为当前 `StoreBackedCourseDataProvider`
