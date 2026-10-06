@@ -21,3 +21,21 @@ BLOCK B4：构造后删除 acceptance record，旧 Provider 仍返回 rows。
 
 环境使用 `/workspace/.venvs/ai-education`，额外 synthetic document 依赖 python-docx / openpyxl；
 前端使用 workspace npm cache。安装和启动说明已保存为云环境 draft，未发布新环境。
+
+## Blocker Closure / immutable identity audit（更新）
+
+审查最新 stack：acceptance fix 831c0e3、Provider fix cb585c1、runtime 3e0a7c3、E2E d097f51。
+详细新结论：`reviewer/full_semester/CLOSURE_REVIEW.md`（优先于上方旧 HEAD 结论）。
+
+- B1 exact bytes PASS；B2 campus inventory/record binding PASS。
+- B3 direct SQL 内容篡改会拒绝，但 same SHA + same count/identities + changed payload 的
+  supported reimport 仍能刷新 expected digest/membership：IMMUTABLE IDENTITY **BLOCK**。
+- B4 sequential deletion next-read PASS；一致读事务未显式 BEGIN，另有 concurrent snapshot BLOCK。
+- 最新 focused 241 passed；targeted 483 passed / 2 skipped；独立 closure probes 42 passed，
+  其中 3 个 passing diagnostics 复现剩余 BLOCK，不代表 readiness PASS。
+- reviewer-only immutable strict gates：3 failed（预期旧版本失败，无 xfail mask，不进默认 suite）。
+  包括 reject changed-content reimport、禁止 semantic UPDATE、stored canonical manifest hash binding。
+- 新 HEAD 搜索中：Provider 远端仍 cb585c1；用户要求 immutable identity PASS 前不继续新版本
+  runtime/E2E 审查。此前旧 HEAD 证据仅供诊断。
+- GitHub API Forbidden，未留评论；exact BLOCK comment text 已写入 CLOSURE_REVIEW.md。
+- 没有 merge、production/Schema/protocol 改动，Formal Real E2E LEVEL0。

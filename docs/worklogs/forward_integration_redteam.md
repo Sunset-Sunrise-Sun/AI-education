@@ -22,3 +22,19 @@ GitHub Git read 正常；gh PR API 返回 Forbidden，无评论权限可用，�
 独立 archive 下 102 Provider/Store existing tests passed；新增 5 probes 验证 stale 隔离
 并复现同数量 identity substitution、valid payload mutation、假 full 声明和 cached record deletion。
 REVIEW.md 追加 B3/B4 finding、复现与最小修复方向。总 probes 10 passed。
+
+## Blocker Closure + Runtime Readiness audit
+
+发现新 Builder stack 831c0e3 / cb585c1 / 3e0a7c3 / d097f51。隔离 archive 读取，
+focused 241 passed，targeted 483 passed / 2 skipped；没有重跑 full backend/frontend Merge Gate。
+独立 42 closure probes验证 exact-byte/campus binding、continuous next-read refusal、
+真实 runtime 503 与 Planner exact payload/pass-through；3 diagnostics 复现 same-SHA rebind、
+actual API 200 after rebind、SELECT 没有 consistent transaction。
+报告 CLOSURE_REVIEW.md 给出 exact manual PR BLOCK comments；gh GraphQL Forbidden，不请求凭据。
+
+用户进一步明确 immutable identity-first 顺序：新增 reviewer-only strict gates
+test_immutable_identity_gate.py。旧实现 3 failed，已知且明确 expected-to-fail-until-fix；
+不加 xfail，不进入 main-ready/default suite。搜索 Provider 新 HEAD，目前仍 cb585c1。
+要求 same-count changed-content 第二次 import 原子拒绝，旧 Provider 返回 A；stored canonical
+manifest SHA 等于 configured acceptance SHA；semantic acceptance/member 禁止 UPDATE。
+此 gate 通过后才继续新 HEAD runtime/E2E，不接受 Builder 自称修复。
