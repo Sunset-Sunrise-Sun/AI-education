@@ -141,6 +141,55 @@ export function displayOrDash(value: string | number | null | undefined): string
  */
 export const EMPTY_MEETINGS_DATA_TEXT = '当前数据中无排课信息'
 
+/* -------------------------------------------------------------------------- */
+/* 演示数据 / 来源披露口径（比赛演示，⛔ 必须逐字可见）                          */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * **始终可见**的演示数据与来源披露（逐字口径，与模式无关）。
+ *
+ * 语义边界（⛔ 不得简化）：
+ * - "Mock 模式回放预置结果"：默认模式**不执行**上游业务计算；
+ * - "计算模式执行实际代码"：`POST /api/v1/plan` 会执行仓库中的真实 Provider / Planner 代码，
+ *   但⛔ 这**不证明**输入数据来自学校；
+ * - "输入来源需逐项核验"：教学班与 Curriculum 是两件独立的事，⛔ 不存在"只有教学班是 Synthetic、其余全部真实"的默认结论。
+ */
+export const DEMO_DATA_DISCLOSURE_UI =
+  '当前为演示数据；Mock模式回放预置结果，计算模式执行实际代码，输入来源需逐项核验。'
+
+/**
+ * 教学班演示快照的强制披露标签。
+ *
+ * 为什么需要它：被验收的 Course Data 行在**代码层**会被统一标记为 `data_source = real`
+ * （已记录的 OPEN ITEM），而该字段是**契约 / 来源声明**、⛔ 不是 provenance 证明，
+ * 所以页面必须显式说明教学班是 Synthetic 快照。
+ * ⛔ 任何情况下都不得隐藏、折叠或改写该标签；但⛔ 也不得把它当成"整页 provenance 的唯一披露面"。
+ */
+export const SYNTHETIC_SNAPSHOT_LABEL = '教学班数据：演示快照（Synthetic）'
+
+/**
+ * 披露说明（**计算模式**：规划结果区来自 `POST /api/v1/plan` 的实际代码计算）。
+ *
+ * ⛔ 关键限制：实际代码执行**不等于**输入数据已获得真实学校来源认证。
+ */
+export const SYNTHETIC_SNAPSHOT_NOTE_REAL =
+  '规划结果区由 /api/v1/plan 实际执行代码计算（Actual API computation）；教学班输入为 Synthetic 演示快照，页面基础展示区仍为演示数据。实际代码执行不等于输入数据已获得真实学校来源认证。'
+
+/**
+ * 披露说明（**演示回放模式**：尚未提交规划请求，规划结果同样来自 Mock 演示通道）。
+ *
+ * ⛔ 不得在回放模式下复用计算模式的说明：那会把回放的 Mock 结果说成实际代码计算产出。
+ */
+export const SYNTHETIC_SNAPSHOT_NOTE_MOCK =
+  '当前为 Mock 回放模式：规划结果是预置样例，未执行本次 Planner 求解；教学班输入为 Synthetic 演示快照，输入来源需逐项核验。'
+
+/**
+ * 教学班演示快照的限制说明（与 README / 启动文档同一口径，逐字）。
+ */
+export const SYNTHETIC_SNAPSHOT_LIMITATION =
+  '由于学校教务系统北校园开课查询存在稳定的深分页异常，当前比赛版本的教学班演示使用经过明确标识的 Synthetic 快照。系统的培养方案解析、补修判定、约束规划、Path Repair、风险解释与前后端运行链路仍按正式架构执行。'
+
+
 /**
  * 把一段 meeting 拼成一行可读文本，例如：
  * `周一 · 第 3-4 节 · 1-16 周 · 东校园 / 东B305`。

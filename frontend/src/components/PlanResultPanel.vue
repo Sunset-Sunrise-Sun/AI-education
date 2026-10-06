@@ -74,7 +74,7 @@ function courseLabel(courseId: string): string {
     </div>
 
     <!-- 1. 已选教学班 selected_classes -->
-    <section class="plan-section">
+    <section id="section-plan-selected" class="plan-section">
       <div class="plan-section__header">
         <h3 class="plan-section__title">
           <span class="section-icon">✅</span>
@@ -100,7 +100,7 @@ function courseLabel(courseId: string): string {
     </section>
 
     <!-- 2. 方案调整变更 changes -->
-    <section class="plan-section">
+    <section id="section-plan-changes" class="plan-section">
       <div class="plan-section__header">
         <h3 class="plan-section__title">
           <span class="section-icon">🔄</span>
@@ -152,7 +152,7 @@ function courseLabel(courseId: string): string {
     </section>
 
     <!-- 3. 风险预警 risks -->
-    <section class="plan-section">
+    <section id="section-plan-risks" class="plan-section">
       <div class="plan-section__header">
         <h3 class="plan-section__title">
           <span class="section-icon">⚡</span>
@@ -187,7 +187,7 @@ function courseLabel(courseId: string): string {
     </section>
 
     <!-- 4. 未解决事项 unresolved（重点展示） -->
-    <section class="plan-section plan-section--unresolved">
+    <section id="section-plan-unresolved" class="plan-section plan-section--unresolved">
       <div class="plan-section__header">
         <h3 class="plan-section__title text-warning">
           <span class="section-icon">⚠️</span>

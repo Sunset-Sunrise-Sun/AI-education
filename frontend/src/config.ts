@@ -36,7 +36,15 @@ export const PLAN_ENDPOINT = `${API_BASE_URL}/api/v1/plan`
 export const PLAN_API_ENABLED: boolean = import.meta.env.VITE_PLAN_API_ENABLED === 'true'
 
 export const APP_TITLE = '学航·转衔'
-export const APP_SUBTITLE = '面向转专业学生的 AI 学业路径重构 Agent'
+
+/**
+ * 副标题（用户可见标签）。
+ *
+ * ⚠️ 口径要求（比赛披露）：当前实现是**固定工具编排原型**，
+ * ⛔ 不得让标题区给人"本版本已运行模型推理 / 检索 / 生成式解释"的印象；
+ * 模型能力（LLM / RAG / GraphRAG）为后续增强方向，页面 footer 另行给出实现边界说明。
+ */
+export const APP_SUBTITLE = '面向转专业学生的学业路径重构原型（固定工具编排，AI 增强待接入）'
 
 /**
  * 比赛 MVP 的 Case context：中山大学 Case A。

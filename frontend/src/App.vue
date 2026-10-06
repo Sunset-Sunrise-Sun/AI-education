@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import CourseOfferingList from './components/CourseOfferingList.vue'
+import DemoSceneGuide from './components/DemoSceneGuide.vue'
 import E2EDebugPanel from './components/E2EDebugPanel.vue'
 import type { E2EDebugInfo } from './components/E2EDebugPanel.vue'
 import MakeupTaskList from './components/MakeupTaskList.vue'
 import PlanResultPanel from './components/PlanResultPanel.vue'
 import PreferencePanel from './components/PreferencePanel.vue'
 import SectionCard from './components/SectionCard.vue'
+import SyntheticSnapshotNotice from './components/SyntheticSnapshotNotice.vue'
 import TopStatusBar from './components/TopStatusBar.vue'
 import UserInputPanel from './components/UserInputPanel.vue'
 import { useDemoData } from './composables/useDemoData'
@@ -199,40 +201,13 @@ onMounted(() => {
   <div class="page">
     <TopStatusBar :data-source="dataSource" />
 
-    <!-- 业务数据流转全景步骤示意（极佳的参赛 Demo 讲解引导条） -->
-    <div class="pipeline-guide">
-      <div class="pipeline-step">
-        <div class="pipeline-step__num">1</div>
-        <div class="pipeline-step__content">
-          <strong>培养方案对比</strong>
-          <span>Curriculum 缺什么课</span>
-        </div>
-      </div>
-      <div class="pipeline-arrow">➔</div>
-      <div class="pipeline-step">
-        <div class="pipeline-step__num">2</div>
-        <div class="pipeline-step__content">
-          <strong>教学班供给获取</strong>
-          <span>Course Data 开了哪些班</span>
-        </div>
-      </div>
-      <div class="pipeline-arrow">➔</div>
-      <div class="pipeline-step">
-        <div class="pipeline-step__num">3</div>
-        <div class="pipeline-step__content">
-          <strong>偏好约束注入</strong>
-          <span>Agent 用户意图解析</span>
-        </div>
-      </div>
-      <div class="pipeline-arrow">➔</div>
-      <div class="pipeline-step pipeline-step--accent">
-        <div class="pipeline-step__num">4</div>
-        <div class="pipeline-step__content">
-          <strong>课表求解与调班</strong>
-          <span>Planner Path Repair</span>
-        </div>
-      </div>
-    </div>
+    <!--
+      比赛演示路线（8 场景）。
+
+      ⚠️ 纯导航：只做锚点跳转与一句话看点，⛔ 不含任何业务判断，
+      也⛔ 不读取任何接口数据（场景 5–8 指向第 4 区内部的四个子块）。
+    -->
+    <DemoSceneGuide />
 
     <main class="page__main">
       <!--
@@ -345,9 +320,16 @@ onMounted(() => {
           mock
           section-id="section-offerings"
           title="2. 开课教学班供给 (CourseOffering)"
-          subtitle="Course Data 模块从教务系统中抓取并标准化的目标学期开课清单：支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
+          subtitle="Course Data 模块负责教学班数据的标准化与结构化；当前比赛演示使用明确标识的 Synthetic 教学班快照（未连接任何实时教务系统）。支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
           :badge-count="data.course_offerings.length"
         >
+          <!--
+            教学班演示快照披露（比赛演示，⛔ 强制可见、不得隐藏）。
+
+            说明文案随「规划结果来源」切换，避免在未提交真实规划时
+            把 Mock 规划结果说成正式链路产出。
+          -->
+          <SyntheticSnapshotNotice :plan-result-mode="planResultMode" />
           <CourseOfferingList :offerings="data.course_offerings" />
         </SectionCard>
 
@@ -356,7 +338,7 @@ onMounted(() => {
           mock
           section-id="section-preference"
           title="3. 学生个性化偏好 (Preference)"
-          subtitle="Agent 模块解析学生自然语言输入所形成的约束条件：包含学分上限控制、避免跨校区、回避特定时段及意向课程。"
+          subtitle="由结构化表单输入形成的约束条件：包含学分上限控制、避免跨校区、回避特定时段及意向课程。⛔ 本版本没有自然语言解析（模型能力为后续方向），也不保证全部偏好都被执行；未确认部分见第 4 区 unresolved。"
         >
           <PreferencePanel
             :preference="data.preference"
@@ -390,11 +372,12 @@ onMounted(() => {
             </span>
             <span class="uig-provenance__note">
               <template v-if="planResultMode === 'real'">
-                本区块方案来自 <code class="mono">POST /api/v1/plan</code>；
+                本区块方案由 <code class="mono">POST /api/v1/plan</code> <strong>实际执行代码计算</strong>（Actual API computation）；
                 其余区块（MakeupTask / 教学班 / Preference）仍为 Mock 演示数据。
+                ⛔ 实际代码执行<strong>不等于</strong>输入数据已获得真实学校来源认证。
               </template>
               <template v-else>
-                本区块方案来自 <code class="mono">GET /api/v1/mock/demo</code>；尚未提交 Real Planning。
+                本区块方案来自 <code class="mono">GET /api/v1/mock/demo</code>，属<strong>回放预置结果</strong>（未执行本次 Planner 求解）。
               </template>
             </span>
           </div>
@@ -411,20 +394,24 @@ onMounted(() => {
     <footer class="page__footer">
       <div class="footer-content">
         <p class="footer-brand">
-          <strong>学航·转衔</strong> —— 面向高校转专业学生的 AI 学业路径重构 Agent 系统
+          <strong>学航·转衔</strong> —— 面向转专业学生的学业路径重构<strong>原型</strong>（固定工具编排，AI 增强待接入）
         </p>
         <p class="footer-compliance">
+          实现边界：本版本为<strong>固定工具编排原型</strong>，<strong>未接入 LLM / RAG / GraphRAG</strong>
+          （无模型推理、无检索管线、无自然语言偏好解析）；模型理解与生成式解释为后续方向。
+          <br />
           数据声明：<strong>页面基础展示数据</strong>（历史培养要求评估、开课教学班、学生偏好）
           由后端 <code class="mono">GET /api/v1/mock/demo</code> 通道提供，属<strong>演示数据</strong>。
           <br />
           <template v-if="planResultMode === 'real'">
-            <strong>规划结果</strong>由 <code class="mono">POST /api/v1/plan</code> 返回（Real），
-            与上述基础展示数据的来源相互独立。
+            <strong>规划结果</strong>由 <code class="mono">POST /api/v1/plan</code> <strong>实际执行代码计算</strong>
+            （Actual API computation），与上述基础展示数据的来源相互独立；
+            ⛔ 实际代码执行<strong>不等于</strong>输入数据已获得真实学校来源认证。
           </template>
           <template v-else>
-            <strong>规划结果</strong>当前同样来自上述 Mock 演示通道；尚未提交 Real Planning。
+            <strong>规划结果</strong>当前同样来自上述 Mock 演示通道（<strong>回放预置结果</strong>），未执行本次 Planner 求解。
           </template>
-          两类内容均<strong>不代表真实教务系统正式指令</strong>。
+          两类内容均<strong>不代表真实教务系统正式指令</strong>；教学班输入为明确标注的 Synthetic 演示快照。
         </p>
       </div>
     </footer>
