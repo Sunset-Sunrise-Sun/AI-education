@@ -2648,3 +2648,52 @@
   Planner / Curriculum 语义 / runtime 架构；⛔ 未做真实登录或教务请求；⛔ 真实材料未入 Git。
 - 下一步：Phase 3 consolidation、Phase 4 CLI 集成、Phase 5 真实操作包、Phase 6 push + PR。
 
+### 2026-10-05 - Phase 3-5：consolidation 审计、CLI 集成现状、真实数据操作包
+
+- **Phase 3（consolidation 审计，只读脚本 `audit_course_data_consolidation.py`，⛔ 未入 Git）**：
+  六项清单全部通过 ——
+  1. **diagnostics 不污染 production**：`collectPages` / `requestReportedTotal` / `collect` /
+     `collectSharded` / `minimizeRow` / `requestPage` 六个 production 切片 + `importer` /
+     `normalization` / `store` / `captured_pages` 四个模块，对 7 个 diagnostic 标记**零引用**；
+  2. **无新增 raw-value 回显**：`schedule_parser.py` / `normalization.py` / `importer.py` /
+     collector 的全部错误信息**不回显**捕获取值；
+  3. **`meetings=[]` 唯一路径**：`normalization.py` 的
+     `build_course_offering_from_non_concrete_schedule()` 定义**唯一**，
+     `importer.py` 只调用**一次**，⛔ 无内联 `meetings=[]` 构造；
+  4. **grammar / 占位符清单完整**：non-concrete 2 / 3 字段、layout B、layout A、
+     concrete 4/5/6 字段、两侧 teacher 与 opaque 占位符全部在位；
+  5. **fail-closed 标记完整**：opaque / Layout A 精确匹配、严格 location、
+     weekday / sections / weeks / credit 四组安全错误分类；
+  6. **Layout A 未泛化、Layout B 只按已批准 grammar 工作**。
+  ⚠️ **审计自身修正**（首轮 4 个"问题"经逐条核实**全部为假阳性**）：
+  (a) `{source!r}` 回显的是**调用方配置标签**（importer / normalization 入参，
+  非学校返回值）⇒ 已列入允许清单；(b) `meetings = []` 在 `importer.py` 只出现在
+  **docstring / 注释**中 ⇒ 已改为用 `ast` 精确剔除 docstring；
+  (c) weeks / credit 的错误码定义在 `normalization.py`，首轮查错了文件 ⇒ 已修正。
+  ⛔ **未发现真实隐私或 fail-closed 缺陷**。
+- **Phase 4（CLI 集成）**：⛔ **无法执行** —— 指定的 commit
+  `1bb8bfdbaddbaac7280702942ba0783c29722ec8` **在本地与远端都不存在**：
+  - `git cat-file -t` → `could not get object info`；
+  - `git fetch origin --prune`（经代理）拉取全部远端分支后，
+    `git branch -a --contains 1bb8bfd` → 无结果；`git rev-list --all` 中无该前缀对象；
+  - 全仓（所有 ref）按 `CLI` / `acceptance` / `artifact` 检索提交，只有 Curriculum CLI /
+    Real Case A acceptance pack，**没有** Course Data artifact acceptance CLI。
+  ⇒ 该项**未集成**（⛔ 不猜测等价提交、⛔ 不自行编写替代 CLI）。
+  **需要用户提供该 commit（push 到远端或给出所在分支）**。
+- **Phase 5（真实数据操作包）**：新增 `docs/data/REAL_CAPTURE_OPERATION_PACK.md`，
+  含既有已批准分片表、导出命令（`toShardJson` / `toDiagnosticsJson`）、
+  各校区 `scope_kind=campus` / `scope_id` / `source` 标签 / `expected_total` 口径、
+  成功判据、`401` / `403` / `HTTP 600` / malformed 的停止说明，
+  以及 **Layout B 重抓要求**（旧东校园 artifact 含原始 opaque ⇒ 必须重抓，⛔ 不得手工改写）。
+  ⚠️ **Phase 5 暴露一个真实数据链路的首要阻塞项**：现有唯一采集入口 `collectSharded()`
+  是**五个 shard（含北校园）的一次性、全有或全无事务**，调用方**不能选择 shard**；
+  而北校园按裁定**保持 suspended**（真实 `HTTP 600` 证据）⇒ 五 shard 运行**预期必然失败**，
+  因此 **East / South / Shenzhen / Zhuhai 目前无法单独取得 bundle**。
+  ⛔ Builder **未**改动 `APPROVED_SHARDS`、⛔ 未新增单校区采集入口、⛔ 未跳过失败 shard
+  —— 需要 Review 在两项中选择：**(A)** 批准一个"单校区采集"新入口；
+  **(B)** 明确允许在北校园 suspended 期间跳过该 shard。
+- **边界**：⛔ **未 merge main**；⛔ 未改 public Schema / frozen Provider contract /
+  Planner / Curriculum 语义 / runtime 架构；⛔ 未做真实登录或教务请求；⛔ 真实材料未入 Git。
+- 下一步：等 Review 对 (A)/(B) 与 CLI commit 给出裁定；随后 push + PR（PR 描述见下条）。
+
+

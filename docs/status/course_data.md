@@ -1493,4 +1493,17 @@ course_data_import（artifact 级审计；同一 (artifact, semester, scope) 只
   再与 Curriculum / Planner 做真实 Case A E2E；
 - **G11 仍保留为学校侧业务原因未知**：DG-07 已解决“如何安全表示和处理”，
   但没有解决“学校为什么缺少 schedule”；
+- ⚠️ **当前真实数据链路的首要阻塞项：没有"单校区采集"入口**。
+  唯一入口 `collectSharded()` 是**五个 shard（含北校园）的一次性、全有或全无事务**，
+  调用方**不能选择 shard**；北校园按裁定保持 **suspended**（真实 `HTTP 600` 证据）
+  ⇒ 五 shard 运行**预期必然失败** ⇒ East / South / Shenzhen / Zhuhai **目前无法单独取得
+  bundle**。⛔ 未擅自改 `APPROVED_SHARDS` / ⛔ 未新增入口 / ⛔ 未跳过失败 shard；
+  需要 Review 在 **(A) 批准单校区采集入口** 与 **(B) 允许 suspended 期间跳过该 shard** 中裁定。
+  操作细节见 `docs/data/REAL_CAPTURE_OPERATION_PACK.md`；
+- ⚠️ **Layout B 重抓**：本轮起 collector 对精确 Layout B 输出 `REDACTED_OPAQUE`，
+  parser 只接受该占位符 ⇒ **旧东校园 artifact（含原始 opaque）必然 fail closed**，
+  必须通过真实采集重抓；⛔ 不得手工编辑旧 artifact 或把原始取值改成占位符；
+- ⚠️ **artifact acceptance CLI 未集成**：指定的 commit
+  `1bb8bfdbaddbaac7280702942ba0783c29722ec8` 在本地与远端都不存在（已 fetch 全部远端 ref 核实）
+  ⇒ 需要用户提供该 commit；
 - 公共契约、fail-closed 边界、Raw / Capture 隐私规则继续保持不变。
