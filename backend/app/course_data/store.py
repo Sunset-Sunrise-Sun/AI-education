@@ -835,6 +835,60 @@ def _open_store(path: object, *, must_exist: bool, ensure_schema: bool) -> Itera
         connection.close()
 
 
+@contextmanager
+def _open_read_snapshot(path: object) -> Iterator[sqlite3.Connection]:
+    """打开一个**显式只读事务**：所有读取必须来自同一个 consistent snapshot。
+
+    ## 为什么必须显式 `BEGIN`（⛔ 不是装饰性关键字）
+
+    Python `sqlite3` 的默认 `isolation_level` **只在 DML 之前**隐式开启事务；
+    裸 `SELECT` **不会**开启事务 —— 每条 SELECT 各自一个隐式事务。
+    因此
+
+    ```text
+    SELECT … course_data_acceptance     ← snapshot 1
+    SELECT … course_data_acceptance_member ← snapshot 2（可能是另一个 epoch）
+    SELECT … course_offering            ← snapshot 3
+    ```
+
+    在并发写入下会读到**混合 epoch**。本函数用
+    `isolation_level=None`（autocommit，事务完全由我们控制）+ 显式
+    `BEGIN`（deferred read transaction）把 acceptance / canonical manifest /
+    membership / rows 全部放进**同一个**读快照，结束时 `ROLLBACK`（只读，永不提交）。
+
+    - ⛔ 不写库、⛔ 不建表、⛔ 不联网；`busy_timeout` 只用于让并发写者等待而不是立刻报错；
+    - ⚠️ WAL 模式下写者可以在读者持有快照期间提交（读者仍看到旧 epoch）；
+      rollback-journal 模式下写者会等待读者完成（同样**不会**交错）。
+    """
+
+    resolved = _require_store_path(path, must_exist=True)
+
+    try:
+        connection = sqlite3.connect(str(resolved), isolation_level=None)
+    except sqlite3.Error as exc:
+        raise CourseDataStoreError(f"无法打开 Course Data 库：{resolved}（{exc}）") from exc
+
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout = 5000")
+
+        # ⚠️ schema 校验在 BEGIN **之前**：它只读 `sqlite_master`（结构，不随写入 epoch 变化）。
+        _require_schema(connection)
+
+        # ⛔ 显式开启 deferred read transaction：之后所有 SELECT 共享同一快照。
+        connection.execute("BEGIN")
+        try:
+            yield connection
+        finally:
+            connection.execute("ROLLBACK")
+    except sqlite3.Error as exc:
+        raise CourseDataStoreError(
+            f"Course Data 库读取失败：{resolved}（{exc}）"
+        ) from exc
+    finally:
+        connection.close()
+
+
 def initialize_course_data_store(path: str | Path) -> Path:
     """建立（或复用）本地 Course Data 库，返回解析后的路径。
 
@@ -1464,7 +1518,17 @@ def load_accepted_offerings(
     第 0 条是 **immutable acceptance identity** 的修复点：即使记录与 digest 一起被
     rewrite，重算 `SHA256(canonical stored manifest)` 也**对不上** configured SHA。
 
-    - 只读、一次性事务；⛔ 不写库、⛔ 不建表、⛔ 不联网；
+    ## 单一 consistent snapshot（R-SNAPSHOT）
+
+    上述 acceptance / canonical manifest / membership / rows 的读取全部发生在
+    **同一个显式只读事务**里（`_open_read_snapshot()`：`isolation_level=None` +
+    显式 `BEGIN` deferred read transaction + 结束时 `ROLLBACK`）。
+    ⛔ 因此并发写者（合法 import 或绕过 API 的 rewrite）**不可能**让本函数读到
+    "acceptance 属于 epoch A、membership/rows 属于 epoch B"这种**混合 epoch**：
+    它要么看到完整的旧 epoch，要么看到完整的新 epoch（详见
+    `backend/tests/test_course_data_read_snapshot.py` 的并发 adversarial probe）。
+
+    - 只读、一次性事务（结束 `ROLLBACK`，⛔ 永不提交）；⛔ 不写库、⛔ 不建表、⛔ 不联网；
     - 返回顺序确定：`ORDER BY course_id, class_id`。
     """
 
@@ -1482,7 +1546,9 @@ def load_accepted_offerings(
             )
         wanted_scope = _require_scope(scope, semester=target_semester)
 
-    with _open_store(path, must_exist=True, ensure_schema=False) as connection:
+    # ⛔ 显式只读事务：acceptance / canonical manifest / membership / rows
+    #    必须来自**同一个** consistent snapshot（R-SNAPSHOT）。
+    with _open_read_snapshot(path) as connection:
         acceptance_row = connection.execute(
             "SELECT artifact_sha256, semester, scope_kind, scope_id, source, imported_at, "
             "completeness, loaded_count, reported_total, offering_count, offering_set_sha256, "

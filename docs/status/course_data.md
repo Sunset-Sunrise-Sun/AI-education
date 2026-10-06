@@ -1754,3 +1754,28 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
 - 测试：store **106 passed**、provider **57 passed**；mutation sweep
   **13 killed / 1 可证等价 / 0 survived**；
 - ⛔ 未改 public Schema / frozen Provider contract、⛔ 未 merge main。
+
+## BLOCK R-SNAPSHOT：单一 consistent read snapshot（✅ 已修）
+
+第三个 Codex BLOCK：`load_accepted_offerings()` 的验证序列是**多次 SELECT**
+（acceptance / canonical manifest / provenance / membership / rows / digests），
+但 Provider HEAD `ef910e3` 用的是 `_open_store(...)`（`sqlite3.connect` 默认
+`isolation_level`）—— 默认隔离级别**只在 DML 前**隐式开事务，裸 `SELECT` 各自一个
+隐式事务 ⇒ **不是一个跨多 SELECT 的一致快照**，并发写者可以在读序列中途提交，
+产生 `acceptance A 元数据 + membership/rows B`（混合 epoch）。
+
+- **实现位置**：`backend/app/course_data/store.py`
+  `_open_read_snapshot()`（`isolation_level=None` + `PRAGMA busy_timeout` +
+  `_require_schema` 在 BEGIN 之前 + 显式 `BEGIN` + `finally: ROLLBACK`）；
+  权威读取 `load_accepted_offerings()` 改为 `with _open_read_snapshot(path) as connection:`；
+- **并发探针**（`backend/tests/test_course_data_read_snapshot.py`，**8 passed**）：
+  读者在 membership SELECT 前确定性暂停，rogue writer 直接改库覆盖
+  delete acceptance / replace accepted row / mutate membership 三场景；
+  修复后 **writer 被锁等待（locked）+ 重试成功 + 读者返回完整 epoch A**；
+  旧 `ef910e3` 上同一探针 `paused_in_transaction=False`、writer 在读中途 **committed**
+  ⇒ 读序列交错（由 R-CONTENT 内容校验拦下，但**混合读已经发生**）；
+- **反空泛**：把 `_open_read_snapshot` 换成"只连接、不开显式事务"的等价实现后，
+  同一探针立刻退化为混合 epoch / fail closed ⇒ `BEGIN` 是承重的；
+- 测试：store **106** / provider **57** / runtime **49** / synthetic E2E **20** /
+  read snapshot **8** = **240 passed**；
+- ⛔ 未改 journal mode、⛔ 未改 public Schema / frozen Provider contract、⛔ 未 merge main。

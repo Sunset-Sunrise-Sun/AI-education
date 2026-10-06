@@ -58,6 +58,51 @@ acceptance 元数据的 scope / counts 被篡改
 
 ⛔ 也**不 cache rows**：每次调用都从库里重新物化（`first is not second`）。
 
+## 单一 consistent read snapshot（R-SNAPSHOT，第三轮 Red-Team BLOCK）
+
+上面的验证序列是**多次 SELECT**（acceptance / canonical manifest / provenance /
+membership / rows）。⛔ 它们必须来自**同一个 SQLite 一致读快照**，否则并发写者可以
+在读序列中途提交，产生
+
+```text
+acceptance A 的元数据  +  epoch B 的 membership / rows      ← ⛔ 混合 epoch（禁止）
+```
+
+⚠️ **`with sqlite3.connect(...)` ⛔ 不是**一致快照：Python `sqlite3` 默认
+`isolation_level` **只在 DML 之前**隐式开启事务，裸 `SELECT` 各自一个隐式事务。
+因此权威读取路径显式建立事务（`store.py`）：
+
+```text
+_open_read_snapshot(path)
+    sqlite3.connect(path, isolation_level=None)   # 事务完全由我们控制
+    PRAGMA busy_timeout = 5000                    # 并发写者等待，而不是立刻失败
+    _require_schema(...)                          # 只读 sqlite_master / PRAGMA（BEGIN 之前）
+    BEGIN                                         # ← 显式 deferred **读**事务，在第一次 SELECT 之前
+        acceptance 元数据 + canonical manifest（一条 SELECT）
+        provenance → membership → rows → 逐行 digest → 整批 digest
+    finally: ROLLBACK                             # 只读，⛔ 永不 COMMIT
+```
+
+- ⛔ 不因为这次修复改变 journal mode；rollback-journal 下写者的 `COMMIT` 会被读者的
+  SHARED 读锁挡住（写者等待/被拒），**仍然**不会与读序列交错；
+- 读者在快照内的读取**必须成功返回完整 epoch A**（⛔ 不是靠 R-CONTENT 的内容校验
+  把混合读"拦下来"，而是**根本不产生**混合读）。
+
+并发探针（`backend/tests/test_course_data_read_snapshot.py`，8 个测试）：读者在
+membership SELECT **之前确定性地暂停**，rogue writer 直接改库（绕过 API），
+三种场景各覆盖一次 reviewer 要求：
+
+```text
+delete acceptance 期间读取       （DELETE course_data_acceptance / course_data_import）
+replace accepted row 期间读取    （UPDATE course_offering 的公共字段）
+mutate membership 期间读取       （改写 offering_set_sha256 + canonical_manifest_json + membership）
+```
+
+允许的结果只有三类：**完整 epoch A** · **writer 被锁等待** · **reader fail closed**；
+探针同时断言"写者第一次确实被挡住、读者结束后重试成功"（证明库真的被改过 ⇒
+"读者看到完整 A"不是空泛结论）。把 `_open_read_snapshot` 换成"只连接、不开显式事务"
+的等价实现后，同一探针立刻退化为**混合 epoch / fail closed**（反空泛测试）。
+
 ## 读取契约
 
 ```python

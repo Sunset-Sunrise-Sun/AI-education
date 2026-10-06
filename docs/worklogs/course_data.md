@@ -3097,3 +3097,33 @@
   mutation sweep **13 killed / 1 可证等价 / 0 survived**；
 - **边界**：⛔ 未 merge main、⛔ 未改 public Schema / frozen Provider contract、
   ⛔ 未处理真实 artifact；formal Real E2E 继续 **LEVEL0**。
+
+### 2026-10-06 - BLOCK R-SNAPSHOT：读序列的一致快照（第三轮 Red-Team）
+
+- **先定位（不改代码）**：`git show ef910e3:backend/app/course_data/store.py` 上
+  `isolation_level` **0 处**、`execute("BEGIN` **0 处**，`load_accepted_offerings()`
+  用 `with _open_store(path, must_exist=True, ensure_schema=False)` ⇒ 默认隔离级别
+  只为 DML 隐式开事务，裸 `SELECT` 各自一个隐式事务 ⇒ 多 SELECT 读序列**不是**
+  一致快照 ⇒ 确认 `ef910e3` **不满足** R-SNAPSHOT（先证据后修复）；
+- **修复**：新增 `_open_read_snapshot()`（`isolation_level=None` +
+  `PRAGMA busy_timeout = 5000` + `_require_schema` 放在 `BEGIN` 之前 +
+  显式 `BEGIN` + `finally: ROLLBACK`），权威读取改用它（`store.py`）；
+- **并发探针**（`backend/tests/test_course_data_read_snapshot.py`，**8 passed**）：
+  stdlib `sqlite3.connect` 上挂 trace 回调，在 membership SELECT **之前**确定性暂停
+  （one-shot，避免 writer 自己的 `DELETE ... member` 也被挂住 ⇒ 互等）；
+  writer 绕过 API 直接改库（`BEGIN IMMEDIATE` + `busy_timeout=300`）：
+  delete acceptance / replace accepted row / mutate membership；
+  读者路径同时覆盖 `load_accepted_offerings` 与 `get_course_offerings`；
+- **修复后探针结果**：三场景 × 两路径全部
+  `paused_in_transaction=True`、`writer=locked`、`writer_retry=committed`、
+  `post_state` 确实变化、读者 `reader_epoch=A`（完整 epoch A，无混合）；
+- **旧 HEAD 复现**：同一探针在 `ef910e3` 上 `paused_in_transaction=False`、
+  writer 在读序列中途 `committed` ⇒ replace row / mutate membership 场景读到
+  **混合 epoch**（acceptance A + row B），被 R-CONTENT 内容校验拦下 ⇒
+  7 failed / 1 passed；即"没有事务"这一缺陷**确实可观测**；
+- **反空泛**：把 `_open_read_snapshot` 换回"只连接、不开显式事务"的等价实现，
+  同一探针立刻退化为混合 epoch / fail closed（`BEGIN` 承重）；
+- **测试**：store **106** / provider **57** / runtime **49** / synthetic E2E **20** /
+  read snapshot **8** = **240 passed**；
+- **边界**：⛔ 未改 journal mode、⛔ 未改 public Schema / frozen Provider contract、
+  ⛔ 未 merge main、⛔ 未处理真实 artifact；formal Real E2E 继续 **LEVEL0**。
