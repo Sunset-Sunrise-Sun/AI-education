@@ -3022,3 +3022,35 @@
 - **边界**：⛔ 未 merge main、⛔ 未改 PR #39 / runtime / public Schema /
   frozen Provider contract、⛔ 未发真实教务请求、⛔ 未读 cookie/token、
   ⛔ 未处理真实 artifact、⛔ 未声明 Real E2E（继续 **LEVEL0**）。
+
+### 2026-10-06 - Gate B：Store-backed CourseDataProvider
+
+- **分支**：基于 Gate A tip 新建 `feature/store-backed-course-data-provider`
+  （stacked：base = Gate A branch，⛔ 未 merge main）；
+- **新增** `backend/app/course_data/store_provider.py`
+  （`StoreBackedCourseDataProvider` + `CourseDataAcceptanceError`）
+  与内部查询 `store.load_course_offerings_for_acceptance()`；
+  ⛔ **未改** `CourseDataProvider` Protocol / `CourseOffering` Schema /
+  `load_course_offerings()` 语义；⛔ **未新增表**（行级 provenance 列已足够）；
+- **构造 fail closed**：恰好一条 provenance 匹配
+  `(semester, scope_kind=full_semester, scope_id=semester, sha)`；
+  `completeness == complete`；`loaded_count == reported_total`；`offering_count > 0`；
+  **实际绑定行数 == offering_count**（重新数，不采信自报数字）；
+- **绑定读回**：`WHERE semester = ? AND scope_kind = 'full_semester'
+  AND scope_id = ? AND artifact_sha256 = ? ORDER BY course_id, class_id`；
+  陈旧 campus 行 / 其它学期行被排除；被后来的 import 覆盖 provenance 的行消失 ⇒
+  行数对账失败 ⇒ fail closed（⛔ 不返回部分数据）；
+- **读取**：`get_course_offerings(semester)` 学期不匹配 ⇒ `CourseDataAcceptanceError`
+  （⛔ 不返回空列表、⛔ 不 fallback）；每次调用重新读回 + 复核行数；只读、零网络；
+- **测试**：`test_course_data_store_provider.py` 36 passed；
+  `test_course_data_store.py` 新增 5 个 acceptance-bound 查询用例（共 66 passed）；
+  覆盖 valid / campus-only 库 / 空库 / 缺记录 / 错 SHA / 错 scope_kind / 错 scope_id /
+  incomplete / 计数不自洽（5 种）/ 行数不符 / 行被删 / meetings 被篡改 /
+  非 Course Data 库 / 库不存在 / 非法 semester 与 digest / 非法路径类型 /
+  陈旧 campus 行隔离 / 跨学期隔离 / 请求其它学期 fail closed /
+  构造后被覆盖 ⇒ 读取 fail closed / Orchestrator 收到绑定行 / 零网络 import 扫描；
+- **mutation sweep**（workspace-only `mutate_store_provider.py`，18 处唯一锚点、
+  逐文件、按字节还原核对）：**13 killed / 5 可证等价 / 0 survived**；
+  5 个等价项已在代码内逐条注明（B03 / B04 / B05 / B06 / B09）；
+- **边界**：⛔ 未改 runtime / 环境变量接线（属 Gate C）、⛔ 未改 public Schema /
+  frozen Provider contract、⛔ 未 merge main、⛔ 未发真实网络请求。

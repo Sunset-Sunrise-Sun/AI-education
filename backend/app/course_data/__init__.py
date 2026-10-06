@@ -56,6 +56,19 @@ complete 的 baseline 快照**，而真实采集侧只有**总量证据**。因�
 `manifest_sha256 = acceptance record identity / integrity ≠ acquisition provenance proof`；
 ⛔ 没有 `--skip-north` / `--allow-partial-semester` / `--force-complete` 这类逃生参数。
 
+⚠️ **SQLite 支撑的 production Provider（Gate B）**：`StoreBackedCourseDataProvider`
+在**构造时**绑定 `(sqlite path, semester, full_semester acceptance SHA-256)`，
+必须匹配到**恰好一条** `full_semester` provenance 记录并核对计数，然后只读地返回
+**被该 acceptance 绑定**的行（`load_course_offerings_for_acceptance()`）：
+
+```text
+load_course_offerings(semester)          = 该学期库里**当前所有**行（含旧 campus import）
+load_course_offerings_for_acceptance()   = 只属于该次 full-semester acceptance 的行
+```
+
+⛔ 没有记录 / SHA 不对 / scope 不对 / campus-only 库 / 零行 / 计数不符 / 行被后来的
+import 覆盖 ⇒ **构造或读取时 fail closed**，⛔ 不返回空列表、⛔ 不 fallback、⛔ 不退化为整学期查询。
+
 ⚠️ **本包是 Course Data 的内部实现，不是跨模块公共契约。**
 
 - 公共边界**只有** `CourseDataProvider.get_course_offerings(semester)`
@@ -160,6 +173,10 @@ from app.course_data.snapshot import (
     SnapshotCourseDataProvider,
     merge_offering_snapshots,
 )
+from app.course_data.store_provider import (
+    CourseDataAcceptanceError,
+    StoreBackedCourseDataProvider,
+)
 from app.course_data.store import (
     ALLOWED_SCOPE_KINDS,
     SCOPE_KIND_CAMPUS,
@@ -173,6 +190,7 @@ from app.course_data.store import (
     initialize_course_data_store,
     load_course_data_provenance,
     load_course_offerings,
+    load_course_offerings_for_acceptance,
 )
 
 __all__ = [
@@ -185,6 +203,7 @@ __all__ = [
     "CourseDataNormalizationError",
     "CourseDataProvenance",
     "CourseDataStoreError",
+    "CourseDataAcceptanceError",
     "FULL_SEMESTER_ACCEPTANCE_FORMAT",
     "FULL_SEMESTER_ACCEPTANCE_TOOL",
     "FULL_SEMESTER_ACCEPTANCE_VERSION",
@@ -204,6 +223,7 @@ __all__ = [
     "ShardSource",
     "SnapshotCourseDataProvider",
     "SnapshotScope",
+    "StoreBackedCourseDataProvider",
     "accept_full_semester_capture_set",
     "build_course_offering",
     "canonical_manifest_bytes",
@@ -222,6 +242,7 @@ __all__ = [
     "load_capture_bundle",
     "load_course_data_provenance",
     "load_course_offerings",
+    "load_course_offerings_for_acceptance",
     "merge_offering_snapshots",
     "parse_sections",
     "parse_teaching_time_place",

@@ -113,6 +113,7 @@ __all__ = [
     "initialize_course_data_store",
     "load_course_data_provenance",
     "load_course_offerings",
+    "load_course_offerings_for_acceptance",
 ]
 
 #: 教学班表（identity 是主键：⛔ 不允许按 `course_id` 覆盖不同教学班）。
@@ -773,6 +774,62 @@ def load_course_offerings(
             f"SELECT {', '.join(_LOAD_COLUMNS)} FROM {COURSE_OFFERING_TABLE} "
             f"WHERE {where} ORDER BY course_id, class_id",
             parameters,
+        ).fetchall()
+
+    return [_row_to_offering(row) for row in rows]
+
+
+def load_course_offerings_for_acceptance(
+    path: str | Path,
+    *,
+    semester: str,
+    acceptance_sha256: str,
+) -> list[CourseOffering]:
+    """按 **acceptance identity** 读回**该次 full_semester 导入绑定**的那些行。
+
+    为什么不能直接用 `load_course_offerings(path, semester)`：
+
+    ```text
+    load_course_offerings(semester)  = 该学期库里**当前所有**行
+                                       （可能包含旧 campus import / 其它 artifact）
+    ```
+
+    ⚠️ **行级 provenance 语义（⛔ 不得改动）**：`course_offering` 表的
+    `artifact_sha256` / `scope_kind` / `scope_id` 记录的是
+    **最后一次写入该行的那次 import**（见 `import_offering_snapshot`）。
+    因此本查询
+
+    ```text
+    WHERE semester = ?
+      AND scope_kind = 'full_semester'
+      AND scope_id    = <semester>
+      AND artifact_sha256 = <acceptance>
+    ```
+
+    返回的**恰好**是被该 acceptance 绑定的那组行，并**天然排除**：
+
+    - 其它学期的行；
+    - 只有 campus provenance 的陈旧行；
+    - 被**后来的** campus import 覆盖过 provenance 的行
+      （它们会从本集合中**消失** ⇒ 调用方必须比对计数并 fail closed，
+      ⛔ **不得**把"少了几行"当成正常结果）。
+
+    - 返回顺序确定：`ORDER BY course_id, class_id`；
+    - ⛔ 只读；⛔ 不写库、⛔ 不判断完整性、⛔ 不 fallback 到整学期查询。
+
+    ⚠️ 这是 Course Data **内部**查询：⛔ 不进 `schemas/`、⛔ 不进
+    `docs/interfaces/`、⛔ 不改 `load_course_offerings()` 的既有语义。
+    """
+
+    target_semester = _require_semester(semester)  # acceptance 绑定读回：semester 必填
+    digest = _require_sha256(acceptance_sha256)
+
+    with _open_store(path, must_exist=True, ensure_schema=False) as connection:
+        rows = connection.execute(
+            f"SELECT {', '.join(_LOAD_COLUMNS)} FROM {COURSE_OFFERING_TABLE} "
+            "WHERE semester = ? AND scope_kind = ? AND scope_id = ? "
+            "AND artifact_sha256 = ? ORDER BY course_id, class_id",
+            (target_semester, SCOPE_KIND_FULL_SEMESTER, target_semester, digest),
         ).fetchall()
 
     return [_row_to_offering(row) for row in rows]

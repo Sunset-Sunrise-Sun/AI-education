@@ -1677,3 +1677,34 @@ course_data_import（artifact 级审计；同一 (artifact, semester, scope) 只
   ⛔ 不得声称"非零退出 == SQLite 零变化"；
 - 使用说明：`docs/data/FULL_SEMESTER_ACCEPTANCE.md`；
   ⛔ 尚未处理任何真实 artifact；**PR #39 = frozen / do not merge**；formal Real E2E = **LEVEL0**。
+
+## Store-backed CourseDataProvider（Gate B，✅ 已收口）
+
+- 新增**内部** Provider `backend/app/course_data/store_provider.py`
+  （`StoreBackedCourseDataProvider`）+ 内部查询
+  `store.load_course_offerings_for_acceptance()`；
+  ⛔ **未改** `CourseDataProvider` Protocol（签名仍是
+  `get_course_offerings(self, semester)`）、⛔ 未改 `CourseOffering` 公共 Schema、
+  ⛔ 未改 `load_course_offerings()` 的既有语义、⛔ **未新增表**；
+- **构造即绑定**：`sqlite path` + `semester` + **full_semester acceptance SHA-256**；
+  必须匹配到**恰好一条** provenance 记录，且
+  `completeness == complete`、`loaded_count == reported_total`、
+  `offering_count > 0`、**实际绑定行数 == provenance.offering_count**
+  （⛔ 不采信自报数字）；任一不满足 ⇒ 构造失败，⛔ 不交出半成品 Provider；
+- **行级绑定语义**：`load_course_offerings(semester)` = 该学期**当前所有**行；
+  按 acceptance 读回 = **只属于该次 acceptance** 的行；
+  campus-only 行 / 陈旧行 / 其它学期的行**被排除**，
+  被**后来的** import 覆盖过 provenance 的行会**消失** ⇒ 行数对账失败 ⇒ fail closed
+  （⛔ 不静默返回"少了几行"的数据）；
+- **读取**：`get_course_offerings(semester)` 学期不匹配 ⇒ `CourseDataAcceptanceError`
+  （⛔ 不返回空列表、⛔ 不 fallback）；每次调用重新读回并复核行数；顺序由 SQL 保证；
+  只读、零网络；
+- **拒绝矩阵**（各有测试）：库不存在 / 非 Course Data 库 / 空库 / **campus-only 库** /
+  SHA 不对 / scope_kind 或 scope_id 不对 / `completeness != complete` /
+  计数不自洽 / 零行 / 行被删除 / 行 provenance 被外部改写 / `meetings_json` 被篡改 /
+  semester 或 digest 形态非法 / `sqlite_path` 类型非法；
+- **测试**：`test_course_data_store_provider.py` **36 passed** +
+  store 新增 acceptance-bound 查询用例（`test_course_data_store.py` **66 passed**）；
+  mutation sweep **13 killed / 5 可证等价 / 0 survived**（等价项已在代码内注明）；
+- 使用说明：`docs/data/STORE_BACKED_COURSE_DATA_PROVIDER.md`；
+  ⛔ 本 Gate **不接线** runtime（环境变量 / Orchestrator / API 属 Gate C）。
