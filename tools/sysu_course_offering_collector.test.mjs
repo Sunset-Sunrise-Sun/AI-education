@@ -2925,7 +2925,7 @@ test("分段诊断：checkpoint 篡改 reject（版本 / 键集合 / 计数 / �
 
   const extra = clone();
   extra.raw_rows = [];
-  assert.throws(() => harness.finalize(extra), /键集合与契约不一致/);
+  assert.throws(() => harness.finalize(extra), /键数量与契约不一致|键集合与契约不一致/);
 
   const negative = clone();
   negative.candidate_count = -1;
@@ -2937,7 +2937,7 @@ test("分段诊断：checkpoint 篡改 reject（版本 / 键集合 / 计数 / �
 
   const badPage = clone();
   badPage.processed_pages = [{ page_no: 1, row_count: 200, extra: 1 }];
-  assert.throws(() => harness.finalize(badPage), /只允许 page_no \/ row_count/);
+  assert.throws(() => harness.finalize(badPage), /键数量不符|只允许 page_no \/ row_count/);
 
   const duplicate = clone();
   duplicate.processed_pages = [
@@ -3363,4 +3363,216 @@ test("分段诊断：加载脚本不自动调用新接口", async () => {
   assert.deepEqual(harness.calls, []);
   assert.equal(typeof harness.collector.diagnoseLayoutBFieldSourcePart, "function");
   assert.equal(typeof harness.collector.finalizeLayoutBFieldSource, "function");
+});
+// ---------------------------------------------------------------------------
+// PR #40 BLOCK 修复回归（Architecture Review P1 + 3 项）
+//
+// ① Layout B 精确准入（与 parser 四条一致）⇒ 不满足 fail closed、且不产出 bundle
+// ② 401 / 403 / 600 **各自真实覆盖**
+// ③ production 错误不反射任意 `payload.code` / `error.message`
+// ④ development-only 分段 state **多键拒绝**（含"排序靠后"的额外键）
+// ---------------------------------------------------------------------------
+
+const BLOCK_LOCATION = LOCATION;
+const BLOCK_ACTIVITY = ACTIVITY;
+const FAKE_CODE = "SECRET-CODE-ALPHA";
+const FAKE_NET_MESSAGE = "SECRET-NET-ALPHA";
+
+/** 一个可逐页指定 HTTP 状态的假 fetch（用于真实覆盖 401 / 403 / 600）。 */
+function loadStatusCollector(rows, status) {
+  const calls = [];
+  const sandbox = {
+    console,
+    Date,
+    JSON,
+    Promise,
+    Error,
+    Number,
+    Array,
+    String,
+    Object,
+    Math,
+    Set,
+    Map,
+    clearTimeout: () => {},
+    setTimeout: (callback) => {
+      queueMicrotask(callback);
+      return 1;
+    },
+    fetch: async (url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push(body.pageNo);
+      return {
+        status: status,
+        ok: false,
+        headers: { get: () => "application/json;charset=UTF-8" },
+        json: async () => ({ code: 50015000, message: "系统异常" }),
+      };
+    },
+  };
+  sandbox.window = {
+    location: { hostname: "jwxt.sysu.edu.cn" },
+    confirm: () => true,
+    XuehangSysuCollector: undefined,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(SOURCE, sandbox, { filename: "sysu_course_offering_collector.js" });
+  return { collector: sandbox.window.XuehangSysuCollector, calls };
+}
+
+test("Layout B 精确准入：f1 非法 weeks ⇒ fail closed（不得 redact、不得产出 bundle）", async () => {
+  const text = `NOT-WEEKS/${BLOCK_LOCATION}/SECRET-OPAQUE-X/${BLOCK_ACTIVITY}`;
+  const { collector } = loadCollector([rawRow(text)]);
+
+  await assert.rejects(
+    () => collector.collect({ semester: SEMESTER }),
+    (error) => {
+      assert.ok(!error.message.includes("SECRET-OPAQUE-X"), "⛔ 不得回显 opaque 取值");
+      assert.ok(!error.message.includes("NOT-WEEKS"), "⛔ 不得回显 raw token");
+      return true;
+    },
+  );
+});
+
+test("Layout B 精确准入：f4 activity 为空 ⇒ fail closed（不得 redact、不得产出 bundle）", async () => {
+  const text = `1-5周/${BLOCK_LOCATION}/SECRET-OPAQUE-Y/`;
+  const { collector } = loadCollector([rawRow(text)]);
+
+  await assert.rejects(
+    () => collector.collect({ semester: SEMESTER }),
+    (error) => {
+      assert.ok(!error.message.includes("SECRET-OPAQUE-Y"), "⛔ 不得回显 opaque 取值");
+      return true;
+    },
+  );
+});
+
+test("Layout B 精确准入：已批准 parity weeks（单/双周）仍必须被 redact", async () => {
+  for (const weeks of ["1-17单周", "3-4双周", "1-5周校外", "1-5周校内(户外)"]) {
+    const text = `${weeks}/${BLOCK_LOCATION}/SECRET-OPAQUE-Z/${BLOCK_ACTIVITY}`;
+    const out = await collectSingle(text);
+
+    assert.equal(out, `${weeks}/${BLOCK_LOCATION}/REDACTED_OPAQUE/${BLOCK_ACTIVITY}`);
+    assert.ok(!out.includes("SECRET-OPAQUE-Z"), `⛔ ${weeks} 必须脱敏`);
+  }
+});
+
+test("production 错误不反射任意 payload.code", async () => {
+  const sandbox = {
+    console,
+    Date,
+    JSON,
+    Promise,
+    Error,
+    Number,
+    Array,
+    String,
+    Object,
+    Math,
+    Set,
+    Map,
+    clearTimeout: () => {},
+    setTimeout: (callback) => {
+      queueMicrotask(callback);
+      return 1;
+    },
+    fetch: async () => ({
+      status: 200,
+      ok: true,
+      headers: { get: () => "application/json;charset=UTF-8" },
+      json: async () => ({ code: FAKE_CODE, data: { total: 0, rows: [] } }),
+    }),
+  };
+  sandbox.window = {
+    location: { hostname: "jwxt.sysu.edu.cn" },
+    confirm: () => true,
+    XuehangSysuCollector: undefined,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(SOURCE, sandbox, { filename: "sysu_course_offering_collector.js" });
+
+  await assert.rejects(
+    () => sandbox.window.XuehangSysuCollector.collect({ semester: SEMESTER }),
+    (error) => {
+      assert.ok(!error.message.includes(FAKE_CODE), "⛔ 不得反射任意 code 取值");
+      assert.ok(error.message.includes("code_not_200"), "必须给出稳定安全分类");
+      return true;
+    },
+  );
+});
+
+test("production 错误不反射任意 fetch error.message", async () => {
+  const sandbox = {
+    console,
+    Date,
+    JSON,
+    Promise,
+    Error,
+    Number,
+    Array,
+    String,
+    Object,
+    Math,
+    Set,
+    Map,
+    clearTimeout: () => {},
+    setTimeout: (callback) => {
+      queueMicrotask(callback);
+      return 1;
+    },
+    fetch: async () => {
+      throw new Error(FAKE_NET_MESSAGE);
+    },
+  };
+  sandbox.window = {
+    location: { hostname: "jwxt.sysu.edu.cn" },
+    confirm: () => true,
+    XuehangSysuCollector: undefined,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(SOURCE, sandbox, { filename: "sysu_course_offering_collector.js" });
+
+  await assert.rejects(
+    () => sandbox.window.XuehangSysuCollector.collect({ semester: SEMESTER }),
+    (error) => {
+      assert.ok(!error.message.includes(FAKE_NET_MESSAGE), "⛔ 不得反射原始 error.message");
+      assert.ok(error.message.includes("network_error"), "必须给出稳定安全分类");
+      return true;
+    },
+  );
+});
+
+test("单校区采集：401 / 403 / 600 **各自**真实覆盖且立即停止", async () => {
+  for (const status of [401, 403, 600]) {
+    const rows = campusRows(10);
+    const harness = loadStatusCollector(rows, status);
+
+    await assert.rejects(
+      () =>
+        harness.collector.collectApprovedShard({
+          semester: SEMESTER,
+          shardId: "east-campus",
+          maxPages: 10,
+        }),
+      new RegExp(String(status)),
+      `HTTP ${status} 必须按该状态真实失败`,
+    );
+    assert.equal(harness.calls.length, 1, `HTTP ${status} 只允许请求 1 次`);
+  }
+});
+
+test("分段诊断 state：多余的键（排序靠后）必须被拒绝", async () => {
+  const harness = newFieldSourceHarness(fsCorpus());
+  const part1 = await harness.part({ startPage: 1, endPage: 6 });
+
+  const extraState = plain(part1);
+  extraState.zzz_extra = 1; // 排序后位于所有已批准键之后
+  assert.throws(() => harness.finalize(extraState), /键数量与契约不一致|键集合与契约不一致/);
+
+  const extraEntry = plain(part1);
+  extraEntry.processed_pages[0].zzz = "x";
+  assert.throws(() => harness.finalize(extraEntry), /键数量不符|只允许 page_no/);
 });

@@ -2793,3 +2793,55 @@
 
 
 
+
+### 2026-10-06 - PR #40 BLOCK 修复（Codex Architecture Review P1 + 3 项）
+
+- **触发**：Codex Architecture Review 对 PR #40（HEAD `7d04b77`）给出 **BLOCK**；
+  本轮**只**修 blocker，⛔ 不扩展新功能、⛔ 不改 runtime、⛔ 不集成 CLI、
+  ⛔ 不改 full_semester acceptance、⛔ 不 merge。
+- **P1（Layout B redaction admission 不够 exact）** —— collector 4 字段分支原先**只**检查
+  `countNonEmptyDashSegments(fields[1]) >= MIN_LOCATION_SEGMENTS` 就脱敏；
+  现改为与 **parser 四条准入逐条一致**：
+  `f1 = isConfirmedWeeksToken（= expand_weeks 的接受集合，含 plain/单双周/已批准 qualifier）`
+  / `f2 = 严格 location` / `f3 = non-empty opaque` / `f4 = non-empty activity` / `恰好 4 字段`；
+  ⛔ 任一不满足 ⇒ **fail closed**（⛔ 不放行到 bundle：那会把 opaque 原文带出去），
+  且三个校验都**早于**脱敏写入。⛔ 未泛化 Python parser、⛔ 未改 Layout A、⛔ 未改 public Schema。
+  - 新增 node 用例：`NOT-WEEKS/location/SECRET/activity` 与 `1-5周/location/SECRET/`（空 activity）
+    都 fail closed 且**不回显取值**；已批准 parity / qualifier weeks（单/双周 / 校外 / 校内(户外)）
+    **仍必须**被脱敏（⛔ 不得因收紧而误杀合法 Layout B）。
+- **② 单校区 401/403/600 测试**：原用例虽写 `[401,403,600]` 循环，但**始终**配置 `http600`
+  ⇒ 三个状态并未真实分别执行。已新增专用 `loadStatusCollector(rows, status)` 并在
+  三个状态上**各自真实**断言（每个状态 1 次请求 + 立即停止）。⛔ 未改共享 helper。
+- **③ production 错误反射**：
+  - `payload.code` 不再原样进错误消息 ⇒ 稳定安全分类 `code_not_200`；
+  - fetch catch 不再拼接 `error.message` ⇒ 稳定安全分类 `network_error`；
+  - `unwrapErrorMessage()` 改为**只信任自有错误**（message 以 `ERROR_PREFIX` 开头），
+    其它来源（fetch / 运行时 / 第三方）一律折叠为 `unexpected_error`；
+    ⛔ 不再 `String(error)`、⛔ 不回显 `error.message` / `error.name`。
+  - 新增 node 用例：任意 `payload.code`（`SECRET-CODE-ALPHA`）与任意
+    `error.message`（`SECRET-NET-ALPHA`）都**不出现在**错误消息中，且分类存在。
+- **④ development-only 分段 state**：`validateLayoutBFieldSourceState()` 原先**只**逐项比较
+  排序后的键数组 ⇒ **多出来的键若排序靠后会被漏过**；现改为**先比键数量、再逐项校验**
+  （state 顶层 + `processed_pages` 元素各一处）。新增 node 用例断言
+  `zzz_extra`（排序最后）与 `processed_pages[0].zzz` 都被拒绝。
+- **⑤ CLI 事实更新**：远端已可见
+  `feature/course-data-artifact-acceptance-cli` 与 commit
+  `1bb8bfdbaddbaac7280702942ba0783c29722ec8`（"feat(course-data): add artifact acceptance CLI"），
+  已 fetch 确认可达；⛔ **本轮按要求未集成**（记录事实，留待后续裁定）。
+- **回归**：`node --check` exit 0；collector node **166 passed**（159 → 166）；
+  守卫 **124 passed**（121 → 124）；targeted（parser+normalization+importer+pagination+
+  store+snapshot_merge+sharded_capture+campus_scope+guard，`-W error::SyntaxWarning`）
+  **766 passed**；full backend **2 failed / 2470 passed / 2 skipped**（两个既有
+  Windows-only Curriculum 用例，⛔ 未修未 skip）；`compileall app` exit 0；
+  mutation **87 个变异全部变红**（50 Node + 37 Python；collector 与 parser SHA-256 前后一致、
+  字节级还原）。新增变异：`N48/N49` 去掉 weeks / activity 准入、`N50/N51` 重新反射
+  code / message、`N52` 去掉 state 键数量检查；守卫层 `P35–P38` 同主题。
+  ⚠️ **自查**：另有一条 `N53`（去掉 page entry 键数量检查）**不可观测** ——
+  逐项循环边界是 `entryKeys.length`，多出的键必然在逐项比较中失败 ⇒
+  该长度检查对 entry 属**冗余防御**；按"⛔ 不留假绿、也不造无意义测试"的纪律**删除**该变异，
+  保留长度检查本身（defence in depth）。
+- **边界**：⛔ 未 merge；⛔ 未改 public Schema / frozen Provider contract / runtime /
+  Planner·Curriculum 语义；⛔ 未自动登录、⛔ 未读 cookie/token、⛔ 未发真实教务请求；
+  ⛔ 真实材料未入 Git。
+- 下一步：push 同一 branch + 更新 PR #40 描述（本机无 `gh` ⇒ 提供可粘贴文本），
+  之后等 Codex/Architecture Review 重新评审。

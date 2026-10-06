@@ -268,7 +268,17 @@
 
   /** 去掉已经带上的前缀（只用于**包装**下层错误信息时）。 */
   function unwrapErrorMessage(error) {
-    var message = error && error.message ? error.message : String(error);
+    // ⛔ 只信任**本采集器自己**抛出的错误（带 ERROR_PREFIX，且其文案已按安全分类书写）；
+    //    其它来源的 error（fetch / 运行时 / 第三方）一律折叠成稳定分类，
+    //    ⛔ 不回显其 message / name / String(error)。
+    var message = "unexpected_error（⛔ 不回显原始 message）";
+    if (
+      error instanceof Error &&
+      typeof error.message === "string" &&
+      error.message.indexOf(ERROR_PREFIX) === 0
+    ) {
+      message = error.message;
+    }
 
     return message.indexOf(ERROR_PREFIX) === 0 ? message.slice(ERROR_PREFIX.length) : message;
   }
@@ -551,6 +561,18 @@
       // ⛔ 只对**精确** Layout B（f2 是严格 location）脱敏，⛔ 不泛化到所有 4 字段。
       // ⛔ 其余 4 字段形态保持原状，由 Python parser 决定是否 fail closed。
       if (countNonEmptyDashSegments(fields[1].trim()) >= MIN_LOCATION_SEGMENTS) {
+        // ⚠️ **精确 Layout B 准入**（与 Python parser 的四条准入**逐条一致**）：
+        //    f1 已批准 weeks（= `expand_weeks` 的接受集合）/ f2 严格 location /
+        //    f3 non-empty opaque / f4 non-empty activity。
+        //    ⛔ 任一不满足 ⇒ **fail closed**（⛔ 不放行到 bundle：那会把 opaque 原文带出去）。
+        if (!isConfirmedWeeksToken(fields[0].trim())) {
+          fail(
+            "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+              "形如 4 字段 layout B（f2 是 location），但 f1 不是已批准的 weeks token。" +
+              "本采集器不猜格式，已整体停止（⛔ 不回显该字段取值）。"
+          );
+        }
+
         var opaque4 = fields[2];
         if (typeof opaque4 !== "string" || opaque4.trim() === "") {
           fail(
@@ -559,6 +581,16 @@
               "本采集器不写入占位符来掩盖该问题，已整体停止（不回显该字段取值）。"
           );
         }
+
+        var activity4 = fields[3];
+        if (typeof activity4 !== "string" || activity4.trim() === "") {
+          fail(
+            "第 " + pageNo + " 页第 " + humanRowNo + " 条记录的 teachingTimePlaceStr " +
+              "是 4 字段 layout B，但其 activity 槽位为空或不是字符串。" +
+              "本采集器不猜格式，已整体停止（不回显该字段取值）。"
+          );
+        }
+
         fields[2] = REDACTED_OPAQUE;
         return fields.join(FIELD_SEPARATOR);
       }
@@ -729,7 +761,12 @@
       fail("第 " + pageNo + " 页响应不是对象。");
     }
     if (payload.code !== 200) {
-      fail("第 " + pageNo + " 页 code 不是 200（实际 " + payload.code + "）。已整体停止。");
+      // ⛔ 不回显 `payload.code` 原始取值：只给稳定安全分类
+      //    （它是学校返回的任意值，可能携带可识别信息）。
+      fail(
+        "第 " + pageNo + " 页 code 不是 200（安全分类 code_not_200；" +
+          "⛔ 不回显原始 code 取值）。已整体停止。"
+      );
     }
 
     var data = payload.data;
@@ -802,7 +839,12 @@
         })
       });
     } catch (error) {
-      fail("第 " + pageNo + " 页请求失败：" + error.message + "。已整体停止。");
+      // ⛔ 不回显 `error.message`：fetch 抛出的文本可能包含 URL / 内部信息。
+      //    只给稳定安全分类。
+      fail(
+        "第 " + pageNo + " 页请求失败（安全分类 network_error；" +
+          "⛔ 不回显原始 error.message）。已整体停止。"
+      );
     }
 
     if (response.status === 401 || response.status === 403) {
@@ -2486,6 +2528,14 @@
 
     var actualKeys = Object.keys(state).sort();
     var expectedKeys = LAYOUT_B_FIELD_SOURCE_STATE_KEYS.slice().sort();
+    // ⚠️ **先比长度**再逐项比较：只逐项比较会让"多出来的键"在排序靠后时悄悄通过
+    //    （⛔ 多一个键即视为被篡改）。
+    if (actualKeys.length !== expectedKeys.length) {
+      fail(
+        "分段 state 的键数量与契约不一致（多出或缺少键；版本不符或被篡改）；" +
+          "已整体停止（不回显键名）。"
+      );
+    }
     for (var keyIndex = 0; keyIndex < expectedKeys.length; keyIndex += 1) {
       if (actualKeys[keyIndex] !== expectedKeys[keyIndex]) {
         fail(
@@ -2530,6 +2580,13 @@
       }
 
       var entryKeys = Object.keys(entry).sort();
+      // ⚠️ 同样**先比长度**：多出来的键排序靠后时不会被逐项比较发现。
+      if (entryKeys.length !== LAYOUT_B_FIELD_SOURCE_PAGE_KEYS.length) {
+        fail(
+          "processed_pages 的元素只允许 page_no / row_count（键数量不符）；" +
+            "已整体停止（不回显取值）。"
+        );
+      }
       for (var entryKeyIndex = 0; entryKeyIndex < entryKeys.length; entryKeyIndex += 1) {
         if (entryKeys[entryKeyIndex] !== LAYOUT_B_FIELD_SOURCE_PAGE_KEYS[entryKeyIndex]) {
           fail(

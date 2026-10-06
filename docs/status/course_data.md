@@ -1518,6 +1518,23 @@ course_data_import（artifact 级审计；同一 (artifact, semester, scope) 只
   分段式字段来源诊断 = **development-only / safe-to-remove-after-final-East-acceptance**；
   `collectApprovedShard` = **production-needed**。
 
+### PR #40 BLOCK 修复（Codex Review；✅ 已修）
+
+- **Layout B redaction admission 已改为与 parser 四条准入逐条一致**：
+  `f1` 已批准 weeks（`isConfirmedWeeksToken` = `expand_weeks` 接受集合）/
+  `f2` 严格 location / `f3` non-empty opaque / `f4` non-empty activity / 恰好 4 字段；
+  ⛔ 任一不满足 ⇒ **fail closed**（⛔ 不放行到 bundle）；三个校验都早于脱敏写入。
+  ⛔ 未泛化 parser、⛔ 未改 Layout A、⛔ 未改 public Schema。
+- **production 错误不再反射任意取值**：`payload.code` → 安全分类 `code_not_200`；
+  fetch `error.message` → 安全分类 `network_error`；`unwrapErrorMessage()` 只信任
+  自有错误（`ERROR_PREFIX` 前缀），其余折叠为 `unexpected_error`。
+- **分段 state 多键拒绝**：先比**键数量**再逐项校验（state 顶层 + `processed_pages` 元素），
+  修补"排序靠后的多余键被漏过"的缺陷。
+- **单校区 401/403/600 测试**改为三个状态**各自真实**执行（专用 status harness）。
+- **CLI 事实**：`feature/course-data-artifact-acceptance-cli`
+  / commit `1bb8bfdbaddbaac7280702942ba0783c29722ec8` **已在远端可见**（已 fetch 确认）；
+  ⛔ 本轮按要求**未集成**。
+
 ## 下一步
 
 - **不再等待 DG-07C / DG-07D**：DG-07A / B / C / D 已全部 IMPLEMENTED / REVIEWED，

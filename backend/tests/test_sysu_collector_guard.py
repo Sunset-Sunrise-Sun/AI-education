@@ -2607,6 +2607,108 @@ def test_field_source_reuses_the_same_predicates_as_the_full_diagnostic(
 
 
 # ---------------------------------------------------------------------------
+# PR #40 BLOCK 修复：Layout B 精确准入 / 错误不反射 / 诊断 state 多键拒绝
+# ---------------------------------------------------------------------------
+
+
+def test_collector_layout_b_admission_matches_the_parser_four_conditions(
+    collector_source: str,
+) -> None:
+    """collector 的 Layout B 准入必须与 parser 的四条**逐条一致**（⛔ 不只看 location）。"""
+
+    branch_start = collector_source.index("    if (fieldCount === 4) {")
+    branch_end = collector_source.index("    if (fieldCount === 5) {", branch_start)
+    branch = _collector_code_only(collector_source[branch_start:branch_end])
+
+    # f2：严格 location（复用既有门槛）
+    assert "countNonEmptyDashSegments(fields[1].trim()) >= MIN_LOCATION_SEGMENTS" in branch
+    # f1：已批准 weeks（= parser 侧 `expand_weeks` 的接受集合）
+    assert "if (!isConfirmedWeeksToken(fields[0].trim())) {" in branch, (
+        "⛔ 必须校验 f1 是已批准 weeks（与 parser 的 expand_weeks 对齐）"
+    )
+    # f3：non-empty opaque
+    assert 'var opaque4 = fields[2];' in branch
+    assert 'if (typeof opaque4 !== "string" || opaque4.trim() === "") {' in branch
+    # f4：non-empty activity
+    assert 'var activity4 = fields[3];' in branch
+    assert 'if (typeof activity4 !== "string" || activity4.trim() === "") {' in branch
+    # 三个校验都必须早于脱敏写入（⛔ 不得先写占位符再校验）
+    redact = branch.index("fields[2] = REDACTED_OPAQUE;")
+    for check in (
+        "if (!isConfirmedWeeksToken(fields[0].trim())) {",
+        'if (typeof opaque4 !== "string" || opaque4.trim() === "") {',
+        'if (typeof activity4 !== "string" || activity4.trim() === "") {',
+    ):
+        assert branch.index(check) < redact, f"校验必须早于脱敏：{check}"
+
+    # ⛔ 全部 fail closed（不产出 bundle）：错误文案不得回显取值
+    assert "不回显该字段取值" in collector_source
+    # ⛔ 未归类 4 字段仍然原样放行（⛔ 不泛化）
+    assert "return segment;" in branch
+
+    # parser 侧仍是四条精确准入（⛔ 未泛化 parser）
+    parser = parser_source()
+    layout_b_start = parser.index("def _try_parse_four_field_non_concrete_layout_b(")
+    layout_b_end = parser.index("def parse_teaching_time_place(", layout_b_start)
+    parser_layout_b = parser[layout_b_start:layout_b_end]
+    for required in (
+        "expand_weeks(fields[0].strip())",
+        "_classify_five_field_token(fields[1].strip()) != _FIVE_FIELD_LOCATION",
+        "if fields[2] != _REDACTED_OPAQUE_PLACEHOLDER:",
+        'if not isinstance(activity, str) or activity.strip() == "":',
+    ):
+        assert required in parser_layout_b, f"parser 的 Layout B 准入缺失：{required}"
+
+
+def test_collector_production_errors_do_not_reflect_raw_values(
+    collector_source: str,
+) -> None:
+    """⛔ payload.code / error.message / String(error) 不得进入生产错误消息。"""
+
+    # ⚠️ 反模式检查只看**代码**：注释里会**说明**"不回显 message / String(error)"。
+    code = _collector_code_only(collector_source)
+
+    # 业务码：只给稳定安全分类
+    assert "安全分类 code_not_200" in code
+    assert "+ payload.code" not in code, "⛔ 不得拼接 payload.code"
+
+    # fetch catch：只给稳定安全分类
+    assert "安全分类 network_error" in code
+    assert "+ error.message" not in code, "⛔ 不得拼接 error.message"
+    assert "String(error)" not in code, "⛔ 不得 String(error)"
+
+    # unwrapErrorMessage 只信任**自有**错误（带 ERROR_PREFIX）
+    unwrap_start = collector_source.index("function unwrapErrorMessage(")
+    unwrap_end = collector_source.index("function sleep(", unwrap_start)
+    unwrap = _collector_code_only(collector_source[unwrap_start:unwrap_end])
+    assert "error.message.indexOf(ERROR_PREFIX) === 0" in unwrap
+    assert "unexpected_error" in unwrap
+
+
+def test_field_source_state_rejects_extra_keys_by_length_first(
+    collector_source: str,
+) -> None:
+    """⛔ 分段 state 必须先比**键数量**再逐项比较（否则排序靠后的多键会漏过）。"""
+
+    section = _collector_code_only(_field_source_section_slice(collector_source))
+
+    assert "if (actualKeys.length !== expectedKeys.length) {" in section, (
+        "state 顶层键必须先比长度"
+    )
+    assert (
+        "if (entryKeys.length !== LAYOUT_B_FIELD_SOURCE_PAGE_KEYS.length) {" in section
+    ), "processed_pages 元素键必须先比长度"
+
+    # 长度检查必须早于逐项比较
+    assert section.index("actualKeys.length !== expectedKeys.length") < section.index(
+        "actualKeys[keyIndex] !== expectedKeys[keyIndex]"
+    )
+    assert section.index(
+        "entryKeys.length !== LAYOUT_B_FIELD_SOURCE_PAGE_KEYS.length"
+    ) < section.index("entryKeys[entryKeyIndex] !== LAYOUT_B_FIELD_SOURCE_PAGE_KEYS")
+
+
+# ---------------------------------------------------------------------------
 # Single-approved-campus capture（Architecture Review 裁定）
 #
 # ⛔ 调用方不能指定校区号；⛔ 五校区编排不变；⛔ 北校园 suspended ⇒ fail closed；
