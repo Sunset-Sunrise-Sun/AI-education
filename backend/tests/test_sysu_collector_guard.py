@@ -164,11 +164,12 @@ def test_collector_has_exactly_one_global_pacing_controller(collector_source: st
     """
 
     assert collector_source.count("function createRequestPacer(") == 1
-    # 定义 1 处 + 三个入口各创建 1 个（每次 run 恰好一个 controller）；
+    # 定义 1 处 + 四个入口各创建 1 个（每次 run 恰好一个 controller）；
     #   `collect()` / `collectSharded()` 是生产入口，
-    #   `diagnoseLayoutBCandidates()` 是**一次性零留存诊断**（多页请求 ⇒ 同样必须受同一 pacing 约束）。
+    #   `diagnoseLayoutBCandidates()` 是**一次性零留存诊断**（多页请求 ⇒ 同样必须受同一 pacing 约束），
+    #   `diagnoseLayoutBFieldSourcePart()` 是**分段式诊断**（每段一个 controller，同样不自己 sleep）。
     # 只看代码，不看注释。
-    assert _collector_code_only(collector_source).count("createRequestPacer(") == 4
+    assert _collector_code_only(collector_source).count("createRequestPacer(") == 5
 
     pacer = _js_function_slice(
         collector_source, "function createRequestPacer(", "function requireAllowedHost("
@@ -659,11 +660,12 @@ def test_diagnostic_uses_the_shared_request_path(collector_source: str) -> None:
     #   `collectPages()` 分页循环（`collect()` 与每个 shard 都走它）、
     #   `requestReportedTotal()` baseline 探针、
     #   2C1B / 2C1C 诊断各只调一次、
-    #   Layout B 一次性诊断（**分页**，因此复用同一取页函数 + 同一 pacer）。
+    #   Layout B 一次性诊断（**分页**，因此复用同一取页函数 + 同一 pacer）、
+    #   分段式 f3 字段来源诊断（同样分页 + 同一 pacer）。
     # ⚠️ 只看**代码**（注释里也提到 `requestPage()`）。
     code = _collector_code_only(collector_source)
     assert code.count("requestPage(") == code.count("await requestPage(") + 1
-    assert code.count("await requestPage(") == 5
+    assert code.count("await requestPage(") == 6
 
     # 唯一的 `fetch(` 仍在 `requestPage` 内部（⛔ 新增入口不得自己发请求）
     assert collector_source.count("fetch(") == 1
@@ -1748,7 +1750,10 @@ def test_sharded_serializers_refuse_incomplete_results(collector_source: str) ->
 # ---------------------------------------------------------------------------
 
 _LAYOUT_B_SECTION_START = "var LAYOUT_B_FIELD_COUNT"
-_LAYOUT_B_SECTION_END = "// 相关性诊断（Phase 2B-2C1C）"
+_LAYOUT_B_SECTION_END = "// 分段式 f3 字段来源诊断"
+
+_FIELD_SOURCE_SECTION_START = "var LAYOUT_B_FIELD_SOURCE_STATE_VERSION"
+_FIELD_SOURCE_SECTION_END = "// 相关性诊断（Phase 2B-2C1C）"
 
 _LAYOUT_B_RETURN_KEYS = (
     "candidate_count",
@@ -2259,4 +2264,330 @@ def test_layout_b_f3_match_histogram_excludes_ids_and_never_echoes_values(
     build = code[build_start:build_end]
     assert "row[" not in build
     assert "f3FieldMatchCounts.get(fieldName)" in build
+
+
+# ---------------------------------------------------------------------------
+# 分段式 f3 字段来源诊断（Architecture Review 方案 D）
+#
+# ⛔ 契约**恰好六个**字段（不含 activity-membership 计数，也不用 0 / null 占位）；
+# ⛔ checkpoint 零敏感（数值计数 + 字段名 → 计数 + 安全分页元数据）；
+# ⛔ 生产链路完全不引用本接口；⛔ 请求 / pacing / fail-closed 行为完全复用既有路径。
+# ---------------------------------------------------------------------------
+
+_FIELD_SOURCE_STATE_KEYS = (
+    "version",
+    "semester",
+    "openingSchoolNumber",
+    "page_size",
+    "expected_total",
+    "processed_pages",
+    "candidate_count",
+    "comparable_teaching_name_count",
+    "f3_equals_teaching_name_count",
+    "f4_equals_teaching_name_count",
+    "f4_activity_count",
+    "f3_matching_raw_fields",
+)
+
+_FIELD_SOURCE_RESULT_KEYS = (
+    "candidate_count",
+    "comparable_teaching_name_count",
+    "f3_equals_teaching_name_count",
+    "f4_equals_teaching_name_count",
+    "f4_activity_count",
+    "f3_matching_raw_fields",
+)
+
+_FIELD_SOURCE_MEMBERSHIP_KEYS = (
+    "f3_in_confirmed_activity_set_count",
+    "f4_in_confirmed_activity_set_count",
+)
+
+
+def _field_source_section_slice(collector_source: str) -> str:
+    """截取分段式诊断整段（常量 + 纯函数 + 两个入口）。"""
+
+    start = collector_source.index(_FIELD_SOURCE_SECTION_START)
+    end = collector_source.index(_FIELD_SOURCE_SECTION_END)
+    assert start < end, "分段式诊断应位于 C1C 段落之前"
+
+    return collector_source[start:end]
+
+
+def _field_source_part_slice(collector_source: str) -> str:
+    """只截取 `diagnoseLayoutBFieldSourcePart()` 的代码。"""
+
+    return _js_function_slice(
+        collector_source,
+        "async function diagnoseLayoutBFieldSourcePart(",
+        "function finalizeLayoutBFieldSource(",
+    )
+
+
+def _field_source_finalize_slice(collector_source: str) -> str:
+    """只截取 `finalizeLayoutBFieldSource()` 的代码。"""
+
+    return _js_function_slice(
+        collector_source,
+        "function finalizeLayoutBFieldSource(",
+        _FIELD_SOURCE_SECTION_END,
+    )
+
+
+def test_field_source_api_is_exposed_and_not_used_by_production(
+    collector_source: str,
+) -> None:
+    """⛔ 生产链路 / 完整诊断都不得引用分段式接口；两个入口必须显式暴露。"""
+
+    assert "diagnoseLayoutBFieldSourcePart: diagnoseLayoutBFieldSourcePart" in (
+        collector_source
+    )
+    assert "finalizeLayoutBFieldSource: finalizeLayoutBFieldSource" in collector_source
+
+    expose_index = collector_source.rindex("window.XuehangSysuCollector")
+    remainder = collector_source[expose_index + len("window.XuehangSysuCollector") :]
+    for name in ("diagnoseLayoutBFieldSourcePart(", "finalizeLayoutBFieldSource("):
+        assert name not in remainder, f"挂载之后不得自动调用：{name}"
+
+    blocks = {
+        "collectPages": _js_function_slice(
+            collector_source, "async function collectPages(", "async function requestReportedTotal("
+        ),
+        "requestReportedTotal": _js_function_slice(
+            collector_source, "async function requestReportedTotal(", "async function collect("
+        ),
+        "collect": _js_function_slice(
+            collector_source, "async function collect(", "// 五校区 shard 编排"
+        ),
+        "collectSharded": _collect_sharded_slice(collector_source),
+        "fullDiagnostic": _layout_b_diagnostic_slice(collector_source),
+        "minimizeRow": _minimize_row_code(collector_source),
+    }
+
+    for name, block in blocks.items():
+        for forbidden in (
+            "FieldSource",
+            "LAYOUT_B_FIELD_SOURCE",
+            "diagnoseLayoutBFieldSourcePart",
+            "finalizeLayoutBFieldSource",
+        ):
+            assert forbidden not in block, f"{name} 不得引用分段式诊断：{forbidden}"
+
+
+def test_field_source_contract_has_exactly_six_keys(collector_source: str) -> None:
+    """最终结果**恰好六个**键：⛔ 不含 activity-membership 计数、⛔ 不用 0 / null 占位。"""
+
+    assert "var LAYOUT_B_FIELD_SOURCE_RESULT_KEYS = [" in collector_source
+
+    finalize = _collector_code_only(_field_source_finalize_slice(collector_source))
+    return_start = finalize.index("return {")
+    returned = finalize[return_start:]
+
+    keys = {
+        line.strip().split(":")[0]
+        for line in returned.splitlines()
+        if ":" in line and line.strip().startswith(tuple(_FIELD_SOURCE_RESULT_KEYS))
+    }
+    assert keys == set(_FIELD_SOURCE_RESULT_KEYS), (
+        f"分段式诊断只允许六个输出字段，实际：{sorted(keys)}"
+    )
+
+    for forbidden in (
+        "rows",
+        "teachingName",
+        "segment",
+        "data.rows",
+        "new Set(",
+        "new Map(",
+        "courseNum",
+        "classNumber",
+        "timePlaceId",
+    ):
+        assert forbidden not in returned, f"分段式诊断返回值不得包含：{forbidden}"
+
+    # ⛔ 两个 activity-membership 计数**不得存在**于本接口（既不算也不用占位）
+    section = _collector_code_only(_field_source_section_slice(collector_source))
+    for membership_key in _FIELD_SOURCE_MEMBERSHIP_KEYS:
+        assert membership_key not in section, f"⛔ 分段式诊断不得出现：{membership_key}"
+    assert "activity_set" not in section
+    assert "confirmedActivityTokens" not in section
+
+
+def test_field_source_checkpoint_schema_is_closed_and_value_free(
+    collector_source: str,
+) -> None:
+    """checkpoint 的键集合封闭；只写数值计数 + 字段名 → 计数 + 安全分页元数据。"""
+
+    section = _collector_code_only(_field_source_section_slice(collector_source))
+
+    start = section.index("LAYOUT_B_FIELD_SOURCE_STATE_KEYS = [")
+    end = section.index("];", start)
+    keys_block = section[start:end]
+    for key in _FIELD_SOURCE_STATE_KEYS:
+        assert f'"{key}"' in keys_block, f"state 键清单缺少：{key}"
+    assert keys_block.count('"') == len(_FIELD_SOURCE_STATE_KEYS) * 2, (
+        "state 键清单必须**恰好**是已批准键（⛔ 不得多写）"
+    )
+
+    assert 'LAYOUT_B_FIELD_SOURCE_PAGE_KEYS = ["page_no", "row_count"]' in section
+
+    # 组装 state 的函数只能写这些键；⛔ 不得引用 row / 取值
+    builder = _js_function_slice(
+        collector_source,
+        "function buildLayoutBFieldSourceState(",
+        "function accumulateLayoutBFieldSourceRows(",
+    )
+    for key in _FIELD_SOURCE_STATE_KEYS:
+        assert f"{key}:" in builder, f"state 组装缺少：{key}"
+
+    builder_code = _collector_code_only(builder)
+    builder_return_start = builder_code.index("return {")
+    builder_return = builder_code[builder_return_start : builder_code.index("};", builder_return_start)]
+    builder_keys = {
+        line.strip().split(":")[0]
+        for line in builder_return.splitlines()
+        if ":" in line and line.strip()
+    }
+    assert builder_keys == set(_FIELD_SOURCE_STATE_KEYS), (
+        f"state 组装只允许写已批准键，实际：{sorted(builder_keys)}"
+    )
+
+    for forbidden in ("row[", "rows[", "teachingName", "segment", "Object.fromEntries(fieldMatches)"):
+        assert forbidden not in builder, f"state 组装不得引用：{forbidden}"
+    assert "writeFieldMatchCounts(fieldMatches)" in builder
+
+    # 逐行累计只允许把**字段名**写进映射
+    accumulator = _js_function_slice(
+        collector_source,
+        "function accumulateLayoutBFieldSourceRows(",
+        "async function diagnoseLayoutBFieldSourcePart(",
+    )
+    assert 'typeof row[fieldName] !== "string"' in accumulator
+    assert "if (thirdField === row[fieldName]) {" in accumulator
+    assert accumulator.count("row[fieldName]") == 2
+    assert accumulator.count("fieldMatches.set(") == 1
+    assert "matchedSoFar === undefined ? 1 : matchedSoFar + 1" in accumulator
+
+
+def test_field_source_reuses_the_shared_request_path_and_pacing(
+    collector_source: str,
+) -> None:
+    """⛔ 不复制认证 / 请求逻辑；⛔ 不放开 pageSize / delayMs；校验先于请求。"""
+
+    part = _collector_code_only(_field_source_part_slice(collector_source))
+
+    assert "requireAllowedHost();" in part
+    assert part.count("await requestPage(") == 1
+    assert "requestPage(semester, pageNo, pageSize, campus, pacer)" in part
+    assert "createRequestPacer(DEFAULT_DELAY_MS)" in part
+    assert "var pageSize = DEFAULT_PAGE_SIZE;" in part
+    assert "opts.pageSize" not in part
+    assert "opts.delayMs" not in part
+
+    # ⛔ 不自己等待 / 不发 raw fetch / 不碰认证
+    for forbidden in ("await sleep(", "fetch(", "credentials", "XMLHttpRequest"):
+        assert forbidden not in part, f"⛔ 分段式诊断不得使用：{forbidden}"
+
+    assert part.index("unexpected.length > 0") < part.index("await requestPage(")
+    assert part.index("startPage < FIRST_PAGE_NO") < part.index("await requestPage(")
+    assert part.index("endPage > ABSOLUTE_MAX_PAGES") < part.index("await requestPage(")
+
+
+def test_field_source_fails_closed_on_incomplete_or_inconsistent_state(
+    collector_source: str,
+) -> None:
+    """重复 / 重叠 / 缺页 / 未取满 / total 漂移 / 绑定不一致 → 全部 fail closed。"""
+
+    part = _collector_code_only(_field_source_part_slice(collector_source))
+    finalize = _collector_code_only(_field_source_finalize_slice(collector_source))
+
+    # 重复 / 重叠页：在**发请求之前**拒绝，且不静默覆盖
+    assert "if (seenPages[pageNo] === true) {" in part
+    assert part.index("if (seenPages[pageNo] === true) {") < part.index(
+        "var data = await requestPage("
+    )
+    assert "不静默覆盖" in collector_source
+
+    # total 漂移
+    assert "data.total !== expectedTotal" in part
+
+    # semester / shard 绑定
+    assert "previous.semester !== semester" in part
+    assert "previous.openingSchoolNumber !== campus" in part
+
+    # 版本 / 键集合 / 计数 / 页码元素校验
+    assert "state.version !== LAYOUT_B_FIELD_SOURCE_STATE_VERSION" in collector_source
+    assert "分段 state 的键集合与契约不一致" in collector_source
+    assert "requireFieldSourceCount(" in collector_source
+    assert "出现重复页" in collector_source
+    assert "processed_pages 的元素只允许 page_no / row_count" in collector_source
+
+    # 覆盖完整性（无洞 + 取满 + 页数与 total 自洽）
+    assert "缺少第 " in finalize and "页（覆盖不连续）" in collector_source
+    assert "totalRows < parsed.expectedTotal" in finalize
+    assert "Math.ceil(parsed.expectedTotal / DEFAULT_PAGE_SIZE)" in finalize
+    assert "maxPage !== requiredPages" in finalize
+
+    # ⛔ 全部走 fail closed（⛔ 不得吞掉错误继续合并）
+    assert "catch (" not in part
+    assert "catch (" not in finalize
+
+
+def test_field_source_does_not_touch_auth_storage_or_output_channels(
+    collector_source: str,
+) -> None:
+    """⛔ 不读认证材料 / 不落盘 / 不 console / 不进 bundle。"""
+
+    section = _field_source_section_slice(collector_source)
+
+    for forbidden in (
+        "localStorage",
+        "sessionStorage",
+        "document.cookie",
+        "indexedDB",
+        "JSON.stringify",
+        "console.",
+        "Blob",
+        "download",
+        "createObjectURL",
+        "KEPT_ROW_FIELDS",
+        "REQUIRED_ROW_FIELDS",
+        "bundle",
+        "minimizeRow",
+        "redact",
+    ):
+        assert forbidden not in section, f"⛔ 分段式诊断不得出现：{forbidden}"
+
+    # 唯一允许的 window 用法是确认框
+    assert section.count("window.") == 1
+    assert "window.confirm(" in section
+
+
+def test_field_source_reuses_the_same_predicates_as_the_full_diagnostic(
+    collector_source: str,
+) -> None:
+    """⛔ 不复制候选 / 排除 / activity 判别逻辑：一律复用既有私有函数。"""
+
+    section = _collector_code_only(_field_source_section_slice(collector_source))
+
+    for helper in (
+        "isLayoutBCandidate(",
+        "isExcludedMatchFieldName(",
+        "isNonEmptyActivityToken(",
+    ):
+        assert helper in section, f"分段式诊断必须复用：{helper}"
+
+    # 这些函数在文件中**只能有一处定义**（⛔ 不得为分段诊断复制一份）
+    for definition in (
+        "function isLayoutBCandidate(",
+        "function isExcludedMatchFieldName(",
+        "function isNonEmptyActivityToken(",
+        "function hasInternalIdShape(",
+        "function confirmedActivitySlotIndex(",
+        "function countNonEmptyDashSegments(",
+    ):
+        assert collector_source.count(definition) == 1, f"⛔ 不得复制定义：{definition}"
+
+    # 读排课字段走 `row[SCHEDULE_FIELD]`：⛔ 段内不出现字面量
+    assert "teachingTimePlaceStr" not in section
 

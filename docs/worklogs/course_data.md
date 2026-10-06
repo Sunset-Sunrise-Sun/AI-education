@@ -2540,3 +2540,61 @@
   frontend；⛔ 真实材料未入 Git；**真实请求数 0**。
 - 下一步：等待 Architecture Review 对 A / C / D 中任一路线（或"接受不续跑"）的裁定；
   ⛔ 在此之前不实现分段诊断。
+
+### 2026-10-05 - 方案 D 实现：**分段式 f3 字段来源诊断**（六字段契约 + 零敏感 checkpoint）
+
+- **裁定**：Architecture Review 选择 **方案 D** ——
+  ⛔ 不改 pacing / cooldown、⛔ 不做 token / digest checkpoint、
+  ✅ **保留现有完整 `diagnoseLayoutBCandidates()` 不动**，
+  新增**仅用于 f3 raw-field 来源确认**的分段式诊断。
+- **新增 API**（`tools/sysu_course_offering_collector.js`；⛔ 生产链路零引用）：
+
+  ```js
+  const part1 = await window.XuehangSysuCollector.diagnoseLayoutBFieldSourcePart({
+    semester, openingSchoolNumber, startPage: 1, endPage: 5
+  });
+  const part2 = await window.XuehangSysuCollector.diagnoseLayoutBFieldSourcePart({
+    semester, openingSchoolNumber, startPage: 6, endPage: 6, previousState: part1
+  });
+  const final = window.XuehangSysuCollector.finalizeLayoutBFieldSource(part2);
+  ```
+
+- **契约恰好六个输出**：`candidate_count` / `comparable_teaching_name_count` /
+  `f3_equals_teaching_name_count` / `f4_equals_teaching_name_count` /
+  `f4_activity_count` / `f3_matching_raw_fields`；
+  ⛔ **不含** `f3_in_confirmed_activity_set_count` /
+  `f4_in_confirmed_activity_set_count`（不是 0 / null，而是**不存在**于本接口契约）。
+- **checkpoint schema（封闭键集合）**：`version` / `semester` / `openingSchoolNumber` /
+  `page_size` / `expected_total` / `processed_pages: [{page_no, row_count}]` /
+  五个数值计数 / `f3_matching_raw_fields: {字段名 → 计数}`；
+  ⛔ 无任何 raw value；多一个键或版本不符 → fail closed。
+- **校验（全部 fail closed）**：重复 / 重叠页（**发请求之前**拒绝，⛔ 不静默覆盖）、
+  缺页（页码恰好 1..N 无洞）、`Σ row_count >= expected_total`（取满）、
+  **页数与 total 自洽**（`N == ceil(total / page_size)`，防止改小 total 伪造完成）、
+  `semester` / `shard` / `page_size` / `version` 绑定。
+- **顺序无关**：支持无序合并（`6 + 1..5`、`4..6 + 1..3`），段间命中计数**累加**。
+- **请求行为完全复用**：`requireAllowedHost()` / `requestPage()` / 全局 pacer / 页校验 /
+  total 一致性；⛔ 不开放 `pageSize` / `delayMs`；⛔ 不改 batch / cooldown；
+  401 / 403 / 600 / malformed / total 漂移 → 立即整体停止。
+- **等价性（Node 测试逐项断言）**：`finalize(part(1..6))` == `1..5 + 6` == `1..3 + 4..6`
+  == 逐页 `1+2+3+4+5+6` == 无序合并；另外与完整诊断的**六个重叠字段**逐项相等（防口径漂移）。
+- **测试规模**：Node **124 → 145**（+21）；守卫 **102 → 109**（+7）；
+  变异 **39 → 64**（+25）**64/64 全部变红**，采集器 SHA-256 前后一致并字节级还原。
+- **⚠️ 三处自查纠正（都曾产生假信号）**：
+  1. 变异脚本的 `-k layout_b` **把新守卫 `field_source` 整批 deselect** ⇒ P19–P24
+     出现**假绿灯**；已改为 `-k "layout_b or field_source"`；
+  2. 分段实现与完整诊断有**同形代码**（缩进不同），旧锚点按"第一处"替换会改到**另一处**
+     ⇒ `N27`（total 漂移防护）出现**假绿灯**；已给 runner 加**锚点唯一性强制**
+     （>1 处即报 `AMB` 视同失败），并给全部 64 个锚点标注 `[full]` / `[seg]`；
+  3. 新测试里 VM realm 对象直接 `deepStrictEqual` 会因跨 realm 原型不同而失败、
+     同步函数误用 `assert.rejects` ⇒ 已改为 `plain()` 摊平 + 对 `finalize` 用 `assert.throws`。
+- **测试结果**：`node --check` exit 0；collector node **145 passed**；守卫 **109 passed**；
+  targeted（parser+normalization+importer+pagination+guard，`-W error::SyntaxWarning`）
+  **599 passed**；full backend **2 failed / 2418 passed / 2 skipped**
+  （两个为**既有** Windows Curriculum 用例）；`compileall app` exit 0。
+- **边界**：⛔ 未 push / 未 PR / 未 merge；⛔ 未改 Layout B parser / 4 字段 redaction /
+  production `collect`·`collectSharded` / Capture Bundle format / `captured_pages.py` /
+  store / public Schema / runtime wiring / Planner / Curriculum / frontend；
+  ⛔ 真实材料未入 Git；**真实请求数 0**。
+- 下一步：负责人按两段流程跑真实诊断（pages 1..5 → 重新登录 → page 6 + previousState）
+  并回传六个结果字段。

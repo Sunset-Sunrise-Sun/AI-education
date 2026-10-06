@@ -2111,6 +2111,522 @@
   }
 
   // ---------------------------------------------------------------------
+  // 分段式 f3 字段来源诊断（Architecture Review 方案 D；**仅** f3 raw-field 来源确认）
+  //
+  // ⛔ 与完整 `diagnoseLayoutBCandidates()` **并存、互不引用**；
+  //    本接口**不提供** activity-membership 计数：既不计算、也⛔ 不用 0 / null 占位，
+  //    它们**不存在**于本接口的契约里（真实 one-shot 的历史结果继续作为历史证据）。
+  // ⛔ 生产链路（`collect()` / `collectSharded()` / 分页核心）完全不引用本接口。
+  // ⛔ checkpoint **零敏感**：只有数值计数 + 字段名 → 计数；⛔ 不落盘、⛔ 不写 bundle、
+  //    ⛔ 无任何 raw value / 原文 / 标识 / 认证材料。
+  // ⛔ 请求行为**完全复用**既有路径：hostname guard / `requestPage()` / 全局 pacer /
+  //    页校验 / total 一致性；⛔ 不改 pacing 常量、⛔ 不 retry。
+  // ⛔ 覆盖不完整 / 重复 / 重叠 / 绑定不一致 → **fail closed**（⛔ 不返回近似结果）。
+  // ---------------------------------------------------------------------
+
+  /** 分段 state 的格式版本（⛔ 不一致即 fail closed）。 */
+  var LAYOUT_B_FIELD_SOURCE_STATE_VERSION = 1;
+
+  /** 分段接口允许的 options（**严格白名单**；⛔ 不开放 pageSize / delayMs / firstPageNo）。 */
+  var LAYOUT_B_FIELD_SOURCE_ALLOWED_OPTIONS = [
+    "semester",
+    "openingSchoolNumber",
+    "startPage",
+    "endPage",
+    "previousState"
+  ];
+
+  /** state 顶层键（**精确**集合；多一个 / 少一个都视为被篡改 → fail closed）。 */
+  var LAYOUT_B_FIELD_SOURCE_STATE_KEYS = [
+    "version",
+    "semester",
+    "openingSchoolNumber",
+    "page_size",
+    "expected_total",
+    "processed_pages",
+    "candidate_count",
+    "comparable_teaching_name_count",
+    "f3_equals_teaching_name_count",
+    "f4_equals_teaching_name_count",
+    "f4_activity_count",
+    "f3_matching_raw_fields"
+  ];
+
+  /** 最终结果的键（**恰好六个**；⛔ 不含任何 activity-membership 计数）。 */
+  var LAYOUT_B_FIELD_SOURCE_RESULT_KEYS = [
+    "candidate_count",
+    "comparable_teaching_name_count",
+    "f3_equals_teaching_name_count",
+    "f4_equals_teaching_name_count",
+    "f4_activity_count",
+    "f3_matching_raw_fields"
+  ];
+
+  /** `processed_pages` 元素只允许这两个键（page number / count：安全数字）。 */
+  var LAYOUT_B_FIELD_SOURCE_PAGE_KEYS = ["page_no", "row_count"];
+
+  /** 非负整数校验（⛔ 不回显取值，只回显字段语义名）。 */
+  function requireFieldSourceCount(value, label) {
+    if (!Number.isInteger(value) || value < 0) {
+      fail("分段诊断的 " + label + " 必须是非负整数；已整体停止（不回显取值）。");
+    }
+    return value;
+  }
+
+  /** 校验 `f3_matching_raw_fields`：字段名 → **>= 1** 的整数计数；⛔ 不接受任何取值。 */
+  function readFieldMatchCounts(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      fail("f3_matching_raw_fields 必须是「字段名 → 计数」的对象；已整体停止（不回显取值）。");
+    }
+
+    var fieldNames = Object.keys(value);
+    var counts = new Map();
+
+    for (var index = 0; index < fieldNames.length; index += 1) {
+      var fieldName = fieldNames[index];
+      if (typeof fieldName !== "string" || fieldName === "") {
+        fail("f3_matching_raw_fields 含空字段名；已整体停止（不回显取值）。");
+      }
+      var count = value[fieldName];
+      if (!Number.isInteger(count) || count < 1) {
+        fail("f3_matching_raw_fields 的计数必须是 >= 1 的整数；已整体停止（不回显取值）。");
+      }
+      counts.set(fieldName, count);
+    }
+
+    return counts;
+  }
+
+  /** 把字段名 → 计数 写回普通对象（字段名按码点排序；⛔ 无任何取值）。 */
+  function writeFieldMatchCounts(counts) {
+    return Object.fromEntries(
+      Array.from(counts.keys())
+        .sort()
+        .map(function (fieldName) {
+          return [fieldName, counts.get(fieldName)];
+        })
+    );
+  }
+
+  /**
+   * 校验（并规整）一个分段 state。
+   *
+   * ⛔ 不信任外部传入的 state：键集合、版本、绑定元数据、页码唯一性、计数类型全部校验；
+   * 任何不符合 → **fail closed**（⛔ 不回显被篡改的内容）。
+   */
+  function validateLayoutBFieldSourceState(state) {
+    if (!state || typeof state !== "object" || Array.isArray(state)) {
+      fail("分段 state 必须是对象；已整体停止（不回显取值）。");
+    }
+
+    var actualKeys = Object.keys(state).sort();
+    var expectedKeys = LAYOUT_B_FIELD_SOURCE_STATE_KEYS.slice().sort();
+    for (var keyIndex = 0; keyIndex < expectedKeys.length; keyIndex += 1) {
+      if (actualKeys[keyIndex] !== expectedKeys[keyIndex]) {
+        fail(
+          "分段 state 的键集合与契约不一致（版本不符或被篡改）；" +
+            "已整体停止（不回显键名）。"
+        );
+      }
+    }
+
+    if (state.version !== LAYOUT_B_FIELD_SOURCE_STATE_VERSION) {
+      fail("分段 state 的 version 不受支持；已整体停止（不回显取值）。");
+    }
+    if (typeof state.semester !== "string" || state.semester.trim() === "") {
+      fail("分段 state 的 semester 非法；已整体停止（不回显取值）。");
+    }
+    if (
+      state.openingSchoolNumber !== null &&
+      (typeof state.openingSchoolNumber !== "string" ||
+        state.openingSchoolNumber.trim() === "")
+    ) {
+      fail("分段 state 的 openingSchoolNumber 非法；已整体停止（不回显取值）。");
+    }
+    if (state.page_size !== DEFAULT_PAGE_SIZE) {
+      fail("分段 state 的 page_size 与已验证口径不一致；已整体停止（不回显取值）。");
+    }
+
+    var expectedTotal = requireFieldSourceCount(state.expected_total, "expected_total");
+    if (expectedTotal < 1) {
+      fail("分段 state 的 expected_total 必须 >= 1；已整体停止（不回显取值）。");
+    }
+
+    if (!Array.isArray(state.processed_pages)) {
+      fail("分段 state 的 processed_pages 必须是数组；已整体停止（不回显取值）。");
+    }
+
+    var pages = [];
+    var seenPages = {};
+    for (var pageIndex = 0; pageIndex < state.processed_pages.length; pageIndex += 1) {
+      var entry = state.processed_pages[pageIndex];
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+        fail("processed_pages 的元素必须是对象；已整体停止（不回显取值）。");
+      }
+
+      var entryKeys = Object.keys(entry).sort();
+      for (var entryKeyIndex = 0; entryKeyIndex < entryKeys.length; entryKeyIndex += 1) {
+        if (entryKeys[entryKeyIndex] !== LAYOUT_B_FIELD_SOURCE_PAGE_KEYS[entryKeyIndex]) {
+          fail(
+            "processed_pages 的元素只允许 page_no / row_count；" +
+              "已整体停止（不回显取值）。"
+          );
+        }
+      }
+
+      var pageNo = requireFieldSourceCount(entry.page_no, "page_no");
+      if (pageNo < FIRST_PAGE_NO) {
+        fail("processed_pages 的 page_no 必须 >= " + FIRST_PAGE_NO + "；已整体停止。");
+      }
+      if (seenPages[pageNo] === true) {
+        fail("分段 state 出现重复页；已整体停止（不回显页码）。");
+      }
+      seenPages[pageNo] = true;
+
+      pages.push({
+        page_no: pageNo,
+        row_count: requireFieldSourceCount(entry.row_count, "row_count")
+      });
+    }
+
+    pages.sort(function (left, right) {
+      return left.page_no - right.page_no;
+    });
+
+    return {
+      semester: state.semester,
+      openingSchoolNumber: state.openingSchoolNumber,
+      expectedTotal: expectedTotal,
+      pages: pages,
+      seenPages: seenPages,
+      counters: {
+        candidateCount: requireFieldSourceCount(state.candidate_count, "candidate_count"),
+        comparableTeachingName: requireFieldSourceCount(
+          state.comparable_teaching_name_count,
+          "comparable_teaching_name_count"
+        ),
+        f3EqualsTeachingName: requireFieldSourceCount(
+          state.f3_equals_teaching_name_count,
+          "f3_equals_teaching_name_count"
+        ),
+        f4EqualsTeachingName: requireFieldSourceCount(
+          state.f4_equals_teaching_name_count,
+          "f4_equals_teaching_name_count"
+        ),
+        f4Activity: requireFieldSourceCount(state.f4_activity_count, "f4_activity_count")
+      },
+      fieldMatches: readFieldMatchCounts(state.f3_matching_raw_fields)
+    };
+  }
+
+  /** 组装一个 state（只有数值计数 + 字段名 → 计数 + 安全分页元数据）。 */
+  function buildLayoutBFieldSourceState(binding, pages, counters, fieldMatches) {
+    return {
+      version: LAYOUT_B_FIELD_SOURCE_STATE_VERSION,
+      semester: binding.semester,
+      openingSchoolNumber: binding.openingSchoolNumber,
+      page_size: binding.pageSize,
+      expected_total: binding.expectedTotal,
+      processed_pages: pages,
+      candidate_count: counters.candidateCount,
+      comparable_teaching_name_count: counters.comparableTeachingName,
+      f3_equals_teaching_name_count: counters.f3EqualsTeachingName,
+      f4_equals_teaching_name_count: counters.f4EqualsTeachingName,
+      f4_activity_count: counters.f4Activity,
+      f3_matching_raw_fields: writeFieldMatchCounts(fieldMatches)
+    };
+  }
+
+  /**
+   * 逐行累计**六个**输出（⛔ 完全不触碰 activity-membership）。
+   *
+   * ⚠️ 与完整诊断对同样六个字段使用**同一批**判别函数
+   * （`isLayoutBCandidate()` / `isExcludedMatchFieldName()` / `isNonEmptyActivityToken()`），
+   * 因此两者在同一份数据上必然给出相同的这六个值。
+   */
+  function accumulateLayoutBFieldSourceRows(rows, counters, fieldMatches) {
+    for (var rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+      var row = rows[rowIndex];
+
+      if (!row || typeof row !== "object" || Array.isArray(row)) {
+        fail("分段诊断读到非对象记录；已整体停止（不回显取值）。");
+      }
+
+      var text = row[SCHEDULE_FIELD];
+      if (typeof text !== "string" || text === "") {
+        continue;
+      }
+
+      var segments = text.split(SEGMENT_SEPARATOR);
+      if (segments.length > 1 && segments[segments.length - 1].trim() === "") {
+        segments.pop();
+      }
+
+      var hasTeachingName = Object.prototype.hasOwnProperty.call(row, "teachingName");
+
+      for (var segmentIndex = 0; segmentIndex < segments.length; segmentIndex += 1) {
+        var segment = segments[segmentIndex];
+        if (segment.trim() === "" || !isLayoutBCandidate(segment)) {
+          continue;
+        }
+
+        counters.candidateCount += 1;
+
+        var fields = segment.split(FIELD_SEPARATOR);
+        var thirdField = fields[2].trim();
+        var fourthField = fields[3].trim();
+
+        if (hasTeachingName) {
+          counters.comparableTeachingName += 1;
+          if (thirdField === row.teachingName) {
+            counters.f3EqualsTeachingName += 1;
+          }
+          if (fourthField === row.teachingName) {
+            counters.f4EqualsTeachingName += 1;
+          }
+        }
+
+        if (isNonEmptyActivityToken(fields[3])) {
+          counters.f4Activity += 1;
+        }
+
+        var rowFieldNames = Object.keys(row);
+        for (
+          var fieldIndex = 0;
+          fieldIndex < rowFieldNames.length;
+          fieldIndex += 1
+        ) {
+          var fieldName = rowFieldNames[fieldIndex];
+
+          if (isExcludedMatchFieldName(fieldName)) {
+            continue;
+          }
+          if (typeof row[fieldName] !== "string") {
+            continue;
+          }
+          if (thirdField === row[fieldName]) {
+            var matchedSoFar = fieldMatches.get(fieldName);
+            fieldMatches.set(fieldName, matchedSoFar === undefined ? 1 : matchedSoFar + 1);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * 扫描 `startPage..endPage` 并返回**合并后的** state。
+   *
+   * ```text
+   * part1 = await diagnoseLayoutBFieldSourcePart({ semester, openingSchoolNumber,
+   *                                               startPage: 1, endPage: 5 })
+   * // 用户把 part1 复制保存；重新登录后：
+   * part2 = await diagnoseLayoutBFieldSourcePart({ semester, openingSchoolNumber,
+   *                                               startPage: 6, endPage: 6,
+   *                                               previousState: part1 })
+   * final = finalizeLayoutBFieldSource(part2)
+   * ```
+   *
+   * ⚠️ `startPage > 1` **允许**（无序合并也被支持）：绑定与覆盖率在 finalize 校验，
+   * 因此 `6 + 1..5` 与 `4..6 + 1..3` 同样成立。
+   * ⛔ 重复 / 重叠页、semester / shard / page_size / expected_total 不一致 → fail closed。
+   */
+  async function diagnoseLayoutBFieldSourcePart(options) {
+    requireAllowedHost();
+
+    var opts = options || {};
+
+    var optionNames = Object.keys(opts);
+    var unexpected = optionNames.filter(function (name) {
+      return LAYOUT_B_FIELD_SOURCE_ALLOWED_OPTIONS.indexOf(name) === -1;
+    });
+    if (unexpected.length > 0) {
+      fail(
+        "分段诊断只接受 " + LAYOUT_B_FIELD_SOURCE_ALLOWED_OPTIONS.join(" / ") +
+          "（收到 " + unexpected.length + " 个其它参数）。已停止；参数名不予回显。"
+      );
+    }
+
+    var semester = opts.semester;
+    if (typeof semester !== "string" || semester.trim() === "") {
+      fail('分段诊断必须显式提供非空 semester（例如 "2026-1"）。');
+    }
+    semester = semester.trim();
+
+    var campus = opts.openingSchoolNumber;
+    if (campus !== undefined && (typeof campus !== "string" || campus.trim() === "")) {
+      fail("openingSchoolNumber 必须是非空字符串（或省略）。");
+    }
+    if (campus === undefined) {
+      campus = null;
+    }
+
+    var startPage = requireFieldSourceCount(opts.startPage, "startPage");
+    var endPage = requireFieldSourceCount(opts.endPage, "endPage");
+    if (startPage < FIRST_PAGE_NO || endPage < startPage) {
+      fail(
+        "startPage / endPage 必须是 " + FIRST_PAGE_NO + " <= startPage <= endPage 的整数；" +
+          "已整体停止（不回显取值）。"
+      );
+    }
+    if (endPage > ABSOLUTE_MAX_PAGES) {
+      fail("endPage 不得超过 " + ABSOLUTE_MAX_PAGES + "；已整体停止（不回显取值）。");
+    }
+
+    // ⛔ pageSize / delayMs 恒为已验证默认值：诊断不接受调用方覆盖。
+    var pageSize = DEFAULT_PAGE_SIZE;
+
+    var pages = [];
+    var seenPages = {};
+    var counters = {
+      candidateCount: 0,
+      comparableTeachingName: 0,
+      f3EqualsTeachingName: 0,
+      f4EqualsTeachingName: 0,
+      f4Activity: 0
+    };
+    var fieldMatches = new Map();
+    var expectedTotal = null;
+    var accumulatedRows = 0;
+
+    if (opts.previousState !== undefined) {
+      var previous = validateLayoutBFieldSourceState(opts.previousState);
+
+      if (previous.semester !== semester) {
+        fail("previousState 的 semester 与本次 semester 不一致；已整体停止（不回显取值）。");
+      }
+      if (previous.openingSchoolNumber !== campus) {
+        fail(
+          "previousState 的 shard 与本次 openingSchoolNumber 不一致；" +
+            "已整体停止（不回显取值）。"
+        );
+      }
+
+      pages = previous.pages;
+      seenPages = previous.seenPages;
+      counters = previous.counters;
+      fieldMatches = previous.fieldMatches;
+      expectedTotal = previous.expectedTotal;
+      for (var previousIndex = 0; previousIndex < pages.length; previousIndex += 1) {
+        accumulatedRows += pages[previousIndex].row_count;
+      }
+    }
+
+    if (endPage - startPage + 1 > DEFAULT_MAX_PAGES) {
+      var confirmed = window.confirm(
+        "即将执行**分段式 f3 字段来源诊断**（只取聚合计数，不产出任何数据、不落盘）。\n" +
+          "本次最多请求 " + (endPage - startPage + 1) + " 页；请求间隔至少 " +
+          DEFAULT_DELAY_MS / 1000 + " 秒（含全局批次冷却）。\n" +
+          "是否继续？"
+      );
+      if (!confirmed) {
+        fail("用户取消了分段诊断：本次不产生任何 state（不返回伪造计数）。");
+      }
+    }
+
+    var pacer = createRequestPacer(DEFAULT_DELAY_MS);
+
+    for (var pageNo = startPage; pageNo <= endPage; pageNo += 1) {
+      if (seenPages[pageNo] === true) {
+        fail(
+          "第 " + pageNo + " 页在 previousState 中已处理过（重复 / 重叠页）；" +
+            "已整体停止（⛔ 不静默覆盖）。"
+        );
+      }
+
+      var data = await requestPage(semester, pageNo, pageSize, campus, pacer);
+
+      if (expectedTotal === null) {
+        expectedTotal = data.total;
+      } else if (data.total !== expectedTotal) {
+        fail(
+          "第 " + pageNo + " 页的 data.total 与已记录的 expected_total 不一致：" +
+            "数据集合发生变化。已整体停止（不回显任何取值，⛔ 不合并）。"
+        );
+      }
+
+      accumulateLayoutBFieldSourceRows(data.rows, counters, fieldMatches);
+
+      pages.push({ page_no: pageNo, row_count: data.rows.length });
+      seenPages[pageNo] = true;
+      accumulatedRows += data.rows.length;
+
+      if (accumulatedRows >= expectedTotal) {
+        break;
+      }
+    }
+
+    pages.sort(function (left, right) {
+      return left.page_no - right.page_no;
+    });
+
+    return buildLayoutBFieldSourceState(
+      {
+        semester: semester,
+        openingSchoolNumber: campus,
+        pageSize: pageSize,
+        expectedTotal: expectedTotal
+      },
+      pages,
+      counters,
+      fieldMatches
+    );
+  }
+
+  /**
+   * 校验覆盖完整性并返回**恰好六个**最终计数。
+   *
+   * ⛔ 页码必须恰好覆盖 `1..N`（无洞）、⛔ `Σ row_count >= expected_total`（取满）；
+   * 否则 **fail closed**（⛔ 不返回近似结果）。
+   * ⛔ 返回值**不含** activity-membership 计数（不存在、也不用 0 / null 占位）。
+   */
+  function finalizeLayoutBFieldSource(state) {
+    var parsed = validateLayoutBFieldSourceState(state);
+
+    var maxPage = 0;
+    var totalRows = 0;
+    for (var index = 0; index < parsed.pages.length; index += 1) {
+      if (parsed.pages[index].page_no > maxPage) {
+        maxPage = parsed.pages[index].page_no;
+      }
+      totalRows += parsed.pages[index].row_count;
+    }
+
+    for (var pageNo = FIRST_PAGE_NO; pageNo <= maxPage; pageNo += 1) {
+      if (parsed.seenPages[pageNo] !== true) {
+        fail(
+          "分段 state 缺少第 " + pageNo + " 页（覆盖不连续）；" +
+            "已整体停止（⛔ 不返回近似结果）。"
+        );
+      }
+    }
+
+    if (totalRows < parsed.expectedTotal) {
+      fail(
+        "分段 state 只覆盖 " + totalRows + " / " + parsed.expectedTotal + " 行；" +
+          "已整体停止（⛔ 不返回近似结果）。"
+      );
+    }
+
+    // ⚠️ 页数与 expected_total 必须自洽（防止把 expected_total 改小来伪造"已完成"）。
+    var requiredPages = Math.ceil(parsed.expectedTotal / DEFAULT_PAGE_SIZE);
+    if (maxPage !== requiredPages) {
+      fail(
+        "分段 state 的页数与 expected_total 不自洽；" +
+          "已整体停止（⛔ 不返回近似结果）。"
+      );
+    }
+
+    return {
+      candidate_count: parsed.counters.candidateCount,
+      comparable_teaching_name_count: parsed.counters.comparableTeachingName,
+      f3_equals_teaching_name_count: parsed.counters.f3EqualsTeachingName,
+      f4_equals_teaching_name_count: parsed.counters.f4EqualsTeachingName,
+      f4_activity_count: parsed.counters.f4Activity,
+      f3_matching_raw_fields: writeFieldMatchCounts(parsed.fieldMatches)
+    };
+  }
+
+  // ---------------------------------------------------------------------
   // 相关性诊断（Phase 2B-2C1C）：missing 组 vs non_empty_string 组的字段聚合
   // ---------------------------------------------------------------------
 
@@ -2618,6 +3134,8 @@
     summarizeSchedulePresence: summarizeSchedulePresence,
     diagnoseMissingScheduleCorrelation: diagnoseMissingScheduleCorrelation,
     diagnoseLayoutBCandidates: diagnoseLayoutBCandidates,
+    diagnoseLayoutBFieldSourcePart: diagnoseLayoutBFieldSourcePart,
+    finalizeLayoutBFieldSource: finalizeLayoutBFieldSource,
     toJson: toJson,
     shardBundle: shardBundle,
     toShardJson: toShardJson,

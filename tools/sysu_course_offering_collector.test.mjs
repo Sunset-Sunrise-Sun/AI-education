@@ -2484,3 +2484,600 @@ test("Layout B 诊断：data.total 中途变化 → 整体 fail closed", async (
 
   assert.deepEqual(calls, [1, 2], "⛔ 失败发生在第 2 页，且不得重试 / 跳页");
 });
+
+
+
+// ---------------------------------------------------------------------------
+// 分段式 f3 字段来源诊断（Architecture Review 方案 D）
+//
+// 契约：**恰好六个**输出（⛔ 不含 activity-membership 计数）；
+// checkpoint 零敏感（只有数值计数 + 字段名 → 计数 + 安全分页元数据）。
+// ---------------------------------------------------------------------------
+
+const FS_CAMPUS = "SYN-CAMPUS-FS";
+const FS_PAGE_SIZE = 200;
+const FS_LAST_PAGE_ROWS = 71;
+const FS_PAGE_COUNT = 6;
+const FS_TOTAL = (FS_PAGE_COUNT - 1) * FS_PAGE_SIZE + FS_LAST_PAGE_ROWS; // 1071
+const FS_RESULT_KEYS = [
+  "candidate_count",
+  "comparable_teaching_name_count",
+  "f3_equals_teaching_name_count",
+  "f4_equals_teaching_name_count",
+  "f4_activity_count",
+  "f3_matching_raw_fields",
+];
+
+/** 分段诊断的合成 row（默认是 4 字段 concrete provider）。 */
+function fsProviderRow(activity, classNumber) {
+  return Object.assign(rawRow(`1-8周/星期五/第5-6节/${activity}`), {
+    classNumber: classNumber,
+  });
+}
+
+/** Layout B 候选 row。 */
+function fsCandidateRow(third, fourth, options = {}) {
+  const row = Object.assign(
+    rawRow(`1-8周/${LOCATION}/${third}/${fourth}`),
+    { classNumber: options.classNumber || "SYN-FS-CAND" },
+  );
+  if (options.hasTeachingName !== false) {
+    row.teachingName = options.teachingName === undefined ? TEACHER : options.teachingName;
+  }
+  if (options.extraFields) {
+    Object.assign(row, options.extraFields);
+  }
+  return row;
+}
+
+/** 构造 6 页语料；`injections` 的键形如 `"1-0"` = 第 1 页第 0 行。 */
+function fsCorpus(injections = {}) {
+  const pages = [];
+  for (let pageNo = 1; pageNo <= FS_PAGE_COUNT; pageNo += 1) {
+    const count = pageNo === FS_PAGE_COUNT ? FS_LAST_PAGE_ROWS : FS_PAGE_SIZE;
+    const rows = [];
+    for (let index = 0; index < count; index += 1) {
+      rows.push(
+        fsProviderRow(ACTIVITY, `SYN-FS-${pageNo}-${String(index + 1).padStart(3, "0")}`),
+      );
+    }
+    pages.push(rows);
+  }
+  for (const [key, row] of Object.entries(injections)) {
+    const [pageNo, index] = key.split("-").map(Number);
+    pages[pageNo - 1][index] = row;
+  }
+  return pages;
+}
+
+function loadFieldSourceCollector(pages, options = {}) {
+  const calls = [];
+  const confirms = [];
+  const timers = [];
+  const totals = options.totals || {};
+  const statusForPage = options.statusForPage || (() => 0);
+
+  const sandbox = {
+    console,
+    Date,
+    JSON,
+    Promise,
+    Error,
+    Number,
+    Array,
+    String,
+    Object,
+    Math,
+    Set,
+    Map,
+    clearTimeout: () => {},
+    setTimeout: (callback, ms) => {
+      timers.push(ms);
+      queueMicrotask(callback);
+      return timers.length;
+    },
+    fetch: async (url, init) => {
+      const body = JSON.parse(init.body);
+      calls.push(body.pageNo);
+
+      const forcedStatus = statusForPage(body.pageNo);
+      if (forcedStatus !== 0) {
+        return {
+          status: forcedStatus,
+          ok: false,
+          headers: { get: () => "application/json;charset=UTF-8" },
+          json: async () => ({ code: 50015000, message: "系统异常" }),
+        };
+      }
+
+      const rows = pages[body.pageNo - 1] || [];
+      const total = totals[body.pageNo] === undefined ? FS_TOTAL : totals[body.pageNo];
+      return fakeResponse({ code: 200, data: { total, rows } });
+    },
+  };
+  sandbox.window = {
+    location: { hostname: "jwxt.sysu.edu.cn" },
+    confirm: (message) => {
+      confirms.push(message);
+      return options.confirmResult === undefined ? true : options.confirmResult;
+    },
+    XuehangSysuCollector: undefined,
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(SOURCE, sandbox, { filename: "sysu_course_offering_collector.js" });
+
+  return { collector: sandbox.window.XuehangSysuCollector, calls, confirms, timers };
+}
+
+function newFieldSourceHarness(pages, options = {}) {
+  const harness = loadFieldSourceCollector(pages, options);
+  return Object.assign(harness, {
+    part: (partOptions) =>
+      harness.collector.diagnoseLayoutBFieldSourcePart(
+        Object.assign(
+          {
+            semester: SEMESTER,
+            openingSchoolNumber: FS_CAMPUS,
+          },
+          partOptions,
+        ),
+      ),
+    finalize: (state) => harness.collector.finalizeLayoutBFieldSource(state),
+  });
+}
+
+function assertFieldSourceResult(result, expected) {
+  assert.deepEqual({ ...result }, expected);
+}
+
+/** 跨 realm 安全：把 VM 生成的对象/数组摊平成宿主 realm 的普通值。 */
+function plain(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+test("分段诊断：1..5 + 6 == one-shot 1..6（六个字段完全相等）", async () => {
+  const pages = fsCorpus({
+    "1-0": fsCandidateRow(TEACHER, ACTIVITY, { classNumber: "SYN-FS-A" }),
+    "6-0": fsCandidateRow(LAYOUT_B_TEACHER_OTHER, ACTIVITY, {
+      classNumber: "SYN-FS-B",
+      teachingName: LAYOUT_B_TEACHER_OTHER,
+    }),
+  });
+
+  const oneShot = newFieldSourceHarness(pages);
+  const oneShotState = await oneShot.part({ startPage: 1, endPage: 6 });
+  const oneShotResult = oneShot.finalize(oneShotState);
+
+  const segmented = newFieldSourceHarness(pages);
+  const part1 = await segmented.part({ startPage: 1, endPage: 5 });
+  const part2 = await segmented.part({ startPage: 6, endPage: 6, previousState: part1 });
+  const merged = segmented.finalize(part2);
+
+  assert.deepEqual(plain(merged), plain(oneShotResult));
+  assert.equal(oneShotResult.candidate_count, 2);
+  assert.deepEqual(segmented.calls, [1, 2, 3, 4, 5, 6]);
+});
+
+test("分段诊断：1..3 + 4..6 与 逐页 1+2+3+4+5+6 都与 one-shot 相等", async () => {
+  const pages = fsCorpus({
+    "2-0": fsCandidateRow("示例课程", ACTIVITY, { classNumber: "SYN-FS-C" }),
+    "5-0": fsCandidateRow("示例课程", ACTIVITY, { classNumber: "SYN-FS-D" }),
+  });
+
+  const baseline = newFieldSourceHarness(pages);
+  const expected = baseline.finalize(await baseline.part({ startPage: 1, endPage: 6 }));
+
+  const split3 = newFieldSourceHarness(pages);
+  const a = await split3.part({ startPage: 1, endPage: 3 });
+  const b = await split3.part({ startPage: 4, endPage: 6, previousState: a });
+  assert.deepEqual(plain(split3.finalize(b)), plain(expected));
+
+  const perPage = newFieldSourceHarness(pages);
+  let state = null;
+  for (let pageNo = 1; pageNo <= 6; pageNo += 1) {
+    state = await perPage.part({
+      startPage: pageNo,
+      endPage: pageNo,
+      previousState: state === null ? undefined : state,
+    });
+  }
+  assert.deepEqual(plain(perPage.finalize(state)), plain(expected));
+  assert.deepEqual(expected.f3_matching_raw_fields, { courseName: 2 });
+});
+
+test("分段诊断：排除字段不参与命中统计（courseNum / 内部 ID）", async () => {
+  const pages = fsCorpus({
+    // f3 == courseNum → 排除
+    "1-0": Object.assign(fsCandidateRow("00000000", ACTIVITY), {
+      classNumber: "SYN-FS-EX-1",
+    }),
+    // f3 == 内部 ID 字段（timePlaceId）→ 排除
+    "2-0": Object.assign(rawRow(`1-8周/${LOCATION}/内部ID值/${ACTIVITY}`), {
+      classNumber: "SYN-FS-EX-2",
+      timePlaceId: "内部ID值",
+    }),
+  });
+
+  const harness = newFieldSourceHarness(pages);
+  const state = await harness.part({ startPage: 1, endPage: 6 });
+  const result = harness.finalize(state);
+
+  assert.equal(result.candidate_count, 2);
+  assert.deepEqual(result.f3_matching_raw_fields, {}, "⛔ 被排除的字段名不得出现");
+});
+
+test("分段诊断：命中统计只做严格相等（⛔ 无 substring / 无分词）", async () => {
+  const pages = fsCorpus({
+    // courseName 是 f3 的**超串** → 不命中
+    "1-0": fsCandidateRow("示例课程", ACTIVITY, {
+      classNumber: "SYN-FS-SUB-1",
+      extraFields: { courseName: "示例课程（含后缀）" },
+    }),
+    // courseName 是 f3 的**子串** → 不命中
+    "2-0": fsCandidateRow("示例课程", ACTIVITY, {
+      classNumber: "SYN-FS-SUB-2",
+      extraFields: { courseName: "示例" },
+    }),
+  });
+
+  const harness = newFieldSourceHarness(pages);
+  const state = await harness.part({ startPage: 1, endPage: 6 });
+
+  assert.deepEqual(harness.finalize(state).f3_matching_raw_fields, {});
+});
+
+test("分段诊断：无序合并（6 + 1..5 与 4..6 + 1..3）同样成立", async () => {
+  const pages = fsCorpus({
+    "1-0": fsCandidateRow("示例课程", ACTIVITY, { classNumber: "SYN-FS-E" }),
+    "4-0": fsCandidateRow("示例课程", ACTIVITY, { classNumber: "SYN-FS-F" }),
+  });
+
+  const baseline = newFieldSourceHarness(pages);
+  const expected = baseline.finalize(await baseline.part({ startPage: 1, endPage: 6 }));
+
+  const late = newFieldSourceHarness(pages);
+  const page6 = await late.part({ startPage: 6, endPage: 6 });
+  const first5 = await late.part({ startPage: 1, endPage: 5, previousState: page6 });
+  assert.deepEqual(plain(late.finalize(first5)), plain(expected));
+
+  const middle = newFieldSourceHarness(pages);
+  const tail = await middle.part({ startPage: 4, endPage: 6 });
+  const head = await middle.part({ startPage: 1, endPage: 3, previousState: tail });
+  assert.deepEqual(plain(middle.finalize(head)), plain(expected));
+});
+
+test("分段诊断：candidate 与 fieldName 命中跨页累计", async () => {
+  const pages = fsCorpus({
+    "1-0": fsCandidateRow("示例课程", ACTIVITY, { classNumber: "SYN-FS-G" }),
+    "6-0": fsCandidateRow("示例课程", ACTIVITY, {
+      classNumber: "SYN-FS-H",
+      hasTeachingName: false,
+    }),
+  });
+
+  const harness = newFieldSourceHarness(pages);
+  const part1 = await harness.part({ startPage: 1, endPage: 5 });
+  assert.equal(part1.candidate_count, 1);
+  assert.deepEqual(part1.f3_matching_raw_fields, { courseName: 1 });
+
+  const part2 = await harness.part({ startPage: 6, endPage: 6, previousState: part1 });
+  const result = harness.finalize(part2);
+
+  assert.equal(result.candidate_count, 2, "candidate_count 必须跨 part 累计");
+  assert.equal(result.comparable_teaching_name_count, 1, "comparable 必须跨 part 累计");
+  assert.deepEqual(result.f3_matching_raw_fields, { courseName: 2 });
+});
+
+test("分段诊断：多字段同时命中 / 部分命中 / 空 mapping", async () => {
+  const pages = fsCorpus({
+    "1-0": fsCandidateRow("示例同名", ACTIVITY, {
+      classNumber: "SYN-FS-I",
+      extraFields: { examMode: "示例同名", examModeName: "示例同名" },
+    }),
+    "2-0": fsCandidateRow("示例课程", ACTIVITY, { classNumber: "SYN-FS-J" }),
+    "3-0": fsCandidateRow("无任何命中", ACTIVITY, { classNumber: "SYN-FS-K" }),
+  });
+
+  const harness = newFieldSourceHarness(pages);
+  const state = await harness.part({ startPage: 1, endPage: 6 });
+  const result = harness.finalize(state);
+
+  assert.equal(result.candidate_count, 3);
+  assert.deepEqual(result.f3_matching_raw_fields, {
+    courseName: 1,
+    examMode: 1,
+    examModeName: 1,
+  });
+
+  const emptyHarness = newFieldSourceHarness(fsCorpus());
+  const emptyState = await emptyHarness.part({ startPage: 1, endPage: 6 });
+  assert.deepEqual(emptyHarness.finalize(emptyState).f3_matching_raw_fields, {});
+});
+
+test("分段诊断：契约恰好六个字段（⛔ 无 activity-membership 计数 / 无占位）", async () => {
+  const harness = newFieldSourceHarness(fsCorpus());
+  const state = await harness.part({ startPage: 1, endPage: 6 });
+  const result = harness.finalize(state);
+
+  assert.deepEqual(Object.keys(result).sort(), [...FS_RESULT_KEYS].sort());
+  assert.ok(!("f3_in_confirmed_activity_set_count" in result));
+  assert.ok(!("f4_in_confirmed_activity_set_count" in result));
+  for (const [key, value] of Object.entries(result)) {
+    if (key === "f3_matching_raw_fields") {
+      continue;
+    }
+    assert.equal(typeof value, "number", `${key} 必须是数字计数`);
+  }
+});
+
+test("分段诊断：与完整诊断的六个重叠字段完全一致（防口径漂移）", async () => {
+  const pages = fsCorpus({
+    "1-0": fsCandidateRow("示例课程", ACTIVITY, { classNumber: "SYN-FS-L" }),
+    "4-0": fsCandidateRow(TEACHER, "示例环节乙", {
+      classNumber: "SYN-FS-M",
+      teachingName: TEACHER,
+      extraFields: { examMode: "示例环节乙" },
+    }),
+  });
+
+  const harness = newFieldSourceHarness(pages);
+  const state = await harness.part({ startPage: 1, endPage: 6 });
+  const fieldSource = harness.finalize(state);
+
+  const full = newFieldSourceHarness(pages);
+  const fullResult = await full.collector.diagnoseLayoutBCandidates({
+    semester: SEMESTER,
+    openingSchoolNumber: FS_CAMPUS,
+    maxPages: 6,
+  });
+
+  for (const key of FS_RESULT_KEYS) {
+    assert.deepEqual(fieldSource[key], fullResult[key], `六个重叠字段必须一致：${key}`);
+  }
+});
+
+test("分段诊断：重复页 / 重叠页 reject（⛔ 不静默覆盖）", async () => {
+  const harness = newFieldSourceHarness(fsCorpus());
+  const part1 = await harness.part({ startPage: 1, endPage: 5 });
+
+  await assert.rejects(
+    () => harness.part({ startPage: 5, endPage: 6, previousState: part1 }),
+    /重复 \/ 重叠页/,
+  );
+  await assert.rejects(
+    () => harness.part({ startPage: 3, endPage: 4, previousState: part1 }),
+    /重复 \/ 重叠页/,
+  );
+  assert.deepEqual(harness.calls, [1, 2, 3, 4, 5], "⛔ 被拒绝的 part 不得发出请求");
+});
+
+test("分段诊断：缺页 / 未取满 → finalize reject", async () => {
+  const harness = newFieldSourceHarness(fsCorpus());
+  const part1 = await harness.part({ startPage: 1, endPage: 5 });
+
+  assert.throws(() => harness.finalize(part1), /只覆盖 1000 \/ 1071 行/);
+
+  // 有洞：跳过第 3 页（伪造 state）
+  const holed = JSON.parse(JSON.stringify(part1));
+  holed.processed_pages = holed.processed_pages.filter((entry) => entry.page_no !== 3);
+  holed.expected_total = 900;
+  assert.throws(() => harness.finalize(holed), /缺少第 3 页/);
+
+  // 篡改 expected_total 变小 → 页数与 total 不自洽 → reject
+  const shrunk = JSON.parse(JSON.stringify(part1));
+  shrunk.expected_total = 800;
+  assert.throws(() => harness.finalize(shrunk), /页数与 expected_total 不自洽/);
+});
+
+test("分段诊断：total 漂移 reject", async () => {
+  const harness = newFieldSourceHarness(fsCorpus(), {
+    totals: { 6: FS_TOTAL + 1 },
+  });
+
+  await assert.rejects(
+    () => harness.part({ startPage: 1, endPage: 6 }),
+    /expected_total 不一致/,
+  );
+});
+
+test("分段诊断：semester / shard / page_size 绑定不一致 reject", async () => {
+  const harness = newFieldSourceHarness(fsCorpus());
+  const part1 = await harness.part({ startPage: 1, endPage: 5 });
+
+  await assert.rejects(
+    () =>
+      harness.part({
+        semester: "2026-2",
+        startPage: 6,
+        endPage: 6,
+        previousState: part1,
+      }),
+    /semester 与本次 semester 不一致/,
+  );
+  await assert.rejects(
+    () =>
+      harness.part({
+        openingSchoolNumber: "5062202",
+        startPage: 6,
+        endPage: 6,
+        previousState: part1,
+      }),
+    /shard 与本次 openingSchoolNumber 不一致/,
+  );
+
+  const wrongSize = JSON.parse(JSON.stringify(part1));
+  wrongSize.page_size = 50;
+  await assert.rejects(
+    () => harness.part({ startPage: 6, endPage: 6, previousState: wrongSize }),
+    /page_size 与已验证口径不一致/,
+  );
+});
+
+test("分段诊断：checkpoint 篡改 reject（版本 / 键集合 / 计数 / 映射 / 页码元素）", async () => {
+  const harness = newFieldSourceHarness(fsCorpus());
+  const part1 = await harness.part({ startPage: 1, endPage: 5 });
+  const clone = () => JSON.parse(JSON.stringify(part1));
+
+  const bumped = clone();
+  bumped.version = 2;
+  assert.throws(() => harness.finalize(bumped), /version 不受支持/);
+
+  const extra = clone();
+  extra.raw_rows = [];
+  assert.throws(() => harness.finalize(extra), /键集合与契约不一致/);
+
+  const negative = clone();
+  negative.candidate_count = -1;
+  assert.throws(() => harness.finalize(negative), /candidate_count 必须是非负整数/);
+
+  const zeroCount = clone();
+  zeroCount.f3_matching_raw_fields = { courseName: 0 };
+  assert.throws(() => harness.finalize(zeroCount), /计数必须是 >= 1 的整数/);
+
+  const badPage = clone();
+  badPage.processed_pages = [{ page_no: 1, row_count: 200, extra: 1 }];
+  assert.throws(() => harness.finalize(badPage), /只允许 page_no \/ row_count/);
+
+  const duplicate = clone();
+  duplicate.processed_pages = [
+    { page_no: 1, row_count: 200 },
+    { page_no: 1, row_count: 200 },
+  ];
+  assert.throws(() => harness.finalize(duplicate), /出现重复页/);
+});
+
+test("分段诊断：checkpoint 可 JSON 往返（用户复制/粘贴流程）", async () => {
+  const pages = fsCorpus({
+    "1-0": fsCandidateRow("示例课程", ACTIVITY, { classNumber: "SYN-FS-N" }),
+  });
+
+  const harness = newFieldSourceHarness(pages);
+  const part1 = await harness.part({ startPage: 1, endPage: 5 });
+
+  const pasted = JSON.parse(JSON.stringify(part1));
+  assert.equal(JSON.stringify(pasted), JSON.stringify(part1));
+
+  const part2 = await harness.part({ startPage: 6, endPage: 6, previousState: pasted });
+  const result = harness.finalize(JSON.parse(JSON.stringify(part2)));
+
+  assert.equal(result.candidate_count, 1);
+  assert.deepEqual(result.f3_matching_raw_fields, { courseName: 1 });
+});
+
+test("分段诊断：checkpoint 与序列化结果都不含任何 synthetic secret", async () => {
+  const secrets = {
+    teacher: "SECRET-TEACHER-ALPHA",
+    activity: "SECRET-ACTIVITY-BETA",
+    f3: "SECRET-F3-GAMMA",
+    f4: "SECRET-F4-DELTA",
+    courseId: "SECRET-COURSE-ID",
+    classId: "SECRET-CLASS-ID",
+  };
+
+  const pages = fsCorpus({
+    "1-0": fsCandidateRow(secrets.f3, secrets.f4, {
+      classNumber: secrets.classId,
+      teachingName: secrets.teacher,
+      extraFields: { courseId: secrets.courseId },
+    }),
+    "1-1": fsProviderRow(secrets.activity, "SYN-FS-SECRET-PROVIDER"),
+  });
+
+  const harness = newFieldSourceHarness(pages);
+  const part1 = await harness.part({ startPage: 1, endPage: 5 });
+  const part2 = await harness.part({ startPage: 6, endPage: 6, previousState: part1 });
+  const result = harness.finalize(part2);
+
+  const checkpointText = JSON.stringify(part1) + JSON.stringify(part2);
+  const resultText = JSON.stringify(result);
+
+  for (const [label, value] of Object.entries(secrets)) {
+    assert.ok(!checkpointText.includes(value), `⛔ checkpoint 不得含 ${label}`);
+    assert.ok(!resultText.includes(value), `⛔ 结果不得含 ${label}`);
+  }
+  // raw segment 原文也不得出现
+  assert.ok(!checkpointText.includes("1-8周/"), "⛔ checkpoint 不得含 raw segment");
+  assert.ok(!checkpointText.includes(LOCATION), "⛔ checkpoint 不得含 location 原文");
+  // checkpoint 只允许契约里的键（逐 part 校验）
+  const stateKeys = [
+    "candidate_count",
+    "comparable_teaching_name_count",
+    "expected_total",
+    "f3_equals_teaching_name_count",
+    "f3_matching_raw_fields",
+    "f4_activity_count",
+    "f4_equals_teaching_name_count",
+    "openingSchoolNumber",
+    "page_size",
+    "processed_pages",
+    "semester",
+    "version",
+  ];
+  assert.deepEqual(Object.keys(part1).sort(), stateKeys);
+  assert.deepEqual(Object.keys(part2).sort(), stateKeys);
+  for (const entry of part2.processed_pages) {
+    assert.deepEqual(Object.keys(entry).sort(), ["page_no", "row_count"]);
+  }
+});
+
+test("分段诊断：401 / 403 / 600 立即整体停止（⛔ 不 retry / 不读认证）", async () => {
+  for (const status of [401, 403, 600]) {
+    const harness = newFieldSourceHarness(fsCorpus(), {
+      statusForPage: (pageNo) => (pageNo === 6 ? status : 0),
+    });
+
+    await assert.rejects(() => harness.part({ startPage: 6, endPage: 6 }));
+    assert.deepEqual(harness.calls, [6], `HTTP ${status} 只允许请求 1 次`);
+  }
+});
+
+test("分段诊断：参数白名单与范围校验（⛔ 校验先于任何请求）", async () => {
+  const harness = newFieldSourceHarness(fsCorpus());
+
+  for (const bad of [{ pageSize: 50 }, { delayMs: 1000 }, { maxPages: 6 }, { scope: "x" }]) {
+    await assert.rejects(
+      () => harness.part(Object.assign({ startPage: 1, endPage: 1 }, bad)),
+      /分段诊断只接受/,
+    );
+  }
+  await assert.rejects(() => harness.part({ startPage: 3, endPage: 2 }), /startPage <= endPage/);
+  await assert.rejects(() => harness.part({ startPage: 0, endPage: 2 }), /startPage <= endPage/);
+  await assert.rejects(() => harness.part({ startPage: 1, endPage: 51 }), /endPage 不得超过/);
+  await assert.rejects(
+    () => harness.part({ startPage: undefined, endPage: undefined }),
+    /startPage/,
+  );
+  assert.deepEqual(harness.calls, [], "⛔ 校验必须发生在任何取页调用之前");
+});
+
+test("分段诊断：取满即停（与 one-shot 相同的停止规则）", async () => {
+  const pages = fsCorpus();
+  const harness = newFieldSourceHarness(pages, { totals: { 1: 450, 2: 450, 3: 450 } });
+  pages[2] = pages[2].slice(0, 50);
+
+  const state = await harness.part({ startPage: 1, endPage: 5 });
+  assert.deepEqual(harness.calls, [1, 2, 3], "累加到 expected_total 后必须停止");
+  assert.deepEqual(
+    [...state.processed_pages].map((entry) => entry.page_no),
+    [1, 2, 3],
+  );
+});
+
+test("分段诊断：超过 smoke 上限的 part 先确认；取消 → 不发请求也不产生 state", async () => {
+  const cancelled = newFieldSourceHarness(fsCorpus(), { confirmResult: false });
+
+  await assert.rejects(
+    () => cancelled.part({ startPage: 1, endPage: 5 }),
+    /取消了分段诊断/,
+  );
+  assert.deepEqual(cancelled.calls, []);
+  assert.equal(cancelled.confirms.length, 1);
+});
+
+test("分段诊断：加载脚本不自动调用新接口", async () => {
+  const harness = newFieldSourceHarness(fsCorpus());
+  assert.deepEqual(harness.calls, []);
+  assert.equal(typeof harness.collector.diagnoseLayoutBFieldSourcePart, "function");
+  assert.equal(typeof harness.collector.finalizeLayoutBFieldSource, "function");
+});

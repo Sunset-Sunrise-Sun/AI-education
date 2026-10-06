@@ -705,8 +705,70 @@ weeks | weekday | location | REDACTED | activity
        两个 `*_equals_teaching_name` 都是**逐行本地**计数，本身可精确分段。
   ```
 
-- ⛔ **仍未获批准**：Layout B parser / 4 字段 redaction / East 重抓 / 分段续跑 API；
-  当前**唯一**支持的诊断路径仍是**一次 6 页 one-shot**（需要在会话存活期内跑完）。
+**分段式 f3 字段来源诊断（Architecture Review 方案 D；✅ 已实现）**
+
+- **定位**：**只**回答"`f3` 来自哪个 raw 字段"，用于跨登录会话的两段式运行；
+  ⛔ **不提供** activity-membership 计数（⛔ 不计算、⛔ 也**不用 0 / null 占位**）；
+  完整 `diagnoseLayoutBCandidates()` **保持不变**，其历史 membership 结果继续作为历史证据。
+
+  ```js
+  // 第 1 段（pages 1..5）
+  const part1 = await window.XuehangSysuCollector.diagnoseLayoutBFieldSourcePart({
+    semester: "2026-1", openingSchoolNumber: "5063559", startPage: 1, endPage: 5
+  });
+  // → 复制 JSON.stringify(part1) 保存到本地文本；重新登录后：
+  const part2 = await window.XuehangSysuCollector.diagnoseLayoutBFieldSourcePart({
+    semester: "2026-1", openingSchoolNumber: "5063559", startPage: 6, endPage: 6,
+    previousState: JSON.parse(<粘贴的 part1>)
+  });
+  const final = window.XuehangSysuCollector.finalizeLayoutBFieldSource(part2);
+  ```
+
+- **契约（恰好六个输出）**：
+
+  ```text
+  candidate_count
+  comparable_teaching_name_count
+  f3_equals_teaching_name_count
+  f4_equals_teaching_name_count
+  f4_activity_count
+  f3_matching_raw_fields    字段名 → 命中候选数（只含 >= 1 命中）
+  ```
+
+  ⛔ `f3_in_confirmed_activity_set_count` / `f4_in_confirmed_activity_set_count`
+  **不存在**于本接口（不是 0 / null，而是没有这两个字段）。
+
+- **checkpoint schema（零敏感，可 `JSON.stringify` + 复制粘贴）**：
+
+  ```text
+  version / semester / openingSchoolNumber / page_size / expected_total
+  processed_pages: [ { page_no, row_count } … ]        （仅安全数字）
+  上面五个数值计数 + f3_matching_raw_fields: { 字段名 → 计数 }
+  ```
+
+  ⛔ 不含任何 raw value / 原文 / 标识 / 认证材料；⛔ 键集合**封闭**（多一个键即 fail closed）。
+  ⚠️ `processed_pages` 保存每页**行数**（安全数字），用于在 finalize 证明"已取满"。
+
+- **覆盖与绑定校验（全部 fail closed，⛔ 不静默覆盖）**：
+  重复 / 重叠页（在发请求**之前**拒绝）、缺页（页码必须恰好 `1..N` 无洞）、
+  `Σ row_count >= expected_total`（取满）、**页数与 `expected_total` 自洽**
+  （`N == ceil(total / page_size)`，防止把 total 改小伪造"已完成"）、
+  `semester` / `openingSchoolNumber` / `page_size` / `version` 全部绑定并逐段校验。
+- **请求行为**：完全复用 `requireAllowedHost()` / `requestPage()` / 全局 pacer /
+  页校验 / total 一致性；⛔ 不开放 `pageSize` / `delayMs`（恒用已验证默认值）；
+  ⛔ 不改 batch / cooldown；401 / 403 / 600 / malformed / total 漂移 → **立即整体停止**。
+- **顺序无关**：允许无序合并（`6 + 1..5`、`4..6 + 1..3` 都已测试）；
+  `startPage` 可以是 6（连同 `previousState`）；段内命中计数**累加**而非覆盖。
+- **等价性（已测试）**：`finalize(part(1..6))` == `finalize(part(1..5) + part(6))`
+  == `1..3 + 4..6` == 逐页 1+2+3+4+5+6 == 无序合并，六个字段逐项完全相等；
+  且这六个字段与完整 `diagnoseLayoutBCandidates()` 的对应六个字段**完全一致**
+  （防口径漂移的差分测试）。
+- ⚠️ **隐私**：`JSON.stringify(checkpoint)` 与结果序列化中**不出现任何取值**
+  （已用 synthetic secret 逐项断言）；与 one-shot 的**空映射**解释边界相同：
+  空映射只表示"本次允许比较的 raw string fields 中没有严格相等的取值"，
+  ⛔ **不**表示"f3 不来自任何 raw 字段"。
+- ⛔ **仍不支持**：分段式接口**不含** activity-membership 计数（方案 D 的明确取舍）；
+  ⛔ Layout B parser / 4 字段 redaction / East 重抓仍未获批准。
 
 **2 字段（无 teacher）**：
 
