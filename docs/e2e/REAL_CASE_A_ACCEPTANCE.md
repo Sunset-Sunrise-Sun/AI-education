@@ -35,10 +35,10 @@
 |---|---|---|
 | **1** | `POST /api/v1/plan` **实际经过 production runtime factory** | 请求由真实装配入口（`backend/app/services/planning_runtime.py` 的装配 seam）构造出的 Orchestrator 处理；⛔ 不是测试里的 `dependency_overrides`、⛔ 不是 Fake |
 | **2** | `CurriculumProvider` **= `CurriculumCaseProvider`** | 真实实现类（`backend/app/curriculum/case.py`），**不是** 任何 test Fake/Stub |
-| **3** | `CourseDataProvider` **= `SnapshotCourseDataProvider`** | 真实实现类（`backend/app/course_data/snapshot.py`），且其持有的快照**是**真实完整快照 |
+| **3** | `CourseDataProvider` **= `StoreBackedCourseDataProvider`** | 真实实现类（`backend/app/course_data/store_provider.py`），绑定到**已接受**的 full-semester acceptance（`APP_COURSE_DATA_ACCEPTANCE_SHA256`）；⚠️ 旧的 `SnapshotCourseDataProvider`（PR #39 单 bundle 模型）已被**取代**，⛔ 不再是 production 路径 |
 | **4** | `PlannerProvider` **= `RestrictedPlannerProvider`** | 真实实现类（`backend/app/planner/provider.py`） |
 | **5** | Curriculum 输入 **= 真实受控 Case A 输入** | 即 Case A（2025 级 遥感科学与技术 → 网络空间安全）的**真实受控**培养方案与已修记录；⛔ 不含 synthetic / mock case 数据 |
-| **6** | Course Data **= complete 2026-1 snapshot** | `semester == "2026-1"`、`is_complete == true`、`loaded_count == reported_total`（逐项见 `COURSE_DATA_SNAPSHOT_CHECKLIST.md`） |
+| **6** | Course Data **= 已接受的 full-semester acceptance** | 五校区 shard 各自 `complete`（`loaded_count == reported_total`）且 **Σ shard reported_total == baseline**（`baseline_before == baseline_after`）；已批准 capture inventory 与五条 campus acceptance 逐项一致；acceptance 已导入 SQLite，且 `APP_COURSE_DATA_ACCEPTANCE_SHA256` = 该 full-semester **manifest** digest（逐项见 `REAL_DATA_EXECUTION_MAP.md`） |
 | **7** | **不使用 Mock / Fake / Stub** | 上述三个 Provider 与 Orchestrator 链路中，**没有**任何一处是 mock/fake/stub；⛔ 包括"只在测试里替换一下"这种 |
 | **8** | `current_schedule` **provenance 合法** | 空数组，或其中**每一项** `data_source == "real"`；含 mock / 混合 / 来源未经确认 → 后端 422，**不算通过** |
 | **9** | API 返回**合法 `PlanResult`** | 符合 `schemas/plan_result.schema.json`（含 `status` / `selected_classes` / `changes` / `risks` / `unresolved`） |
@@ -90,18 +90,25 @@ LEVEL 0 on main
 
 依据（可当场复核）：
 
-- `backend/app/services/planning_runtime.py` 的 `get_planning_orchestrator()`
-  **当前恒返回 `None`**；
-- 因此 `POST /api/v1/plan` 恒返回 **503 `real_pipeline_not_configured`**；
+- 仓库**已具备** production runtime factory（`backend/app/services/planning_runtime.py`），
+  但它只在**五个环境变量齐全且相互一致**时才装配 Orchestrator；
+- 当前的部署**没有**任何真实受控输入：没有已批准的 curriculum case、没有真实的
+  full-semester acceptance 被导入 SQLite ⇒ `get_planning_orchestrator()` 返回 `None`
+  ⇒ `POST /api/v1/plan` 恒返回 **503 `real_pipeline_not_configured`**；
 - 前端 `VITE_PLAN_API_ENABLED` 默认关闭，Real 提交按钮 disabled。
 
-⚠️ **不得**因为"Codex 本地存在 runtime wiring 工作"就把状态写成 **LEVEL 1**：
-**本地未合入的代码不是当前状态**。等级只描述**当前 main 可验证的事实**。
+⚠️ LEVEL 0 的原因现在是「**真实受控输入尚未采集/配置**」，
+**不再**是"factory 恒返回 None"（那是 PR #39 时代的描述）。
+⚠️ **不得**因为"本地存在 runtime wiring 工作"或"preflight 跑绿"就把状态写成 LEVEL 1+：
+`tools/prepare_real_case_a_runtime.py --preflight` 是 **LEVEL 1（synthetic）**，
+⛔ 不是 Real。等级只描述**当前可验证的事实**。
 
 ### 2.2 等级晋升的规则
 
-- **LEVEL 0 → 1**：需要 production factory 真的能装配真实实现类（可合并的代码 + 证据）；
-- **LEVEL 1 → 2**：需要真实 Curriculum 输入 + **complete** 2026-1 snapshot（见 checklist）；
+- **LEVEL 0 → 1**：production factory 真的能装配真实实现类（已合并的代码 + 证据）；
+  ✅ 当前已满足（synthetic 链路跑通；见 `REAL_DATA_EXECUTION_MAP.md` §4）；
+- **LEVEL 1 → 2**：需要**真实受控** Curriculum 输入 + **五校区**全部采集成功
+  → 已批准 inventory → full-semester acceptance → 导入 SQLite → runtime 消费该 acceptance；
 - **LEVEL 2 → 3**：需要前端实际联调通过，且 §1 的 10 条**全部**成立；
 - ⛔ **跳级不被允许**：不得在 LEVEL 1 的证据上声称 LEVEL 2/3。
 
@@ -114,8 +121,9 @@ LEVEL 0 on main
 | **Mock 通道** | `GET /api/v1/mock/*`，永久保留，响应带 `X-Data-Source: mock` |
 | **synthetic artifact** | 人工构造的测试/演示产物（含 `real://` 形式 source 的假 bundle） |
 | **真实受控输入** | 经负责人确认、按数据边界私下交接的真实材料（不入 public Git） |
-| **complete snapshot** | `reported_total == loaded_count` 且通过全部 checklist 项的快照 |
+| **complete（scope 内）** | 在**该 scope**（campus shard / full_semester acceptance）内 `reported_total == loaded_count`；⚠️ campus complete ⛔ **不等于** full-semester complete |
 | **production runtime factory** | 真实装配入口（唯一 production wiring seam） |
+| **full-semester acceptance digest** | canonical manifest 的 SHA-256 = acceptance identity（`APP_COURSE_DATA_ACCEPTANCE_SHA256`）；⛔ 与 campus artifact digest 不是同一个东西 |
 
 ---
 
@@ -134,6 +142,18 @@ LEVEL 0 on main
   **不应单独被视为真实性证明**；
 - `CourseOffering.data_source` 由 Course Data 代码**无条件**置为 `real`，
   因此**受信 capture 与任意 synthetic bundle 走的是同一条代码路径**。
+
+**已加入的校验锚点（第二轮/第三轮 Red-Team 之后，仍**不是**数据自证）**：
+
+```text
+已批准 capture inventory（semester + 五条 shard_id/openingSchoolNumber/raw_bundle_sha256）
+  → full-semester acceptance 要求 artifact 原始字节、campus acceptance 记录、inventory 三方逐项一致
+  → immutable acceptance：manifest 字节被持久化，读取时重算 SHA 并核对语义字段
+```
+
+⚠️ 这**提高**了"必须消费一个已批准 inventory 产物"的门槛，但⛔ **仍不能**证明某个 inventory
+确实经过人工批准 —— 批准永远是 **out-of-band** 的人工动作
+（工具自己也明确输出 `draft_document_identity_not_an_approval`）。
 
 **安全不变量（本文件据此提出验收要求，非实现方案）**：
 
@@ -154,8 +174,12 @@ LEVEL 0 on main
 
 ## 5. 相关文档
 
-- `docs/e2e/COURSE_DATA_SNAPSHOT_CHECKLIST.md` —— 完整快照进入 Real pipeline 前的人工确认清单
+- `docs/e2e/REAL_DATA_EXECUTION_MAP.md` —— **当前实现**的真实执行链审计 + 五校区操作包 + synthetic preflight
+- `docs/e2e/REAL_CAPTURE_AND_RUNTIME_RUNBOOK.md` —— 用户采集 checklist + runtime 启动包 + 前端 real-run checklist
+- `docs/e2e/REAL_E2E_EVIDENCE_PROTOCOL.md` —— LEVEL 2 / LEVEL 3 证据清单
+- `docs/e2e/READINESS_DECISION_NOTES.md` —— hardening 决策记录 + North 诊断计划
+- `docs/e2e/COURSE_DATA_SNAPSHOT_CHECKLIST.md` —— ⚠️ 旧的单 bundle 快照清单（已被 full-semester acceptance 模型取代，保留作历史/逐校区完整性核对）
 - `docs/e2e/REAL_E2E_TEST_MATRIX.md` —— 验收矩阵（Precondition / Request / Expected / Evidence）
 - `docs/e2e/DEMO_RUNBOOK.md` —— 比赛 Demo 运行手册（含 Real 不可用时的切换策略）
-- `docs/status/course_data.md` —— snapshot provenance 语义的详细记录
+- `docs/status/course_data.md` —— Course Data 信任链语义的详细记录
 - `docs/status/integration.md` —— Integration 当前状态

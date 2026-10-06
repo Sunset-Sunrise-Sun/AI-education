@@ -1,5 +1,12 @@
 # Course Data 完整快照验收清单（2026-1 Snapshot Checklist）
 
+> ⚠️ **模型已更新（本文描述的是早期"单个 bundle 快照"模型）**：
+> 当前 production 模型是 **五校区 shard → 已批准 inventory → full-semester acceptance（manifest SHA）
+> → SQLite → `StoreBackedCourseDataProvider`**，见 `docs/e2e/REAL_DATA_EXECUTION_MAP.md`。
+> 本文保留的价值：**逐校区**完整性 / 脱敏 / 来源记录的核对项仍然适用；
+> ⛔ 但"一个 bundle 通过本清单 = 可以进入 Real runtime"这一推论**已不成立**
+> （campus complete ≠ full-semester complete；缺 North 即不可产出真实 acceptance）。
+
 > **用途**：一个 2026-1 教学班快照在**被允许进入 Real pipeline 之前**，
 > 必须由人工逐项确认。⛔ 任何一项未确认 → **不得**装配进 Real runtime。
 >

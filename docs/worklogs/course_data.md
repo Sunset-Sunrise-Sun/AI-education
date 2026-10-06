@@ -3144,3 +3144,61 @@
   mutation sweep **9 killed / 0 survived**；
 - **边界**：⛔ 只声明 **LEVEL1 synthetic production wiring capability**；
   ⛔ 不声明 Real LEVEL2 / LEVEL3；⛔ 未处理真实 artifact、⛔ 未 merge main。
+
+### 2026-10-06 - Real E2E Readiness / Operations Run（R1–R10）
+
+- 触发：Core MVP 之后进入 **readiness / operations**（⛔ 不加产品功能），
+  目标是把"真实数据一旦采集后如何跑完"变成**可复核的命令序列 + 机器可检文档**。
+- 分支：`feature/real-e2e-readiness-tooling`，base = `origin/main @ 67c8585`（#42–#47 已合并）。
+- **R1 执行链审计**：新增 `docs/e2e/REAL_DATA_EXECUTION_MAP.md`——
+  11 步依赖图（capture / validate / campus_acceptance / draft_inventory / accept / import /
+  provenance_verification / configure / start / probe / frontend），每步给出
+  command / input / output / invariant / failure_mode / 是否需人工；结论全部来自**当前实现**
+  （`tools/*`、`planning_runtime.py`、`store_provider.py`、`frontend/*`），⛔ 不以旧 worklog 为依据。
+  该 JSON 块由新测试 `backend/tests/test_readiness_pack_docs.py` 机器校验（字段齐全、
+  工具路径存在、五校区表与 `APPROVED_FULL_SEMESTER_SHARDS` 一致、历史计数必须标注"仅参考"、
+  North 四条禁令必须存在）。
+- **R2 五校区操作包**：已批准号码表（East 5063559 / South 5062201 / Shenzhen 333291143 /
+  Zhuhai 5062203 / North 5062202）+ 历史基线计数（East 1071 / North 405 / South 2898 /
+  Shenzhen 1171 / Zhuhai 1335 / Total 6880）**只作历史观测**，⛔ 不硬编码为真值；
+  正式 acceptance 必须用本次 diagnostics 的 baseline_before/after；North 仍 suspended。
+- **R3 用户 checklist**：`docs/e2e/REAL_CAPTURE_AND_RUNTIME_RUNBOOK.md`——用户只做 6 步
+  （登录 / MFA / 打开批准上下文 / 运行采集脚本 / 保存五个 shard + diagnostics / 交回路径）；
+  ⛔ 不需要手改 JSON、算 SHA、合并文件、改 label、动 SQLite、跑 SQL、判断完整性。
+- **R4 编排 CLI**：新增 `tools/prepare_real_case_a_runtime.py`（组合既有两个 CLI 的**工作函数**，
+  ⛔ 不复制 parser / 校验 / acceptance / 持久化逻辑）：五 bundle → 逐校区 campus acceptance →
+  inventory 草稿（人工批准后继续）→ full-semester acceptance → 新 SQLite → **provider 级 read-back**
+  → 五种 runtime env 值（可写本地 env 文件）。安全：目标 SQLite 已存在默认拒绝（需
+  `--allow-existing-store`，immutability 规则照旧）、⛔ 不自动建父目录、env 文件默认不覆盖。
+- **R5 synthetic preflight**：`--preflight` 一条命令跑完上面整条链（合成 5×3 行，
+  semester=2099-1），输出 `level = LEVEL1-synthetic-preflight` / `synthetic = true` /
+  `NOT Real E2E`；runtime+API+前端那段继续用既有
+  `test_synthetic_production_e2e.py` 与前端 readiness 回归复核。
+- **R6 证据协议**：`docs/e2e/REAL_E2E_EVIDENCE_PROTOCOL.md`——LEVEL 2（L2-1…L2-11）与
+  LEVEL 3（L3-1…L3-10）逐条证据形态（manifest SHA / acceptance id / semester / 五 shard
+  raw digest / baseline / merged count / HTTP 状态 / provenance / 否定式判据），
+  ⛔ 不含任何真实学生个人数据。
+- **R7 启动包**：同 runbook §3——必填五个 env 变量、**三种 digest 的明确命名**
+  （raw campus bundle digest / campus acceptance digest / full-semester manifest digest）、
+  成功与 7 类失败矩阵（缺库 / 缺 acceptance / 错 digest / campus-only / 篡改 / 删除 / 陈旧行
+  ⇒ 503；无关内部错误 ⇒ 500）。
+- **R8 前端 checklist**：runbook §4——`VITE_PLAN_API_ENABLED` / `VITE_PROXY_TARGET`、
+  12 项人工核对（Real/Mock 区分、无 fallback、503/500 态、中性文案、provenance 等），
+  均已被 Gate E 的 21 条自动化断言锁定；⛔ 本轮未改前端。
+- **R9 决策记录**：`docs/e2e/READINESS_DECISION_NOTES.md`——XLSX 入口鉴权与
+  `X-Data-Source` 标记各自的当前风险 / Demo 影响 / 生产影响 / 是否阻塞 Real E2E 证据 /
+  建议时机；结论：**都不阻塞**，都属需 Architecture Decision 的接口面/部署面变更，本轮⛔ 未擅自实现。
+- **R10 North 诊断计划**：同文件 §2——6 次最小观测（baseline / North 第 1–2 页 / 首个失败页 /
+  同会话复测 / 新会话复测）、必须记录的**元数据**（状态码、pageNo、total、rows 条数、
+  非敏感响应头；⛔ 不记 cookie/token、⛔ 不 dump 响应体）、6 条停止条件；
+  ⛔ 不称"限流"（无证据）、⛔ 不做激进的重复请求、⛔ 本 Run 未触网。
+- **文档纠正（readiness 一致性）**：`docs/e2e/REAL_CASE_A_ACCEPTANCE.md` 的验收条件 #3/#6、
+  §2.1/§2.2、术语表、§4 OPEN ITEM 从被取代的 `SnapshotCourseDataProvider` / 单 bundle 快照
+  更新为当前 `StoreBackedCourseDataProvider` + full-semester acceptance（⛔ **未**放宽任何条件，
+  只是把实现名与信任锚点写对）；`COURSE_DATA_SNAPSHOT_CHECKLIST.md` 顶部加"模型已更新"提示。
+- **测试**：新增 `backend/tests/test_prepare_real_case_a_runtime_cli.py`（**13 passed**：
+  preflight 全链路 + keep-dir 产物 + 真实模式两步流程 + 篡改 fail closed + campus 不完整 fail closed +
+  已有库需显式允许 + env 不覆盖 + ⛔ 不硬编码校区号 + ⛔ 无网络/凭据面）与
+  `backend/tests/test_readiness_pack_docs.py`（**11 passed**）。
+- **边界**：⛔ 未改 public Schema / frozen Provider contract / 前端 / 已合并 stack；
+  ⛔ 未接真实学校网络；⛔ 未提交真实 artifact；formal Real E2E 仍 **LEVEL 0**、North 仍 suspended。
