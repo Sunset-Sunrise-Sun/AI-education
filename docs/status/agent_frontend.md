@@ -975,8 +975,11 @@ cd frontend && npm run test:scenarios →  既有 14 项全部通过
 - 前端 Mock 数据来源：`GET /api/v1/mock/demo`（**永久保留**，本轮未修改）
 - **前端已预留 Real 接口 client（本轮）**：`POST /api/v1/plan`，
   请求体**只有** `semester` / `current_schedule` / `preference`，响应按 `PlanResult` 处理；
-  ⚠️ 该 endpoint **由并行开发中的 `feature/real-plan-api` 提供，当前 main 上并不存在**；
-  `VITE_PLAN_API_ENABLED` 默认关闭 → Real 提交按钮 disabled，且**不 fallback 到 Mock**；
+  ✅ **该 endpoint 已经实现**（integration/runtime 侧已提供；Gate E 更新，此前"由并行开发中的
+  `feature/real-plan-api` 提供、当前 main 上并不存在"的表述**已过时**）；
+  未装配时后端**明确返回 `503 real_pipeline_not_configured`** —— 这是**当前正确状态**，
+  前端单独的错误态展示它（⛔ 不写成"接口不存在"、⛔ 不 fallback 到 Mock）；
+  `VITE_PLAN_API_ENABLED` 默认关闭只是**演示默认值**，Real 提交按钮 disabled，且**不 fallback 到 Mock**；
   ⚠️ 该接口**只返回 `PlanResult`**（不含 MakeupTask / CourseOffering / Preference），
   因此前端只把**规划结果**标为 Real，其余区块仍为 Mock（见上方 provenance 修复）；
   ⚠️ 提交受 **课表 provenance 门禁**约束（**fail closed**）：只有**空课表**或**每项都明确为
@@ -1005,6 +1008,39 @@ cd frontend && npm run test:scenarios →  既有 14 项全部通过
   都是**用户自己录入**的输入；成绩文件**只选择、不解析、不上传**；
   页面显示的数据模式在 Real 接口接通前**始终为 Mock**
 - 「当前功能仅使用 Mock 数据验证，尚未完成真实数据验证」
+
+## Gate E：Frontend Real-path Readiness（✅ 已收口）
+
+**前提**：`POST /api/v1/plan` 已在后端实现（integration/runtime 侧）；本 Gate ⛔ 不改前端业务规则、
+⛔ 不改 API contract / public Schema、⛔ 未新增任何判断逻辑。
+
+回归锁定：`frontend/tests/real-path-readiness.spec.ts`（**21 用例**，全 mocked fetch）。
+逐条对应本轮 mandate 的 15 项要求：
+
+| # | 要求 | 证据 |
+| --- | --- | --- |
+| 1 | Real / Mock 明确区分 | 成功路径：`plan-result-provenance` = Real，基础区块仍标 Mock |
+| 2 | Real 请求仍走真实 `/api/v1/plan` | `api/plan.ts` 只用 `PLAN_ENDPOINT`；⛔ 不 import Mock 通道 |
+| 3 | 503 `real_pipeline_not_configured` 有明确错误态 | `real-plan-error-title` = "尚未完成装配" + HTTP 503 + 错误码 |
+| 4 | ⛔ 无 Real → Mock fallback | 503 后 `plan` 请求数仍为 1、Mock 请求数不变、结果仍为 Mock |
+| 5 | `meetings=[]` 中性文案 | `EMPTY_MEETINGS_DATA_TEXT` = "当前数据中无排课信息" |
+| 6 | 缺地点中性文案 | `formatMeetingLine` 在无 campus/classroom 时 = "当前数据中无地点信息" |
+| 7 | `selected_classes` ⛔ 不写成"已选课 / 已成功选中" | 渲染文本 + 源码静态守卫 |
+| 8 | `feasible` ⛔ 不写成"可直接执行" | 源码静态守卫 + 空 `unresolved` 文案 |
+| 9 | `changes` / `risks` / `unresolved` 空数组只表示"无记录" | "未返回方案变更记录 / 未返回风险项 / 未决事项为空"，⛔ 无"无风险 / 无需调整" |
+| 10 | Preference ⛔ 不声称已被求解器执行 | "以 PlanResult 输出为准"；⛔ "已按偏好求解 / 偏好已全部满足" |
+| 11 | 前端 ⛔ 不重算冲突 / 课程认定 / 优先级 | 静态：⛔ 无 `hasConflict` / `isFeasible` / `repairPlan` … |
+| 12 | ⛔ 无自造容量阈值 | 余量极低（4 / 90）仍原样展示；⛔ "余量紧张 / 即将满员 / 阈值" |
+| 13 | UNKNOWN / `manual_confirmation` 语义保留 | `schedule_unknown` / `manual_confirmation` / `missing_data` 原样展示 + 原始 `type` 字段 |
+| 14 | Real 结果 provenance 展示正确 | 只有规划结果标 Real，其余区块仍标 Mock |
+| 15 | loading / success / 503 / generic 500 状态稳定 | 进行中 disabled + "正在请求 Real Planning…"；500 ⇒ "server"，⛔ 不写成"未装配" |
+
+```text
+frontend: npm test（9 文件 134 用例）· npm run typecheck（vue-tsc --noEmit）· npm run build  全部 exit 0
+```
+
+⚠️ 唯一未变更的接口面事实：真实 `POST /api/v1/plan` **不返回 `X-Data-Source`** 头
+（⛔ 属接口面变更，本 Gate 未擅自扩 API）；前端全仓库只有 Mock 客户端读取该标记。
 
 ## 当前阻塞
 - **D2 / D3 的总体证据缺口已由认证来源补齐**（`CURR-OLD-003` / `CURR-NEW-004`）；
@@ -1040,7 +1076,10 @@ cd frontend && npm run test:scenarios →  既有 14 项全部通过
 ## 下一步
 - **本轮产出等待 Architecture Review**：Frontend User Input Gate Phase 1
   （输入区 / Mock-Real 隔离 / Real client 预留），以及**新增前端测试依赖**是否批准；
-- **等 `feature/real-plan-api` 合并后**再接线真实调用（届时打开 `VITE_PLAN_API_ENABLED`），
+- ✅ **Gate E（Frontend Real-path Readiness）已完成**：`POST /api/v1/plan` 已在后端实现，
+  前端按"未装配 ⇒ 503 `real_pipeline_not_configured`"这一**当前正确状态**展示；
+  readiness 回归锁定在 `frontend/tests/real-path-readiness.spec.ts`（**21 用例**）。
+  打开真实链路只需 `VITE_PLAN_API_ENABLED=true`（是否可用仍由后端 readiness 决定）；
   在此之前 Real 按钮保持 disabled，**不得**用 Mock 冒充 Real；
 - **下一步的候选工作**（需另行确认，本轮未做）：
   ① 把预填的转专业上下文作为**显式请求字段**扩展进 `POST /api/v1/plan`（属**接口变更**，须走 `【接口变更请求】`）；

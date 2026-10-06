@@ -104,8 +104,10 @@ const errorDisplay = computed(() =>
         class="uig-field__hint"
         data-testid="real-plan-disabled-hint"
       >
-        真实规划接口 <code class="mono">POST /api/v1/plan</code> 尚在并行开发中（<code class="mono">feature/real-plan-api</code>），
-        因此该按钮暂不可用。Mock 演示通道保持原样，<strong>不会</strong>在 Real 提交失败时回退到 Mock。
+        接口 <code class="mono">POST /api/v1/plan</code> <strong>已存在于后端</strong>；当前演示环境
+        未开启 <code class="mono">VITE_PLAN_API_ENABLED</code>（开关默认关闭，仅是演示默认值），
+        因此该按钮暂不可用。未装配时后端返回 <code class="mono">503</code>，属**当前正确状态**。
+        Mock 演示通道保持原样，<strong>不会</strong>在 Real 提交失败时回退到 Mock。
       </p>
       <p
         v-else-if="scheduleBlockReason"
