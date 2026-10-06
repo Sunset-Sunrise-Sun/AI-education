@@ -2845,3 +2845,64 @@
   ⛔ 真实材料未入 Git。
 - 下一步：push 同一 branch + 更新 PR #40 描述（本机无 `gh` ⇒ 提供可粘贴文本），
   之后等 Codex/Architecture Review 重新评审。
+
+### 2026-10-06 - PR #40 Blocker Fix Round（定点补强 + 过期事实修正）
+
+- **基线澄清（事实）**：本轮开工时仓库 HEAD 已是 `957aaaf`
+  （上一轮 "PR #40 BLOCK 修复"），**不是** 报告里写的 `7d04b77`；
+  P1（Layout B 精确准入）与 error-reflection / diagnostic extra-key 三项
+  **已在 `957aaaf` 修完并 push**。本轮在此之上补齐**adversarial 断言**、**未覆盖的
+  weeks 形态**、**过期文档**与**runtime 决定记录**，并重跑全量验证。
+- **P1 最终逻辑（collector 4 字段分支）** —— 五条全部满足才把 `fields[2]` 写为
+  `REDACTED_OPAQUE`：
+
+  ```text
+  恰好 4 字段
+  f1 = isConfirmedWeeksToken（镜像 parser 侧 expand_weeks 的接受集合）
+  f2 = countNonEmptyDashSegments(fields[1].trim()) >= MIN_LOCATION_SEGMENTS（严格 location）
+  f3 = non-empty opaque
+  f4 = non-empty activity
+  ```
+
+  ⛔ 任一不满足 ⇒ fail closed 且**不产出 bundle**；三处校验都早于脱敏写入；
+  ⛔ 未泛化 parser、⛔ Layout A 未改、⛔ public Schema 未改、⛔ 无 CJK/name 启发式。
+- **① 新增 adversarial Node 用例（本轮到 169 项）**：
+  - `NOT-WEEKS/...` 与空 activity ⇒ fail closed 且**不回显取值**；
+  - **malformed / 未批准 weeks 七形态**（`5-3周` / `0-3周` / `1-5` / `第1-5周` / `abc周` /
+    `1-5周单周` / **`1-5周线上`**）⇒ collector 侧 fail closed（⛔ 不依赖 parser 事后拒绝），
+    且错误文案不回显 raw token；
+  - 严格 location 之外的 4 字段近邻（两段 `-`）⇒ **不得误 redact**；
+  - 精确 Layout B（含 parity / qualifier weeks）⇒ f3 精确替换为 `REDACTED_OPAQUE`、
+    raw opaque 不出现在 bundle JSON（既有用例 + 本轮保持）。
+- **② 401 / 403 / 600 真实分别覆盖**：新增专用 status harness，**每个状态**断言
+  对应 status 确实被触发（错误文案含该状态码）、**恰好一次失败请求**（`calls === [1]`）、
+  无重试 / 无下一页 / 无后续 shard 请求、**不产出 bundle**。
+- **③ error reflection**（`957aaaf` 已修，本轮复核）：`payload.code` → `code_not_200`；
+  fetch `error.message` → `network_error`；`unwrapErrorMessage()` 只信任自有
+  `ERROR_PREFIX` 错误，其余折叠为 `unexpected_error`；adversarial 用例断言
+  `SECRET-CODE-ALPHA` / `SECRET-NET-ALPHA` 不出现在最终错误字符串中。
+- **④ diagnostic exact-key**（`957aaaf` 已修，本轮复核）：`validateLayoutBFieldSourceState()`
+  **先比键数量、再逐项校验**（state 顶层 + `processed_pages` 元素）；
+  用例断言 `zzz_extra`（排序最后）与 `processed_pages[0].zzz` 都被拒绝；
+  ⛔ 未改 production bundle format。
+- **⑤ 过期文档修正（本轮）**：
+  - 删除"**没有单校区采集入口**"（已过期）⇒ 改为"✅ 单校区采集入口已实现"，
+    并写明白名单 / 内部映射 / 单校区 batch ceiling **7** vs 五校区 **5** /
+    北校园 suspended fail closed / 未取满 fail closed；
+  - 删除"**CLI commit 在本地与远端都不存在**"（已过期）⇒ 改为"✅ CLI 已在远端可见：
+    `feature/course-data-artifact-acceptance-cli` / `1bb8bfd…`；⚠️ 本轮未集成"；
+  - 新增 **runtime 正式决定**记录（只记录、⛔ 不改实现）：PR #39 as-is **FROZEN /
+    DO NOT MERGE**、`campus complete != full semester complete`、
+    production runtime 后续必须依赖 SQLite 中的**显式 full_semester acceptance/provenance**、
+    North suspended 期间**不得**产生 full_semester acceptance、formal Real E2E 继续 **LEVEL0**。
+- **⑥ 回归（串行执行，mutation 与 full backend 不并发）**：
+  `node --check` exit 0；collector node **169 passed**；守卫 **124 passed**；
+  targeted（parser+normalization+importer+pagination+store+snapshot_merge+
+  sharded_capture+campus_scope+guard，`-W error::SyntaxWarning`）**766 passed**；
+  full backend **2 failed / 2473 passed / 2 skipped**（两个既有 Windows-only
+  Curriculum 用例，⛔ 未修未 skip）；`compileall app` exit 0；
+  mutation **87 个变异全部变红**（50 Node + 37 Python），
+  collector 与 parser SHA-256 前后一致、字节级还原。
+- **边界**：⛔ 未 merge main；⛔ 未 cherry-pick CLI；⛔ 未改 PR #39；⛔ 未改 runtime
+  implementation / public Schema / frozen Provider contract；⛔ 未自动登录、
+  ⛔ 未读 cookie/token、⛔ 未发真实教务请求、⛔ 未抓 East/South/Shenzhen/Zhuhai。

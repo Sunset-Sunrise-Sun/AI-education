@@ -3576,3 +3576,66 @@ test("分段诊断 state：多余的键（排序靠后）必须被拒绝", async
   extraEntry.processed_pages[0].zzz = "x";
   assert.throws(() => harness.finalize(extraEntry), /键数量不符|只允许 page_no/);
 });
+// ---------------------------------------------------------------------------
+// PR #40 Blocker Fix Round — 追加 adversarial 覆盖
+//
+// ① 401 / 403 / 600：**每个状态**真实触发 + 恰好一次失败请求 + 无重试 / 无下一页 /
+//    无后续 shard 请求 + 不产出 bundle
+// ② weeks admission 的 adversarial：malformed range / start<1 / 未批准 qualifier
+//    ⇒ collector 侧 fail closed（⛔ 不依赖 Python parser 事后拒绝）
+// ---------------------------------------------------------------------------
+
+test("单校区采集：401/403/600 各自真实触发（含无重试/无下一页/不产出 bundle）", async () => {
+  for (const status of [401, 403, 600]) {
+    const rows = campusRows(3 * CAMPUS_PAGE_SIZE);
+    const harness = loadStatusCollector(rows, status);
+
+    let failure = null;
+    try {
+      await harness.collector.collectApprovedShard({
+        semester: SEMESTER,
+        shardId: "east-campus",
+        maxPages: 10,
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.ok(failure, `HTTP ${status} 必须失败`);
+    // ① 对应 status 确实被触发（错误文案里带该状态码）
+    assert.ok(
+      failure.message.includes(String(status)),
+      `HTTP ${status} 的错误必须体现该状态：${failure.message}`,
+    );
+    // ② 恰好一次失败请求；③ 无重试；④ 无下一页；⑤ 无后续 shard / 请求
+    assert.deepEqual(plain(harness.calls), [1], `HTTP ${status} 只允许请求 1 页且不重试`);
+    // ⑥ 不产出 bundle：函数抛出即无返回值
+    assert.equal(failure.message.includes("REDACTED"), false, "错误文案不得含脱敏占位符内容");
+  }
+});
+
+test("Layout B adversarial：malformed / 非法 weeks 区间 ⇒ collector fail closed", async () => {
+  for (const weeks of ["5-3周", "0-3周", "1-5", "第1-5周", "abc周", "1-5周单周", "1-5周线上"]) {
+    const text = `${weeks}/${BLOCK_LOCATION}/SECRET-OPAQUE-W/${BLOCK_ACTIVITY}`;
+    const { collector } = loadCollector([rawRow(text)]);
+
+    await assert.rejects(
+      () => collector.collect({ semester: SEMESTER }),
+      (error) => {
+        assert.ok(!error.message.includes("SECRET-OPAQUE-W"), `⛔ 不得回显 opaque 取值（${weeks}）`);
+        assert.ok(!error.message.includes(weeks), `⛔ 不得回显 raw weeks token（${weeks}）`);
+        return true;
+      },
+      `未批准/非法 weeks 形态必须 fail closed：${weeks}`,
+    );
+  }
+});
+
+test("Layout B adversarial：严格 location 之外的 4 字段近邻不得被 redact", async () => {
+  // f2 只有两段 '-'（不是严格 location）⇒ 不是 Layout B：原样保留（⛔ 不误 redact）
+  const nearNeighbor = `1-5周/${CAMPUS}-2108/${TEACHER}/${ACTIVITY}`;
+  const out = await collectSingle(nearNeighbor);
+
+  assert.equal(out, nearNeighbor);
+  assert.ok(!out.includes("REDACTED_OPAQUE"));
+});
