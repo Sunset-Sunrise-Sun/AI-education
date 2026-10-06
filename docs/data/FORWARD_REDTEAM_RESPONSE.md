@@ -46,7 +46,7 @@
   - `::test_campus_acceptance_with_wrong_row_count_is_rejected`（"行数碰巧"）；
   - `::test_campus_acceptance_with_changed_content_digest_is_rejected`；
   - `::test_same_artifact_bytes_cannot_be_declared_as_two_campuses`；
-  - `::test_inventory_requires_the_approved_numbers` / `::test_inventory_has_exact_five_shards` /
+  - `::test_inventory_requires_the_approved_numbers` / `::test_inventory_requires_exact_five_shards` /
     `::test_inventory_rejects_unknown_fields_and_duplicate_keys` / `::test_inventory_must_be_canonical`；
   - CLI：`test_full_semester_acceptance_cli.py::test_changed_bytes_after_inventory_approval_are_rejected`、
     `::test_missing_campus_acceptance_is_rejected`、`::test_relabeled_campus_acceptance_is_rejected`、
@@ -109,7 +109,7 @@
 | 12 | identity 内容一致 | reject | 同上（B2 后每 shard 带自己的 campus label，故 `source` 归一化后判为重复） |
 | 13 | identity 内容冲突 | reject | `test_conflicting_identity_across_shards_is_rejected` |
 | 14 | input shard 顺序变化 | NON-BLOCKING | `test_artifact_order_does_not_change_the_manifest` |
-| 15 | raw bytes 变化 | reject（pinned digest 不符） | `test_raw_bytes_change_does_not_change_the_identity`（whitespace-only 也拒绝） |
+| 15 | raw bytes 变化 | reject（pinned digest 不符） | `test_raw_bytes_change_does_not_change_the_identity`（名字沿用；断言的是"pinned digest 不符即拒绝"，whitespace-only 变化同样拒绝） |
 | 16 | manifest keys / whitespace | NON-BLOCKING | `test_manifest_validator_rejects_unknown_fields_and_bad_counts`（shard 数组语义规范化）、`test_manifest_is_deterministic_across_runs` |
 | 17 | source label vs actual scope | reject | `test_campus_acceptance_with_arbitrary_source_label_is_rejected` |
 | 18 | empty shard | reject | `test_empty_shard_is_rejected`；⚠️ 五个**完全相同**的空 artifact 会更早在 inventory 被拒（`test_five_identical_empty_artifacts_are_rejected`） |
