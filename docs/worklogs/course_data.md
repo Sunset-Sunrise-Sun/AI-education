@@ -3060,3 +3060,70 @@
   `REAL_CAPTURE_OPERATION_PACK.md`（§E2 两步流程 + 草稿 inventory）；
 - **边界**：⛔ 未 merge main、⛔ 未改 PR #39 / public Schema / frozen Provider contract、
   ⛔ 未处理真实 artifact、⛔ 未发真实网络请求；formal Real E2E 继续 **LEVEL0**。
+
+### 2026-10-06 - BLOCK B4：Provider 每次读取都重新验证 acceptance
+
+- **分支**：基于 BLOCK B1/B2/B3 修复 tip（`fix/full-semester-acceptance-blocks`
+  @ `831c0e3`）新建 `fix/store-provider-continuous-verification`
+  （⛔ 未 rebase 旧 branch、⛔ 未 merge main）；
+- **Provider 重写**：删除"构造时缓存 metadata + 只重读 rows"的模型；
+  每次调用 `store.load_accepted_offerings()`（同一读事务内核对两个平面 /
+  scope / 计数 / membership / 逐行内容指纹 / 整批 digest / 行级 provenance）；
+- **错误映射**：`app/main.py` 新增 `CourseDataAcceptanceError` 异常处理器 ⇒
+  `503 real_pipeline_not_configured`（请求期间失效同样是就绪性失败）；
+  ⛔ 其它异常不映射（仍 500）；
+- **降级非权威路径**：`load_course_offerings_for_acceptance()` 保留但明确标注
+  "不核对内容、仅供诊断"；
+- **测试**：`test_course_data_store_provider.py` **51 passed**
+  （reviewer probe 修复版 + 构造后删除 / 篡改 + 同数量替换 + 陈旧行 + 不缓存）；
+  store **83 passed**（含 Gate B 的声明平面查询用例）；
+- **边界**：⛔ 未改 frozen Provider contract / public Schema、⛔ 未处理真实 artifact、
+  ⛔ 未 merge main；formal Real E2E 继续 **LEVEL0**。
+
+### 2026-10-06 - BLOCK B5：immutable acceptance identity（第二轮 Red-Team）
+
+- **先复现**：把审计 HEAD `cb585c1` 归档后用 `probe_immutable_acceptance_cb585c1.py`
+  复现攻击（同 SHA：A 落库 → Provider 构造 → B 用同一 SHA 再导入 →
+  旧 Provider 返回 `DATASET_B_TAMPERED`）⇒ **HAZARD REPRODUCED**；
+- **修复**：①`canonical_manifest_json` 持久化 + `SHA256(canonical) == acceptance_sha256`、
+  ②同 SHA 重复提交逐项比较（幂等或 `immutable_acceptance_conflict`，⛔ 无 semantic upsert）、
+  ③membership 不可变且按 `(scope_kind, scope_id)` 限定、
+  ④读取侧 trust chain、⑤无 canonical manifest 的 full_semester acceptance 拒绝服务、
+  ⑥CLI 传 manifest 并核对 `provenance_canonical_manifest_sha256`；
+- **攻击关闭**：`probe_immutable_acceptance_fixed.py` ⇒ 三条路径全部被拒，
+  旧 Provider 仍返回 `DATASET_A` ⇒ **ATTACK CLOSED**；
+- **测试**：store **106 passed**、provider **57 passed**、
+  full backend **2780 passed**（2 个既有 Windows-only Curriculum failure，⛔ 未修未 skip）；
+  mutation sweep **13 killed / 1 可证等价 / 0 survived**；
+- **边界**：⛔ 未 merge main、⛔ 未改 public Schema / frozen Provider contract、
+  ⛔ 未处理真实 artifact；formal Real E2E 继续 **LEVEL0**。
+
+### 2026-10-06 - BLOCK R-SNAPSHOT：读序列的一致快照（第三轮 Red-Team）
+
+- **先定位（不改代码）**：`git show ef910e3:backend/app/course_data/store.py` 上
+  `isolation_level` **0 处**、`execute("BEGIN` **0 处**，`load_accepted_offerings()`
+  用 `with _open_store(path, must_exist=True, ensure_schema=False)` ⇒ 默认隔离级别
+  只为 DML 隐式开事务，裸 `SELECT` 各自一个隐式事务 ⇒ 多 SELECT 读序列**不是**
+  一致快照 ⇒ 确认 `ef910e3` **不满足** R-SNAPSHOT（先证据后修复）；
+- **修复**：新增 `_open_read_snapshot()`（`isolation_level=None` +
+  `PRAGMA busy_timeout = 5000` + `_require_schema` 放在 `BEGIN` 之前 +
+  显式 `BEGIN` + `finally: ROLLBACK`），权威读取改用它（`store.py`）；
+- **并发探针**（`backend/tests/test_course_data_read_snapshot.py`，**8 passed**）：
+  stdlib `sqlite3.connect` 上挂 trace 回调，在 membership SELECT **之前**确定性暂停
+  （one-shot，避免 writer 自己的 `DELETE ... member` 也被挂住 ⇒ 互等）；
+  writer 绕过 API 直接改库（`BEGIN IMMEDIATE` + `busy_timeout=300`）：
+  delete acceptance / replace accepted row / mutate membership；
+  读者路径同时覆盖 `load_accepted_offerings` 与 `get_course_offerings`；
+- **修复后探针结果**：三场景 × 两路径全部
+  `paused_in_transaction=True`、`writer=locked`、`writer_retry=committed`、
+  `post_state` 确实变化、读者 `reader_epoch=A`（完整 epoch A，无混合）；
+- **旧 HEAD 复现**：同一探针在 `ef910e3` 上 `paused_in_transaction=False`、
+  writer 在读序列中途 `committed` ⇒ replace row / mutate membership 场景读到
+  **混合 epoch**（acceptance A + row B），被 R-CONTENT 内容校验拦下 ⇒
+  7 failed / 1 passed；即"没有事务"这一缺陷**确实可观测**；
+- **反空泛**：把 `_open_read_snapshot` 换回"只连接、不开显式事务"的等价实现，
+  同一探针立刻退化为混合 epoch / fail closed（`BEGIN` 承重）；
+- **测试**：store **106** / provider **57** / runtime **49** / synthetic E2E **20** /
+  read snapshot **8** = **240 passed**；
+- **边界**：⛔ 未改 journal mode、⛔ 未改 public Schema / frozen Provider contract、
+  ⛔ 未 merge main、⛔ 未处理真实 artifact；formal Real E2E 继续 **LEVEL0**。

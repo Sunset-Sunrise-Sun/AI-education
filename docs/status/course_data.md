@@ -1707,3 +1707,75 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
 - 逐条映射：`docs/data/FORWARD_REDTEAM_RESPONSE.md`（Reviewer 20-case 矩阵 + runtime/E2E 矩阵）；
 - ⛔ **未声称** physical immutability（专用 immutable acceptance DB 属后续 Architecture Decision）；
   ⛔ 未处理真实 artifact、⛔ 未 merge main。
+
+## BLOCK B4：Provider 持续验证（✅ 已修）
+
+- `StoreBackedCourseDataProvider` **不再缓存** metadata / rows：
+  每次 `get_course_offerings(semester)` 都在**一个一致读事务**里调用
+  `store.load_accepted_offerings()`，重新核对
+  ①acceptance 元数据仍存在且精确匹配（semester / scope / digest）、
+  ②两个平面（`course_data_import` / `course_data_acceptance`）一致、
+  ③completeness 与三个计数自洽、④membership 行数与 identity 集合、
+  ⑤逐行 `offering_payload_sha256`、⑥重算整批 `offering_set_sha256`、
+  ⑦每行的行级 provenance 仍指向本 acceptance；
+- 构造期只做 fail fast（走同一条路径），⛔ 不作为此后读取的依据；
+- **错误映射**：`CourseDataAcceptanceError` 是就绪性失败 ⇒ runtime factory 映射为
+  `course_data_not_ready` ⇒ 503；请求期间才发现的失效由 `app/main.py` 的**显式**
+  异常处理器映射成同样的 `503 real_pipeline_not_configured`
+  （⛔ 其它未预期异常仍为 500，⛔ 不伪装成未装配）；
+- `load_course_offerings_for_acceptance()` 明确降级为**非权威**诊断查询
+  （只按行级 provenance 过滤、不核对内容）；
+- **测试**：provider **51 passed**（含 reviewer probe 的修复版
+  `test_acceptance_record_removed_after_construction_fails_closed`、
+  构造后内容 / membership 篡改、两个平面不一致、6 种同数量内容替换、
+  陈旧行不泄漏、不缓存 rows）+ store **83 passed**；
+- ⛔ 仍未声称 physical immutability；⛔ 未改 public Schema / frozen Provider contract。
+
+## BLOCK B5：immutable acceptance identity（✅ 已修）
+
+第二个 Codex 对 Provider HEAD `cb585c1` 的独立复现：**同一个 acceptance SHA**
+可以被第二次导入改写（A → B），旧 Provider 随后返回 B —— 即 acceptance SHA
+**没有不可变地绑定**一份 canonical acceptance。
+
+- **持久化 canonical manifest**：`course_data_acceptance.canonical_manifest_json`
+  （与 rows 同事务落库）；不变量：
+  `SHA256(canonical manifest bytes) == acceptance_sha256`（可重算，⛔ 不靠 DB 自报）；
+- **禁止 semantic UPSERT**：同 SHA 已存在 ⇒ 逐项比较（source / completeness /
+  counts / `offering_set_sha256` / manifest 字节 / membership）；
+  完全相同 ⇒ 幂等 no-op，任一不同 ⇒ `ImmutableAcceptanceConflictError`；
+- **membership 不可变**：逐 identity 比较 `offering_payload_sha256`，
+  +1 / -1 / 替换 / 内容变化全部 reject；member 主键补上 `(scope_kind, scope_id)`；
+- **Provider trust chain（每次读取）**：configured SHA → stored canonical manifest →
+  重算 SHA == configured → manifest 语义字段 == 列式 metadata →
+  `merged_offering_set_sha256` → membership 精确集合 → 逐行 payload digest →
+  重算整批 digest → 一致才返回；⛔ 没有 canonical manifest 的 `full_semester`
+  acceptance 拒绝装配；
+- 复现证据：旧 `cb585c1` archive 上 `HAZARD REPRODUCED`；修复后 `ATTACK CLOSED`；
+- 测试：store **106 passed**、provider **57 passed**；mutation sweep
+  **13 killed / 1 可证等价 / 0 survived**；
+- ⛔ 未改 public Schema / frozen Provider contract、⛔ 未 merge main。
+
+## BLOCK R-SNAPSHOT：单一 consistent read snapshot（✅ 已修）
+
+第三个 Codex BLOCK：`load_accepted_offerings()` 的验证序列是**多次 SELECT**
+（acceptance / canonical manifest / provenance / membership / rows / digests），
+但 Provider HEAD `ef910e3` 用的是 `_open_store(...)`（`sqlite3.connect` 默认
+`isolation_level`）—— 默认隔离级别**只在 DML 前**隐式开事务，裸 `SELECT` 各自一个
+隐式事务 ⇒ **不是一个跨多 SELECT 的一致快照**，并发写者可以在读序列中途提交，
+产生 `acceptance A 元数据 + membership/rows B`（混合 epoch）。
+
+- **实现位置**：`backend/app/course_data/store.py`
+  `_open_read_snapshot()`（`isolation_level=None` + `PRAGMA busy_timeout` +
+  `_require_schema` 在 BEGIN 之前 + 显式 `BEGIN` + `finally: ROLLBACK`）；
+  权威读取 `load_accepted_offerings()` 改为 `with _open_read_snapshot(path) as connection:`；
+- **并发探针**（`backend/tests/test_course_data_read_snapshot.py`，**8 passed**）：
+  读者在 membership SELECT 前确定性暂停，rogue writer 直接改库覆盖
+  delete acceptance / replace accepted row / mutate membership 三场景；
+  修复后 **writer 被锁等待（locked）+ 重试成功 + 读者返回完整 epoch A**；
+  旧 `ef910e3` 上同一探针 `paused_in_transaction=False`、writer 在读中途 **committed**
+  ⇒ 读序列交错（由 R-CONTENT 内容校验拦下，但**混合读已经发生**）；
+- **反空泛**：把 `_open_read_snapshot` 换成"只连接、不开显式事务"的等价实现后，
+  同一探针立刻退化为混合 epoch / fail closed ⇒ `BEGIN` 是承重的；
+- 测试：store **106** / provider **57** / runtime **49** / synthetic E2E **20** /
+  read snapshot **8** = **240 passed**；
+- ⛔ 未改 journal mode、⛔ 未改 public Schema / frozen Provider contract、⛔ 未 merge main。

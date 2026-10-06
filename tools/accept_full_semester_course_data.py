@@ -633,6 +633,10 @@ def accept_full_semester(args: argparse.Namespace) -> dict[str, object]:
             acceptance.merged,
             artifact_sha256=acceptance.manifest_sha256,
             scope=acceptance.scope,
+            # ⛔ acceptance identity 是**不可变**的：canonical manifest 与 rows 同事务落库，
+            #    使 Provider 每次读取都能重算 SHA256(canonical stored manifest) 并与
+            #    configured SHA 比对（Forward Red-Team：immutable acceptance identity）。
+            canonical_manifest=acceptance.manifest,
         )
 
         # ⛔ content-bound 回读（B3）：acceptance 平面必须与本次 acceptance 的
@@ -657,6 +661,9 @@ def accept_full_semester(args: argparse.Namespace) -> dict[str, object]:
             # ⚠️ store 的 load_accepted_offerings 已经核对过整批 digest；
             #    这里再比一次是纵深防御（对账 CLI 看到的 manifest 与库）。
             or record.offering_set_sha256 != acceptance.merged_offering_set_sha256
+            # ⛔ immutable acceptance identity：持久化的 canonical manifest 必须能重算出
+            #    同一个 acceptance SHA（由 store 的 trust chain 给出）。
+            or record.canonical_manifest_sha256 != acceptance.manifest_sha256
             or len(dataset.offerings) != acceptance.merged_offering_count
         ):
             _fail(
@@ -718,6 +725,7 @@ def accept_full_semester(args: argparse.Namespace) -> dict[str, object]:
         "provenance_reported_total": record.reported_total,
         "provenance_offering_count": record.offering_count,
         "provenance_offering_set_sha256": record.offering_set_sha256,
+        "provenance_canonical_manifest_sha256": record.canonical_manifest_sha256,
     }
 
 
