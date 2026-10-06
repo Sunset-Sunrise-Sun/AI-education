@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import CourseOfferingList from './components/CourseOfferingList.vue'
+import DemoSceneGuide from './components/DemoSceneGuide.vue'
 import E2EDebugPanel from './components/E2EDebugPanel.vue'
 import type { E2EDebugInfo } from './components/E2EDebugPanel.vue'
 import MakeupTaskList from './components/MakeupTaskList.vue'
 import PlanResultPanel from './components/PlanResultPanel.vue'
 import PreferencePanel from './components/PreferencePanel.vue'
 import SectionCard from './components/SectionCard.vue'
+import SyntheticSnapshotNotice from './components/SyntheticSnapshotNotice.vue'
 import TopStatusBar from './components/TopStatusBar.vue'
 import UserInputPanel from './components/UserInputPanel.vue'
 import { useDemoData } from './composables/useDemoData'
@@ -199,40 +201,13 @@ onMounted(() => {
   <div class="page">
     <TopStatusBar :data-source="dataSource" />
 
-    <!-- 业务数据流转全景步骤示意（极佳的参赛 Demo 讲解引导条） -->
-    <div class="pipeline-guide">
-      <div class="pipeline-step">
-        <div class="pipeline-step__num">1</div>
-        <div class="pipeline-step__content">
-          <strong>培养方案对比</strong>
-          <span>Curriculum 缺什么课</span>
-        </div>
-      </div>
-      <div class="pipeline-arrow">➔</div>
-      <div class="pipeline-step">
-        <div class="pipeline-step__num">2</div>
-        <div class="pipeline-step__content">
-          <strong>教学班供给获取</strong>
-          <span>Course Data 开了哪些班</span>
-        </div>
-      </div>
-      <div class="pipeline-arrow">➔</div>
-      <div class="pipeline-step">
-        <div class="pipeline-step__num">3</div>
-        <div class="pipeline-step__content">
-          <strong>偏好约束注入</strong>
-          <span>Agent 用户意图解析</span>
-        </div>
-      </div>
-      <div class="pipeline-arrow">➔</div>
-      <div class="pipeline-step pipeline-step--accent">
-        <div class="pipeline-step__num">4</div>
-        <div class="pipeline-step__content">
-          <strong>课表求解与调班</strong>
-          <span>Planner Path Repair</span>
-        </div>
-      </div>
-    </div>
+    <!--
+      比赛演示路线（8 场景）。
+
+      ⚠️ 纯导航：只做锚点跳转与一句话看点，⛔ 不含任何业务判断，
+      也⛔ 不读取任何接口数据（场景 5–8 指向第 4 区内部的四个子块）。
+    -->
+    <DemoSceneGuide />
 
     <main class="page__main">
       <!--
@@ -348,6 +323,13 @@ onMounted(() => {
           subtitle="Course Data 模块从教务系统中抓取并标准化的目标学期开课清单：支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
           :badge-count="data.course_offerings.length"
         >
+          <!--
+            教学班演示快照披露（比赛演示，⛔ 强制可见、不得隐藏）。
+
+            说明文案随「规划结果来源」切换，避免在未提交真实规划时
+            把 Mock 规划结果说成正式链路产出。
+          -->
+          <SyntheticSnapshotNotice :plan-result-mode="planResultMode" />
           <CourseOfferingList :offerings="data.course_offerings" />
         </SectionCard>
 

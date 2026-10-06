@@ -141,6 +141,42 @@ export function displayOrDash(value: string | number | null | undefined): string
  */
 export const EMPTY_MEETINGS_DATA_TEXT = '当前数据中无排课信息'
 
+/* -------------------------------------------------------------------------- */
+/* 教学班演示快照的披露口径（比赛演示，⛔ 必须逐字可见）                        */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * 教学班演示快照的强制披露标签。
+ *
+ * 为什么需要它：被验收的 Course Data 行在**代码层**会被统一标记为 `data_source = real`
+ * （已记录的 OPEN ITEM），因此页面上的这个标签是**唯一**的 Synthetic 披露面。
+ * ⛔ 任何情况下都不得隐藏、折叠或改写该标签。
+ */
+export const SYNTHETIC_SNAPSHOT_LABEL = '教学班数据：演示快照（Synthetic）'
+
+/**
+ * 披露说明（**模式 2**：规划结果来自真实链路 `POST /api/v1/plan`）。
+ *
+ * 逐字口径：只声明“教学班是 Synthetic 演示快照”，其余链路仍在正式架构上执行。
+ */
+export const SYNTHETIC_SNAPSHOT_NOTE_REAL =
+  '用于比赛演示；培养方案分析、约束规划、Path Repair 与风险解释仍通过实际系统链路执行。'
+
+/**
+ * 披露说明（**模式 1**：尚未提交真实规划，规划结果同样来自 Mock 演示通道）。
+ *
+ * ⛔ 不得在模式 1 下复用模式 2 的说明：那会把 Mock 规划结果说成正式链路产出。
+ */
+export const SYNTHETIC_SNAPSHOT_NOTE_MOCK =
+  '用于比赛演示；当前尚未提交真实规划请求，培养要求评估、教学班与规划结果均来自 Mock 演示通道。'
+
+/**
+ * 教学班演示快照的限制说明（与 README / 启动文档同一口径，逐字）。
+ */
+export const SYNTHETIC_SNAPSHOT_LIMITATION =
+  '由于学校教务系统北校园开课查询存在稳定的深分页异常，当前比赛版本的教学班演示使用经过明确标识的 Synthetic 快照。系统的培养方案解析、补修判定、约束规划、Path Repair、风险解释与前后端运行链路仍按正式架构执行。'
+
+
 /**
  * 把一段 meeting 拼成一行可读文本，例如：
  * `周一 · 第 3-4 节 · 1-16 周 · 东校园 / 东B305`。

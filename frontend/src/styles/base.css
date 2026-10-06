@@ -296,70 +296,134 @@ code.mono {
   margin-bottom: 2px;
 }
 
-/* ---------- 业务链路引导条 ---------- */
+/* ---------- 比赛演示路线（8 场景） ---------- */
 
-.pipeline-guide {
+.scene-guide {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px 20px;
   margin: 16px 0 20px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
   box-shadow: var(--shadow-sm);
   overflow-x: auto;
 }
 
-.pipeline-step {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex: 1;
-  min-width: 170px;
+.scene-guide__title {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  letter-spacing: 0.04em;
+  margin-bottom: 10px;
 }
 
-.pipeline-step__num {
-  width: 28px;
-  height: 28px;
+.scene-guide__list {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.scene-guide__item {
+  flex: 1;
+  min-width: 148px;
+}
+
+.scene-guide__link {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  height: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8fafc;
+  text-decoration: none;
+  color: inherit;
+}
+
+.scene-guide__link:hover,
+.scene-guide__link:focus-visible {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+.scene-guide__num {
+  width: 24px;
+  height: 24px;
   border-radius: 50%;
-  background: #f1f5f9;
-  border: 1px solid var(--border-strong);
+  background: #2563eb;
+  color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
-  font-size: 13px;
-  color: #475569;
+  font-size: 12px;
   flex-shrink: 0;
 }
 
-.pipeline-step--accent .pipeline-step__num {
-  background: #2563eb;
-  color: #fff;
-  border-color: #1d4ed8;
-}
-
-.pipeline-step__content {
+.scene-guide__body {
   display: flex;
   flex-direction: column;
+  gap: 2px;
 }
 
-.pipeline-step__content strong {
+.scene-guide__name {
   font-size: 13px;
   color: var(--text);
 }
 
-.pipeline-step__content span {
+.scene-guide__hint {
   font-size: 11px;
   color: var(--text-muted);
+  line-height: 1.35;
 }
 
-.pipeline-arrow {
-  color: var(--border-strong);
-  font-size: 16px;
-  user-select: none;
+/* ---------- 教学班演示快照披露 ---------- */
+
+.snapshot-notice {
+  border: 1px dashed #d97706;
+  background: #fffbeb;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.snapshot-notice__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0;
+}
+
+.snapshot-notice__label {
+  font-size: 13px;
+  color: #92400e;
+}
+
+.snapshot-notice__note {
+  font-size: 12px;
+  color: #78350f;
+  line-height: 1.5;
+}
+
+.snapshot-notice__details {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #78350f;
+}
+
+.snapshot-notice__details summary {
+  cursor: pointer;
+  color: #92400e;
+}
+
+.snapshot-notice__limitation {
+  margin: 6px 0 0;
+  line-height: 1.6;
 }
 
 /* ---------- 顶层概览统计 KPI ---------- */
@@ -1944,13 +2008,8 @@ code.mono {
     justify-content: space-between;
   }
 
-  .pipeline-guide {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .pipeline-arrow {
-    display: none;
+  .scene-guide__list {
+    flex-wrap: wrap;
   }
 
   /* 用户输入区：窄屏改为单列 */
