@@ -21,6 +21,11 @@ term / course_name / credits / grade / course_attribute
 ⛔ **不支持**：扫描件 / 图片型 PDF（无 OCR）、其它学校、其它版本的中大成绩单、
 其它语言版面。版面不符时**一律 fail closed**，⛔ 不猜测、⛔ 不部分输出。
 
+⛔ **修复过的 PDF 一律拒绝**：MuPDF 会**成功修复**截断 / 损坏的 PDF 并返回
+（可能不完整的）内容而**不**抛异常——例如把真实成绩单截断到 97% 会让第二个学期整段消失。
+因此打开文档后立即检查 `is_repaired`，为真则按"malformed PDF"fail closed
+（⛔ 绝不把修复过的文件当作权威成绩单输入）。
+
 ## 为什么解析后 `course_id` 为空
 
 成绩单**不提供**官方课程号。本模块**不构造、不推断、不借用**任何课程号：
@@ -515,6 +520,22 @@ def parse_transcript_pdf_bytes(payload: object) -> TranscriptParse:
     try:
         document = pymupdf.open(stream=body, filetype="pdf")
     except Exception:  # noqa: BLE001 - 第三方解码异常一律 fail closed
+        _fail("transcript: malformed PDF")
+
+    # ⛔ 修复过的 PDF 一律拒绝：MuPDF 会**成功修复**截断 / 损坏的 PDF 并返回
+    # （可能不完整的）内容，而**不**抛异常。修复过程可能悄悄丢弃对象 / 内容流甚至页面，
+    # 例如把真实成绩单截断到 97% 时第二个学期整段消失——那会变成"看起来正常"的
+    # 不完整已修课程输入。成绩单是权威输入，⛔ 绝不接受修复过的文件。
+    # ⚠️ 必须在读取任何页之前判断，且**先关闭**文档再抛出（⛔ 不泄漏文件句柄）。
+    try:
+        repaired = document.is_repaired
+    except Exception:  # noqa: BLE001 - 无法判定修复状态时同样 fail closed
+        repaired = True
+    if repaired:
+        try:
+            document.close()
+        except Exception:  # noqa: BLE001 - 关闭失败不改变判定结果
+            pass
         _fail("transcript: malformed PDF")
 
     records: list[TranscriptRecord] = []

@@ -330,3 +330,31 @@
   Plane/Integration/Frontend 既不需要感知，也不应把本接口当作已冻结 Case A runtime 的入口。
 - 下一步：Architecture 决定 PDF 版面的**版本化**策略；负责人提供课程号补全依据后，
   再把 `pending` 记录升级为已确认身份；前端接入成绩单上传（本轮只做后端 + 接口）。
+
+### 2026-10-07 - 复审修复：修复过的 PDF 必须 fail closed
+- 本次目标：只修 Reviewer 复审指出的**唯一阻塞项**——截断 / 损坏的 PDF 可能被静默接受。
+- 问题（复审实测）：页面解析库会**成功修复**截断 / 损坏的 PDF 并返回（可能不完整的）
+  内容而**不**抛异常。把**真实**成绩单截断到 **97% / 95%** 时，解析器仍"成功"返回
+  24 条记录，但 `terms` 从 **2 变成 1**——第二个学期整段消失。原测试只覆盖
+  "打不开的输入"，因此 CI 全绿也未发现。
+- 修复：打开文档后**立即**读取 `document.is_repaired`；为真则**先关闭文档**再按既有
+  通用文案 `transcript: malformed PDF` 拒绝。无法判定修复状态时同样拒绝（fail closed）。
+  ⛔ 未改匹配语义 / Curriculum 语义 / API 形状 / 公共 Schema / Provider 契约 /
+  frontend / Course Data / Planner。
+- 修改文件：`backend/app/curriculum/pdf_reader.py`（仅新增修复判定）、
+  `backend/tests/test_curriculum_pdf_reader.py`（新增 3 个回归用例）、
+  `docs/status/curriculum.md`、`docs/worklogs/curriculum.md`、
+  `docs/curriculum/PDF_TRANSCRIPT_INPUT.md`（补充"不支持需要修复的 PDF"）。
+- 测试：新增回归用例——
+  ① 正常成绩单 `is_repaired is False` 且仍被接受；
+  ② 截断到需要修复的文件被拒绝，且错误文案**恰为**通用文案（并断言不含姓名 / 学号 /
+  路径 / `.pdf` / `Traceback`）；
+  ③ 多页成绩单截断同样被拒绝。
+  ⚠️ **刻意不依赖 MuPDF 的告警文案**（实现细节、可能随版本变化），只依据 `is_repaired`。
+  `tests/test_curriculum_pdf_reader.py` 18 → **21 passed**。
+- 数据：无。⛔ 未接触、未提交任何真实成绩单；真实文件仅在本机做一次性验证
+  （完整文件仍解析出 24 条 / 2 个学期；99%–90% 截断现全部被拒绝）。
+- 回归：全量 **3036 tests · 3032 passed · 2 failed · 2 skipped**；
+  2 failed 与 base `c75b6da` **完全相同**（已用独立 base worktree 复现并比对失败集合）。
+- 尚未处理（非阻塞）：MuPDF 的 C 层诊断会绕过 Python 的告警抑制直接写到 stderr；
+  已用 fd 级捕获确认其中**不含** PDF 内容 / 个人信息，本轮按指示不做抑制。
