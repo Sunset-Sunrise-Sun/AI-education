@@ -90,3 +90,17 @@ Top指定CourseData/Provider/snapshot/acceptanceCLI/runtime/API/synthetic1103 pa
 full backend2823 passed/2skip，compileall和diffcheck通过。四PR及cross-stack PASS，
 ready，推荐merge order42→43→44→45。尝试gh pr comment42 Forbidden；四独立comment稿保存。
 没有merge/production编辑/学校访问；Formal Real E2E仍LEVEL0。
+
+## 2026-10-06 Gate E/F/G final PR-level review
+
+刷新Git全部分支，GitHub公开页面metadata与refs/pull确认Draft46/47 base/head精确匹配。
+main faff309已合并42–45；本轮只审46/47增量，不重做旧backend threat sweep。
+Frontend134pass、typecheck/build/nodecheck通过，#46PASS。#47API/ingest只新增兼容route，
+Schema/ports/runtime/store/matching无diff，既有XLSX140pass、Curriculum/integration/runtime1208pass。
+独立XLSX26例：24pass/2fail（超长十进制CL与非ASCII digit应用HTTP500分类错误）。
+补查真实localhost Uvicorn/h11两例都先400，明确不声称上传绕过/公网500漏洞；BLOCK限定
+ASGI应用自身文档化输入边界。最小修复ASCII校验+转换前有限大小比较，不改业务异常边界。
+测试fixture参数初写sheet_name，按fixture真实接口selected_sheet_name修正；七个假失败消除，
+剩余两个确认实现缺陷，无xfail。报告与strict reviewer test已保存；#47/cross-stackBLOCK。
+按用户条件未启动最终fullbackend/compileall；Windows敏感两个reader文件相对main无diff，
+本Linux targeted包含它们并全通过。无secret/artifact新增，无merge/production改动/学校访问。

@@ -84,3 +84,14 @@ GitHub公开页面base/head/Draft与指定stack一致，Git pull refs+ancestry�
 #42 full2628/2skip；#43 full2721/2skip；#44 runtime/API98；top targeted1103、full2823/2skip。
 compileall与diff检查通过。不重复旧HEAD sweep。merge readiness ready，顺序42→43→44→45。
 四份评论稿独立保存pr_comments/；发布尝试Forbidden，未发表。未merge、未改production。
+
+## Gate E/F/G PR-level review — #46 / #47
+
+Report: `reviewer/full_semester/GATE_E_F_G_PR_REVIEW.md`。
+GitHub Draft/base/head核实：#46 19970db base main；#47 0727902 base #46；main已merge42–45。
+- #46 Architecture PASS：frontend134 passed，typecheck/build/nodecheck PASS。
+- #47 BLOCK F-LENGTH-CLASSIFICATION：API Content-Length .isdigit/int不匹配；4301位ASCII数字
+  和superscript digit在ASGI应用返回500，文档要求413/411。Uvicorn/h11先拒400，未发现bypass。
+- 独立XLSX24pass/2fail；existing XLSX140pass；Curriculum/orchestrator/runtime/API1208pass。
+- Cross-stack BLOCK；full backend/compileall按用户条件等修复后运行；不merge不改production。
+- Auth与Real X-Data-Source仅non-blocking hardening；Formal Real E2E仍LEVEL0。
