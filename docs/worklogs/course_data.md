@@ -2934,3 +2934,35 @@
   normalization secret 不泄露、异常文本不泄露；
 - ⛔ 未改 schedule parser / collector / Capture Bundle format / public schemas / runtime /
   Planner / Curriculum / frontend / PR #39；⛔ 未发网络请求、⛔ 未处理真实 artifact。
+
+### 2026-10-06 - Acceptance CLI Integration Gate（campus-only）
+
+- **分支**：从 main `d3a451b` 新建 `feature/course-data-acceptance-cli-integration`（⛔ 不用旧分支）；
+  **cherry-pick** CLI commit `1bb8bfd`（来源 `feature/course-data-artifact-acceptance-cli`）：
+  代码文件干净落地；`docs/status/course_data.md` 与 `docs/worklogs/course_data.md`
+  **冲突手工解决** —— 保留 main 中 PR #40 的最新事实，再追加 CLI 的 campus-only Gate 说明
+  （⛔ 不整文件覆盖、⛔ 未带回旧 parser / collector / store 实现）；
+- **Phase 2 收紧**：`--scope-kind` **移除**，CLI 固定 `scope_kind = campus`；
+  ⛔ `full_semester` 无表达路径（传 `--scope-kind` 即 `invalid_arguments`）；
+  ⛔ missing scope / blank scope_id / unknown scope kind 均 reject；
+- **Phase 3 source**：精确等于 `capture://sysu/<semester>/campus/<scope_id>`
+  （semester 与 scope_id 双重一致）；仍只是 audit label，⛔ 不是 provenance proof；
+- **Phase 4 链路保持**：raw bytes → SHA-256 → `load_capture_bundle` →
+  `collect_captured_pages_snapshot` → campus completeness → `SnapshotScope(campus, scope_id)`
+  → 可选 SQLite import → provenance read-back；新增**可选** `--expected-sha256` gate；
+- **Phase 5 read-back 强化**：逐项核对 digest / semester / campus scope / source /
+  completeness / loaded_count / reported_total / offering_count +
+  `inserted + updated + unchanged == offering_count`；
+  `db_offering_count` 更名为 `db_semester_offering_count` 并加 `*_semantics` 标注
+  （⛔ 不改公共 store API，只改 summary 文案）；
+  新增 **empty（0 offering）snapshot** fail closed（独立退出码 `EXIT_EMPTY_SNAPSHOT = 8`）；
+- ⚠️ **事务 caveat 明确写入 docs**：import commit 与 read-back 非同一事务 ⇒
+  ⛔ 不得声称"非零退出 == SQLite 零变化"；
+- **测试**：CLI targeted **10 → 17 passed**（新增：full_semester 不可表达、
+  arbitrary source、source semester / campus 错配、`--expected-sha256` 错 digest、
+  empty snapshot、幂等重入对账 + 学期级/artifact 级计数区分、异常文本不泄露）；
+- **回归**：CLI targeted 17；Course Data targeted（parser/normalization/importer/
+  store/snapshot/sharded/campus-scope/guards）；full backend；compileall —— 见提交说明；
+  两个既有 Windows-only Curriculum failure ⛔ 不修不 skip；
+- **边界**：⛔ 未 merge main、⛔ 未改 PR #39、⛔ 未改 runtime / public Schema /
+  frozen Provider contract、⛔ 未发真实教务请求、⛔ 未读 cookie/token、⛔ 未处理真实 artifact。
