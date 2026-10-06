@@ -338,7 +338,7 @@ onMounted(() => {
           mock
           section-id="section-preference"
           title="3. 学生个性化偏好 (Preference)"
-          subtitle="Agent 模块解析学生自然语言输入所形成的约束条件：包含学分上限控制、避免跨校区、回避特定时段及意向课程。"
+          subtitle="由结构化表单输入形成的约束条件：包含学分上限控制、避免跨校区、回避特定时段及意向课程。⛔ 本版本没有自然语言解析（模型能力为后续方向），也不保证全部偏好都被执行；未确认部分见第 4 区 unresolved。"
         >
           <PreferencePanel
             :preference="data.preference"
@@ -372,11 +372,12 @@ onMounted(() => {
             </span>
             <span class="uig-provenance__note">
               <template v-if="planResultMode === 'real'">
-                本区块方案来自 <code class="mono">POST /api/v1/plan</code>；
+                本区块方案由 <code class="mono">POST /api/v1/plan</code> <strong>实际执行代码计算</strong>（Actual API computation）；
                 其余区块（MakeupTask / 教学班 / Preference）仍为 Mock 演示数据。
+                ⛔ 实际代码执行<strong>不等于</strong>输入数据已获得真实学校来源认证。
               </template>
               <template v-else>
-                本区块方案来自 <code class="mono">GET /api/v1/mock/demo</code>；尚未提交 Real Planning。
+                本区块方案来自 <code class="mono">GET /api/v1/mock/demo</code>，属<strong>回放预置结果</strong>（未执行本次 Planner 求解）。
               </template>
             </span>
           </div>
@@ -393,20 +394,24 @@ onMounted(() => {
     <footer class="page__footer">
       <div class="footer-content">
         <p class="footer-brand">
-          <strong>学航·转衔</strong> —— 面向高校转专业学生的 AI 学业路径重构 Agent 系统
+          <strong>学航·转衔</strong> —— 面向转专业学生的学业路径重构<strong>原型</strong>（固定工具编排，AI 增强待接入）
         </p>
         <p class="footer-compliance">
+          实现边界：本版本为<strong>固定工具编排原型</strong>，<strong>未接入 LLM / RAG / GraphRAG</strong>
+          （无模型推理、无检索管线、无自然语言偏好解析）；模型理解与生成式解释为后续方向。
+          <br />
           数据声明：<strong>页面基础展示数据</strong>（历史培养要求评估、开课教学班、学生偏好）
           由后端 <code class="mono">GET /api/v1/mock/demo</code> 通道提供，属<strong>演示数据</strong>。
           <br />
           <template v-if="planResultMode === 'real'">
-            <strong>规划结果</strong>由 <code class="mono">POST /api/v1/plan</code> 返回（Real），
-            与上述基础展示数据的来源相互独立。
+            <strong>规划结果</strong>由 <code class="mono">POST /api/v1/plan</code> <strong>实际执行代码计算</strong>
+            （Actual API computation），与上述基础展示数据的来源相互独立；
+            ⛔ 实际代码执行<strong>不等于</strong>输入数据已获得真实学校来源认证。
           </template>
           <template v-else>
-            <strong>规划结果</strong>当前同样来自上述 Mock 演示通道；尚未提交 Real Planning。
+            <strong>规划结果</strong>当前同样来自上述 Mock 演示通道（<strong>回放预置结果</strong>），未执行本次 Planner 求解。
           </template>
-          两类内容均<strong>不代表真实教务系统正式指令</strong>。
+          两类内容均<strong>不代表真实教务系统正式指令</strong>；教学班输入为明确标注的 Synthetic 演示快照。
         </p>
       </div>
     </footer>

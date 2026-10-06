@@ -15,6 +15,7 @@ import App from '@/App.vue'
 import DemoSceneGuide from '@/components/DemoSceneGuide.vue'
 import SyntheticSnapshotNotice from '@/components/SyntheticSnapshotNotice.vue'
 import {
+  DEMO_DATA_DISCLOSURE_UI,
   SYNTHETIC_SNAPSHOT_LABEL,
   SYNTHETIC_SNAPSHOT_LIMITATION,
   SYNTHETIC_SNAPSHOT_NOTE_MOCK,
@@ -103,37 +104,44 @@ describe('教学班演示快照披露（Synthetic）', () => {
     // ⛔ 主标签不得位于 <details> 内（只有背景说明可以折叠）
     expect(label.element.closest('details')).toBeNull()
 
+    // 与模式无关的 UI 披露逐字可见
+    expect(wrapper.find('[data-testid="demo-data-disclosure"]').text()).toBe(
+      DEMO_DATA_DISCLOSURE_UI,
+    )
+
     expect(wrapper.find('[data-testid="synthetic-snapshot-limitation"]').text()).toBe(
       SYNTHETIC_SNAPSHOT_LIMITATION,
     )
   })
 
-  it('模式 1（未提交真实规划）使用如实说明，⛔ 不声称其余链路已执行', async () => {
+  it('回放模式使用如实说明：预置样例 + 未执行本次求解，⛔ 不声称其余链路已执行', async () => {
     const wrapper = await mountApp()
 
     const note = wrapper.find('[data-testid="synthetic-snapshot-note"]').text()
     expect(note).toBe(SYNTHETIC_SNAPSHOT_NOTE_MOCK)
     expect(note).not.toBe(SYNTHETIC_SNAPSHOT_NOTE_REAL)
+    expect(note).toContain('未执行本次 Planner 求解')
     expect(wrapper.find('[data-testid="plan-result-provenance"]').text()).toBe('Mock')
   })
 
-  it('模式 2（真实规划成功后）切换到逐字口径说明', async () => {
+  it('计算模式（实际提交成功后）切换到「实际代码计算」口径，并声明实际执行 ≠ 输入真实', async () => {
     const wrapper = await mountApp()
 
     await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-testid="plan-result-provenance"]').text()).toBe('Real')
-    expect(wrapper.find('[data-testid="synthetic-snapshot-note"]').text()).toBe(
-      SYNTHETIC_SNAPSHOT_NOTE_REAL,
-    )
+    const note = wrapper.find('[data-testid="synthetic-snapshot-note"]').text()
+    expect(note).toBe(SYNTHETIC_SNAPSHOT_NOTE_REAL)
+    expect(note).toContain('Actual API computation')
+    expect(note).toContain('不等于输入数据已获得真实学校来源认证')
     // 教学班区块本身仍标 Mock 演示数据，披露标签持续可见
     expect(wrapper.find('[data-testid="synthetic-snapshot-label"]').text()).toBe(
       SYNTHETIC_SNAPSHOT_LABEL,
     )
   })
 
-  it('⛔ 披露文案不含“已选课 / 可直接执行 / 无冲突 / 尚未排课”类表述', async () => {
+  it('⛔ 披露文案不含"已选课 / 可直接执行 / 无冲突 / 尚未排课"类表述', async () => {
     const wrapper = mount(SyntheticSnapshotNotice, {
       props: { planResultMode: 'real' },
     })
@@ -142,6 +150,16 @@ describe('教学班演示快照披露（Synthetic）', () => {
     for (const forbidden of ['已选课', '可直接执行', '无冲突', '尚未排课', '无课', '异步课程']) {
       expect(text).not.toContain(forbidden)
     }
+  })
+
+  it('⛔ 页面不把「教学班是 Synthetic」写成「其余输入都真实」', async () => {
+    const wrapper = await mountApp()
+    const text = wrapper.text()
+
+    for (const forbidden of ['其余全部真实', '其余数据均为真实', '只有教学班是 Synthetic，其余']) {
+      expect(text).not.toContain(forbidden)
+    }
+    expect(text).toContain('输入来源需逐项核验')
   })
 })
 

@@ -42,19 +42,19 @@ const scenes: readonly DemoScene[] = [
   {
     index: 4,
     title: '教学班供给 + 学生偏好',
-    hint: '演示快照 + 偏好约束',
+    hint: '演示快照（Synthetic）+ 结构化偏好',
     anchor: '#section-offerings',
   },
   {
     index: 5,
     title: '风险与未决',
-    hint: 'risks：排课信息未知时如实说明',
+    hint: 'risks / unresolved：以实际输出为准',
     anchor: '#section-plan-risks',
   },
   {
     index: 6,
-    title: 'Path Repair',
-    hint: 'changes：原班级 → 调整为 + 调整原因',
+    title: '受限修复与变更记录',
+    hint: 'changes：候选/新增记录（非自动调班）',
     anchor: '#section-plan-changes',
   },
   {

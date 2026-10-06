@@ -1,9 +1,12 @@
 # 学航·转衔
 
-**面向高校转专业学生的 AI 学业路径重构 Agent 系统**（比赛演示参考场景：中山大学 Case A —— 2025 级 遥感科学与技术 → 网络空间安全）。
+**学航·转衔：面向转专业学生的学业路径重构原型（固定工具编排，AI 增强待接入）**（比赛演示参考场景：中山大学 Case A —— 2025 级 遥感科学与技术 → 网络空间安全）。
 
 > 本项目是参赛交付版本。演示数据与真实受控输入严格分开，页面与文档都会明确标注数据来源；
 > 系统**不代替学校完成选课或注册**，最终认定与执行始终由人工与学校正式渠道完成。
+>
+> ⚠️ **当前实现边界（必读）**：当前为**固定工具编排原型**；**LLM / RAG / GraphRAG 为后续增强方向，尚未接入**。
+> 页面标题中的 "AI Agent" 指的是产品方向与固定编排架构，⛔ 不代表本版本已运行模型推理、检索或生成式解释。
 
 ---
 
@@ -15,7 +18,9 @@
 
 核心原则（全项目通用）：
 
-> AI 负责理解、解析、协调和解释；规则负责确定性判断；算法负责约束求解；人负责正式规则、权限边界和最终确认。
+> **未来**可由模型辅助理解输入、检索证据与生成解释；**当前版本由结构化输入、规则和固定编排执行**：
+> 规则负责确定性判断；受限确定性检查负责时间与候选评估；人负责正式规则、权限边界和最终确认。
+> ⛔ 不把"AI 负责理解 / 解析 / 解释"当作本版本已实现的功能分工。
 
 ---
 
@@ -48,13 +53,19 @@
 
 | 能力 | 说明 | 责任模块 |
 |---|---|---|
-| **培养方案解析与差异（Curriculum Diff）** | 解析原 / 新专业培养方案与已修课程记录，给出新旧方案差异与课程匹配建议 | Curriculum |
-| **历史培养要求评估 / 补修判定** | 逐条评估目标培养方案要求，输出 `MakeupTask`（状态含 `required` / `possibly_equivalent` / `manual_confirmation` / `satisfied`）；先修关系由 `prerequisites[]` 承载 | Curriculum |
-| **教学班供给** | 按学期提供结构化 `CourseOffering`（课程号、教学班号、教师、容量、多段排课 `meetings[]`） | Course Data |
-| **偏好约束** | 把学生输入整理为 `Preference`：学分上限、避免跨校区、回避时段、意向课程 | Agent / Frontend |
-| **冲突识别与 Path Repair** | 基于全部 `Meeting` 做时间 / 节次 / 周次冲突检测，搜索替代教学班并给出变更前后对照（`changes`） | Planner |
-| **风险解释** | 输出 `risks[]`（`low` / `medium` / `high` + 原因），说明方案中哪些条件尚未完全认证 | Planner → Frontend |
+| **培养方案解析与差异（Curriculum Diff）** | 解析原 / 新专业培养方案与已修课程记录，给出新旧方案差异与课程匹配建议（**Mode 2 实际执行；Mode 1 为回放**） | Curriculum |
+| **历史培养要求评估 / 补修判定** | 逐条评估目标培养方案要求，输出 `MakeupTask`（状态含 `required` / `possibly_equivalent` / `manual_confirmation` / `satisfied`）；先修关系由 `prerequisites[]` 承载。⛔ 状态为 `manual_confirmation` / `possibly_equivalent` 的条目**不是**"已确认需要补修" | Curriculum |
+| **教学班供给** | 按学期提供结构化 `CourseOffering`（课程号、教学班号、教师、容量、多段排课 `meetings[]`）；比赛演示的供给为 Synthetic 演示快照 | Course Data |
+| **偏好约束** | 把**结构化表单输入**整理为 `Preference`：学分上限、避免跨校区、回避时段、意向课程。⛔ 本版本没有自然语言解析；⛔ 不保证全部偏好都被执行（见下方 §3 说明） | Frontend（结构化输入）→ Planner（受限使用） |
+| **冲突识别与 Path Repair** | 已实现**确定性时间检查**与**受限修复候选评估**：保留已有班，仅对 `required` 任务的唯一 CLEAR 候选提出新增建议，并保留未解决 / 人审事项。⛔ 不自动按偏好换班、不执行选课、不是全局优化器 | Planner |
+| **风险与未决事项呈现** | 页面展示 `PlanResult` 中的 `risks[]` / `unresolved[]`。⚠️ Mode 1 的 `risks` / `changes` 是**人工构造的演示样例**；计算模式以实际 Planner 输出为准（当前 Provider 主要输出 `unresolved`，`risks` 可能为空）。⛔ 不称"实时算出风险等级" | Planner → Frontend |
 | **人工确认模型** | 涉及课程等价、替代审批、学院特殊政策、培养方案歧义条款的结论一律标记为待人工确认（`unresolved[].type = manual_confirmation`），系统不自动下正式结论 | 全链路 |
+
+**Planner 的权威表述（与代码一致）**：
+
+> 已实现确定性时间检查、受限组合可行性检查及替代教学班候选评估。当前 Planner 保留已有班，仅在受限条件下提出新增/候选建议，并把无法确定的事项保留到 `unresolved` / 人工确认。
+
+⛔ 禁用说法：全局最优 / 全局优化 / CP-SAT 已求解 / ILP 已求解 / 自动换班 / 自动选课 / 所有偏好已执行。
 
 三条贯穿设计的安全约束：
 
@@ -73,7 +84,7 @@
         ↓  HTTP
 后端 FastAPI（POST /api/v1/plan；GET /api/v1/mock/demo；GET /health）
         ↓
-Agent / Orchestration：PlanningOrchestrator（只编排，不做业务算法）
+Agent / Orchestration：PlanningOrchestrator（**固定工具编排**：只编排，不做业务算法，⛔ 不调用任何模型）
         ├── CurriculumProvider    培养方案解析 / 差异 / 补修判定 → MakeupTask[]
         ├── CourseDataProvider    整学期教学班供给 → CourseOffering[]
         └── PlannerProvider       受限确定性求解 + Path Repair → PlanResult
@@ -94,12 +105,25 @@ PlanResult（status / selected_classes / changes / risks / unresolved / objectiv
 
 ## 5. 数据来源与真实性声明
 
+> **本项目已实现结构化读取、规则分析、固定 Provider 编排、受限时间检查和结果呈现。
+> Mode 1 为 Mock 回放，不执行上游业务计算；Mode 2 调用 `/api/v1/plan` 执行实际代码，
+> 比赛教学班供给为 Synthetic，页面基础展示区仍包含演示数据。
+> 只有具备批准 provenance 的具体 artifact 才可称真实学校输入。
+> 当前未完成 Real LEVEL2 / LEVEL3。**
+
+术语按两个**相互独立**的轴使用，⛔ 不得互相替代：
+
+| 轴 | 含义 | ⛔ 不能由此推出 |
+|---|---|---|
+| **实际执行的代码**（actual / production implementation logic） | 仓库中的 `CurriculumCaseProvider`、`StoreBackedCourseDataProvider`、`RestrictedPlannerProvider`、`PlanningOrchestrator`、API/runtime 与前端渲染确实执行 | 输入数据来自学校 |
+| **经证明的输入来源**（provenance-backed real school data） | 具体 artifact 有受控来源、授权与批准证据，且与当前消费的字节/版本一致 | ⛔ 不能由 `data_source="real"`、HTTP 200、端点名、已验收 Store、`full_semester` 枚举或 "Case A" 名称推断 |
+
 ### 5.1 三段数据事实（必须分开表述）
 
 | 数据面 | 本版本的准确表述 |
 |---|---|
-| **培养方案（Case A）与业务语义** | Curriculum Diff、MakeupTask、补修判定、Planner 受限确定性求解、Path Repair、风险解释与人工确认模型，**按正式架构执行**；在模式 2 下走真实链路 |
-| **教学班 `CourseOffering`** | 比赛演示中使用**明确标识的 Synthetic 演示快照** |
+| **培养方案（Case A）与业务语义** | **Mode 1 为回放，不执行上游业务计算**；**Mode 2 执行实际代码**（Curriculum Diff、MakeupTask 投影、受限确定性检查、替代候选评估、`PlanResult` 生成）。Curriculum 是否属于**真实学校输入**，须由该次 artifact 的批准 provenance 逐项证明，⛔ 不由 case 名称或 `data_source` 字段证明 |
+| **教学班 `CourseOffering`** | 比赛演示中使用**明确标识的 Synthetic 演示快照**（模式 1 回放、模式 2 输入皆为人工/程序生成） |
 | **`mock_data/*.json` 演化数据** | 以文件形式提交，**仅用于演示回放**，且已通过 `schemas/*.schema.json` 校验 |
 
 ⛔ 本版本**没有**连接任何实时教务系统，**不存在**"全部数据均为真实"的说法；Mock 与 Synthetic 一律按要求标注，不会被表述为真实数据。
@@ -110,16 +134,19 @@ PlanResult（status / selected_classes / changes / risks / unresolved / objectiv
 >
 > 由于学校教务系统北校园开课查询存在稳定的深分页异常，当前比赛版本的教学班演示使用经过明确标识的 Synthetic 快照。系统的培养方案解析、补修判定、约束规划、Path Repair、风险解释与前后端运行链路仍按正式架构执行。
 
-该措辞同样适用于相关文档与演示话术；模式 2 下前端的「教学班数据：演示快照（Synthetic）」标签是本项目在教学班来源上的**唯一披露面**，不得在其上叠加"真实教学班"的表述。
+该措辞同样适用于相关文档与演示话术。它说明的是**架构按正式设计执行**，⛔ 不等于"其余输入都真实"：
+页面基础区仍是演示数据，Curriculum 输入是否真实须由该次批准证据逐项核验。因此教学班来源与 Curriculum 来源必须**分别标注**
+（该标签是教学班来源的可见披露，⛔ 不是全页 provenance 的"唯一披露面"）。
 
 ### 5.3 两种运行模式与数据来源
 
-| | 模式 1「演示快照回放」（默认） | 模式 2「真实规划链路」 |
+| | 模式 1「演示回放」（默认） | 模式 2「计算模式」 |
 |---|---|---|
 | 触发条件 | 不设置任何真实链路环境变量 | 5 个运行时环境变量齐全且相互一致 |
-| 基础数据 | `GET /api/v1/mock/demo` | 受控 Case A manifest + 已验收整学期 Course Data SQLite |
-| 规划结果 | 同样来自 Mock 聚合接口 | `POST /api/v1/plan` 走真实链路 |
-| 标注 | 全部标注为演示数据 / Mock | 规划结果为 Real；教学班输入仍是 Synthetic 演示快照 |
+| **UI 基础展示区**（MakeupTask / 教学班 / Preference） | `GET /api/v1/mock/demo` | **仍为 Mock 演示数据**（页面不会整页变成真实） |
+| **规划结果区** | 同样来自 Mock 聚合接口（**回放预置结果**） | `POST /api/v1/plan` 的**实际代码计算**（Actual API computation） |
+| 后端运算输入 | 无（不执行 Curriculum / Planner） | 显式本地 Case A manifest + 已验收 Store（比赛教学班供给为 Synthetic） |
+| 标注口径 | 全部标注为演示数据 / Mock | 规划结果区标注为「实际代码计算」；✅ 实际代码执行 ⛔ **不等于**输入数据已获得真实学校来源认证 |
 
 ### 5.4 fail-closed：明确拒绝，不回退
 
@@ -127,10 +154,14 @@ PlanResult（status / selected_classes / changes / risks / unresolved / objectiv
 - **不回退**到 Mock，也不用演示数据顶替真实结果；
 - `X-Data-Source: mock` 响应头**只**由永久 Mock 通道（`/api/v1/mock/*`）设置；真实链路响应上不出现该头，反之真实链路也不会借用 Mock 数据。
 
-### 5.5 Real E2E 证据等级
+### 5.5 证据等级：`ready` ⛔ 不等于 LEVEL2
 
-- 本版本的正式 Real E2E 证据等级仍是 **LEVEL 0**：**没有**真实教务登录、**没有**真实 artifact 被处理；
-- 已具备的是 **LEVEL 1（synthetic）** 的 wiring capability（合成产物跑通装配），⛔ 不得据此声称 LEVEL 2 / LEVEL 3 已达成；
+- `ready`（readiness 工具的最终状态）只表示**运行时输入通过了 Store + Curriculum 的最终复验**（可装配、可读取、逐请求重校验）；
+- `ready` ⛔ **不证明**：真实学校 Course Data 来源、LEVEL 2、LEVEL 3；
+- **Synthetic 教学班供给可以产出 runtime-ready 的本地计算 demo，但不会因此成为真实学校数据**；
+- **LEVEL 2 额外要求**：已批准的真实 Course Data provenance / handoff、与之精确对应的已验收整学期证据、已批准的真实 Curriculum provenance，且**不得有 synthetic 替代**；
+- 本版本的正式 Real E2E 证据等级仍是 **LEVEL 0**；已具备的是 **LEVEL 1（synthetic）** 的 wiring capability（合成产物跑通装配），⛔ 不得据此声称 LEVEL 2 / LEVEL 3 已达成；
+- 本次可复现演示**未处理真实全量 Course Data**；真实 Case A 材料有受控记录，但本轮**未独立核验**其来源，故不据此声明真实学校输入；
 - 等级定义与晋升规则见 [`docs/e2e/REAL_CASE_A_ACCEPTANCE.md`](docs/e2e/REAL_CASE_A_ACCEPTANCE.md)，LEVEL 2 / LEVEL 3 的证据清单见 [`docs/e2e/REAL_E2E_EVIDENCE_PROTOCOL.md`](docs/e2e/REAL_E2E_EVIDENCE_PROTOCOL.md)。
 
 ---
@@ -163,7 +194,7 @@ curl -i -s http://127.0.0.1:8000/api/v1/mock/demo   # 期望 200，且响应头�
 
 前端 Real 提交按钮默认 **disabled**（`VITE_PLAN_API_ENABLED` 未设置）。这是刻意的默认值：演示不依赖后端已装配的真实输入。前端代理目标默认 `http://127.0.0.1:8000`，可用 `VITE_PROXY_TARGET` 覆盖。
 
-### 模式 2：真实规划链路（可选，需要操作者本机已批准的真实输入）
+### 模式 2：计算模式（`POST /api/v1/plan` 实际代码计算；可选，需要操作者本机显式本地输入）
 
 前置条件（全部由操作者在本机准备，**都不在 Git 中**）：
 
@@ -175,7 +206,7 @@ curl -i -s http://127.0.0.1:8000/api/v1/mock/demo   # 期望 200，且响应头�
 | 变量 | 语义 |
 |---|---|
 | `APP_REAL_CASE_A_ENABLED` | `1` = 启用；未设置或 `0` = 关闭；其它取值 ⇒ `invalid_runtime_configuration` |
-| `APP_CASE_A_CURRICULUM_CASE_PATH` | 真实 Case A manifest 的本地路径 |
+| `APP_CASE_A_CURRICULUM_CASE_PATH` | 显式本地 Case A manifest 路径（**来源须由该次批准 provenance 另行证明**，⛔ 字段值本身不是证明） |
 | `APP_COURSE_DATA_SQLITE_PATH` | 本地 Course Data SQLite 库路径 |
 | `APP_COURSE_DATA_SEMESTER` | 该 acceptance 绑定的学期 |
 | `APP_COURSE_DATA_ACCEPTANCE_SHA256` | 整学期 acceptance 的 manifest SHA-256（64 位 hex） |
@@ -198,11 +229,11 @@ curl -i -s http://127.0.0.1:8000/api/v1/mock/demo   # 期望 200，且响应头�
 一段式概览（按演示顺序；详细话术与逐场景检查点见 [`docs/demo/COMPETITION_DEMO_SCRIPT.md`](docs/demo/COMPETITION_DEMO_SCRIPT.md)）：
 
 1. **场景 1 · 转专业背景**：从第 0 区「用户输入」讲清输入从哪里来（目标学期 `2026-1`、原专业遥感科学与技术、目标专业网络空间安全、转入学期），并说明该区块只组织输入，不做冲突检测、不生成补修任务。
-2. **场景 2 · 学业差异**：用顶部概览计数与第 1 区副标题说明"差异"如何被组织 —— 由 Curriculum 依据目标培养方案要求与已修记录逐条产出，前端只展示、不重算；具体数字以页面实际显示为准。
-3. **场景 3 · 历史培养要求评估（MakeupTask）**：逐条念判定列，说明四种状态（`satisfied` / `possibly_equivalent` / `manual_confirmation` / `required`）互不等同，凡涉及课程等价与学分差额一律留待人工确认。
-4. **场景 4 · 教学班供给 + 学生偏好**：在第 2 区展示按课程分组的 `CourseOffering`（多段 `meetings`、容量、`data_source`），对没有可用排课信息的教学班使用中性文案「当前数据中无排课信息」；在第 3 区展示 `Preference`。**此处一次性披露教学班数据性质**，逐字念出：「教学班数据：演示快照（Synthetic）。」以及 §5.2 的既定说明，随后不再重复致歉或追加解释。
-5. **场景 5 · 冲突与风险**：展示第 4 区的 `risks[]`（等级 + 原因），说明风险由后端给出、前端不重算；排课信息缺失时坚持中性表述，不据此下可行性结论。
-6. **场景 6 · Path Repair**：展示 `PlanResult.changes` 的"原教学班 → 调整为 + 调整原因"，说明替代教学班搜索来自受约束的确定性求解，不由语言模型决定，也不涉及任何选课 / 退课操作。
+2. **场景 2 · 学业差异**：用顶部概览计数与第 1 区副标题说明"差异"如何被组织 —— 由 Curriculum 依据目标培养方案要求与已修记录逐条产出（**Mode 2 为实际代码计算；Mode 1 为回放**），前端只展示、不重算；具体数字以页面实际显示为准。
+3. **场景 3 · 历史培养要求评估（MakeupTask）**：逐条念判定列，说明四种状态（`satisfied` / `possibly_equivalent` / `manual_confirmation` / `required`）互不等同，凡涉及课程等价与学分差额一律留待人工确认。⛔ 不把 `manual_confirmation` 说成"需要补修"。
+4. **场景 4 · 教学班供给 + 学生偏好**：在第 2 区展示按课程分组的 `CourseOffering`（多段 `meetings`、容量、`data_source`），对没有可用排课信息的教学班使用中性文案「当前数据中无排课信息」；在第 3 区展示**结构化表单**形成的 `Preference`（⛔ 本版本无自然语言解析）。**此处按模式披露数据性质**，逐字念出：「教学班数据：演示快照（Synthetic）。」并说明「输入来源需逐项核验」（见 §5.2 / §5.3）。
+5. **场景 5 · 风险与未决**：展示第 4 区的 `risks[]` / `unresolved[]`。⚠️ **Mode 1 的 `risks` 是人工构造的演示样例，不是本次现场算出的风险等级**；计算模式以实际 Planner 输出为准（当前 Provider 主要输出 `unresolved`，`risks` 可能为空）。排课信息缺失时坚持中性表述，不据此下可行性结论。
+6. **场景 6 · Path Repair（受限修复候选）**：展示 `PlanResult.changes` 的"原教学班 → 调整为 + 调整原因"。⚠️ **Mode 1 展示的是人工构造的变更样例，不是本次 Planner 求解**；计算模式会执行受限的确定性检查与替代候选评估，**保留已有班并要求人做选择**，`changes` 可能只是唯一 CLEAR `required` 候选的新增记录。⛔ 不保证按偏好自动换班，也不涉及任何选课 / 退课操作。
 7. **场景 7 · 方案与建议课表**：展示 `selected_classes` 与方案状态（`可行` / `部分可确认` / `当前范围内不可行`）及求解目标说明，明确这只是**建议方案**，不代表学校已完成选课或注册。
 8. **场景 8 · 人工确认模型**：收尾在第 4 区的 `unresolved[]`，逐条展示原始 `type`（`manual_confirmation` / `missing_data` / `schedule_unknown` / `selection_required`），说明这些是**边界声明**而非缺陷列表 —— 系统把最终认定交回给人。
 
@@ -254,14 +285,15 @@ npm run build       # vue-tsc --noEmit && vite build
 
 ## 10. 已知限制与未决事项
 
-1. **教学班数据是 Synthetic 演示快照**：比赛版本的教学班输入为明确标识的演示快照，不是实时教务数据（原因见 §5.2）。
-2. **OPEN ITEM：`data_source` 标记**：Course Data 代码会把已验收 Course Data 行的 `data_source` 置为 `real`；该标记表达的是"真实来源等级"，**不是**"这份数据已被证明来自受信采集"。因此模式 2 下前端显示的「教学班数据：演示快照（Synthetic）」标签是**唯一披露面**，此问题仍有待架构裁决。
-3. **北校园开课查询采集为外部系统阻塞，已挂起**：整学期 acceptance 要求五个校区齐备，因此在该外部问题解决前，**真实整学期 acceptance 尚不可产出**；当前版本不探测、不绕过该阻塞。
-4. **Real E2E 证据等级 = LEVEL 0**：本轮没有真实教务登录、没有真实 artifact；已具备的是 synthetic 级 wiring capability（LEVEL 1）。
+1. **教学班数据是 Synthetic 演示快照**：比赛版本的教学班输入为明确标识的演示快照，不是实时教务数据（原因见 §5.2）。教学班来源与 Curriculum 来源须**分别**披露与核验。
+2. **OPEN ITEM：`data_source` 标记**：Course Data 代码会把已验收 Course Data 行的 `data_source` 置为 `real`。该字段是**契约 / 来源声明**，⛔ **不是**加密或 provenance 证明：形状正确的 Synthetic 输入经 adapter 之后同样可能带上 `real` 枚举值，**不得**据此判定为"已核验的真实学校来源"。因此页面上的「教学班数据：演示快照（Synthetic）」标签与完整 provenance 记录必须同时保留，此问题仍有待架构裁决。
+3. **北校园开课查询采集为外部系统阻塞，已挂起**：整学期 acceptance 要求五个校区齐备，因此在该外部问题解决前，**真实整学期 acceptance 尚不可产出**；当前版本不探测、不绕过该阻塞（⛔ 也不跳过北校园）。
+4. **Real E2E 证据等级 = LEVEL 0**：本轮没有真实教务登录、没有真实全量 artifact；已具备的是 synthetic 级 wiring capability（LEVEL 1）。`ready` 只证明运行时输入通过 Store + Curriculum 最终复验，⛔ 不证明真实学校来源、也⛔ 不等于 LEVEL 2 / LEVEL 3。
 5. **未做选课 / 注册执行**：系统输出的是规划结果与解释，**不代替学生完成选课或注册**，也不代表学校已完成任何审批。
-6. **先修关系的真实来源尚无证据**：现有真实培养方案样本中未发现明确的先修 / 前置课程字段，`prerequisites[]` 能否被真实数据填充目前无法确认（这不构成"学校没有先修制度"的结论）。
-7. **meeting 级教师关联为已知表达缺口**：真实数据中排课段与教师存在关联，但当前公共 `Meeting` 不表达它，`teacher` 仍是教学班顶层的汇总字段。
-8. **拓扑不承诺**：不保证任意输入都能得到可行方案；数据不足时系统输出部分可行或未知，而非编造结论。
+6. **未集成 LLM / RAG / GraphRAG**：当前无模型调用、无检索管线、无自然语言偏好解析；`Preference` 来自结构化表单。模型能力为后续增强方向。
+7. **先修关系的真实来源尚无证据**：现有真实培养方案样本中未发现明确的先修 / 前置课程字段，`prerequisites[]` 能否被真实数据填充目前无法确认（这不构成"学校没有先修制度"的结论）。
+8. **meeting 级教师关联为已知表达缺口**：真实数据中排课段与教师存在关联，但当前公共 `Meeting` 不表达它，`teacher` 仍是教学班顶层的汇总字段。
+9. **拓扑不承诺**：不保证任意输入都能得到可行方案；数据不足时系统输出部分可行或未知，而非编造结论；⛔ 不是全局优化器、不保证所有偏好被执行。
 
 ---
 

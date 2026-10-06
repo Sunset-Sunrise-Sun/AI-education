@@ -410,6 +410,13 @@ code.mono {
   line-height: 1.5;
 }
 
+.snapshot-notice__mode {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: #78350f;
+  line-height: 1.55;
+}
+
 .snapshot-notice__details {
   margin-top: 6px;
   font-size: 12px;

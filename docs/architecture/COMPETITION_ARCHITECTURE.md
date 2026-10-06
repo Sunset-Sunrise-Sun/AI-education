@@ -15,35 +15,36 @@
 flowchart TB
     U(["用户 / 评委"])
     FE(["前端 · Vue 3 + Vite 单页应用"])
-    IN["输入区：目标学期 · 转专业上下文 · 当前课表 · 偏好"]
+    IN["输入区：目标学期 · 转专业上下文 · 当前课表 · 结构化偏好"]
     BLOCKS["展示区块：培养要求评估 · 教学班 · 偏好 · 规划结果 · 来源声明"]
 
     API["后端 FastAPI"]
-    MOCK["GET /api/v1/mock/demo<br/>演示数据聚合"]
+    MOCK["GET /api/v1/mock/demo<br/>演示数据聚合（回放）"]
     PLAN["POST /api/v1/plan<br/>规划编排"]
 
-    ORCH["PlanningOrchestrator<br/>只编排 · 不做业务算法"]
+    ORCH["PlanningOrchestrator<br/>固定工具编排 · 不做业务算法 · 不调用模型"]
 
     PROV1["CurriculumProvider<br/>培养方案解析 · 差异 · 补修判定"]
     PROV2["CourseDataProvider<br/>整学期教学班供给"]
-    PROV3["PlannerProvider<br/>受限确定性求解 + Path Repair"]
+    PROV3["PlannerProvider<br/>受限确定性检查 + 替代候选评估"]
 
     PR["PlanResult<br/>status / selected_classes / changes · risks / unresolved"]
 
-    EXPL["前端解释 · 风险展示 · 人工确认项"]
+    EXPL["前端呈现（展示已有结果 · 不做生成式解释）<br/>风险与人工确认项"]
     CONF(["人工确认与用户决策<br/>正式规则 · 权限边界 · 最终确认"])
 
-    DEMO["演示数据 / Mock 回放通道<br/>mock_data/*.json"]
-    SYN["演示快照 · Synthetic CourseOffering<br/>教学班数据：演示快照（Synthetic）"]
-    CASEA["受控真实输入 · Case A manifest<br/>不在 Git 中"]
+    DEMO["Mock 回放通道<br/>mock_data/*.json"]
+    SYN["Synthetic 演示快照 · 教学班供给<br/>教学班数据：演示快照（Synthetic）"]
+    CASEA["外部本地输入 · Case A manifest<br/>来源须由批准 provenance 证明 · 不在 Git 中"]
+    AI["模型增强（LLM / RAG / GraphRAG）<br/>尚未接入 · 不在当前执行路径"]
 
     U --> FE
     FE --> IN
     FE --> BLOCKS
     API --> MOCK
     API --> PLAN
-    IN -->|"Real 提交 · 受 provenance 门禁约束"| PLAN
-    MOCK -->|"模式 1 默认"| BLOCKS
+    IN -->|"Real Planning 提交 · 受 provenance 门禁约束"| PLAN
+    MOCK -->|"模式 1 默认：回放预置对象，不执行上游业务计算"| BLOCKS
 
     PLAN --> ORCH
     ORCH --> PROV1
@@ -57,20 +58,24 @@ flowchart TB
     CONF -.->|"人工确认后回到用户输入"| IN
 
     DEMO -.->|"Mock 演示数据 · 仅回放"| MOCK
-    SYN -.->|"Synthetic 教学班快照"| PROV2
-    CASEA -->|"真实执行链路 · 受控输入"| PROV1
+    SYN -.->|"Synthetic 教学班快照（输入来源，非代码）"| PROV2
+    CASEA -.->|"外部本地输入（来源须证明，非代码）"| PROV1
 
-    classDef real fill:#e8f4ff,stroke:#1f5f9f,stroke-width:2px,color:#0b2545
+    classDef exec fill:#e8f4ff,stroke:#1f5f9f,stroke-width:2px,color:#0b2545
     classDef orch fill:#fff4e0,stroke:#c47f00,stroke-width:2px,color:#4a2c00
-    classDef demo fill:#f2f2f2,stroke:#8a8a8a,stroke-width:2px,stroke-dasharray:6 4,color:#3a3a3a
+    classDef input fill:#f2f2f2,stroke:#8a8a8a,stroke-width:2px,stroke-dasharray:6 4,color:#3a3a3a
+    classDef synth fill:#fff8e6,stroke:#b58a00,stroke-width:2px,stroke-dasharray:6 4,color:#3d2f00
     classDef mock fill:#f7f0ff,stroke:#7a4fb5,stroke-width:2px,stroke-dasharray:6 4,color:#331b52
+    classDef planned fill:#ffffff,stroke:#b0b0b0,stroke-width:2px,stroke-dasharray:2 4,color:#666666
     classDef human fill:#e6f7ee,stroke:#1f7a4d,stroke-width:2px,color:#0b3320
     classDef fe fill:#ffffff,stroke:#333333,stroke-width:2px,color:#111111
 
-    class PROV1,PROV3 real
+    class PROV1,PROV2,PROV3 exec
     class ORCH orch
-    class PROV2,SYN,CASEA demo
+    class CASEA input
+    class SYN synth
     class DEMO,MOCK mock
+    class AI planned
     class U,CONF human
     class FE,IN,BLOCKS,API,PLAN,PR,EXPL fe
 ```
@@ -79,18 +84,23 @@ flowchart TB
 
 ## 2. 图例说明
 
-| 图形 / 样式 | 含义 |
-|---|---|
-| **实线边框 · 蓝色（real）** | **真实执行链路**：Case A 培养方案差异、补修判定、受限确定性求解与 Path Repair 按正式架构执行 |
-| **实线边框 · 橙色（orch）** | Agent / 编排层：只负责调用顺序，不产生业务结论 |
-| **虚线边框 · 灰色（demo）** | **演示快照（Synthetic）**：`CourseDataProvider` 输入侧的教学班供给，以及受控真实输入 Case A manifest 的挂载位 |
-| **虚线边框 · 紫色（mock）** | **Mock 回放通道**：`mock_data/*.json` → `GET /api/v1/mock/demo`，仅用于演示回放 |
-| **虚线箭头（`-.->`）** | 演示 / 快照数据流，或在人工确认之后回到用户输入的回流路径 |
-| **实线箭头** | 正常调用与数据传递 |
-| **绿色节点** | 人：正式规则、权限边界与最终确认的责任主体 |
+⚠️ 本图用**两条相互独立的轴**着色，⛔ 不得把两者合成一个叫 "Real" 的结论：
 
-> ⚠️ 阅读要点：**紫色与灰色虚线部分都是演示数据**，不得读作真实教务供给；
-> 蓝色实线部分才是按正式架构执行的真实链路语义。
+| 轴 | 图形 / 样式 | 含义 |
+|---|---|---|
+| **A. 实际执行的代码** | **实线边框 · 蓝色（`exec` / 实际执行）** | 仓库中真实存在的生产代码确实执行：`CurriculumCaseProvider`、`StoreBackedCourseDataProvider`、`RestrictedPlannerProvider`、`PlanningOrchestrator`、API/runtime、前端渲染。⛔ 它**不证明**输入数据来自学校 |
+| **B. 输入来源** | **虚线边框 · 灰色（`input`）** | **外部本地输入**（Case A manifest）：来源须由绑定具体 artifact 的批准 provenance 证明，⛔ 不能由 `data_source` 字段 / 端点名 / HTTP 200 / 已验收 Store 推断 |
+| **B. 输入来源** | **虚线边框 · 米黄（`synth`）** | **Synthetic 演示快照**：比赛版本的教学班供给（`CourseOffering` 输入侧），经既有验收链路进入 Store；⛔ 通过验收只证明完整性与一致性，⛔ 不等于真实学校供给 |
+| **B. 输入来源** | **虚线边框 · 紫色（`mock`）** | **Mock 回放通道**：`mock_data/*.json` → `GET /api/v1/mock/demo`，仅用于演示回放，不执行上游业务计算 |
+| **未接入** | **点线边框 · 白色（`planned`）** | **规划中的能力**（LLM / RAG / GraphRAG）：当前**不在执行路径上**，图中仅用于交代方向 |
+| **编排** | **实线边框 · 橙色（`orch`）** | 固定工具编排层：只负责调用顺序，不产生业务结论，不调用模型 |
+| **人** | **绿色节点** | 正式规则、权限边界与最终确认的责任主体 |
+
+> ⚠️ 阅读要点：
+> ① 蓝色实线只说明"这段代码确实执行"，⛔ 不说明"输入来自学校"；
+> ② 米黄 / 灰色 / 紫色虚线都是**输入来源**层面的标注，其中米黄与紫色是**人工或程序生成**的演示数据；
+> ③ 计算模式（Mode 2）下页面**规划结果区**来自 `POST /api/v1/plan` 的实际代码计算（Actual API computation），
+> 但**页面基础展示区仍为 Mock 演示数据**，⛔ 不得整页称为"真实"。
 
 ---
 
@@ -162,7 +172,8 @@ PlannerProvider.plan(makeup_tasks, offerings, current_schedule, preference)
 
 ### 3.5 解释 / 风险 / 人工确认回路
 
-- 确定性结论（冲突、学分、先修）**不得**由语言模型判定；Agent / 前端只把已有结果解释成人话；
+- 确定性结论（冲突、学分、先修）**不得**由语言模型判定；当前不存在生成式解释环节，前端只**呈现**已有结果文案；
+  （未来可由模型辅助理解输入、检索证据与生成解释 —— ⛔ 当前未接入 LLM / RAG / GraphRAG，不在执行路径上）
 - 冲突判定采用三态，安全优先级 **`CONFLICT > UNKNOWN > CLEAR`**；任一相关教学班 `meetings = []` ⇒ 该班 schedule 视为 unknown，⛔ 绝不等同于 conflict-free；
 - 总体不变量：**UNKNOWN ≠ INFEASIBLE**；
 - 人工确认项（课程等价、替代审批、学院特殊政策、培养方案歧义条款）如实展示并回流到用户输入，由人决定；
@@ -197,21 +208,23 @@ POST /api/v1/plan → 503 real_pipeline_not_configured
 
 ## 5. 模式 1 / 模式 2 差异对照
 
-| 维度 | 模式 1「演示快照回放」（默认） | 模式 2「真实规划链路」 |
+| 维度 | 模式 1「演示回放」（默认） | 模式 2「计算模式」 |
 |---|---|---|
 | 环境变量 | 不设置任何真实链路变量 | 5 个变量齐全且一致 |
 | 前端开关 | `VITE_PLAN_API_ENABLED` 未设置（Real 提交按钮 disabled） | `VITE_PLAN_API_ENABLED=true` |
-| 基础数据来源 | `GET /api/v1/mock/demo` | 受控 Case A manifest + 已验收整学期 Course Data SQLite |
-| 规划结果来源 | 同样来自 Mock 聚合接口 | `POST /api/v1/plan` 真实链路 |
+| **UI 基础展示区来源** | `GET /api/v1/mock/demo` | **仍为 Mock 演示数据**（`mock_data/*.json` 回放；页面不会整页变真实） |
+| **规划结果区来源** | 同样来自 Mock 聚合接口（**回放预置结果**） | `POST /api/v1/plan` 的**实际代码计算**（Actual API computation） |
+| 该请求是否执行上游业务计算 | ⛔ 否（不运行 Curriculum / Planner） | ✅ 是（实际 Provider + 受限 Planner 代码执行） |
 | `POST /api/v1/plan` | `503 real_pipeline_not_configured` | 200 + 合法 `PlanResult` |
-| 培养方案（Case A） | 演示数据 | 真实受控输入（不在 Git 中） |
-| 教学班 `CourseOffering` | **Synthetic 演示快照** | **仍是 Synthetic 演示快照** |
-| 数据标注 | 全链路标注为演示数据 / Mock | 规划结果为 Real；**教学班仍是 Synthetic 演示快照** |
-| 适用场合 | 干净检出即可运行，比赛默认演示路径 | 操作者本机已具备已批准输入时的真实链路演示 |
-| 等级表述 | 演示回放，不涉及 Real E2E 等级 | 仍为 **LEVEL 0**（无真实教务登录、无真实 artifact） |
+| 培养方案（Case A）输入 | 演示数据 | 显式本地 manifest（**来源须由该次批准 provenance 证明**；不在 Git 中） |
+| 教学班 `CourseOffering` 输入 | **Synthetic 演示快照** | **仍是 Synthetic 演示快照** |
+| 数据标注口径 | 全部标注为演示数据 / Mock | 规划结果区标注「**实际代码计算**」；⛔ 实际执行 ≠ 输入数据已获真实学校来源认证 |
+| 适用场合 | 干净检出即可运行，比赛默认演示路径 | 操作者本机已具备显式本地输入时的计算链路演示 |
+| 等级表述 | 演示回放，不涉及 Real E2E 等级 | 仍为 **LEVEL 0**（无真实教务登录、无真实全量 artifact）；`ready` ⛔ 不等于 LEVEL2 |
 
 > ⚠️ 两种模式**都必须**保留教学班来源披露：教学班数据在任何模式下的准确表述都是
-> 「教学班数据：演示快照（Synthetic）」。
+> 「教学班数据：演示快照（Synthetic）」；
+> 且**输入来源需逐项核验** —— 教学班与 Curriculum 是两件独立的事，⛔ 不存在"只有教学班是 Synthetic、其余全部真实"的默认结论。
 
 ---
 
@@ -219,11 +232,15 @@ POST /api/v1/plan → 503 real_pipeline_not_configured
 
 由于学校教务系统北校园开课查询存在稳定的深分页异常，当前比赛版本的教学班演示使用经过明确标识的 Synthetic 快照。系统的培养方案解析、补修判定、约束规划、Path Repair、风险解释与前后端运行链路仍按正式架构执行。
 
-- **培养方案（Case A）与业务语义**：按正式架构执行；模式 2 下为真实链路；
-- **教学班 `CourseOffering`**：比赛演示中使用**明确标识的 Synthetic 演示快照**；
+> 该既定措辞说明的是**架构按正式设计执行**，⛔ 不等于"其余输入都真实"：Mode 1 为回放；
+> Mode 2 执行实际代码，但 Curriculum 输入是否属于真实学校数据须由该次批准 provenance 逐项证明，
+> 页面基础展示区仍为演示数据。⛔ 不存在"只有教学班是 Synthetic、其余全部真实"的默认结论。
+
+- **培养方案（Case A）与业务语义**：Mode 1 为回放（不执行上游业务计算）；Mode 2 执行**实际代码**；是否属于真实学校输入由该次 artifact 的批准 provenance 逐项证明；
+- **教学班 `CourseOffering`**：比赛演示中使用**明确标识的 Synthetic 演示快照**（两种模式皆为人工/程序生成输入）；
 - **`mock_data/*.json` 演化数据**：仅用于演示回放，已通过 `schemas/*.schema.json` 校验。
 
-⛔ 本版本没有连接实时教务系统；⛔ 不把 Mock 或 Synthetic 表述为真实数据。
+⛔ 本版本没有连接实时教务系统；⛔ 不把 Mock 或 Synthetic 表述为真实数据；⛔ 不声称 LLM / RAG / GraphRAG 已接入；⛔ 不声称达成 LEVEL 2 / LEVEL 3。
 
 ---
 

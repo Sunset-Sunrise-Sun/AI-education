@@ -43,16 +43,19 @@
 
 ### 1.1 两种模式
 
-| | **模式 1：演示快照回放**（默认、干净检出即可运行） | **模式 2：真实规划链路** |
+| | **模式 1：演示回放**（默认、干净检出即可运行） | **模式 2：计算模式** |
 |---|---|---|
-| 前置条件 | 无。不需要任何环境变量 | ① 操作者本机**已批准**的真实 Case A manifest（`APP_CASE_A_CURRICULUM_CASE_PATH`）② **已验收**的整学期 Course Data SQLite 库 |
-| 基础数据（培养要求评估 / 教学班 / 偏好） | 来自 `GET /api/v1/mock/demo`（仓库内 `mock_data/*.json`） | 同上，**仍来自 Mock Demo** |
-| 规划结果 | 同样来自 `GET /api/v1/mock/demo` 的 `plan_result` | `POST /api/v1/plan` 走真实链路：Curriculum Case A → Diff → MakeupTask → Planner → Path Repair → PlanResult |
-| 必须标注 | **演示数据 / Mock** | 规划结果标 **Real**；教学班输入是**明确标注的 Synthetic 演示快照** |
-| 数据等级声明 | Mock | 真实链路 + Synthetic 教学班快照；正式 Real E2E 证据等级仍为 **LEVEL 0** |
+| 前置条件 | 无。不需要任何环境变量 | ① 操作者本机**显式本地** Case A manifest（`APP_CASE_A_CURRICULUM_CASE_PATH`，来源须由批准 provenance 证明）② **已验收**的整学期 Course Data SQLite 库 |
+| 基础数据（培养要求评估 / 教学班 / 偏好） | 来自 `GET /api/v1/mock/demo`（仓库内 `mock_data/*.json`） | 同上，**仍来自 Mock Demo**（页面基础区不会变成真实） |
+| 规划结果 | 同样来自 `GET /api/v1/mock/demo` 的 `plan_result`（**回放预置结果，不执行上游业务计算**） | `POST /api/v1/plan` **执行实际代码**：CurriculumCaseProvider → Diff → MakeupTask → RestrictedPlanner → `PlanResult`（有界、受限；`risks` 可能为空） |
+| 必须标注 | **演示数据 / Mock** | 规划结果区标 **「实际代码计算」（Actual API computation）**；教学班输入是**明确标注的 Synthetic 演示快照**；⛔ 实际执行 ≠ 输入真实 |
+| 数据等级声明 | Mock | 实际代码执行 + Synthetic 教学班快照；正式 Real E2E 证据等级仍为 **LEVEL 0**；`ready` ⛔ ≠ LEVEL2 |
 
-⚠️ **真实 Case A manifest 不在 Git 中**，它是模式 2 的**显式前置条件**：没有它就只能走模式 1。
+⚠️ **Case A manifest 不在 Git 中**，它是模式 2 的**显式前置条件**：没有它就只能走模式 1；
+即使有它，**真实学校来源仍须由绑定该 artifact 字节的批准 provenance 证据**证明（⛔ `data_source=real` 不是证明）。
 ⚠️ 模式 2 的教学班输入是**明确标注的 Synthetic 演示快照**，⛔ 不等于真实教务在线数据。
+⚠️ 模式 2 页面**基础展示区仍为 Mock 演示数据**，⛔ 不得把整页说成"真实"。
+⚠️ **`ready` 只表示运行时输入通过了 Store + Curriculum 的最终复验，⛔ 不等于 LEVEL2**；Synthetic 教学班供给可以产出 runtime-ready 的本地计算 demo，但不会因此成为真实学校数据。
 
 ### 1.2 运行时环境变量（**恰好 5 个**）
 
@@ -591,24 +594,29 @@ cd backend && python -m uvicorn app.main:app --reload --port 8000
 **这是可以坦然展示、甚至是加分项的一段话术**（照实说，不要绕）：
 
 > 「当前后端返回 503 `real_pipeline_not_configured`。这是我们**刻意设计的 fail-closed**：
-> 真实链路需要本机已批准的真实 Case A manifest 与已验收的整学期 Course Data 库，
+> 计算模式需要本机可加载的显式本地 Case A manifest 与已验收的整学期 Course Data 库，
 > 这两个都不在 Git 里，是显式前置条件。任何一步没就绪，`POST /api/v1/plan` 就明确拒绝，
 > **不会**回退到 Mock，也**不会**给一个看起来成功的替代结果。
 > 页面把这件事单独标出来了：规划结果仍然是 Mock，并且说明了原因。」
 
-⚠️ 模式 2 若成功显示 Real 结果，口播必须同时说清两件事：
-1. **规划结果**来自 `POST /api/v1/plan`（Real）；
-2. **基础数据**（培养要求评估 / 教学班 / 偏好）**仍为 Mock 演示数据**；
-   教学班输入是**明确标注的 Synthetic 演示快照**。
+⚠️ 模式 2 若成功显示 Real 结果，口播必须同时说清**三**件事：
+1. **规划结果区**来自 `POST /api/v1/plan` 的**实际代码计算**（Actual API computation）；
+   ⛔ 实际代码执行**不等于**输入数据已获得真实学校来源认证；
+2. **页面基础展示区**（培养要求评估 / 教学班 / 偏好）**仍为 Mock 演示数据**；
+3. 教学班输入是**明确标注的 Synthetic 演示快照**；Curriculum 是否属于真实学校输入须由该次批准证据逐项核验。
+   ⛔ 不得说"`ready` 了就是 LEVEL2"，也⛔ 不得说"只有教学班是 Synthetic、其余全部真实"。
 
 ### 不要做什么
 
 - ⛔ 不要把 503 说成"接口没写 / 后端崩了 / 网络问题"；
-- ⛔ 不要用 Mock 的 `PlanResult` 去顶替 Real 结果，也不要手工把页面文案改成 Real；
+- ⛔ 不要用 Mock 的 `PlanResult` 去顶替实际计算结果，也不要手工把页面文案改成 Real；
+- ⛔ 不要把 `partial_ready` 靠手工补 `APP_CASE_A_CURRICULUM_CASE_PATH` 绕过 gate 去启动计算链路；
+  正确做法是提供匹配的已批准 Curriculum provenance 并**重跑最终双复验**（且教学班为 Synthetic 时 `level2_eligible` 仍为 false）；
 - ⛔ 不要用 `APP_COURSE_DATA_ACCEPTANCE_SHA256` 填**其它** digest
   （raw campus bundle digest 或 campus acceptance digest 都不行）；
 - ⛔ 不要用 campus-only 库"先跑起来"（只会得到同一个 503，且属于错误用法）；
-- ⛔ 不要手工改库、删行、改 acceptance 记录来"让它过"。
+- ⛔ 不要手工改库、删行、改 acceptance 记录来"让它过"；
+- ⛔ 不要声称已接入 LLM / RAG / GraphRAG，也不要声称达成 LEVEL 2 / LEVEL 3。
 
 ---
 
@@ -748,12 +756,13 @@ curl.exe -s -o NUL -w "%{http_code}" http://127.0.0.1:8000/api/v1/mock/demo   # 
 
 - 清空后就是干净的模式 1：基础数据与规划结果**全部标注 Mock**，一切如实。
 - 口播：
-  > 「真实链路需要 5 个显式环境变量，缺一个都只会有 503，不会有任何降级。
-  > 现在环境里没有这些变量，所以系统处于默认的演示快照回放模式。」
+  > 「计算链路需要 5 个显式环境变量，缺一个都只会有 503，不会有任何降级。
+  > 现在环境里没有这些变量，所以系统处于默认的演示回放模式。」
 
 ### 不要做什么
 
-- ⛔ 不要在演示中"试着配一下"真实链路变量——这不属于现场应急，且需要已批准的真实前置条件；
+- ⛔ 不要在演示中"试着配一下"计算链路变量——这不属于现场应急，且需要操作者本机的显式本地前置条件
+  （⛔ 更不要用"手工补一个 case 路径"的方式绕过 `partial_ready` gate）；
 - ⛔ 不要用假路径 / 假 digest 让某个分支"过去"（结果只是同一个 503，还会留下错误印象）；
 - ⛔ 不要把 `.env` / 真实路径写进仓库或提交（真实 artifact 与本地路径都不入库）。
 
@@ -862,9 +871,11 @@ curl.exe -s -o NUL -w "%{http_code}" http://127.0.0.1:8000/api/v1/mock/demo   # 
 - 教学班数据来自 `GET /api/v1/mock/demo`（`mock_data/course_offerings.json`）；
   区块为空 ⇒ Mock 通道这一项没回来（先回到 §3 / §7 查通道本身）；
 - 页面必须能明确看到 **「教学班数据：演示快照（Synthetic）」** 这一标注。
-  **这是模式 2 下教学班数据的唯一披露面**：
   代码会把已验收 Course Data 行的 `data_source` 置为 **REAL**（已记录的 OPEN ITEM），
-  因此**如果这个标签不可见，页面上就没有任何东西能说明教学班是 Synthetic 快照** —— 必须当场口头更正并停止展示该区块。
+  而该字段是**契约 / 来源声明**、⛔ **不是** provenance 证明（形状正确的 Synthetic 输入经 adapter 后同样可能带 `real` 枚举值），
+  因此**如果这个标签不可见，页面上就没有东西能说明教学班是 Synthetic 快照** —— 必须当场口头更正并停止展示该区块。
+  ⚠️ 反过来也成立：**标签可见 ⛔ 不等于"其余输入都真实"**；Curriculum 来源必须由该次批准证据**逐项**核验，
+  ⛔ 不存在"只有教学班是 Synthetic、其余全部真实"的默认结论。
 
 ```powershell
 # 通道侧自检（200 且带 X-Data-Source: mock）
@@ -943,11 +954,11 @@ curl.exe -i -s http://127.0.0.1:8000/api/v1/mock/demo | Select-String -Pattern "
 | 顺序 | 区块 / 动作 | 只说这一句关键话 |
 |---|---|---|
 | 1 | 顶栏「后端数据源标头」= `mock` | 「页面所有数据的来源标头由后端给出，现在是 Mock。」 |
-| 2 | 1. 历史培养要求评估（MakeupTask） | 「这是 Curriculum 侧按培养方案与学生已修记录逐条评估的结果，属**演示数据**。」 |
-| 3 | 2. 开课教学班供给 | 「教学班数据：演示快照（Synthetic）」+ 深分页异常那段既定表述 |
-| 4 | 3. 学生个性化偏好 | 「偏好来自 Agent 对自然语言的解析，同样标注为演示数据。」 |
-| 5 | 4. 规划结果来源标注 | 「基础演示数据是 Mock；规划结果当前也是 Mock（来自 `GET /api/v1/mock/demo`）。」 |
-| 6 | 若时间允许：后端一条 503 探针 | 「真实链路未配置时返回 503 `real_pipeline_not_configured`，**不回退 Mock**。」 |
+| 2 | 1. 历史培养要求评估（MakeupTask） | 「这是 Curriculum 侧按培养方案与学生已修记录逐条评估的结果；**本模式为回放预置结果，属演示数据**。」 |
+| 3 | 2. 开课教学班供给 | 「教学班数据：演示快照（Synthetic）」+ 深分页异常那段既定表述 + 「输入来源需逐项核验」 |
+| 4 | 3. 学生个性化偏好 | 「偏好来自**结构化表单输入**（本版本没有自然语言解析，模型能力为后续方向），同样标注为演示数据。」 |
+| 5 | 4. 规划结果来源标注 | 「基础演示数据是 Mock；规划结果当前也是 Mock（来自 `GET /api/v1/mock/demo`，**回放预置结果，不执行 Planner**）。」 |
+| 6 | 若时间允许：后端一条 503 探针 | 「计算链路未配置时返回 503 `real_pipeline_not_configured`，**不回退 Mock**。」 |
 
 ```powershell
 # 第 6 步的那一条命令（可选）

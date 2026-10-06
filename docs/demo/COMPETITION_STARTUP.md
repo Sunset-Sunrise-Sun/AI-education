@@ -2,13 +2,16 @@
 
 > 面向**比赛现场操作者**。目标只有两个：**一次就能启动**，并且**演示过程中不说假话**。
 > 本文件只描述**当前仓库真实存在**的启动路径与开关；命令、变量名、端口均以仓库代码为准。
+>
+> ⚠️ **实现边界（开场必须说清）**：当前为**固定工具编排原型**；**LLM / RAG / GraphRAG 尚未接入**，
+> 没有模型推理、没有检索管线、没有自然语言偏好解析（`Preference` 来自结构化表单）。
 
 **两种演示模式（先选一种，再往下读）：**
 
 | 模式 | 名称 | 需要什么 | 数据性质 |
 |---|---|---|---|
-| **模式 1（默认）** | 演示快照回放 | 干净检出即可运行，**零配置** | 基础数据与规划结果**全部是 Mock 演示数据**（`GET /api/v1/mock/demo`） |
-| **模式 2** | 真实规划链路 | 操作者本机已批准的真实 Case A manifest + 已验收的整学期 Course Data SQLite 库 | 规划结果走真实链路；**教学班输入**是明确标注的 Synthetic 演示快照 |
+| **模式 1（默认）** | 演示回放 | 干净检出即可运行，**零配置** | 基础数据与规划结果**全部是 Mock 演示数据**（`GET /api/v1/mock/demo` 回放预置对象，**不执行上游业务计算**） |
+| **模式 2** | 计算模式 | 操作者本机**显式本地输入**：Case A manifest（来源须由批准 provenance 证明）+ 已验收的整学期 Course Data SQLite 库 | **规划结果区**由 `POST /api/v1/plan` 的**实际代码计算**；**页面基础展示区仍为 Mock 演示数据**；**教学班输入**是明确标注的 Synthetic 演示快照 |
 
 ---
 
@@ -88,11 +91,11 @@ npm run dev
 
 ### 1.4 预期看到什么
 
-- 页面标题区：`学航·转衔` / 面向转专业学生的 AI 学业路径重构 Agent；
+- 页面标题区：`学航·转衔` / 面向转专业学生的学业路径重构**原型**（固定工具编排，AI 增强待接入）；
 - 黄色警示条与区块 `Mock` 标记；页面展示后端响应头 `X-Data-Source` 的实际取值（Mock 通道为 `mock`）；
 - 四个区块都有内容：补修任务 / 开课教学班 / 用户偏好 / 规划结果；
-- 规划结果区显示「**规划结果来源：Mock**」；
-- 教学班区显示「**教学班数据：演示快照（Synthetic）**」；
+- 规划结果区显示「**规划结果来源：Mock**」（**回放预置结果，本模式不执行 Planner**）；
+- 教学班区显示「**教学班数据：演示快照（Synthetic）**」以及“输入来源需逐项核验”的说明；
 - 「真实规划提交」入口**默认不可用**（`VITE_PLAN_API_ENABLED` 未设置即为 false）——这是**预期行为**，不是故障。
 
 ### 1.5 规则与边界（模式 1 必须口头同步给评委）
@@ -108,7 +111,7 @@ npm run dev
 
 ---
 
-## 2. 模式 2：真实规划链路启动
+## 2. 模式 2：计算模式启动（`POST /api/v1/plan` 实际代码计算）
 
 > 只有**操作者本机**具备受控真实输入时才走这一节。
 > 真实 Case A manifest **不在 Git 中**（受控真实输入），必须在操作者本机另行准备。
@@ -116,10 +119,13 @@ npm run dev
 ### 2.1 前置条件清单（逐项打勾，缺一不可）
 
 ```text
-[ ] 1. 已批准的真实 Case A manifest（case JSON，data_source=real，目标版本 = Case A，
+[ ] 1. 显式本地 Case A manifest（case JSON，data_source=real，目标版本 = Case A，
         makeup_scope.as_of_term 与已批准决策集合一致）——不在 Git 中
+        ⚠️ data_source=real 只是**契约/来源声明**，不是来源证明：
+        真实学校来源须由绑定该 artifact 字节的**批准 provenance 证据**另行证明
 [ ] 2. 已验收的整学期（full semester）Course Data SQLite 库：包含恰好一条 full_semester
-        acceptance 记录，complete、计数自洽
+        acceptance 记录，complete、计数自洽（⚠️ 通过验收只证明完整性与一致性，
+        不证明数据来自学校；比赛演示的这份供给是 Synthetic 快照）
 [ ] 3. 该 acceptance 的 manifest SHA-256（64 位十六进制）
 [ ] 4. 明确标注的 Synthetic 演示快照，作为本次的**教学班输入**
 [ ] 5. 后端依赖已安装（backend/requirements.txt）
@@ -186,18 +192,26 @@ python tools/generate_competition_demo_snapshot.py --out-dir $OUT --semester 202
   --course-id CSE101 --course-id CSE102 --course-id CSE103 --course-id CSE104 --course-id CSE105
 ```
 
-⚠️ 必须知道的四点：
+⚠️ 必须知道的五点：
 
 1. 第 2 步产出的 `runtime.env` 在**没有**已批准 Curriculum provenance 时只包含 4 个变量
-   （工具状态为 `partial_ready`，`level2_eligible=false`）：第 2 个变量
-   `APP_CASE_A_CURRICULUM_CASE_PATH` 由操作者**显式**给出；运行时会**每个请求重新校验**
-   该 case 是否满足受控条件（`data_source=real`、目标版本、`as_of_term`、已批准决策集合）。
-2. 只有当你也提供**已批准的 Curriculum provenance 记录**时，readiness 工具才会报告 `ready`
-   并具备 LEVEL2 资格（流程见 `docs/e2e/REAL_CAPTURE_AND_RUNTIME_RUNBOOK.md`）。
+   （工具状态为 `partial_ready`，`level2_eligible=false`）：此时**⛔ 不得启动计算链路**——
+   ⛔ 不允许"手工把 `APP_CASE_A_CURRICULUM_CASE_PATH` 补进环境变量就直接跑 Real runtime"来绕过 gate。
+   正确做法：提供**与之匹配的已批准 Curriculum provenance 记录**，用同一组输入**重跑一次就绪性验证**
+   （最终 Store + Curriculum 双复验），只有状态为 `ready` 时该 runtime 路径才可启动。
+2. **`ready` ⛔ 不等于 LEVEL2**：
+   - `ready` = 运行时输入通过了 Store + Curriculum 的**最终复验**（可装配、可读取、逐请求重校验）；
+   - `ready` **不证明**：真实学校 Course Data provenance、LEVEL 2、LEVEL 3；
+   - **Synthetic 教学班供给同样可以产出 runtime-ready 的本地计算 demo**，但它不会因此成为真实学校数据；
+   - **LEVEL 2 额外要求**：已批准的真实 Course Data provenance / handoff、与之精确对应的已验收整学期证据、
+     已批准的真实 Curriculum provenance，且**不得有 synthetic 替代**。
+   - ⛔ 禁止表述："补齐 approved Curriculum 之后就能达到 LEVEL2"或任何等价说法。
 3. 演示快照的每一行都带 `DEMO-` 教学班号前缀与 `DEMO` 场地标记，并且每第 4 行**省略排课字段**
    （规范化后 `meetings = []`，用于演示「当前数据中无排课信息」这一中性状态）。
 4. ⛔ 不得为了让演示更"完整"而放宽验收规则、跳过任一已批准校区、改写 acceptance 记录或伪造 provenance；
    五个校区都必须有行，且必须通过既有 acceptance 才会被运行时读取。
+5. ⛔ 不得把 synthetic handoff / synthetic Curriculum 证据改写成 non-synthetic，也不得把演示数据
+   送入"真实来源资格"声明（`level2_eligible` 必须如实保持 `false`）。
 
 ### 2.2 启动顺序
 
@@ -297,9 +311,10 @@ curl -i -s -X POST http://127.0.0.1:8000/api/v1/plan \
 ### 2.3 模式 2 下必须如实说明的三件事
 
 ```text
-① 规划结果来自真实规划链路（POST /api/v1/plan）；页面基础展示数据（培养要求评估 /
-   教学班 / 偏好）仍来自 Mock 演示通道，两者必须分别标注。
-② 教学班输入明确标注为 Synthetic 演示快照。
+① 规划结果区的方案来自 `POST /api/v1/plan` 的**实际代码计算**（Actual API computation）；
+   页面基础展示数据（培养要求评估 / 教学班 / 偏好）**仍来自 Mock 演示通道**，两者必须分别标注；
+   ⛔ 实际代码执行**不等于**输入数据已获得真实学校来源认证。
+② 教学班输入明确标注为 Synthetic 演示快照；Curriculum 输入是否真实须由该次批准证据逐项核验。
 ③ 正式 Real E2E 证据等级仍是 **LEVEL 0**；⛔ 不得声称 LEVEL1 / LEVEL2 / LEVEL3。
 ```
 
@@ -310,7 +325,10 @@ curl -i -s -X POST http://127.0.0.1:8000/api/v1/plan \
 ⚠️ 北校园开课查询采集为**外部系统阻塞**、已挂起：⛔ 不要在演示中建议探测、也不得声称可用。
 
 ⚠️ 已验收 Course Data 行的 `data_source` 会被代码置为 **REAL**（已记录 OPEN ITEM）。
-因此模式 2 下前端「**教学班数据：演示快照（Synthetic）**」是**唯一披露面**，整场演示必须保持可见。
+该字段是**契约 / 来源声明**，⛔ **不是** provenance 证明：形状正确的 Synthetic 输入经 adapter 后同样可能带上 `real` 枚举值，
+因此 **不得**据此判定为真实学校来源。模式 2 下前端「**教学班数据：演示快照（Synthetic）**」标签必须整场保持可见，
+同时按上面的口径说明"输入来源需逐项核验"（⛔ 不把它当成全页 provenance 的"唯一披露面"的说法，
+也不得由此推出"其余输入都真实"）。
 
 ---
 
@@ -413,18 +431,20 @@ unset APP_COURSE_DATA_ACCEPTANCE_SHA256
 
 ## 7. 数据来源标注口径（Mock vs Real / Synthetic）
 
-| 展示对象 | 模式 1 | 模式 2 |
+| 展示对象 | 模式 1（回放） | 模式 2（计算模式） |
 |---|---|---|
-| 页面基础数据（培养要求评估 / 教学班 / 偏好） | Mock 演示数据 | 仍为 Mock 演示数据 |
-| 教学班数据标签 | 「教学班数据：演示快照（Synthetic）」 | 「教学班数据：演示快照（Synthetic）」（**唯一披露面，必须持续可见**） |
-| 规划结果来源 | Mock（`GET /api/v1/mock/demo` 回放） | Real（`POST /api/v1/plan` 成功后）；失败时仍为 Mock |
-| 正式 Real E2E 证据等级 | **LEVEL 0** | **LEVEL 0**（不得声称 LEVEL1 / LEVEL2 / LEVEL3） |
+| 页面基础数据（培养要求评估 / 教学班 / 偏好） | Mock 演示数据 | **仍为 Mock 演示数据**（页面基础区不会变成真实） |
+| 教学班数据标签 | 「教学班数据：演示快照（Synthetic）」 | 「教学班数据：演示快照（Synthetic）」（**必须持续可见**；⛔ 它不是全页 provenance 的唯一披露面，Curriculum 来源须**逐项**核验） |
+| 规划结果来源 | Mock（`GET /api/v1/mock/demo` **回放预置结果**，不执行 Planner） | **实际代码计算**（`POST /api/v1/plan` 成功；Actual API computation）；失败时仍为 Mock。⛔ 实际执行 ≠ 输入真实 |
+| 风险 / 变更的来源 | `risks` / `changes` 为**人工构造的演示样例** | 以实际 Planner 输出为准（当前主要输出 `unresolved`，`risks` 可能为空） |
+| 正式 Real E2E 证据等级 | **LEVEL 0** | **LEVEL 0**（不得声称 LEVEL1 / LEVEL2 / LEVEL3）；`ready` ⛔ ≠ LEVEL2 |
 
 ```text
-⛔ 允许出现的说法：Mock 演示数据 · Synthetic 演示快照 · 当前数据中无排课信息 · 待人工确认
+⛔ 允许出现的说法：Mock 演示数据 · Synthetic 演示快照 · 实际代码计算 · 当前数据中无排课信息 · 待人工确认
 ⛔ 禁止出现的说法：已连接实时教务系统 · 实时教务数据 · 全部数据均为真实 ·
 ⛔ 禁止出现的说法：Real E2E completed · 可直接执行 · 已选课 · 已注册 · 无冲突 ·
-⛔ 禁止出现的说法：官方已批准 · 完全无风险
+⛔ 禁止出现的说法：官方已批准 · 完全无风险 ·
+⛔ 禁止出现的说法：全局最优 · 自动调班 · 自动选课 · 偏好全部生效 · LLM / RAG / GraphRAG 已接入
 ```
 
 ---
