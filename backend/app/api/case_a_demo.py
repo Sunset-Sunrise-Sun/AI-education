@@ -9,6 +9,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.course_data import CaseAScopeError
 from app.models.contracts import CourseOffering, MakeupTask, PlanResult, Preference
 from app.services.case_a_demo import (
     CASE_A_DEMO_SCOPE_LABEL,
@@ -75,7 +76,20 @@ def get_case_a_offerings(
     runtime: Annotated[CaseADemoRuntime | None, Depends(get_case_a_demo_runtime)],
 ) -> list[CourseOffering]:
     configured = _runtime_or_503(runtime)
-    return configured.course_data.get_course_offerings(semester)
+    try:
+        return configured.course_data.get_course_offerings(semester)
+    except CaseAScopeError as exc:
+        # A semester the accepted Case A scope does not cover is a *request* problem,
+        # never a server fault: map it to the demo's existing 422 contract instead of
+        # letting it escape as a 500. The provider's own validation is untouched.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "case_a_demo_semester_not_in_scope",
+                "message": "semester is not covered by the configured Case A scope",
+                "category": getattr(exc, "category", None),
+            },
+        ) from None
 
 
 @router.post("/plan", response_model=CaseADemoPlanResponse)

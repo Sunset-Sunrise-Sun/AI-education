@@ -358,3 +358,54 @@
   2 failed 与 base `c75b6da` **完全相同**（已用独立 base worktree 复现并比对失败集合）。
 - 尚未处理（非阻塞）：MuPDF 的 C 层诊断会绕过 Python 的告警抑制直接写到 stderr；
   已用 fd 级捕获确认其中**不含** PDF 内容 / 个人信息，本轮按指示不做抑制。
+
+### 2026-10-07 - Case A 历史范围裁决：3 条 `2025-1~2025-2` 条目显式记为 historical
+- 本次目标：修复集成评审发现的阻塞——`POST /api/v1/case-a-demo/plan` 在**批准 scoped case +
+  真实成绩单 PDF** 下 500（`makeup scope: target entries have no confirmable arrangement term`）。
+- 根因（已隔离证明）：`makeup_scope.as_of_term=2025-2` 使 3 条 range 条目
+  （MAR116 `table:2!row:8` / PSY199 `row:9` / PUB1991 `row:10`）落入 `SCOPE_UNRESOLVED`。
+  在批准基线（D4）下它们靠 **confirmed `course_id`** 走 identity 匹配才 `satisfied`；
+  换用**无课程号**的成绩单 PDF 后退化为 `possibly_equivalent`，scope guard 只对
+  `SATISFIED` 放行 → 抛错。三种 rules 变体（`None` / 重定向 / 单开任一 allow 标志）**均失败**，
+  证明问题不在 rules，而在 **scope 依赖了 recognition**。
+- 架构裁决：这 3 条区间**整体落在 `as_of_term=2025-2` 当日或之前**，故以**自身区间措辞**
+  显式裁定为 `historical`（见 `CASE_OWNER_HISTORICAL_RATIONALE`）。
+  ⛔ 该 decision **只回答 historical / future**：不表示课程等价、不确认课程身份、
+  不构成已修认定、不使任何要求自动满足、不提供课程号。
+- 实现（仅 case 数据 + 判定门，⛔ 未改算法）：
+  - `case_a_decisions.py`：新增 `_CONFIRMED_HISTORICAL`（3 条）并入 `CONFIRMED_SCOPE_DECISIONS`
+    （现 **7 条 = 3 historical + 4 future**，4 条 future 保持不变）；移除语义已过时的
+    `SATISFIED_UNRESOLVED_NO_DECISION`（不再宣称这 3 条"无需 decision"）；
+    新增 `CONFIRMED_SCOPE_DECISION_KEYS` / `LEGACY_SCOPE_DECISION_KEYS` /
+    `is_supported_scope_decision_set()`。
+  - 兼容窗口：已批准的私有 case artifact 是**修复前**的 4 条 decision 集合。
+    `case_a_demo` 与 `planning_runtime` 改为接受"批准的 7 条集合"或"其 4 条 future 前身"，
+    并在 demo runtime 内**补齐缺失的已批准 decision**（⛔ 不修改 artifact）。
+    ⛔ 该窗口**不是放松**：实测"新增未批准条目"与"翻转某条方向"与"替换 evidence"仍一律拒绝。
+  - 第二处缺陷：`GET /api/v1/case-a-demo/offerings?semester=<错学期>` 原为 **500**，
+    现于 API 边界捕获 `CaseAScopeError` → **422** `case_a_demo_semester_not_in_scope`
+    （⛔ 未削弱 provider 自身校验）。
+- 修改文件：`backend/app/curriculum/case_a_decisions.py`、`backend/app/services/case_a_demo.py`、
+  `backend/app/services/planning_runtime.py`（仅判定门）、`backend/app/api/case_a_demo.py`、
+  `backend/tests/test_curriculum_case_a_scope_decisions.py`、`backend/tests/test_planning_runtime.py`、
+  `backend/tests/test_case_a_scoped_scope_regression.py`（新）、本文件、`docs/status/curriculum.md`。
+- 回归 A（批准的 D4 artifact，**case 文件未改**）：target_records **94**、completed **24**、
+  group_gap_count **0**、makeup_task_count **23**、satisfied **12**、manual_confirmation **11** —
+  **完全不变**。
+- 回归 B（真实 PDF + 真实 South+Shenzhen SQLite）：`POST /api/v1/case-a-demo/plan` 由 500 → **200**，
+  transcript_records **24**（全部 pending）、offerings **4069**（全 real）、
+  makeup_tasks 23 全 `manual_confirmation`、`plan_result.status=partially_feasible`、
+  `planner='actual RestrictedPlanner execution'`、`is_full_semester=false`、响应不含 `mock`。
+  MAR116/PSY199/PUB1991 均 `manual_confirmation` — ⛔ **未被静默提升为 satisfied**。
+- 回归 C（测试盲区）：新增 `tests/test_case_a_scoped_scope_regression.py`（**6 项**），
+  fixture 携带真实 `makeup_scope` + 真实 7 条 decision + **无课程号**（`pending`）completed 记录；
+  并断言该 fixture **确实需要**这些 historical decision（去掉后 3 条重新变 unresolved 且投影 fail closed），
+  防止再次退化成"没有 makeup_scope"的假绿。
+- 测试：全量后端 **3079 tests · 3075 passed · 2 failed · 2 skipped**；
+  2 failed 仍为既有 Windows 环境差异（本分支 base 上同样失败），⛔ 非本次引入。
+- 未改动（已验证 0 diff）：`schemas/`、`docs/interfaces/`、`matching.py`、`terms.py`、
+  `requirements.py`、`case.py`、`planner/`、`integration/ports.py`、`models/contracts.py`、
+  `course_data/store.py`、`snapshot.py`、`case_a_scope.py`、`api/plan.py`。
+- 使用数据：测试全部使用自建合成 fixture；真实 PDF / DOCX / XLSX / SQLite **均未入库**。
+- 需要人工确认：本次裁决是**架构授权**下的修正；`historical` 是否正确反映学校对该三条的
+  真实安排窗口，仍建议负责人复核一次。

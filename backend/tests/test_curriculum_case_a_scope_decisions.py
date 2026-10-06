@@ -27,14 +27,16 @@ import pytest
 from app.curriculum.case_a_decisions import (
     AS_OF_TERM,
     CASE_OWNER_FUTURE_RATIONALE,
+    CASE_OWNER_HISTORICAL_RATIONALE,
     CASE_TARGET_VERSION_ID,
     CONFIRMED_SCOPE_DECISIONS,
     DECISION_EVIDENCE,
-    SATISFIED_UNRESOLVED_NO_DECISION,
     confirmed_scope_decisions,
+    is_supported_scope_decision_set,
 )
 from app.curriculum.errors import CurriculumNormalizationError
 from app.curriculum.plan_profiles import ELECTIVE_POOL_GROUP_ID, plan_group_records
+from app.curriculum.terms import ConfirmedScopeDecision
 
 from tests.test_curriculum_scope_decisions import _completed, _course, _payload, _provider
 
@@ -73,19 +75,32 @@ def test_the_crossing_range_is_decided_future_by_case_owner_ruling() -> None:
     assert CASE_OWNER_FUTURE_RATIONALE
 
 
-def test_all_case_a_decisions_are_future_and_bound_to_entries() -> None:
-    assert len(CONFIRMED_SCOPE_DECISIONS) == 4
-    assert {record["decision"] for record in CONFIRMED_SCOPE_DECISIONS} == {"future"}
+def test_all_case_a_decisions_are_bound_to_entries_with_an_explicit_decision() -> None:
+    assert len(CONFIRMED_SCOPE_DECISIONS) == 7
+    assert {record["decision"] for record in CONFIRMED_SCOPE_DECISIONS} <= {"historical", "future"}
     records = [record["target_source_record"] for record in CONFIRMED_SCOPE_DECISIONS]
     assert len(set(records)) == len(records), "one decision per requirement entry"
 
 
-def test_satisfied_range_terms_need_no_decision() -> None:
-    satisfied_ids = {
-        course_id for _record, course_id, _term, _name in SATISFIED_UNRESOLVED_NO_DECISION
-    }
-    decided_ids = {record["target_course_id"] for record in CONFIRMED_SCOPE_DECISIONS}
-    assert satisfied_ids and not (satisfied_ids & decided_ids)
+def test_the_three_ranges_ending_at_the_cutoff_are_decided_historical() -> None:
+    """MAR116 / PSY199 / PUB1991 end at or before the cut-off, so they are historical.
+
+    This is a *scope-only* statement. It must not be read as course equivalence,
+    course identity, completed-course recognition, or automatic satisfaction.
+    """
+    historical = [r for r in CONFIRMED_SCOPE_DECISIONS if r["decision"] == "historical"]
+    assert {r["target_course_id"] for r in historical} == {"MAR116", "PSY199", "PUB1991"}
+    for record in historical:
+        start, end = record["recommended_term_text"].split("~")
+        assert end <= AS_OF_TERM, record
+        assert record["evidence"] == DECISION_EVIDENCE
+    assert CASE_OWNER_HISTORICAL_RATIONALE
+
+
+def test_the_scope_decision_set_is_exactly_three_historical_and_four_future() -> None:
+    decisions = [record["decision"] for record in CONFIRMED_SCOPE_DECISIONS]
+    assert decisions.count("historical") == 3
+    assert decisions.count("future") == 4
 
 
 def test_decisions_carry_case_owner_evidence_bound_to_the_target_version() -> None:
@@ -100,10 +115,46 @@ def test_decisions_carry_case_owner_evidence_bound_to_the_target_version() -> No
 def test_decisions_build_into_internal_objects() -> None:
     built = confirmed_scope_decisions()
     assert len(built) == len(CONFIRMED_SCOPE_DECISIONS)
-    assert {decision.decision for decision in built} == {"future"}
+    assert {decision.decision for decision in built} == {"historical", "future"}
     assert {decision.target_source_record for decision in built} == {
         record["target_source_record"] for record in CONFIRMED_SCOPE_DECISIONS
     }
+
+
+def test_only_approved_decision_sets_are_accepted() -> None:
+    """The rollout window accepts the approved set and its ``future``-only predecessor.
+
+    ⛔ An artifact may not *add* a decision of its own: an unknown entry or a
+    swapped direction is still rejected.
+    """
+    built = confirmed_scope_decisions()
+    assert is_supported_scope_decision_set(built)
+    assert is_supported_scope_decision_set(
+        [decision for decision in built if decision.decision == "future"]
+    )
+    # An extra, unapproved entry is not an approved set.
+    extra = ConfirmedScopeDecision(
+        target_version_id=CASE_TARGET_VERSION_ID,
+        target_source_record="table:2!row:999",
+        target_course_id="DEMO-NOT-APPROVED",
+        decision="historical",
+        evidence=DECISION_EVIDENCE,
+    )
+    assert not is_supported_scope_decision_set([*built, extra])
+    # Flipping one approved entry's direction is not an approved set either.
+    flipped = [
+        ConfirmedScopeDecision(
+            target_version_id=decision.target_version_id,
+            target_source_record=decision.target_source_record,
+            target_course_id=decision.target_course_id,
+            decision="future" if decision.decision == "historical" else "historical",
+            evidence=decision.evidence,
+        )
+        for decision in built
+    ]
+    assert not is_supported_scope_decision_set(flipped)
+    assert not is_supported_scope_decision_set(None)
+    assert not is_supported_scope_decision_set(("not-a-decision",))
 
 
 # --------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from app.curriculum.case_a_decisions import (
     AS_OF_TERM,
     CASE_TARGET_VERSION_ID,
     confirmed_scope_decisions,
+    is_supported_scope_decision_set,
 )
 from app.integration import PlanningOrchestrator
 from app.models.contracts import CourseOffering, DataSource, MakeupTask, PlanResult, Preference
@@ -140,6 +141,33 @@ class CaseADemoRuntime:
         return CaseADemoRun(imported, tasks, offerings, preference, result)
 
 
+def _with_approved_scope_decisions(base_case: CurriculumCase) -> CurriculumCase:
+    """Return the case carrying every approved Case A scope decision.
+
+    A private artifact built before the historical ruling carries only the four
+    ``future`` decisions. The scope question for the three ranges ending at the
+    cut-off must not depend on whether a completed course happened to be recognised
+    (a transcript PDF carries no course id), so the runtime completes the case with
+    the approved decisions it is missing instead of mutating anything.
+
+    ⛔ Only decisions that are literally part of the approved set are ever added, and
+    an artifact carrying a decision **outside** that set is rejected by the caller -
+    this is a completion of approved data, not a relaxation of the gate.
+    """
+
+    approved = confirmed_scope_decisions()
+    present = {decision.target_source_record for decision in base_case.confirmed_scope_decisions}
+    missing = tuple(
+        decision for decision in approved if decision.target_source_record not in present
+    )
+    if not missing:
+        return base_case
+    return replace(
+        base_case,
+        confirmed_scope_decisions=(*base_case.confirmed_scope_decisions, *missing),
+    )
+
+
 def build_case_a_demo_runtime(environment: Mapping[str, str]) -> CaseADemoRuntime | None:
     """Fail closed unless every explicit Case A demo input is present and valid."""
 
@@ -160,9 +188,12 @@ def build_case_a_demo_runtime(environment: Mapping[str, str]) -> CaseADemoRuntim
             or base_case.new.version_id != CASE_TARGET_VERSION_ID
             or base_case.makeup_scope is None
             or base_case.makeup_scope.as_of_term != AS_OF_TERM
-            or base_case.confirmed_scope_decisions != confirmed_scope_decisions()
+            # Only an approved decision set is accepted; an artifact that invented a
+            # decision of its own is still rejected.
+            or not is_supported_scope_decision_set(base_case.confirmed_scope_decisions)
         ):
             return None
+        base_case = _with_approved_scope_decisions(base_case)
         # Validate the approved base projection before replacing its completed input.
         CurriculumCaseProvider(base_case).get_makeup_tasks()
         dataset = build_case_a_dataset(

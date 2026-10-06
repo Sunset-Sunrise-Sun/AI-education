@@ -106,7 +106,7 @@ from app.curriculum import (
 from app.curriculum.case_a_decisions import (
     AS_OF_TERM,
     CASE_TARGET_VERSION_ID,
-    confirmed_scope_decisions,
+    is_supported_scope_decision_set,
 )
 from app.integration import PlanningOrchestrator
 from app.planner import RestrictedPlannerProvider
@@ -189,7 +189,7 @@ def build_curriculum_provider(case_path: str) -> CurriculumCaseProvider:
         raise _RuntimeSourceUnavailable("curriculum case is not Case A")
     if case.makeup_scope is None or case.makeup_scope.as_of_term != AS_OF_TERM:
         raise _RuntimeSourceUnavailable("curriculum case has the wrong scope cut-off")
-    if case.confirmed_scope_decisions != confirmed_scope_decisions():
+    if not is_supported_scope_decision_set(case.confirmed_scope_decisions):
         raise _RuntimeSourceUnavailable("curriculum case decisions are not approved")
 
     provider = CurriculumCaseProvider(case)

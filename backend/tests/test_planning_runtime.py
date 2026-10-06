@@ -218,7 +218,10 @@ def _case_payload(*, with_decisions: bool = True) -> dict[str, object]:
             "course_name": "示例历史欠修课",
             "credit": 3,
             "requirement": "required",
-            "source_record": "table:2!row:8",
+            # A non-range requirement with no scope decision: this is the entry the
+            # "not ready" probes rely on. ⛔ It must not reuse a source_record that
+            # carries an approved decision (those are added from the decision set).
+            "source_record": "table:2!row:7",
             "recommended_term_text": "2025-1",
             "prerequisites": [],
         }
@@ -634,8 +637,13 @@ def test_ready_runtime_assembles_the_three_approved_providers(tmp_path: Path) ->
     assert {offering.semester for offering in offerings} == {SEMESTER}
 
     # Curriculum 侧真的投影出了 makeup task（Case A projection 在构造期已成功）。
+    # SYN116 是可自动解析的历史条目；MAR116 / PSY199 / PUB1991 由**显式 historical
+    # scope decision** 落到历史范围，在空的 completed 输入下同样是未满足的历史要求，
+    # 因此一并进入补修任务（⛔ 决策只回答 scope，不代表已满足）。
     tasks = orchestrator.curriculum.get_makeup_tasks()
-    assert [task.course_id for task in tasks] == ["SYN116"]
+    assert sorted(task.course_id for task in tasks) == [
+        "MAR116", "PSY199", "PUB1991", "SYN116",
+    ]
 
 
 def test_ready_runtime_planner_receives_exactly_the_bound_offerings(
