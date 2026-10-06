@@ -124,3 +124,14 @@ reviewer/full_semester/PR48_CLOSURE_87d9d6e.md. Default publication race and bro
 capture/export binding now PASS. Reviewer15PASS/2strictFAIL; readiness47; targeted541;
 full backend2936PASS/2skip; frontend134/typecheck/build/compileall/nodecheck PASS.
 LEVEL1 preflight PASS; no Real LEVEL2/3 claim. North remains suspended, merge not ready.
+
+## PR48 final closure — 2e76e04
+
+Fetched PR48 base/head/pull ref exact2e76e044744a572d815f7fcc43331c8a0f77dd4a.
+ENV READY and HANDOFF APPROVAL gates PASS. Curriculum/static matrix now implemented,
+but after publication replacing case bytes or redirecting emitted case path still yields
+ready/level2_eligible=true for digest-mismatched, actual runtime-loadable input.
+CURRICULUM PROVENANCE / COMBINED LEVEL2 / PR48 BLOCK. Report:
+reviewer/full_semester/PR48_FINAL_2e76e04.md. Independent37PASS/2strictFAIL;
+targeted565PASS; fullbackend2960PASS/2skip; frontend134/type/build/compile/nodePASS.
+No frozen production/public Schema diff. North suspended; user captureNO; merge not ready.

@@ -141,3 +141,17 @@ level2_eligible=true. Curriculum input source digest/version still absent from m
 Recorded report and strict closure probes (15pass/2fail), no skip/xfail. Full backend2936/2skip,
 targeted541, readiness47, frontend134/type/build, compileall and nodecheck pass.
 PR48BLOCK/user full captureNO/merge notready; no production edits/merge/school access.
+
+## 2026-10-06 — PR48 final invariants 2e76e04
+
+Single-agent review fetched all/pruned/full heads; GitHub metadata/pull ref match exactHEAD.
+No production edits/merge/school access. Actual CLI37pass/2strictfail: no overwrite options,
+existing destinations unchanged, Store reopens after env publication, all Store tamper
+probes reject, handoff metadata and static Curriculum negative matrix fail closed.
+Curriculum final binding remains absent: published case byte mutation / emitted case path
+redirect produce eligibletrue with digest-mismatch and actual runtime factory still ready.
+Tool computes provenance before publication; final check only Store. Minimal final emitted
+Curriculum path/digest/approval recheck recorded, no runtime semantic change required.
+Targeted565/full2960+2skip/frontend134/type/build/compile/node allpass. Linux nohistorical
+Windows Curriculum failures; unchanged Curriculum code/tests. ENV/HANDOFFPASS, C/D/PR48BLOCK,
+usercaptureNO/mergenotready. Independent tests/docs/status only, reportPR48_FINAL_2e76e04.md.
