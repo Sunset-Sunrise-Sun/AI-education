@@ -113,3 +113,14 @@ runbook缺sharded赋值；LEVEL2机械证据不足证明real来源，需明确di
 Synthetic preflightPASS（5shards/15rows/LEVEL1）；North保守计划PASS但operational仍suspended。
 Reviewer13pass/3fail；targeted609pass；full2913/2skip；frontend134/typecheck/build/compile/nodePASS。
 READY FOR USER REAL CAPTURE=NO；merge not ready；未merge、不改production、不访问学校。
+
+## PR48 closure — 87d9d6e
+
+Single-line DeepSeek builder / independent reviewer. GitHub base/head and pull ref verified.
+PR48 still BLOCK: --overwrite-env destination alias overwrites verified SQLite and returns
+ready; handoff with approved_by/approved_at null nevertheless sets level2_eligible=true.
+Curriculum real-source digest/version mandatory evidence remains missing. Report:
+reviewer/full_semester/PR48_CLOSURE_87d9d6e.md. Default publication race and browser Console
+capture/export binding now PASS. Reviewer15PASS/2strictFAIL; readiness47; targeted541;
+full backend2936PASS/2skip; frontend134/typecheck/build/compileall/nodecheck PASS.
+LEVEL1 preflight PASS; no Real LEVEL2/3 claim. North remains suspended, merge not ready.

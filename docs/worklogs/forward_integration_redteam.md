@@ -128,3 +128,16 @@ actualrealorigin，新LEVEL2协议需明确受控来源交接记录与case/五ra
 collector+scenario nodecheckPASS。North计划不称rate-limit、有bounded manual观察/stop但仍suspended。
 PR48/orchestratorsafety/docs BLOCK，synthetic PASS，NorthplanPASS，usercaptureNO/merge notready。
 仅reviewer tests/docs，无production编辑/merge/realnetwork/credentials。
+
+## 2026-10-06 — PR48 focused closure 87d9d6e
+
+Fetched/refreshed all heads and verified PR48 base main/head87d9d6e against GitHub/public
+pull ref. Single-agent review, synthetic-only local archive, production diff unchanged.
+Adapted original alias probe to --overwrite-env: actual CLI exit0/ready then SQLite SELECT
+DatabaseError. Publication-boundary competitor preserved: race closed. Browser Console
+sloppy-script capture/export runs: binding closed; strict ESM portability nonblocking.
+Actual generated handoff with only state changed approved and null approver/time gives
+level2_eligible=true. Curriculum input source digest/version still absent from mandatory gate.
+Recorded report and strict closure probes (15pass/2fail), no skip/xfail. Full backend2936/2skip,
+targeted541, readiness47, frontend134/type/build, compileall and nodecheck pass.
+PR48BLOCK/user full captureNO/merge notready; no production edits/merge/school access.
