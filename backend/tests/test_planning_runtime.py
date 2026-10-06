@@ -185,6 +185,9 @@ def _full_semester_store(tmp_path: Path) -> tuple[Path, object]:
         acceptance.merged,
         artifact_sha256=acceptance.manifest_sha256,
         scope=acceptance.scope,
+        # ⛔ immutable acceptance identity：canonical manifest 与 rows 同事务落库，
+        #    Provider 每次读取都会重算 SHA256(canonical stored manifest)。
+        canonical_manifest=acceptance.manifest,
     )
     return sqlite_path, acceptance
 
