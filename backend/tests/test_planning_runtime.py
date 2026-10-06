@@ -13,6 +13,7 @@ APP_COURSE_DATA_SQLITE_PATH / APP_COURSE_DATA_SEMESTER / APP_COURSE_DATA_ACCEPTA
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -20,17 +21,23 @@ from pathlib import Path
 import pytest
 
 from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
+from fastapi.testclient import TestClient
 from app.course_data import (
     SCOPE_KIND_CAMPUS,
     SCOPE_KIND_FULL_SEMESTER,
     CourseDataAcceptanceError,
+    CourseDataStoreError,
     ShardArtifact,
     SnapshotScope,
     StoreBackedCourseDataProvider,
     accept_full_semester_capture_set,
-    import_offering_snapshot,
-    load_capture_bundle,
+    build_capture_inventory,
+    campus_source_label,
+    capture_inventory_bytes,
     collect_captured_pages_snapshot,
+    import_offering_snapshot,
+    load_capture_bundle_bytes,
+    load_capture_inventory,
 )
 from app.curriculum import CurriculumCaseProvider
 from app.curriculum.case_a_decisions import (
@@ -64,6 +71,14 @@ SHARD_IDS = (
     "zhuhai-campus",
     "north-campus",
 )
+
+SHARD_NUMBERS = {
+    "east-campus": "5063559",
+    "south-campus": "5062201",
+    "shenzhen-campus": "333291143",
+    "zhuhai-campus": "5062203",
+    "north-campus": "5062202",
+}
 
 
 # --------------------------------------------------------------------------- #
@@ -121,10 +136,36 @@ def _write_bundle(directory: Path, shard_id: str) -> Path:
 
 
 def _full_semester_store(tmp_path: Path) -> tuple[Path, object]:
-    """造一份 synthetic full-semester acceptance 并导入 SQLite。"""
+    """造一份 synthetic full-semester acceptance 并导入 SQLite。
+
+    ⚠️ 正式 acceptance 需要**已批准 inventory** + **campus acceptance 记录**
+    （Forward Red-Team BLOCK B2），因此这里先把五个 shard 以 campus scope 入库。
+    """
 
     captures = tmp_path / "captures"
     paths = {shard_id: _write_bundle(captures, shard_id) for shard_id in SHARD_IDS}
+
+    digests = {
+        shard_id: hashlib.sha256(path.read_bytes()).hexdigest()
+        for shard_id, path in paths.items()
+    }
+    inventory = build_capture_inventory(SEMESTER, digests)
+    inventory_path = tmp_path / "capture-inventory.json"
+    inventory_path.write_bytes(capture_inventory_bytes(inventory))
+
+    campus_store = tmp_path / "campus-acceptances.sqlite3"
+    for shard_id, path in paths.items():
+        number = SHARD_NUMBERS[shard_id]
+        snapshot = collect_captured_pages_snapshot(
+            load_capture_bundle_bytes(path.read_bytes()),
+            source=campus_source_label(SEMESTER, number),
+        )
+        import_offering_snapshot(
+            campus_store,
+            snapshot,
+            artifact_sha256=digests[shard_id],
+            scope=SnapshotScope(scope_kind=SCOPE_KIND_CAMPUS, scope_id=number),
+        )
 
     acceptance = accept_full_semester_capture_set(
         expected_semester=SEMESTER,
@@ -134,6 +175,8 @@ def _full_semester_store(tmp_path: Path) -> tuple[Path, object]:
             ShardArtifact(shard_id=shard_id, bundle_path=paths[shard_id])
             for shard_id in SHARD_IDS
         ],
+        inventory=load_capture_inventory(inventory_path),
+        campus_store_path=campus_store,
     )
 
     sqlite_path = tmp_path / "course-data.sqlite3"
@@ -150,7 +193,8 @@ def _campus_only_store(tmp_path: Path) -> Path:
     sqlite_path = tmp_path / "campus-only.sqlite3"
     bundle_path = _write_bundle(tmp_path / "campus", "east-campus")
     snapshot = collect_captured_pages_snapshot(
-        load_capture_bundle(bundle_path), source="capture://sysu/2026-1/campus/5063559"
+        load_capture_bundle_bytes(bundle_path.read_bytes()),
+        source="capture://sysu/2026-1/campus/5063559",
     )
     import_offering_snapshot(
         sqlite_path,
@@ -682,6 +726,67 @@ def test_get_planning_orchestrator_reads_the_process_environment(
 
     orchestrator = get_planning_orchestrator()
     assert isinstance(orchestrator, PlanningOrchestrator)
+
+
+def test_request_time_readiness_failure_is_mapped_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """请求期间才发现的 acceptance 失效也必须映射成 503（⛔ 不是 500、⛔ 不是 Mock）。"""
+
+    class _ExplodingCourseData:
+        def get_course_offerings(self, semester: str) -> list[object]:
+            raise CourseDataAcceptanceError("synthetic readiness failure")
+
+    class _Curriculum:
+        def get_makeup_tasks(self) -> list[object]:
+            return []
+
+    orchestrator = PlanningOrchestrator(
+        curriculum=_Curriculum(),
+        course_data=_ExplodingCourseData(),
+        planner=RestrictedPlannerProvider(),
+    )
+
+    app.dependency_overrides[get_planning_orchestrator] = lambda: orchestrator
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.post(PLAN_PATH, json=_request_payload())
+    finally:
+        app.dependency_overrides.pop(get_planning_orchestrator, None)
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["error"] == "real_pipeline_not_configured"
+    assert MOCK_DATA_SOURCE_HEADER not in response.headers
+    assert MOCK_DATA_SOURCE_VALUE not in response.text
+
+
+def test_unexpected_store_failure_is_not_mapped_to_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ 其它未预期异常仍然保持 500：不把程序缺陷伪装成"未装配"。"""
+
+    class _BrokenCourseData:
+        def get_course_offerings(self, semester: str) -> list[object]:
+            raise CourseDataStoreError("synthetic store corruption")
+
+    class _Curriculum:
+        def get_makeup_tasks(self) -> list[object]:
+            return []
+
+    orchestrator = PlanningOrchestrator(
+        curriculum=_Curriculum(),
+        course_data=_BrokenCourseData(),
+        planner=RestrictedPlannerProvider(),
+    )
+
+    app.dependency_overrides[get_planning_orchestrator] = lambda: orchestrator
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            response = client.post(PLAN_PATH, json=_request_payload())
+    finally:
+        app.dependency_overrides.pop(get_planning_orchestrator, None)
+
+    assert response.status_code == 500
 
 
 def test_module_has_no_mock_or_single_bundle_fallback() -> None:
