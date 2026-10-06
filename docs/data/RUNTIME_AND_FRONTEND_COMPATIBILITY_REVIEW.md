@@ -76,6 +76,22 @@
 本文**不替** Review 决定；在此之前 runtime 一律保持未装配（503）——
 这正是当前 production 的实际状态。
 
+### 1.5 Gate C 落地（2026-10-06，本文写于其之前，保留原文以存证）
+
+上文 §1.2 的**方案 (b)** 已按既有 runtime 决定落地：
+
+```text
+production runtime 只接受 **显式 full_semester acceptance**（SQLite + manifest SHA-256）
+⛔ campus 不作为可装载范围（campus-only 库 ⇒ course_data_not_ready ⇒ 503）
+```
+
+- 实现：`backend/app/services/planning_runtime.py` +
+  `StoreBackedCourseDataProvider`（见 `docs/data/CASE_A_RUNTIME_WIRING.md`）；
+- **PR #39 = FROZEN / DO NOT MERGE**（其单 bundle 装载模型已被取代）；
+- ⛔ 本文 §3.1 的 `X-Data-Source: real` 建议**仍未实施**（接口面变更仍需裁定）；
+- ⛔ §1.4 的"campus 是否可作为最高范围"已由**既有决定**回答：**否**；
+  若 Review 日后要放宽，必须走新的 Gate（本 Gate 未提供任何 campus 路径）。
+
 ---
 
 ## 2. Phase 7 —— synthetic 结构 dry-run（证据，不是真实 E2E）

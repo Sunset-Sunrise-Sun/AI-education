@@ -1779,3 +1779,15 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
 - 测试：store **106** / provider **57** / runtime **49** / synthetic E2E **20** /
   read snapshot **8** = **240 passed**；
 - ⛔ 未改 journal mode、⛔ 未改 public Schema / frozen Provider contract、⛔ 未 merge main。
+
+## Gate C：Store provider 已接入 runtime factory（✅ 已收口）
+
+- `backend/app/services/planning_runtime.py` 现在按**五个显式环境变量**装配
+  `CurriculumCaseProvider` + `StoreBackedCourseDataProvider` + `RestrictedPlannerProvider`；
+  ⛔ 没有 campus fallback（campus-only 库 ⇒ `course_data_not_ready` ⇒ 503）、
+  ⛔ 没有 Mock fallback、⛔ 不存在 PR #39 的单 bundle 变量名；
+- **PR #39 = FROZEN / DO NOT MERGE**；本 Gate 的实现是它的 **successor**
+  （诊断码不含路径 / 配置取值；每请求重新装配 ⇒ 启动后的库改写会被发现）；
+- ⛔ 未改 frozen Provider Protocol / public Schema / `PlanningOrchestrator` / API 响应体；
+  详见 `docs/data/CASE_A_RUNTIME_WIRING.md` 与 `docs/status/integration.md`；
+- ⛔ 仍未处理真实 artifact ⇒ formal Real E2E 继续 **LEVEL0**。

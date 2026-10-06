@@ -33,3 +33,40 @@
 - 显式 `mock` 被拒绝；缺失 `data_source` 时公共模型会采用默认值 `mock`，随后同样由 Real API 边界返回 422。
 - 校验只约束 Real HTTP 输入，不修改 Planner 算法、frozen Provider contract 或公共 Schema。
 - 验证：targeted **55 passed**；全量 backend **2048 passed / 2 skipped / 2 failed**。两项失败仍为既有 Curriculum Windows 环境问题。
+
+### 2026-10-06 - Gate C：Case A runtime wiring（PR #39 successor）
+
+- **分支**：基于 Gate B tip 新建 `feature/case-a-runtime-wiring-store`（stacked；
+  ⛔ 未 merge main、⛔ 未 merge PR #39 —— 旧分支只 fetch 作参考）；
+- **取代 PR #39 的装载模型**：single Capture Bundle + raw bytes digest + 内存快照
+  → SQLite + **显式 full_semester acceptance 绑定**
+  （`campus complete != full semester complete`，单 bundle 会静默不完整）；
+  ⛔ PR #39 = FROZEN / DO NOT MERGE，只在文档中标记 **superseded**；
+- **环境契约（五个变量）**：`APP_REAL_CASE_A_ENABLED` /
+  `APP_CASE_A_CURRICULUM_CASE_PATH` / `APP_COURSE_DATA_SQLITE_PATH` /
+  `APP_COURSE_DATA_SEMESTER` / `APP_COURSE_DATA_ACCEPTANCE_SHA256`；
+  ⛔ 不存在单 bundle 的旧变量名，⛔ 无 campus / Mock / "有行就启动" 退化路径；
+- **装配**：`build_planning_runtime(environment)` 返回
+  `PlanningRuntimeInspection(orchestrator, reason)`；reason ∈
+  `runtime_disabled` / `invalid_runtime_configuration` / `curriculum_not_ready` /
+  `course_data_not_ready` / `ready`（⛔ 不含路径与配置取值）；
+  Curriculum 侧沿用同一套受控校验（real / case-a-new / as_of_term=2025-2 /
+  已批准决策集合 / 构造期 projection 成功）；
+  Course Data 侧全部交由 `StoreBackedCourseDataProvider` 构造期 fail closed；
+- **每请求重新装配**（不缓存 orchestrator）⇒ 启动之后被改写的库会被发现并 fail closed；
+- **API 行为不变**：未装配 ⇒ `503 real_pipeline_not_configured` 且不带 `X-Data-Source`；
+  已装配 ⇒ 200 + `PlanResult`（公共 Schema 通过）；上抛异常仍不被吞；
+  ⛔ 未给真实 API 增加 `X-Data-Source: real`（接口面变更仍需裁定）；
+- **测试**：`test_planning_runtime.py` **47 passed**（synthetic / zero-network，含
+  开关值矩阵、缺配置、非法 digest、大写 digest、case 四类受控校验的**逐个隔离**用例、
+  库缺失 / 非 Course Data 库 / campus-only 库 / 错 digest / 错 semester、
+  ready 装配、planner 收到恰好绑定行、启动后库被改写 ⇒ fail closed、
+  真实 endpoint 503 与 200、mock 通道仍标记、源码级无 Mock / 无快照 Provider / 无网络 import）；
+  相关回归（real plan api + mock api + orchestrator + planner provider + runtime）**307 passed**；
+- **mutation sweep**（workspace-only `mutate_planning_runtime.py`，17 处唯一锚点、
+  按字节还原核对）：**16 killed / 1 可证等价 / 0 survived**；
+  等价项 = "版本必须等于 Case A 目标版本"，冗余性由测试证明
+  （已批准决策绑定在 `case-a-new`，换版本后 Curriculum 层自身拒绝）；
+- **边界**：⛔ 未改 frozen Provider Protocol / public Schema / `PlanningOrchestrator`、
+  ⛔ 未 merge main 或 PR #39、⛔ 未真实登录、⛔ 未发真实教务请求、⛔ 未处理真实 artifact；
+  formal Real E2E 继续 **LEVEL0**。
