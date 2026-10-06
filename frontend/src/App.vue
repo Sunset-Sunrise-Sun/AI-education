@@ -320,7 +320,7 @@ onMounted(() => {
           mock
           section-id="section-offerings"
           title="2. 开课教学班供给 (CourseOffering)"
-          subtitle="Course Data 模块从教务系统中抓取并标准化的目标学期开课清单：支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
+          subtitle="Course Data 模块负责教学班数据的标准化与结构化；当前比赛演示使用明确标识的 Synthetic 教学班快照（未连接任何实时教务系统）。支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
           :badge-count="data.course_offerings.length"
         >
           <!--
