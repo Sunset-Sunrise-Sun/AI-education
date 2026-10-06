@@ -486,7 +486,13 @@ def test_integration_has_no_mock_fallback() -> None:
 
 
 def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) -> None:
-    """真实规划入口已开放；未装配时由 API 明确返回 503。"""
+    """真实规划入口已开放；未装配时由 API 明确返回 503。
+
+    ⚠️ 下面是**显式白名单**：任何新增路由都必须在这里逐条登记（⛔ 不允许"顺手多挂"）。
+    Gate F 只新增了一条：通用已修课程 XLSX 摄取入口
+    `POST /api/v1/completed-courses/import`（见 `docs/data/XLSX_COMPLETED_COURSES_IMPORT.md`），
+    它⛔ 不改 `/api/v1/plan` 契约，也⛔ 不接入 Case A fixed-case runtime。
+    """
 
     paths = set(client.get("/openapi.json").json()["paths"])
 
@@ -502,4 +508,6 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         "/api/v1/mock/plan-result",
         "/api/v1/mock/demo",
         "/api/v1/plan",
+        # Gate F（已授权的新增入口）：通用 XLSX 摄取，⛔ 不是 integration 数据通道。
+        "/api/v1/completed-courses/import",
     }
