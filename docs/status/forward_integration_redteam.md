@@ -104,3 +104,12 @@ PR46仍frozen PASS，未复审。PR47新HEAD c904312只复查Content-Length修�
 真实8MiB workbook200；streamoverflow413；mismatch/invalid400；直接ASGI无transport依赖。
 Final XLSX174、Curriculum/integration/runtime1208、fullbackend2889/2skip、frontend134passed；
 typecheck/build/compileall/nodecheck PASS。PR47/cross-stack PASS，ready，顺序46→47，未merge。
+
+## PR48 Real E2E readiness — 8ea5c84
+
+Report `reviewer/full_semester/PR48_REAL_READINESS_REVIEW.md`。main67c8585、PR48base/head核实。
+PR48BLOCK：env output可在force下覆盖已验证SQLite仍返回ready；默认env覆盖存在TOCTOU；
+runbook缺sharded赋值；LEVEL2机械证据不足证明real来源，需明确digest绑定真实交接证明。
+Synthetic preflightPASS（5shards/15rows/LEVEL1）；North保守计划PASS但operational仍suspended。
+Reviewer13pass/3fail；targeted609pass；full2913/2skip；frontend134/typecheck/build/compile/nodePASS。
+READY FOR USER REAL CAPTURE=NO；merge not ready；未merge、不改production、不访问学校。
