@@ -3,22 +3,37 @@ import { computed, onMounted, ref } from 'vue'
 import { loadCaseAOfferings, runCaseADemo, type CaseADemoResponse } from '../api/caseADemo'
 import {
   addManualScheduleEntry,
+  addPreferredCourse,
   applyManualAttestation,
   buildRealPlanRequest,
   createDefaultUserInputForm,
   invalidateManualAttestation,
   manualScheduleOfferingCount,
   removeCurrentScheduleOffering,
+  removePreferredCourse,
   toggleCurrentScheduleOffering,
   type ManualScheduleEntry,
 } from '../state/userInput'
 import type { CourseOffering } from '../types/contracts'
+import FutureRoadmapView from './FutureRoadmapView.vue'
+import IntentCourseSearch from './IntentCourseSearch.vue'
 import MakeupTaskList from './MakeupTaskList.vue'
 import ManualScheduleForm from './ManualScheduleForm.vue'
+import PendingAdjustments from './PendingAdjustments.vue'
 import PlanResultPanel from './PlanResultPanel.vue'
 import PreferenceForm from './PreferenceForm.vue'
 import PreferencePanel from './PreferencePanel.vue'
 import SectionCard from './SectionCard.vue'
+import WeeklyScheduleView from './WeeklyScheduleView.vue'
+
+/** 说明卡的固定内容：⛔ 不承诺"系统会自动替换课程"，真实语义是"找候选 → 提建议 → 用户确认"。 */
+const PLANNING_STEPS = [
+  '检查当前课表的时间冲突',
+  '为补修课程寻找本学期开设的教学班',
+  '尝试安排你选择的意向课程',
+  '发现冲突时寻找同课程其他教学班',
+  '无法自动确认的问题会明确提示，由你决定',
+] as const
 
 const SEARCH_LIMIT = 20
 const form = ref(createDefaultUserInputForm())
@@ -149,6 +164,29 @@ function addManual(payload: { offering: CourseOffering; entries: ManualScheduleE
 function removeOffering(offering: CourseOffering): void {
   const next = removeCurrentScheduleOffering(form.value.currentSchedule, offering)
   form.value = invalidateManualAttestation(form.value, next).form
+}
+
+/* 意向课程（课程级，写入 Preference.preferredCourses；重复课程不会重复加入） */
+const preferredCourses = computed(() => form.value.preference.preferredCourses)
+
+function addPreferred(courseId: string): void {
+  form.value = {
+    ...form.value,
+    preference: {
+      ...form.value.preference,
+      preferredCourses: addPreferredCourse(form.value.preference.preferredCourses, courseId),
+    },
+  }
+}
+
+function removePreferred(courseId: string): void {
+  form.value = {
+    ...form.value,
+    preference: {
+      ...form.value.preference,
+      preferredCourses: removePreferredCourse(form.value.preference.preferredCourses, courseId),
+    },
+  }
 }
 
 function teacherText(offering: CourseOffering): string {
@@ -386,13 +424,36 @@ onMounted(loadOfferings)
         </div>
       </SectionCard>
 
-      <SectionCard :mock="false" title="第三步：设置排课偏好" subtitle="根据你的时间、校区和学分偏好调整推荐方案。">
-        <PreferenceForm :form="form" @update:form="form = $event" />
+      <SectionCard :mock="false" title="第三步：告诉我你的选课需求" subtitle="这些信息会用于本学期排课与补修安排，不会改变学校规则。">
+        <div class="case-a-needs">
+          <IntentCourseSearch
+            :offerings="offerings"
+            :selected-course-ids="preferredCourses"
+            @add="addPreferred"
+            @remove="removePreferred"
+          />
+          <PreferenceForm
+            :form="form"
+            :preferred-courses="preferredCourses"
+            @update:form="form = $event"
+            @remove-preferred="removePreferred"
+          />
+        </div>
       </SectionCard>
+
+      <div class="case-a-explainer" data-testid="case-a-planning-explainer">
+        <h2 class="case-a-explainer__title">系统将如何帮你规划</h2>
+        <ul class="case-a-explainer__list">
+          <li v-for="step in PLANNING_STEPS" :key="step">✓ {{ step }}</li>
+        </ul>
+        <p class="case-a-explainer__note">
+          调整只会以<strong>建议</strong>形式给出：系统找到候选教学班后需要你确认，⛔ 不会自动替换你的课程。
+        </p>
+      </div>
 
       <div class="case-a-submit-wrap">
         <button class="button case-a-submit" type="button" :disabled="loading" data-testid="case-a-submit" @click="submit">
-          {{ loading ? '正在生成方案…' : '生成我的转专业补修方案' }}
+          {{ loading ? '正在规划你的学业路径…' : '生成并优化我的转专业学业方案' }}
         </button>
         <p>系统仅提供规划建议，不执行实际选课操作。</p>
       </div>
@@ -410,6 +471,30 @@ onMounted(loadOfferings)
           <MakeupTaskList :tasks="result.makeup_tasks" />
         </SectionCard>
 
+        <SectionCard :mock="false" title="本学期推荐课表" subtitle="按真实教学班绘制；这是 Planner 的建议，不代表已经选上课。">
+          <WeeklyScheduleView
+            :plan-result="result.plan_result"
+            :offerings="result.course_offerings"
+            :current-schedule="form.currentSchedule"
+            :makeup-tasks="result.makeup_tasks"
+            :preferred-courses="preferredCourses"
+          />
+        </SectionCard>
+
+        <SectionCard :mock="false" title="待你确认的调整" subtitle="系统只提出建议；确认后才会生效。">
+          <PendingAdjustments :plan-result="result.plan_result" :course-name-by-id="resultCourseNames" />
+        </SectionCard>
+
+        <!-- 未来学期：只有后端真的返回 roadmap 时才渲染（⛔ 不补假数据） -->
+        <SectionCard
+          v-if="result.roadmap && result.roadmap.semesters.length > 0"
+          :mock="false"
+          title="未来学期修读路径"
+          subtitle="课程级规划，不含具体教学班。"
+        >
+          <FutureRoadmapView :roadmap="result.roadmap" />
+        </SectionCard>
+
         <SectionCard :mock="false" title="本次规划数据">
           <div class="case-a-coverage" data-testid="case-a-coverage-summary">
             <div><strong>{{ result.transcript.record_count }}</strong><span>成绩单课程</span></div>
@@ -422,7 +507,7 @@ onMounted(loadOfferings)
           </p>
         </SectionCard>
 
-        <SectionCard :mock="false" title="排课偏好">
+        <SectionCard :mock="false" title="我的选课需求">
           <PreferencePanel :preference="result.preference" :course-name-by-id="resultCourseNames" />
         </SectionCard>
 
@@ -738,6 +823,43 @@ onMounted(loadOfferings)
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.case-a-needs {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.case-a-explainer {
+  padding: 20px 24px;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-lg);
+  background: #f2f7ff;
+}
+
+.case-a-explainer__title {
+  margin: 0 0 12px;
+  font-size: 17px;
+  color: #1e40af;
+}
+
+.case-a-explainer__list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: #1e293b;
+  line-height: 1.7;
+}
+
+.case-a-explainer__note {
+  margin: 12px 0 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 .case-a-submit {

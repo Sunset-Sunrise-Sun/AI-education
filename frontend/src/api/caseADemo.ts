@@ -1,5 +1,11 @@
 import { CASE_A_DEMO_OFFERINGS_ENDPOINT, CASE_A_DEMO_PLAN_ENDPOINT } from '../config'
-import type { CourseOffering, MakeupTask, PlanResult, Preference } from '../types/contracts'
+import type {
+  CourseOffering,
+  FutureRoadmap,
+  MakeupTask,
+  PlanResult,
+  Preference,
+} from '../types/contracts'
 
 export interface CaseADemoResponse {
   transcript: {
@@ -22,6 +28,13 @@ export interface CaseADemoResponse {
     planner: string
     is_full_semester: boolean
   }
+  /**
+   * 未来学期修读路径（**可选**）。
+   *
+   * ⚠️ 后端当前**不返回**该字段。前端只在它真的存在且含学期数据时渲染，
+   * ⛔ 缺省时整块不渲染、⛔ 不补任何假数据。
+   */
+  roadmap?: FutureRoadmap | null
 }
 
 async function checkedJson<T>(response: Response): Promise<T> {
