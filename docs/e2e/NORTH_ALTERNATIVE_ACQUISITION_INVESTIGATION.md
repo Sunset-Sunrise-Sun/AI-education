@@ -291,3 +291,75 @@ HTTP 600 仍**不得称为限流**。
 这两次请求的目的仅是判断 **pageSize=150 的 transport 可行性**，不是正式采集，也不能单独解除 North suspension。
 
 若不愿继续对真实系统做任何诊断，则直接采用 Option C。
+
+
+## 11. Round 2 diagnostic result and final decision
+
+The Architecture Lead-approved bounded pageSize=150 diagnostic has now been completed.
+
+Observed:
+
+| request | offset | result |
+|---|---:|---|
+| pageSize=150, pageNo=2 | 150 | HTTP 200 / code 200 / total 405 |
+| pageSize=150, pageNo=3 | 300 | HTTP 600 / code 50015000 / 系统异常 |
+
+Combined with the prior evidence:
+
+- pageSize=200, pageNo=2, offset 200 -> repeated HTTP 600 / code 50015000;
+- pageSize=150, pageNo=2, offset 150 -> success;
+- pageSize=150, pageNo=3, offset 300 -> HTTP 600 / code 50015000.
+
+### 11.1 Hypothesis update
+
+- H1 (`pageNo >= 2` always fails): **contradicted** by pageSize=150/pageNo=2 success.
+- H2 (North failure is driven by reaching a higher result-window/offset region around >=200): **strongly supported**, but not proven for every possible offset value.
+- H3 (pageSize=200/pageNo=2 specifically fails): still supported, but no longer the best explanatory model because pageSize=150/pageNo=3 also fails.
+- H4 (server-side filtered result-window/pagination defect): remains plausible but unproven.
+- H5 (request-budget/session effect): not supported by the bounded fresh-session evidence.
+
+No evidence supports calling this rate limiting.
+
+### 11.2 pageSize workaround decision
+
+**REJECTED.**
+
+The purpose of the p=150 diagnostic was to determine whether changing page size could provide a low-request path to complete all 405 North rows.
+
+It cannot:
+
+- offset 150 is reachable;
+- offset 300 is not;
+- therefore the three-page p=150 plan cannot complete;
+- p=135 would also require an offset 270 request and has no evidence of success;
+- any page-size-only strategy still needs to cross the same higher-offset region to retrieve all 405 rows.
+
+Accordingly, there is no justified reason for further live page-size probing.
+
+### 11.3 Final architecture decision
+
+Adopt **Option C — external-system blocker** for the current project state.
+
+Do not:
+
+- retry North blindly;
+- lower pageSize further as a completeness strategy;
+- skip North;
+- synthesize North;
+- infer missing rows;
+- weaken full-semester acceptance;
+- implement courseNumber partitioning without an independently complete North inventory.
+
+North remains `suspended`.
+
+`READY FOR USER REAL CAPTURE` remains **NO**.
+
+Formal Real E2E remains **LEVEL 0**.
+
+Future reopening conditions are limited to one of:
+
+1. the existing North filtered pagination path is demonstrably restored;
+2. the school exposes a legitimate complete bulk/export acquisition path;
+3. an independently complete, auditable North inventory becomes available and a new partition acceptance design passes Architecture Review.
+
+Until one of these occurs, no further network diagnostics are recommended.
