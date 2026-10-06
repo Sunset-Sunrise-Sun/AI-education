@@ -1,4 +1,4 @@
-"""Focused provider gate for ef910e3 or newer. No Runtime/E2E execution here.
+"""Focused provider gate for ec8ab6f or newer. No Runtime/E2E execution here.
 
 Uses our independently generated five-shard inputs from the prior reviewer helper.
 Every acceptance import now supplies the real generated canonical manifest.
@@ -121,25 +121,34 @@ def test_explicit_read_transaction_and_concurrent_epoch(dataset, monkeypatch, mu
     writer_done = threading.Event()
     read_finished = threading.Event()
     states, reader_results, reader_errors, writer_errors = [], [], [], []
-    real_open = store._open_store
-    real_manifest_validation = store._require_manifest_trust_chain
+    validation_states, boundary_states, sql_events = [], [], []
+    read_helper_name = "_open_read_snapshot" if hasattr(store, "_open_read_snapshot") else "_open_store"
+    real_open = getattr(store, read_helper_name)
+    active = threading.local()
 
     @contextmanager
     def instrumented_open(*args, **kwargs):
         with real_open(*args, **kwargs) as connection:
+            active.connection = connection
+            boundary_states.append(connection.in_transaction)
             def trace(sql):
-                if "FROM course_data_acceptance " in sql and sql.lstrip().startswith("SELECT"):
+                sql_events.append(" ".join(sql.split()))
+                if sql.lstrip().startswith("SELECT") and "FROM course" in sql:
                     states.append(connection.in_transaction)
+                if "FROM course_data_acceptance_member WHERE" in sql and sql.lstrip().startswith("SELECT"):
+                    reader_paused.set()
+                    if not writer_done.wait(5):
+                        writer_errors.append(AssertionError("writer did not commit/finish"))
             connection.set_trace_callback(trace)
             yield connection
 
-    def pause_after_acceptance_read(*args, **kwargs):
-        reader_paused.set()
-        assert writer_done.wait(5), "writer did not commit/finish"
-        return real_manifest_validation(*args, **kwargs)
-
-    monkeypatch.setattr(store, "_open_store", instrumented_open)
-    monkeypatch.setattr(store, "_require_manifest_trust_chain", pause_after_acceptance_read)
+    monkeypatch.setattr(store, read_helper_name, instrumented_open)
+    for validation_name in ("_require_manifest_trust_chain", "offering_payload_sha256", "offering_set_sha256"):
+        original_validation = getattr(store, validation_name)
+        def observe_validation(*args, _original=original_validation, **kwargs):
+            validation_states.append(active.connection.in_transaction)
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(store, validation_name, observe_validation)
 
     def reader():
         try:
@@ -176,6 +185,9 @@ def test_explicit_read_transaction_and_concurrent_epoch(dataset, monkeypatch, mu
         assert reader_results == [original]
     else:
         assert len(reader_errors) == 1 and isinstance(reader_errors[0], CourseDataAcceptanceError)
-    assert states and all(states), (
+    assert boundary_states == [True] and states and all(states) and validation_states and all(validation_states), (
         f"authoritative SELECT did not start in explicit transaction: states={states}; "
         f"outcome={'epoch A' if reader_results else 'fail closed'}; writer committed {mutation}")
+    assert sql_events[-1] == "ROLLBACK", sql_events
+    print(f"WAL {mutation}: writer committed; reader={'epoch A' if reader_results else 'typed refusal'}; "
+          f"authoritative SELECTs active={states}; all validations active={all(validation_states)}; ROLLBACK")

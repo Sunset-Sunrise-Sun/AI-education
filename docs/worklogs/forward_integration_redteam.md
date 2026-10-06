@@ -50,3 +50,17 @@ authoritative SELECT全部in_transaction=False，R-SNAPSHOT BLOCK。Reader结果
 没有混合payload泄露的夸大声明。Existing Store/Provider 163 passed。
 按用户gate依赖未执行新版Runtime/E2E，不跑full backend/frontend。精确BLOCK评论文本与
 修复要求保存在FOCUSED_PROVIDER_REVIEW.md。没有production/Schema/protocol/Builder code修改或merge。
+
+## Latest HEAD closure update
+
+fetch并确认ec8ab6f/eb135a8/6fa155c及acceptance831c0e3。按阶段顺序，独立Provider27passed；
+adapted instrumentation跟随新的_open_read_snapshot，会员查询前Event暂停，真实WAL writer
+commit acceptance deletion/row replacement/member mutation。Reader三例均A，4个authoritative
+SELECT以及所有manifest/payload/set验证txn active，结束ROLLBACK。Snapshot suite8passed，
+Store/Provider163passed：R-CONTENT/R-SNAPSHOT/PROVIDER GATE PASS。
+
+再进入Runtime eb135a8；独立14passed/1failed，API targeted65passed。负例数据门禁503和
+stale非成员不进实际Planner均通过；无关construction ValueError被factory广泛catch吞为503，
+违反用户内部程序错误非503要求。R-ERROR-CLASSIFICATION BLOCK，exact reproduction/comment
+保存LATEST_CLOSURE_REVIEW.md。未进入Phase3新E2E；不运行allGatesPASS前提下的finalfullbackend/
+compileall/前端回归。只有reviewer docs/tests修改，无production或merge。

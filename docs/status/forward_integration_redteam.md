@@ -53,3 +53,14 @@ Provider ef910e3fd3c68b10d9d9ed42a39698f5e8a21f36；Runtime a67ba96；E2E f8675e
 - 独立 probes 24 passed / 3 failed；existing Store/Provider suite 163 passed。
 - Provider BLOCK；按用户 phase 顺序，本轮新 Runtime/E2E 未执行，dependency gate BLOCK。
 - 不接受旧 suite PASS 替代本次 transaction gate；不 merge、不改 Builder code。
+
+## Latest closure — ec8ab6f / eb135a8 / 6fa155c
+
+新结论优先于以上旧HEAD记录：`reviewer/full_semester/LATEST_CLOSURE_REVIEW.md`。
+- Provider ec8ab6f：R-CONTENT PASS、R-SNAPSHOT PASS、STORE TRUST CHAIN / PROVIDER GATE PASS。
+  独立27 passed；snapshot8 passed；Store/Provider163 passed。WAL三变体Reader均完整epochA，
+  authoritative SELECT/digest验证全程active，最后ROLLBACK。
+- Runtime eb135a8：BLOCK R-ERROR-CLASSIFICATION。所有数据门禁503/stale隔离通过，
+  但construction无关ValueError被宽泛catch转503，期望500。独立14passed/1failed；targeted65passed。
+- E2E6fa155c：已fetch，因Runtime未PASS本轮未执行。Full backend/compileall条件不成立未运行。
+- Provider branch可进入其Gate PR review；Runtime/E2E没有完整PASS。未merge、未改production。
