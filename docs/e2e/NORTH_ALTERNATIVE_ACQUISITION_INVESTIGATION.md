@@ -11,8 +11,7 @@
 F1  North 过滤分页（openingSchoolNumber=5062202, pageSize=200, pageNo=2）
     在**同一已授权会话内两次**返回 HTTP 600 / 业务码 50015000    ← PR #49 O2 + O3
 F2  ⛔ 这不是限流证据：没有 429、没有 Retry-After、没有服务端说明   ← PR #49 明示
-F3  North **第 1 页从未被请求过**：诊断脚本把 baseline 第 1 页当成等价物，
-    而两者**不等价**（baseline 不带 openingSchoolNumber）        ← PR #49「Important diagnostic note」
+F3  Fresh-session follow-up 已补齐 North page 1：pageSize=200,pageNo=1 → HTTP 200/code 200/total=405；\n    同一新会话随后 pageNo=2 → HTTP 600/code 50015000。North 当前应归类为\n    **第一页可用、pageSize=200 时 page 2 阻塞**。                    ← PR #49 fresh-session follow-up
 F4  历史（**未过滤**）深分页：offset ≥ 6500 稳定 600，且与 pageSize 无关
     （pageSize=100/pageNo=66 与 pageSize=50/pageNo=131 同为 offset 6500 → 600） ← course_data.md:1032-1043
 F5  人工实测的 pacing 包络：pageSize=50 + 30 s 间隔，**连续 7 次成功后第 8 次**出现 600
@@ -157,14 +156,7 @@ pageSize workaround 变体  C6 ❌（§2.3）
 ## 7. 推荐路径（§8，按优先级）
 
 ```text
-P0（先做，最小、且**已在已批准计划内**）：
-   在新的已授权会话里，**首先**只请求 **North 第 1 页一次**
-   （`openingSchoolNumber=5062202`, `pageNo=1`, `pageSize=200`），
-   记录 §2 的安全元数据；然后按已批准计划的 O3/O4 预算继续（≤6 次、间隔 ≥30 s）。
-   目的：补上 PR #49 明示的缺口（North page 1 从未被请求），判定 600 是
-   "North 过滤查询整体不可用" 还是 "从 offset 200 起不可用"。
-   ⛔ 这不是"反复盲探"：它是一次**有明确判据**的、计划内的一次观测。
-
+P0（已完成）：fresh-session North page 1/page 2 定点诊断已补齐。\n   结果：page 1 = 200/200/total 405；page 2 = 600/50015000。\n   因此旧的“page 1 是否可用”缺口已经关闭；North 仍 suspended。\n
 P1（若 P0 显示 North page 1 可用、page 2 仍 600）：
    把 North 判定为**外部系统阻塞**（preference #4）：
    ⛔ 不跳过 North、⛔ 不合成、⛔ 不推断完整性、⛔ 不放宽验收规则；
@@ -186,7 +178,7 @@ P2（架构层面的唯一备选，需要 Architecture Decision，⛔ 不得先�
 ```text
 R1  PR #49 未记录"O1 之前该会话是否已有请求" ⇒ 无法完全排除"会话已被预热"这一解释
     （但即便如此，F5/F6 的 7-请求包络与"第 2 个请求即失败"仍不一致）
-R2  North 第 1 页从未被请求（F3 缺口）⇒ "North 过滤查询整体 vs 仅 page≥2 失败"未判定
+R2  已由 fresh-session 证据关闭：North page 1 可用，而 pageSize=200 的 page 2 阻塞
 R3  North 历史 total（405）**只作参考**（⛔ 不写进 production 逻辑）⇒ 失败边界(offset 200)
     与 405 的关系只能作为**线索**，不能作为判定依据
 R4  四个其它校区标为"可采集"是**运营状态**陈述（REAL_CAPTURE_OPERATION_PACK §B），
@@ -202,3 +194,100 @@ R6  任何"用未过滤流 + 响应字段切校区"的做法都会引入未批�
 ⛔ 未新增采集路径；B 类方案只是**待裁定的设计提案**，实现前必须 Architecture Review。
 ⛔ 本轮未访问真实学校网络、未发请求、未使用/记录任何凭据。
 ```
+
+
+## 10. Round 2：基于 fresh-session `total=405` 的低请求量架构分析
+
+### 10.1 pageSize 数学
+
+当次 North page 1 观测得到 `total=405`。这只是当前观测值，**不得写死进 production 逻辑**。
+
+若页大小为 `p <= 200`，则需要 `ceil(405/p)` 页，各页 offset 为：
+
+`0, p, 2p, ...`
+
+代表性情况：
+
+| pageSize | 页数 | offsets | 是否包含 offset=200 |
+|---:|---:|---|---|
+| 200 | 3 | 0, 200, 400 | 是 |
+| 150 | 3 | 0, 150, 300 | 否 |
+| 135 | 3 | 0, 135, 270 | 否 |
+| 101 | 5 | 0, 101, 202, 303, 404 | 否 |
+| 100 | 5 | 0, 100, 200, 300, 400 | 是 |
+| 50 | 9 | 0, 50, ..., 400 | 是 |
+
+两个需要区分的模型：
+
+- **M1：offset >= 200 都失败。** 若此模型成立，则任何 `p <= 200` 都无法覆盖 405 行。原因是所有允许的成功起始 offset 若都必须小于 200，则最多无法覆盖到完整的第 405 行。
+- **M2：只有特定 offset（例如 200）失败，而更高 offset 并非一律失败。** 若此模型成立，则 `p=135` 或 `p=150` 在数学上存在 3 页完整平铺的可能。
+
+重要：**改变 pageSize 只是 transport hypothesis，不是完整性证明。**
+
+### 10.2 H1–H5
+
+| 假设 | 当前结论 | 证据 |
+|---|---|---|
+| H1：North 的 pageNo >= 2 都失败 | 未判定 | pageSize=200 的 page 2 多次失败；尚无其它 pageSize 的 North page 2 证据 |
+| H2：North 的 offset >= 200 都失败 | 未判定 | 与 pageSize=200/page2 失败一致；尚无 North offset<200 的 page2 与 offset>200 的非200页长证据 |
+| H3：North + pageSize=200 的 page 2 路径失败 | **supported** | 两个会话、三次一致的 HTTP 600/code 50015000 |
+| H4：服务端结果窗口/分页实现缺陷 | unknown | 与观测相容，但无直接实现证据 |
+| H5：请求预算/会话效应导致本次失败 | 当前证据不支持 | fresh session 中第二个定点请求即失败；无 429/Retry-After |
+
+HTTP 600 仍**不得称为限流**。
+
+### 10.3 一个需要纠正的推理点
+
+单独请求 `pageSize=150,pageNo=2`（offset 150）只能区分：
+
+- 若返回 600：支持 H1（或其它 pageNo=2 特定问题），pageSize workaround 应停止；
+- 若返回 200：否证 H1，但 **H2 与 M2 都仍可能成立**。
+
+因此，**一次 offset=150 观测不足以证明 3 页平铺可行**。
+
+若且仅若 offset 150 成功，第二个高信息增益观测应是：
+
+`pageSize=150,pageNo=3`（offset 300）
+
+- offset 300 返回 600：与 H2 一致，pageSize-only 方案失败；
+- offset 300 返回 200，且 total 仍为 405、返回行数符合最后一页预期：H2 被否证，M2/其它“非单调失败”模型仍可能；此时才值得进入“3 页受控完整 capture”设计评审。
+
+这仍然只是 transport 可行性证据；正式 acceptance 仍必须满足稳定 baseline、每页/每 shard 完整性、raw digest/inventory 绑定和 canonical identity 对账。
+
+### 10.4 最多三个架构选项
+
+#### Option A — 两步判别，再决定是否允许 3 页 North capture
+
+- **机制**：先做 `p=150,pageNo=2`；仅成功时再做 `p=150,pageNo=3`。
+- **诊断请求数**：最多 2。
+- **若两次均成功**：再单独 Architecture Review 是否允许一次 `p=150` 的 3 页 North capture。
+- **完整性要求**：正式 capture 必须重新从 page 1 开始，三页 total 一致，行数应为 150/150/105（仅针对当次 total 仍为405时），合并唯一 identity 数量等于当次稳定 total；不得把 405 写死。
+- **信任模型**：Store/acceptance 语义不需要改变；但 collector 的 pageSize=200 锁定需要一个显式、最小的 transport 变更评审。
+- **分类**：A 候选，但只有在两步诊断都通过后才进入实现评审。
+
+#### Option B — courseNumber 分区
+
+- 当前仍不可用：没有独立、可审计、穷尽的 North 课程号清单。
+- 请求数预计数百级，违反保守请求预算。
+- **分类**：B 设计候选，但当前拒绝落地。
+
+#### Option C — 外部系统 blocker
+
+- 不再进行网络测试。
+- 保持 North suspended；不产出真实 full-semester acceptance。
+- **分类**：STOP。
+
+### 10.5 Architecture Lead 决策
+
+批准 **Option A 的最多两次定点诊断**，但仅限人工已授权会话，且不修改生产 collector：
+
+1. 请求 `openingSchoolNumber=5062202, pageSize=150, pageNo=2`。
+2. 若且仅若第 1 次返回 HTTP 200/code 200，等待至少 30 秒，再请求 `pageNo=3`。
+3. 任一请求出现 600/401/403/429/超时/异常认证行为，立即停止。
+4. 不并发、不自动轮询、不重试。
+5. 只记录安全元数据：时间、semester、openingSchoolNumber、pageSize、pageNo、HTTP、code、total、rows count。
+6. 不记录 Cookie、Set-Cookie、Authorization、token、完整响应体或个人信息。
+
+这两次请求的目的仅是判断 **pageSize=150 的 transport 可行性**，不是正式采集，也不能单独解除 North suspension。
+
+若不愿继续对真实系统做任何诊断，则直接采用 Option C。
