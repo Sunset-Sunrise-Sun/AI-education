@@ -898,23 +898,25 @@ describe('MakeupTaskList 交互细节', () => {
       },
     })
     expect(wrapper.find('[data-testid="makeup-confirm-CSE101"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="makeup-defer-CSE101"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="makeup-action-region-CSE101"]').findAll('button')).toHaveLength(1)
+    expect(wrapper.find('[data-testid="makeup-defer-CSE101"]').exists()).toBe(false)
     // 已满足项没有操作按钮
     expect(wrapper.find('[data-testid="makeup-confirm-MAR103"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="makeup-defer-MAR103"]').exists()).toBe(false)
   })
 
-  it('「暂不确认」是本地视图状态，撤销后回到待确认', async () => {
+  it('确认成功后同一按钮变为已确认，并可再次点击撤销', async () => {
     const wrapper = mount(MakeupTaskList, {
       props: { tasks: makeupTasks() as never, confirmedKeys: [], disclosure: DISCLOSURE },
     })
-    await wrapper.get('[data-testid="makeup-defer-CSE101"]').trigger('click')
-    expect(wrapper.get('[data-testid="makeup-deferred-CSE101"]').text()).toContain('暂不确认')
-    // ⛔ 暂不确认不提交任何请求
-    expect(wrapper.emitted('confirm')).toBeUndefined()
-    await wrapper.get('[data-testid="makeup-undefer-CSE101"]').trigger('click')
-    expect(wrapper.find('[data-testid="makeup-deferred-CSE101"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="makeup-confirm-CSE101"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="makeup-confirm-CSE101"]').trigger('click')
+    expect(wrapper.emitted('confirm')?.[0]?.[0]).toEqual({ courseIds: ['CSE101'] })
+    await wrapper.setProps({ confirmedKeys: ['CSE101'] })
+    const confirmed = wrapper.get('[data-testid="makeup-action-region-CSE101"] button')
+    expect(confirmed.text()).toContain('已确认')
+    expect(confirmed.attributes('aria-pressed')).toBe('true')
+    await confirmed.trigger('click')
+    expect(wrapper.emitted('undo')?.[0]?.[0]).toEqual({ courseId: 'CSE101' })
   })
 
   it('单项确认发出"完整期望状态"（已有确认 + 本项）', async () => {

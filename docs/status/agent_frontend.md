@@ -1,5 +1,15 @@
 # Agent / Frontend 当前状态
 
+> 最后更新：Final UX Micro Polish（**已实现，REVIEW_READY**）
+> - 补修认定表每行左侧改为单一 toggle 主按钮：`确认可转换` → 服务端接受后 `✓ 已确认`；
+>   同一按钮可撤销，移除并列的「暂不确认」主操作；点击期间只显示该行处理中。
+> - 补修表改用固定 7 列 `colgroup`，恢复 `td` 的 table-cell 布局，并以整行边框统一分隔线；
+>   行高、列宽与左右边界一致。
+> - 专业选修候选卡以绿色描边/底色/左侧状态条和 `✓ 已加入，可撤销` 明确区分状态；
+>   成功态仍只取服务端 recompute 结果，失败恢复最近一次服务端已接受状态并显示错误。
+> - 仅改 frontend 与前端测试；未改 backend、`schemas/`、`docs/interfaces/`、Provider / Planner 协议。
+> - 验证：focused **51/51**；frontend full **341/341**；typecheck、build 均通过。
+
 > 最后更新：Case A 学业路径规划集成（**已实现，待 Architecture Review**）
 > 前端已接上真实后端数据，不再只是展示壳：
 > - `PendingAdjustments.vue` 展示后端返回的**结构化换班建议**

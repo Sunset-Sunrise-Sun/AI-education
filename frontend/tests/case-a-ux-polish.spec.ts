@@ -4,7 +4,7 @@
  * 覆盖本轮 7 项产品要求的**可验证部分**（⛔ 不做纯样式断言）：
  *
  * 1. 中间重复的「待确认事项」大块已移除；页面底部**只有一处**统一提醒区；
- * 2. 补修「待人工确认」逐条可操作（确认可转换 / 暂不确认 / 撤销确认）+ 三项披露；
+ * 2. 补修「待人工确认」逐条只有一个 toggle 主操作（确认 / 已确认可撤销）+ 三项披露；
  * 3. 专业选修可加入/撤销，且**数据库选修可达**（不再被显示上限静默藏掉）；
  * 4. 交互后是**局部**更新体验（按模块 pending + 轻量反馈）；
  * 5. 标签色/层级由 global CSS 统一（此处只断言结构化标签存在）；
@@ -262,19 +262,25 @@ describe('1. 冗余提醒块已收口', () => {
 })
 
 describe('2. 补修「待人工确认」逐条可操作', () => {
-  it('每个待确认项都有：课程名 + 课程号 + 确认/暂不确认', async () => {
+  it('每个待确认项都有课程身份，且左侧只有一个“确认可转换”主按钮', async () => {
     const wrapper = await mountPage()
     const row = wrapper.get('[data-testid="makeup-row-CSE101"]')
     // 课程名优先，课程号次级；⛔ 不是匿名"需要你确认"卡片
     expect(row.text()).toContain('程序设计I')
     expect(row.text()).toContain('CSE101')
     expect(row.text()).not.toContain('需要你确认')
-    expect(wrapper.find('[data-testid="makeup-confirm-CSE101"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="makeup-defer-CSE101"]').exists()).toBe(true)
+    const action = wrapper.get('[data-testid="makeup-action-region-CSE101"]')
+    expect(action.findAll('button')).toHaveLength(1)
+    expect(action.get('[data-testid="makeup-confirm-CSE101"]').text()).toBe('确认可转换')
+    expect(wrapper.find('[data-testid="makeup-defer-CSE101"]').exists()).toBe(false)
+    expect(action.text()).not.toContain('暂不确认')
   })
 
-  it('「确认可转换」触发局部更新并显示局部反馈', async () => {
+  it('「确认可转换」成功后同一个主按钮变为明显的“已确认”toggle', async () => {
     const wrapper = await mountPage()
+    runCaseADemo.mockResolvedValueOnce(
+      planResponse({ applied_manual_confirmations: ['CSE101'] }),
+    )
     await wrapper.get('[data-testid="makeup-confirm-CSE101"]').trigger('click')
     await flushPromises()
     expect(runCaseADemo).toHaveBeenCalled()
@@ -282,8 +288,25 @@ describe('2. 补修「待人工确认」逐条可操作', () => {
       override?: { userConfirmedManualTaskKeys: string[] }
     }
     expect(body.override?.userConfirmedManualTaskKeys).toEqual(['CSE101'])
+    const action = wrapper.get('[data-testid="makeup-action-region-CSE101"]')
+    const confirmed = action.get('[data-testid="makeup-undo-CSE101"]')
+    expect(action.findAll('button')).toHaveLength(1)
+    expect(confirmed.text()).toContain('已确认')
+    expect(confirmed.classes()).toContain('makeup-confirm-toggle--confirmed')
+    expect(confirmed.attributes('aria-pressed')).toBe('true')
     // 模块内轻量反馈（⛔ 不是整页提示）
     expect(wrapper.get('[data-testid="case-a-makeup-notice"]').text()).toContain('已根据你的确认')
+  })
+
+  it('表格使用固定 7 列与单操作区结构，行分隔不再由 flex td 拼接', async () => {
+    const wrapper = await mountPage()
+    const table = wrapper.get('[data-testid="makeup-task-table"]')
+    expect(table.classes()).toContain('makeup-task-table')
+    expect(table.findAll('col.makeup-col')).toHaveLength(7)
+    const row = wrapper.get('[data-testid="makeup-row-CSE101"]')
+    expect(row.findAll(':scope > td')).toHaveLength(7)
+    expect(row.get('td.makeup-actions-cell').find('.makeup-action-region').exists()).toBe(true)
+    expect(row.get('td.makeup-actions-cell').classes()).not.toContain('makeup-action-region')
   })
 
   it('披露同时说明：仅用于本次规划 / 非官方认定 / 不改教务系统', async () => {
@@ -355,17 +378,48 @@ describe('3. 专业选修交互 + 数据库选修可达', () => {
     expect(cards.map((c) => c.text()).join(' ')).toContain('数据库系统实验')
   })
 
-  it('加入后显示已加入 + 撤销，并触发局部更新', async () => {
+  it('加入后候选卡变为清晰的已加入 toggle，并触发局部更新', async () => {
     const wrapper = await mountPage()
+    runCaseADemo.mockResolvedValueOnce(
+      planResponse({
+        applied_elective_sections: [
+          { course_id: 'CSE317', course_name: '通信原理', class_id: '01', credit: 3 },
+        ],
+      }),
+    )
     await wrapper.get('[data-testid="elective-add-CSE317"]').trigger('click')
     await flushPromises()
     const body = runCaseADemo.mock.calls.at(-1)?.[0] as {
       override?: { electiveSelections: { course_id: string }[] }
     }
     expect(body.override?.electiveSelections?.[0]?.course_id).toBe('CSE317')
+    const card = wrapper
+      .findAll('[data-testid="case-a-elective-item"]')
+      .find((candidate) => candidate.text().includes('CSE317'))
+    expect(card).toBeDefined()
+    expect(card?.classes()).toContain('elective__item--selected')
+    const toggle = wrapper.get('[data-testid="elective-add-CSE317"]')
+    expect(toggle.text()).toContain('已加入，可撤销')
+    expect(toggle.classes()).toContain('elective__toggle--applied')
+    expect(toggle.attributes('aria-pressed')).toBe('true')
     expect(wrapper.get('[data-testid="case-a-elective-notice"]').text()).toContain(
       '已根据你的选修选择',
     )
+  })
+
+  it('加入失败时恢复未加入状态并显示失败反馈', async () => {
+    const wrapper = await mountPage()
+    runCaseADemo.mockRejectedValueOnce(new Error('选修加入失败，请重试。'))
+
+    await wrapper.get('[data-testid="elective-add-CSE317"]').trigger('click')
+    await flushPromises()
+
+    const button = wrapper.get('[data-testid="elective-add-CSE317"]')
+    expect(button.text()).toBe('加入本学期方案')
+    expect(button.classes()).not.toContain('elective__toggle--applied')
+    expect(button.attributes('aria-pressed')).toBe('false')
+    expect(wrapper.get('[role="alert"]').text()).toContain('选修加入失败，请重试。')
+    expect(wrapper.find('[data-testid="elective-applied"]').exists()).toBe(false)
   })
 })
 

@@ -1925,3 +1925,19 @@
   （属接口面变更，本 Gate 未擅自扩 API）。
 - 下一步：Gate F（XLSX backend pipeline）。
 
+### 2026-10-07 - Final UX Micro Polish（单一补修操作 + 选修状态反馈）
+
+- 分支：`fix/final-ux-micro-polish`；base：`695834a45905166321422eeeef0d8f46c83add0d`。
+- 补修认定：移除每行并列的「暂不确认」，使用单一 toggle 主按钮；未确认显示
+  `确认可转换`，服务端接受后显示 `✓ 已确认`，再次点击撤销。保留规划限定披露，
+  不把用户确认冒充为官方认定。
+- 表格对齐：增加固定 7 列 `colgroup` 与单操作区结构；`td` 保持 table-cell，
+  分隔线改由完整行统一绘制，统一 72px 行高与列宽。
+- 选修状态：候选卡在服务端接受后显示绿色已加入态与 `✓ 已加入，可撤销` toggle；
+  pending 局部反馈保留，失败时本地意图回滚到最近一次服务端已接受状态并显示错误。
+- 测试：更新真实渲染测试，锁住单按钮、确认/撤销、固定列结构、选修加入/撤销、
+  失败不假装成功与局部 pending。
+- 验证：focused `51/51`；`npm test` `341/341`；`npm run typecheck` 通过；
+  `npm run build` 通过。
+- 边界：未改 backend、公共 Schema / Interface、Provider / Planner 协议；未新增虚构数据。
+

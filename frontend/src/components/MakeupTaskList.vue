@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { MakeupStatus, MakeupTask } from '../types/contracts'
 import type { PlanningOnlyDisclosure } from '../api/caseADemo'
 import {
@@ -45,13 +45,15 @@ const emit = defineEmits<{
 
 const activeFilter = ref<'all' | MakeupStatus>('all')
 const evidenceOpen = ref<Set<string>>(new Set())
-/**
- * 用户点了「暂不确认」的课程号（**纯本地视图状态**）。
- *
- * ⛔ 不提交给服务端：它只是"本次先放着"的界面标记，
- *    撤销后回到"待人工确认"，不改变任何来源事实。
- */
-const deferred = ref<Set<string>>(new Set())
+/** 当前正在提交的单行操作，只用于即时 pending 文案。 */
+const activeCourseId = ref<string | null>(null)
+
+watch(
+  () => props.pending,
+  (pending, wasPending) => {
+    if (wasPending && !pending) activeCourseId.value = null
+  },
+)
 
 const DEFAULT_DISCLOSURE: PlanningOnlyDisclosure = {
   basis: '基于你的确认',
@@ -91,8 +93,6 @@ const selectableTasks = computed(() =>
 interface Row {
   task: MakeupTask
   confirmedByUser: boolean
-  /** 用户点了"暂不确认"（纯本地视图状态）。 */
-  deferred: boolean
   displayStatus: MakeupStatus
 }
 
@@ -102,7 +102,6 @@ const rows = computed<Row[]>(() =>
     return {
       task,
       confirmedByUser,
-      deferred: deferred.value.has(task.course_id),
       displayStatus: confirmedByUser ? 'satisfied' : task.status,
     }
   }),
@@ -125,18 +124,6 @@ const displayStats = computed(() => {
   return counts
 })
 
-function defer(courseId: string): void {
-  const next = new Set(deferred.value)
-  next.add(courseId)
-  deferred.value = next
-}
-
-function undoDefer(courseId: string): void {
-  const next = new Set(deferred.value)
-  next.delete(courseId)
-  deferred.value = next
-}
-
 function toggleEvidence(courseId: string): void {
   const next = new Set(evidenceOpen.value)
   if (next.has(courseId)) next.delete(courseId)
@@ -151,13 +138,26 @@ function toggleEvidence(courseId: string): void {
  * ⛔ 提交后不本地改状态：结论等服务端 recompute 返回。
  */
 function confirmOne(courseId: string): void {
-  undoDefer(courseId)
+  activeCourseId.value = courseId
   emit('confirm', { courseIds: [...new Set([...props.confirmedKeys, courseId])].sort() })
 }
 
 /** 单项撤销（"撤销确认"）：从完整期望状态里移除本项。 */
 function undoOne(courseId: string): void {
+  activeCourseId.value = courseId
   emit('undo', { courseId })
+}
+
+function toggleConfirmation(row: Row): void {
+  if (row.confirmedByUser) undoOne(row.task.course_id)
+  else confirmOne(row.task.course_id)
+}
+
+function confirmationLabel(row: Row): string {
+  if (props.pending && activeCourseId.value === row.task.course_id) {
+    return row.confirmedByUser ? '正在撤销…' : '确认中…'
+  }
+  return row.confirmedByUser ? '✓ 已确认' : '确认可转换'
 }
 </script>
 
@@ -258,16 +258,25 @@ function undoOne(courseId: string): void {
       </ul>
     </div>
 
-    <div class="table-wrap">
-      <table class="table">
+    <div class="table-wrap makeup-table-wrap">
+      <table class="table makeup-task-table" data-testid="makeup-task-table">
+        <colgroup>
+          <col class="makeup-col makeup-col--action" />
+          <col class="makeup-col makeup-col--course" />
+          <col class="makeup-col makeup-col--credit" />
+          <col class="makeup-col makeup-col--status" />
+          <col class="makeup-col makeup-col--semester" />
+          <col class="makeup-col makeup-col--prerequisite" />
+          <col class="makeup-col makeup-col--reason" />
+        </colgroup>
         <thead>
           <tr>
-            <th scope="col" style="width: 190px;">本次规划操作</th>
-            <th scope="col" style="width: 220px;">课程名称与编号</th>
-            <th scope="col" style="width: 70px;">学分</th>
-            <th scope="col" style="width: 190px;">判定状态</th>
-            <th scope="col" style="width: 130px;">学期建议</th>
-            <th scope="col" style="width: 120px;">先修依赖</th>
+            <th scope="col">本次规划操作</th>
+            <th scope="col">课程名称与编号</th>
+            <th scope="col">学分</th>
+            <th scope="col">判定状态</th>
+            <th scope="col">学期建议</th>
+            <th scope="col">先修依赖</th>
             <th scope="col">认定说明与证据</th>
           </tr>
         </thead>
@@ -279,53 +288,27 @@ function undoOne(courseId: string): void {
             :data-testid="`makeup-row-${row.task.course_id}`"
           >
             <td class="makeup-actions-cell">
-              <!-- 待人工确认：逐条给出可操作按钮（⛔ 不是只读展示） -->
-              <template v-if="row.task.status === 'manual_confirmation' && !row.confirmedByUser">
-                <template v-if="row.deferred">
-                  <span class="tag tag--deferred" :data-testid="`makeup-deferred-${row.task.course_id}`">
-                    暂不确认
-                  </span>
-                  <button
-                    type="button"
-                    class="button button--small button--ghost"
-                    :data-testid="`makeup-undefer-${row.task.course_id}`"
-                    @click="undoDefer(row.task.course_id)"
-                  >
-                    撤销
-                  </button>
-                </template>
-                <template v-else>
-                  <button
-                    type="button"
-                    class="button button--small"
-                    :disabled="pending"
-                    :data-testid="`makeup-confirm-${row.task.course_id}`"
-                    @click="confirmOne(row.task.course_id)"
-                  >
-                    确认可转换
-                  </button>
-                  <button
-                    type="button"
-                    class="button button--small button--ghost"
-                    :disabled="pending"
-                    :data-testid="`makeup-defer-${row.task.course_id}`"
-                    @click="defer(row.task.course_id)"
-                  >
-                    暂不确认
-                  </button>
-                </template>
-              </template>
-              <button
-                v-else-if="row.confirmedByUser"
-                type="button"
-                class="button button--small button--ghost"
-                :disabled="pending"
-                :data-testid="`makeup-undo-${row.task.course_id}`"
-                @click="undoOne(row.task.course_id)"
+              <div
+                class="makeup-action-region"
+                :data-testid="`makeup-action-region-${row.task.course_id}`"
               >
-                撤销确认
-              </button>
-              <span v-else class="text-muted">—</span>
+                <!-- 单一主操作：成功态仍由服务端 confirmedKeys 决定，同一按钮可撤销。 -->
+                <button
+                  v-if="row.task.status === 'manual_confirmation'"
+                  type="button"
+                  class="button button--small makeup-confirm-toggle"
+                  :class="{ 'makeup-confirm-toggle--confirmed': row.confirmedByUser }"
+                  :disabled="pending"
+                  :aria-pressed="row.confirmedByUser"
+                  :data-testid="row.confirmedByUser
+                    ? `makeup-undo-${row.task.course_id}`
+                    : `makeup-confirm-${row.task.course_id}`"
+                  @click="toggleConfirmation(row)"
+                >
+                  {{ confirmationLabel(row) }}
+                </button>
+                <span v-else class="text-muted">—</span>
+              </div>
             </td>
             <td>
               <div class="course-cell">
@@ -485,17 +468,60 @@ function undoOne(courseId: string): void {
   border-radius: 999px;
 }
 
-.makeup-actions-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  align-items: flex-start;
+.makeup-table-wrap {
+  border-radius: var(--radius);
 }
 
-.tag--deferred {
-  color: #92400e;
-  background: #fef3c7;
-  border-color: #fcd34d;
+.makeup-task-table {
+  min-width: 1160px;
+  table-layout: fixed;
+}
+
+.makeup-col--action { width: 160px; }
+.makeup-col--course { width: 205px; }
+.makeup-col--credit { width: 70px; }
+.makeup-col--status { width: 180px; }
+.makeup-col--semester { width: 135px; }
+.makeup-col--prerequisite { width: 120px; }
+.makeup-col--reason { width: 290px; }
+
+.makeup-task-table th,
+.makeup-task-table td {
+  box-sizing: border-box;
+}
+
+.makeup-task-table tbody tr {
+  border-bottom: 1px solid var(--border);
+}
+
+.makeup-task-table tbody tr:last-child {
+  border-bottom: 0;
+}
+
+.makeup-task-table tbody td {
+  height: 72px;
+  border-bottom: 0;
+  vertical-align: middle;
+}
+
+.makeup-action-region {
+  display: flex;
+  min-height: 34px;
+  align-items: flex-start;
+  justify-content: center;
+  flex-direction: column;
+}
+
+.makeup-confirm-toggle {
+  width: 124px;
+  justify-content: center;
+}
+
+.makeup-confirm-toggle--confirmed {
+  color: #166534;
+  background: #dcfce7;
+  border-color: #86efac;
+  box-shadow: inset 0 0 0 1px #bbf7d0;
 }
 
 .tag--user-confirmed {

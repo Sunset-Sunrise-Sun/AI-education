@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type {
   AppliedElectiveItem,
   CurrentElectiveItem,
@@ -84,6 +84,14 @@ const items = computed(() =>
 const appliedItems = computed(() => props.applied ?? [])
 const rejections = computed(() => props.rejected ?? [])
 const appliedIds = computed(() => new Set(appliedItems.value.map((i) => i.course_id)))
+const activeCourseId = ref<string | null>(null)
+
+watch(
+  () => props.pending,
+  (pending, wasPending) => {
+    if (wasPending && !pending) activeCourseId.value = null
+  },
+)
 
 /** 用户为"多个 CLEAR"课程显式选定的教学班。 */
 const chosenSections = ref<Record<string, string>>({})
@@ -121,15 +129,34 @@ function targetClassId(item: CurrentElectiveItem): string {
 function onAdd(item: CurrentElectiveItem): void {
   const classId = targetClassId(item)
   if (!classId) return
+  activeCourseId.value = item.course_id
   emit('add', { courseId: item.course_id, classId, semester: props.semester })
 }
 
 function onRemove(item: AppliedElectiveItem): void {
+  activeCourseId.value = item.course_id
   emit('remove', {
     courseId: item.course_id,
     classId: item.class_id,
     semester: props.semester,
   })
+}
+
+function appliedItemFor(courseId: string): AppliedElectiveItem | undefined {
+  return appliedItems.value.find((item) => item.course_id === courseId)
+}
+
+function onToggle(item: CurrentElectiveItem): void {
+  const applied = appliedItemFor(item.course_id)
+  if (applied) onRemove(applied)
+  else onAdd(item)
+}
+
+function actionLabel(courseId: string): string {
+  if (props.pending && activeCourseId.value === courseId) {
+    return appliedIds.value.has(courseId) ? '正在撤销…' : '正在加入…'
+  }
+  return appliedIds.value.has(courseId) ? '✓ 已加入，可撤销' : '加入本学期方案'
 }
 
 const loadLine = computed(() => {
@@ -168,13 +195,13 @@ const loadLine = computed(() => {
           </p>
           <div class="elective__actions">
             <button
-              class="button button--small button--ghost"
+              class="button button--small elective__toggle elective__toggle--applied"
               type="button"
               :disabled="pending"
               :data-testid="`elective-remove-${item.course_id}`"
               @click="onRemove(item)"
             >
-              撤销
+              {{ actionLabel(item.course_id) }}
             </button>
           </div>
         </li>
@@ -246,6 +273,7 @@ const loadLine = computed(() => {
           v-for="item in items"
           :key="item.course_id"
           class="elective__item"
+          :class="{ 'elective__item--selected': appliedIds.has(item.course_id) }"
           data-testid="case-a-elective-item"
         >
           <div class="elective__head">
@@ -305,13 +333,15 @@ const loadLine = computed(() => {
 
           <div v-if="item.clear_class_count > 0" class="elective__actions">
             <button
-              class="button button--small"
+              class="button button--small elective__toggle"
+              :class="{ 'elective__toggle--applied': appliedIds.has(item.course_id) }"
               type="button"
-              :disabled="!canAdd(item) || pending || appliedIds.has(item.course_id)"
+              :disabled="pending || (!appliedIds.has(item.course_id) && !canAdd(item))"
+              :aria-pressed="appliedIds.has(item.course_id)"
               :data-testid="`elective-add-${item.course_id}`"
-              @click="onAdd(item)"
+              @click="onToggle(item)"
             >
-              {{ appliedIds.has(item.course_id) ? '✓ 已加入本学期方案' : '加入本学期方案' }}
+              {{ actionLabel(item.course_id) }}
             </button>
           </div>
         </li>
@@ -369,6 +399,12 @@ const loadLine = computed(() => {
 .elective__item--applied {
   border-color: #bbf7d0;
   background: #fff;
+}
+
+.elective__item--selected {
+  border-color: #86efac;
+  background: #f0fdf4;
+  box-shadow: inset 4px 0 0 #22c55e;
 }
 
 .elective__check {
@@ -480,5 +516,11 @@ const loadLine = computed(() => {
   display: flex;
   gap: 8px;
   margin-top: 4px;
+}
+
+.elective__toggle--applied {
+  color: #166534;
+  background: #dcfce7;
+  border-color: #86efac;
 }
 </style>

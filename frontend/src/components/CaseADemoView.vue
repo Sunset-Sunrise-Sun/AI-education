@@ -229,7 +229,9 @@ async function submitOverride(module: 'makeup' | 'elective' | 'repair'): Promise
     // ⚠️ 必须捕获：`submit()` 在 silent 模式下会把失败向上抛（换班流程需要它
     //    来决定是否保留"待刷新"），但交互式重算是由模板事件触发的，没有调用方
     //    接住它 —— 不捕获就会变成未处理的 Promise 拒绝。
-    //    失败已经写进 `error.value`（用户可见），因此这里只做兜底。
+    //    失败已经写进 `error.value`（用户可见）。同时把本地待提交意图恢复为
+    //    最近一次服务端已接受状态，避免失败选择在后续操作中被隐式重提。
+    reconcilePlanningIntent()
   } finally {
     pendingModule.value = null
   }
