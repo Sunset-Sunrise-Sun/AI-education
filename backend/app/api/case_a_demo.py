@@ -14,7 +14,6 @@ from app.models.contracts import Change, CourseOffering, MakeupTask, PlanResult,
 from app.path_planner import apply_repair_proposal, generate_repair_proposals
 from app.services.case_a_demo import (
     CASE_A_DEMO_SCOPE_LABEL,
-    CASE_A_ELECTIVE_GROUP_ID,
     CaseADemoInputError,
     CaseADemoRuntime,
     get_case_a_demo_runtime,
@@ -252,7 +251,7 @@ def create_case_a_plan(
             is_full_semester=False,
         ),
         repair_proposals=_proposal_summary(run.repair_proposals),
-        roadmap=_roadmap_payload(run.roadmap),
+        roadmap=_roadmap_payload(run.roadmap, group_id=run.elective_group_id),
         roadmap_note=run.roadmap_note,
     )
 
@@ -279,10 +278,12 @@ def _proposal_summary(proposals: object) -> RepairProposalSummary:
     )
 
 
-def _roadmap_payload(roadmap: object | None) -> AcademicRoadmapPayload | None:
+def _roadmap_payload(roadmap: object | None, *, group_id: str) -> AcademicRoadmapPayload | None:
     """把内部 `AcademicRoadmap` 映射成加法式响应。
 
     ⛔ 未来学期**只**输出课程级字段；本映射里不存在任何教学班级字段。
+    ``group_id`` 由调用方（即本次 run 实际使用的选修组）如实传入，
+    ⛔ 本层不自行猜测或另取一个常量。
     """
 
     if roadmap is None:
@@ -331,7 +332,7 @@ def _roadmap_payload(roadmap: object | None) -> AcademicRoadmapPayload | None:
             planned_credit=roadmap.elective_planned_credit,  # type: ignore[attr-defined]
             remaining_credit=roadmap.elective_remaining_credit,  # type: ignore[attr-defined]
             gap_credit=gap,
-            group_id=CASE_A_ELECTIVE_GROUP_ID,
+            group_id=group_id,
         ),
         unresolved=list(roadmap.unresolved),  # type: ignore[attr-defined]
         warnings=list(roadmap.warnings),  # type: ignore[attr-defined]

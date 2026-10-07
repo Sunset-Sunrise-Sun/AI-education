@@ -24,6 +24,7 @@ from app.curriculum.case_a_decisions import (
     confirmed_scope_decisions,
     is_supported_scope_decision_set,
 )
+from app.curriculum.plan_profiles import ELECTIVE_POOL_GROUP_ID
 from app.integration import PlanningOrchestrator
 from app.models.contracts import CourseOffering, DataSource, MakeupTask, PlanResult, Preference
 from app.path_planner import RepairProposalSet, generate_repair_proposals
@@ -39,8 +40,13 @@ from app.services.completed_courses_pdf_ingest import (
 CASE_A_DEMO_SCOPE_LABEL = "case-scoped:south+shenzhen"
 MANUAL_SCHEDULE_SOURCE = "manual-entry://current-schedule"
 
-#: Case A 目标培养方案里的专业选修组（最低学分**读自** CurriculumGroup，⛔ 不硬编码）。
-CASE_A_ELECTIVE_GROUP_ID = "CSE-ELECTIVE-POOL"
+#: Case A 目标培养方案里的专业选修组。
+#:
+#: ⚠️ 这是**Curriculum 模块的权威常量**（`app.curriculum.plan_profiles`），
+#: ⛔ 本模块不自行定义一个新的组名；可用环境变量覆盖，
+#: 但覆盖值若不在培养方案里，路线图会 **fail closed**（报告 unresolved），
+#: ⛔ 绝不会静默伪造一个组或一个最低学分。
+CASE_A_ELECTIVE_GROUP_ID = ELECTIVE_POOL_GROUP_ID
 
 _ENABLED = "APP_CASE_A_DEMO_ENABLED"
 _CASE_PATH = "APP_CASE_A_DEMO_CURRICULUM_CASE_PATH"
@@ -49,6 +55,7 @@ _SEMESTER = "APP_CASE_A_DEMO_SEMESTER"
 _SOUTH_SHA = "APP_CASE_A_DEMO_SOUTH_ACCEPTANCE_SHA256"
 _SHENZHEN_SHA = "APP_CASE_A_DEMO_SHENZHEN_ACCEPTANCE_SHA256"
 _ROADMAP_HORIZON = "APP_CASE_A_DEMO_ROADMAP_LAST_SEMESTER"
+_ELECTIVE_GROUP = "APP_CASE_A_DEMO_ELECTIVE_GROUP_ID"
 _SHA256 = re.compile(r"[0-9a-fA-F]{64}")
 
 
@@ -69,6 +76,8 @@ class CaseADemoRun:
     roadmap: AcademicRoadmap | None
     #: 路线图不可构建的原因（`roadmap is None` 时给出；⛔ 只含结构性说明）。
     roadmap_note: str | None
+    #: 本次实际使用的选修组 id（供响应如实回显，⛔ 不由 API 层另行猜测）。
+    elective_group_id: str = CASE_A_ELECTIVE_GROUP_ID
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +87,8 @@ class CaseADemoRuntime:
     planner: RestrictedPlannerProvider
     #: 未来路线图的上界学期（可选）；缺省取培养方案链尾。
     roadmap_last_semester: str | None = None
+    #: 需要满足最低学分的选修组（缺省用 Curriculum 的权威常量）。
+    elective_group_id: str = CASE_A_ELECTIVE_GROUP_ID
 
     def _curriculum(self, imported: CompletedCoursesPdfImport) -> CurriculumCaseProvider:
         dynamic = replace(
@@ -168,7 +179,7 @@ class CaseADemoRuntime:
                 makeup_tasks=tasks,
                 current_semester_label=semester,
                 last_curriculum_semester=self.roadmap_last_semester,
-                elective_group_id=CASE_A_ELECTIVE_GROUP_ID,
+                elective_group_id=self.elective_group_id,
             )
         except CaseARoadmapError as exc:
             # ⛔ 不编造路线图：如实说明为什么无法构建（只含结构性说明）。
@@ -182,6 +193,7 @@ class CaseADemoRuntime:
             repair_proposals,
             roadmap,
             roadmap_note,
+            self.elective_group_id,
         )
 
 
@@ -255,6 +267,8 @@ def build_case_a_demo_runtime(environment: Mapping[str, str]) -> CaseADemoRuntim
         course_data=CaseAScopedCourseDataProvider(dataset),
         planner=RestrictedPlannerProvider(),
         roadmap_last_semester=(environment.get(_ROADMAP_HORIZON) or "").strip() or None,
+        elective_group_id=(environment.get(_ELECTIVE_GROUP) or "").strip()
+        or CASE_A_ELECTIVE_GROUP_ID,
     )
 
 
