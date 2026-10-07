@@ -37,7 +37,7 @@ describe('issue humanization — ⛔ 机器码不得作为主文案', () => {
 
   it('keeps the raw code out of the displayed message', () => {
     const issues = normalizedIssues({
-      planUnresolved: [{ type: 'schedule_unknown', course_id: 'CSE204', message: 'raw text' }],
+      planUnresolved: [{ type: 'schedule_unknown', message: '课程 CSE204 排课信息缺失' }],
       courseNameById: { CSE204: '数据结构' },
     })
     expect(issues).toHaveLength(1)
@@ -56,10 +56,10 @@ describe('unified issue list — 去重与分组', () => {
   it('deduplicates the same issue reported by several backend lists', () => {
     const issues = normalizedIssues({
       planUnresolved: [
-        { type: 'schedule_unknown', course_id: 'MAR202', message: '排课信息缺失' },
+        { type: 'schedule_unknown', message: '课程 MAR202 排课信息缺失' },
       ],
-      roadmapUnresolved: ['排课信息尚未同步，暂时无法判断是否冲突'],
-      repairUnresolved: ['课程 MAR202 的当前教学班状态为 CONFLICT（no_alternatives）。'],
+      // 同一件事、同一类别，措辞不同 ⇒ 仍应合并为一条
+      roadmapUnresolved: ['课程 MAR202 的排课信息尚未同步，暂时无法判断是否冲突'],
       courseNameById: { MAR202: '马克思主义基本原理' },
     })
     // 同一门课 + 同一类问题 ⇒ 只出现一次
@@ -72,7 +72,7 @@ describe('unified issue list — 去重与分组', () => {
   it('drops selection_required when a real confirmable repair exists for the course', () => {
     const issues = normalizedIssues({
       planUnresolved: [
-        { type: 'selection_required', course_id: 'PUB178', message: '有多个可选教学班' },
+        { type: 'selection_required', message: '课程 PUB178 有多个可选教学班' },
       ],
       repairProposals: [
         {
@@ -92,8 +92,10 @@ describe('unified issue list — 去重与分组', () => {
 
   it('sorts actionable issues first and summarizes by kind', () => {
     const issues = normalizedIssues({
+      // ⚠️ 冻结 Schema 的 `unresolved` **只有** `type` + `message`（extra=forbid），
+      //    因此课程身份只能来自 message 文本，⛔ 不能传 `course_id`。
       planUnresolved: [
-        { type: 'schedule_unknown', course_id: 'AAA101', message: '' },
+        { type: 'schedule_unknown', message: '课程 AAA101 排课信息缺失' },
       ],
       repairProposals: [
         {

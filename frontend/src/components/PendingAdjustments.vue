@@ -210,7 +210,10 @@ function onApply(courseId: string, fromClassId: string, toClassId: string): void
                   · {{ teacherText(offeringOf(group.courseId, candidate.classId)) }}
                 </p>
                 <div class="adjust__actions">
+                  <!-- ⛔ 只有**已确认无冲突（CLEAR）**的候选才给可执行按钮。
+                       UNKNOWN / CONFLICT 的兄弟候选只是信息展示：点下去没有可靠结果。 -->
                   <button
+                    v-if="candidate.confirmedClear"
                     class="button button--small"
                     type="button"
                     :disabled="applying"
@@ -219,6 +222,13 @@ function onApply(courseId: string, fromClassId: string, toClassId: string): void
                   >
                     采用调整
                   </button>
+                  <span
+                    v-else
+                    class="adjust__not-actionable"
+                    :data-testid="`case-a-repair-not-actionable-${group.courseId}-${candidate.classId}`"
+                  >
+                    暂不可调整：{{ stateLabel(candidate.state) }}
+                  </span>
                 </div>
               </li>
             </ul>
@@ -381,5 +391,12 @@ function onApply(courseId: string, fromClassId: string, toClassId: string): void
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+/* 非 CLEAR 候选：只说明状态，不提供可执行按钮。 */
+.adjust__not-actionable {
+  color: var(--text-muted);
+  font-size: 12px;
 }
 </style>

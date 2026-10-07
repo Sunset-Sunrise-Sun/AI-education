@@ -62,7 +62,8 @@ export interface NormalizedIssue {
 
 const ISSUE_LABEL: Record<IssueKind, string> = {
   repair_choice: '可以换班',
-  no_alternatives: '没有可用的替代教学班',
+  // ⚠️ 与 `humanizeIssueCode('no_alternatives')` 保持**同一措辞**（全局唯一口径）
+  no_alternatives: '暂未找到可替代的同课程教学班',
   schedule_unknown: '排课信息待确认',
   all_conflict: '候选教学班都有冲突',
   makeup_confirmation: '补修认定需要人工确认',
@@ -121,7 +122,8 @@ export function humanizeIssueCode(code: string | null | undefined): string {
  */
 const RAW_TOKEN_LABELS: Record<string, string> = {
   schedule_unknown: '排课信息暂不完整',
-  no_alternatives: '暂无同课程替代教学班',
+  // ⚠️ 统一口径：详情/摘要里也必须与 `humanizeIssueCode('no_alternatives')` 完全一致
+  no_alternatives: '暂未找到可替代的同课程教学班',
   all_conflict: '候选教学班均有冲突',
   selection_required: '有多个可选教学班，需要你选择',
   manual_confirmation: '需要人工确认',
@@ -248,18 +250,73 @@ function detailFor(courseId: string | null, classId: string | null): string {
 }
 
 /**
- * 去重键。`kind + courseId + classId`，**不带文案**。
+ * 保守的**语义判别式**：只在拿不到课程/教学班身份时使用。
  *
- * ⚠️ 为什么刻意不带文案：同一个逻辑事项会由不同后端列表用**不同措辞**报告，例如
- * `plan_result.unresolved` 说「课程 CSE204 排课信息缺失」，
- * `roadmap.unresolved` 说「课程 CSE204 的排课信息缺失（schedule_unknown）」。
- * 若把文案进键，同一件事会出现两次——这正是人工验收指出的重复问题。
+ * 做且只做稳定、无损的归一化：
+ * - 大小写归一、统一全角/半角标点、折叠空白、去掉结尾句号；
+ * - 机器取值按同一张表翻成中文（与主文案口径一致）。
  *
- * ⚠️ 同时必须带**教学班身份**：同一门课的**不同教学班**是不同待办，⛔ 不得合并。
- * 解析不到教学班号时 `classId` 为空 ⇒ 按课程级合并（同课程同类问题视为同一件事）。
+ * ⛔ 不做：删大段语义、模糊匹配、相似度、LLM、substring 去重。
+ * ⛔ 不同的事项必须得到**不同**的判别式；无法确定同一时，宁可两者都留。
  */
-function issueKey(kind: IssueKind, courseId: string | null, classId: string | null): string {
-  return `${kind}::${courseId ?? ''}::${classId ?? ''}`
+function semanticDiscriminator(text: string): string {
+  return normalizeRawText(text ?? '')
+    .toLowerCase()
+    .replace(/[，。、；：！？,.;:!?]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/[。.\s]+$/g, '')
+    .trim()
+}
+
+/**
+ * 去重键。
+ *
+ * ```text
+ * 有 course_id / class_id ⇒ kind + courseId + classId        （⛔ 不含任何文案）
+ * 完全没有身份            ⇒ kind + 语义判别式
+ * ```
+ *
+ * ⚠️ 两条不同的原则，故意分开：
+ *
+ * - **有身份**时键里**不放文案**。因为同一件事在不同来源里措辞必然不同
+ *   （`plan_result` 说「排课信息缺失」，`roadmap` 说「……（schedule_unknown）」），
+ *   一旦把文案进键，真正重复的事项就永远合并不了（这正是 Case A 跨来源去重的目的）。
+ *   代价是同课程同教学班下不同类别的问题会合并 —— 可接受的权衡：
+ *   它们通常由同一次冲突引发，且属同一门课的教学班，合并如实的类别文案即可。
+ * - **无身份**时用**各条自己的归一化语义**。多个不同的 plan 级
+ *   `manual_confirmation` 往往都没有课程号/教学班号，若只按 `kind::''` 分桶
+ *   会把它们全部压成一条，**静默丢掉真实待办**（禁止）。
+ *
+ * 原则：**宁可重复显示，不允许静默丢失真实事项**。
+ */
+function issueKey(
+  kind: IssueKind,
+  courseId: string | null,
+  classId: string | null,
+  discriminator: string,
+): string {
+  const hasIdentity = Boolean(courseId || classId)
+  return hasIdentity
+    ? `${kind}::${courseId ?? ''}::${classId ?? ''}`
+    : `${kind}::${discriminator}`
+}
+
+/** 每个类别的规范中文判别式（⛔ 与用户可见文案口径一致，不含机器码）。 */
+function canonicalLabelFor(kind: IssueKind): string {
+  switch (kind) {
+    case 'no_alternatives':
+      return humanizeIssueCode('no_alternatives')
+    case 'all_conflict':
+      return humanizeIssueCode('all_conflict')
+    case 'schedule_unknown':
+      return humanizeIssueCode('schedule_unknown')
+    case 'makeup_confirmation':
+      return humanizeIssueCode('manual_confirmation')
+    case 'selection_required':
+      return humanizeIssueCode('selection_required')
+    default:
+      return kind
+  }
 }
 
 /** 结构化 `unresolved[].type` → 类别。 */
@@ -274,18 +331,80 @@ function issueKindFromCode(rawType: string): IssueKind {
   return 'other'
 }
 
-/** 自由文本（roadmap / repair unresolved）→ 类别。⛔ 只做保守关键词判定。 */
+/**
+ * 自由文本 → 类别。⛔ 只做保守关键词判定（无模糊匹配、无相似度）。
+ *
+ * ⚠️ 必须同时看**原文**与**归一化后**的文本：原文可能带机器码
+ * （`（schedule_unknown）`），归一化后则变成中文。
+ *
+ * ⚠️ 关键词**按特异性排序**，而不是先命中谁算谁：
+ * `冲突` 是极其宽泛的词，几乎会出现在所有排课类消息里
+ * （例如「排课信息尚未同步，暂时无法判断**是否冲突**」——真正的问题是
+ * **排课信息缺失**，不是候选冲突）。因此：
+ *
+ * 1. 证据不足 / possibly_equivalent  ⇒ 需人工确认（最明确）
+ * 2. 排课信息缺失类                  ⇒ schedule_unknown（原因明确且唯一）
+ * 3. 没有替代班类                    ⇒ no_alternatives
+ * 4. 冲突类                          ⇒ all_conflict（最宽泛，最后判定）
+ * 5. 其它                            ⇒ other
+ *
+ * ⛔ 不得把「人工确认」这种到处都是的措辞当作判据。
+ */
 function issueKindFromText(text: string): IssueKind {
-  const value = (text ?? '').toLowerCase()
-  if (value.includes('no_alternatives') || value.includes('没有其他') || value.includes('没有可')) {
-    return 'no_alternatives'
-  }
-  if (value.includes('all_conflict') || value.includes('冲突')) return 'all_conflict'
-  if (value.includes('schedule_unknown') || value.includes('排课信息')) return 'schedule_unknown'
-  if (value.includes('manual_confirmation') || value.includes('证据不足')) {
+  const raw = (text ?? '').toLowerCase()
+  const normalized = normalizeRawText(text ?? '').toLowerCase()
+  const both = `${raw} ${normalized}`
+
+  if (both.includes('possibly_equivalent') || both.includes('证据不足')) {
     return 'makeup_confirmation'
   }
+  // ⚠️ 必须早于"冲突"判定：原因明确的信号优先
+  if (
+    both.includes('schedule_unknown') ||
+    both.includes('排课信息') ||
+    both.includes('时间安排')
+  ) {
+    return 'schedule_unknown'
+  }
+  if (
+    both.includes('no_alternatives') ||
+    both.includes('替代') ||
+    both.includes('没有可确认无冲突')
+  ) {
+    return 'no_alternatives'
+  }
+  if (both.includes('all_conflict') || both.includes('冲突')) return 'all_conflict'
+  if (both.includes('manual_confirmation')) return 'makeup_confirmation'
   return 'other'
+}
+
+/**
+ * 统一入口：判定一条事项的类别。
+ *
+ * ⚠️ 优先级规则（重要）：
+ *
+ * 1. `plan_result.unresolved[].type` 是冻结 Schema 的**权威字段**，默认直接采用；
+ * 2. **例外**：`manual_confirmation` 是后端使用的**兜底大桶**，同一个取值会承载
+ *    很多互不相同的问题（"证据不足"、"已知时间冲突导致无解"、"容量规则未确认"…）。
+ *    当文本能给出**更具体**的类别时，采用文本类别。
+ *    否则同一条消息经 plan（有 type）与 roadmap（纯文本）进来会得到不同 kind，
+ *    去重键不同 ⇒ 跨来源重复合并失败。
+ * 3. `type` 缺失或未登记时，一律退回文本判定。
+ * 4. 文本也只给出 `other` 时，保留兜底桶的类别（`makeup_confirmation`）。
+ */
+function resolveIssueKind(rawType: string, text: string): IssueKind {
+  const value = (rawType ?? '').trim().toLowerCase()
+  const fromText = issueKindFromText(text)
+  if (!value) return fromText
+
+  const fromCode = issueKindFromCode(value)
+  if (fromCode === 'other') return fromText
+
+  // 兜底大桶：优先采用文本给出的**更具体**类别
+  const isGenericBucket = fromCode === 'makeup_confirmation'
+  if (isGenericBucket && fromText !== 'other') return fromText
+
+  return fromCode
 }
 
 
@@ -337,7 +456,11 @@ export function normalizedIssues(input: NormalizeInput): NormalizedIssue[] {
   for (const item of input.planUnresolved ?? []) {
     const rawType = (item.type ?? '').trim()
     const message = (item.message ?? '').trim()
-    const courseId = item.course_id ?? extractCourseId(message)
+    // ⚠️ 冻结契约里 `Unresolved` **只有** `type` + `message`
+    //    （`schemas/plan_result.schema.json` 为 `additionalProperties: false`，
+    //     后端模型也是 `extra="forbid"`）。⛔ 不得假装它还有 `course_id`：
+    //     身份一律从 `message` 文本里保守提取。
+    const courseId = extractCourseId(message)
     const lower = rawType.toLowerCase()
 
     // ⛔ 已有可操作换班候选时，`selection_required` 不再单独占一条（同一件事）
@@ -345,14 +468,17 @@ export function normalizedIssues(input: NormalizeInput): NormalizedIssue[] {
       continue
     }
 
-    const kind: IssueKind = issueKindFromCode(rawType)
+    const kind: IssueKind = resolveIssueKind(rawType, message)
     const human = humanizeIssueCode(rawType)
     const classId = extractClassId(message)
     // `other` 类型没有稳定中文文案 ⇒ 用归一化后的文本，⛔ 不含机器码
     const body = message ? stripTechnicalPrefix(normalizeRawText(message)) : ''
     const display = kind === 'other' && body ? body : human
+    // ⚠️ 判别式取**原文**的归一化结果（而非 display）：即使类别文案相同，
+    //    不同的原文也应得到不同判别式，从而**不会**被合并掉。
+    const discriminator = semanticDiscriminator(message) || human
     push({
-      id: issueKey(kind, courseId, classId),
+      id: issueKey(kind, courseId, classId, discriminator),
       kind,
       title: titleFor(courseId, nameById),
       detail: detailFor(courseId, classId),
@@ -372,13 +498,15 @@ export function normalizedIssues(input: NormalizeInput): NormalizedIssue[] {
     if (!text) continue
     const courseId = extractCourseId(text)
     const classId = extractClassId(text)
-    const kind = issueKindFromText(text)
+    const kind = resolveIssueKind('', text)
     // ⚠️ 归一化后可能只剩中性中文；此时用类别文案兜底，保证主界面一定有可读中文
     const normalized = stripTechnicalPrefix(normalizeRawText(text))
     const fallback = humanizeIssueCode(kind === 'schedule_unknown' ? 'schedule_unknown' : '')
     const display = normalized || fallback
     push({
-      id: issueKey(kind, courseId, classId),
+      // ⚠️ 判别式用**归一化后**的文本：跨来源（plan / roadmap）对同一件事的措辞
+      //    差异（例如 `（schedule_unknown）` 后缀）会被同一张表吸收，从而正确合并。
+      id: issueKey(kind, courseId, classId, semanticDiscriminator(text)),
       kind,
       title: titleFor(courseId, nameById),
       detail: detailFor(courseId, classId),
@@ -398,7 +526,7 @@ export function normalizedIssues(input: NormalizeInput): NormalizedIssue[] {
     if (!text) continue
     const courseId = extractCourseId(text)
     const classId = extractClassId(text)
-    const kind = issueKindFromText(text)
+    const kind = resolveIssueKind('', text)
     const human =
       kind === 'no_alternatives'
         ? humanizeIssueCode('no_alternatives')
@@ -407,7 +535,7 @@ export function normalizedIssues(input: NormalizeInput): NormalizedIssue[] {
           : humanizeIssueCode('schedule_unknown')
     push({
       // ⚠️ 去重键带上**教学班身份**：同一门课的不同教学班是**不同**待办，⛔ 不得合并
-      id: issueKey(kind, courseId, classId),
+      id: issueKey(kind, courseId, classId, semanticDiscriminator(text)),
       kind,
       title: titleFor(courseId, nameById),
       detail: detailFor(courseId, classId),

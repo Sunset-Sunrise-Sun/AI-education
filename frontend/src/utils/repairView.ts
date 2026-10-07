@@ -83,7 +83,8 @@ export interface RepairView {
 const BLOCKER_LABEL: Record<CourseRepairBlocker['reasonKind'], string> = {
   unknown_schedule: '排课信息不完整',
   all_conflict: '候选教学班均有冲突',
-  no_alternatives: '没有同课程替代班',
+  // ⚠️ 口径统一：与 `humanizeIssueCode('no_alternatives')` 完全一致，避免同一件事两种中文。
+  no_alternatives: '暂未找到可替代的同课程教学班',
   other: '其它原因',
 }
 

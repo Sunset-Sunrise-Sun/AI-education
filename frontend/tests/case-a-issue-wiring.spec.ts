@@ -144,6 +144,306 @@ beforeEach(() => {
   loadCaseAOfferings.mockResolvedValue(OFFERINGS)
 })
 
+/* ---------------------------------------------------------------------------
+ * 真实 Case A 回归数据（Reviewer 场景：non-empty current_schedule，n = 3）
+ *
+ * 取自现有 accepted Case A artifacts（私有本地数据，⛔ 未新增任何采集）：
+ * 用 3 个真实已接受教学班作为当前课表后，后端返回
+ *   plan_result.unresolved   = 14 条，**全部** manual_confirmation
+ *   roadmap.unresolved       = 3 条（含教学班号）
+ *   repair_proposals.unresolved = 3 条
+ * 其中 11 条 manual_confirmation 的 message 里带课程号、**3 条不带**任何课程号。
+ *
+ * ⚠️ 这 3 条"无身份"的 generic 事项正是本轮 blocker 的受害者：
+ * 旧的 `kind + course_id + class_id` 键把它们全部压成 1 条，静默丢掉 2 条真实待办。
+ * 这里只保留 type / message 文本（无个人信息），因此可以提交进仓库。
+ * ------------------------------------------------------------------------- */
+const REAL_PLAN_UNRESOLVED: { type: string; message: string }[] = [
+  { type: 'manual_confirmation', message: '课程 FL101 的补修认定仍需人工确认，不自动新增。' },
+  { type: 'manual_confirmation', message: '课程 FL102 的补修认定仍需人工确认，不自动新增。' },
+  { type: 'manual_confirmation', message: '课程 MAR108 的补修认定仍需人工确认，不自动新增。' },
+  { type: 'manual_confirmation', message: '课程 CSE209 的补修认定仍需人工确认，不自动新增。' },
+  { type: 'manual_confirmation', message: '课程 CSE101 的补修认定仍需人工确认，不自动新增。' },
+  { type: 'manual_confirmation', message: '课程 CSE103 的补修认定仍需人工确认，不自动新增。' },
+  { type: 'manual_confirmation', message: '课程 PHY137 的补修认定仍需人工确认，不自动新增。' },
+  { type: 'manual_confirmation', message: '课程 CSE201 的补修认定仍需人工确认，不自动新增。' },
+  { type: 'manual_confirmation', message: '课程 CSE203 的补修认定仍需人工确认，不自动新增。' },
+  { type: 'manual_confirmation', message: '课程 MA184 的补修认定仍需人工确认，不自动新增。' },
+  { type: 'manual_confirmation', message: '课程 PHY139 的补修认定仍需人工确认，不自动新增。' },
+  {
+    type: 'manual_confirmation',
+    message: '当前课表含已知时间冲突，仍保留当前选择事实；未认证为可执行课表。',
+  },
+  {
+    type: 'manual_confirmation',
+    message:
+      '当前已选课程的全部原班/同课同学期输入候选组合（含 UNKNOWN 可能组合）已被已知时间冲突排除；即使放宽至全部这些候选，也无法同时保留当前课程，因此本次完整目标无解。证明仅限本次输入及保留课程范围，不推断学校全部供给。',
+  },
+  {
+    type: 'manual_confirmation',
+    message:
+      '建议课表包含容量信息；容量快照、已有选课与新增选课的处理规则尚未确认，不能认证学校实际可选性，不自动过滤。',
+  },
+]
+
+const REAL_ROADMAP_UNRESOLVED: string[] = [
+  '本学期课程 AA1006（教学班 202615612）不在培养方案课程中；⛔ 无法按精确课程身份绑定，未计入学分，需人工确认。',
+  '本学期课程 AA110（教学班 202615515）不在培养方案课程中；⛔ 无法按精确课程身份绑定，未计入学分，需人工确认。',
+  '本学期课程 AA1701（教学班 202615601）不在培养方案课程中；⛔ 无法按精确课程身份绑定，未计入学分，需人工确认。',
+]
+
+/**
+ * 这 11 条与上面 11 条"课程 XXX 的补修认定仍需人工确认"是**同一件事**，
+ * 只是由 roadmap 侧用不同措辞再说了一遍（含机器码 `manual_confirmation`）。
+ * 它们正是跨来源去重必须合并的对象。
+ */
+const REAL_ROADMAP_WARNINGS: string[] = [
+  '课程 FL101 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+  '课程 FL102 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+  '课程 MAR108 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+  '课程 CSE209 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+  '课程 CSE101 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+  '课程 CSE103 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+  '课程 PHY137 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+  '课程 CSE201 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+  '课程 CSE203 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+  '课程 MA184 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+  '课程 PHY139 的补修状态为 manual_confirmation：⛔ 该状态**不是**已满足，仍需人工认定，本次按「未满足」处理。',
+]
+
+const REAL_REPAIR_UNRESOLVED: string[] = [
+  '课程 AA1006 的当前教学班 202615612 状态为 CONFLICT，但本次输入中没有可确认无冲突的同课程候选（no_alternatives）；需要人工核验，不生成建议。',
+  '课程 AA110 的当前教学班 202615515 状态为 CONFLICT，但本次输入中没有可确认无冲突的同课程候选（no_alternatives）；需要人工核验，不生成建议。',
+  '课程 AA1701 的当前教学班 202615601 状态为 CONFLICT，但本次输入中没有可确认无冲突的同课程候选（all_conflict）；需要人工核验，不生成建议。',
+]
+
+describe('Test 5 — 真实 Case A（non-empty 当前课表）generic 事项不得丢失', () => {
+  it('每条 distinct 的 generic manual_confirmation 都保留下来', () => {
+    const issues = normalizedIssues({
+      planUnresolved: REAL_PLAN_UNRESOLVED,
+      roadmapUnresolved: REAL_ROADMAP_UNRESOLVED,
+      roadmapWarnings: REAL_ROADMAP_WARNINGS,
+      repairUnresolved: REAL_REPAIR_UNRESOLVED,
+      courseNameById: {},
+    })
+
+    // ① 无身份（message 里没有课程号）的 generic manual_confirmation 条数
+    const hasCourseId = (text: string) => /\b[A-Z]{2,}[0-9]{2,}[A-Z]?\b/.test(text)
+    const rawGeneric = REAL_PLAN_UNRESOLVED.filter(
+      (item) => item.type === 'manual_confirmation' && !hasCourseId(item.message),
+    )
+    expect(rawGeneric).toHaveLength(3)
+
+    // ② 这 3 条必须全部出现在归一化结果里（⛔ 不能被压成 1 条）
+    const renderedGeneric = issues.filter((issue) => {
+      if (issue.courseId) return false
+      return rawGeneric.some((item) => issue.rawMessage === item.message)
+    })
+    expect(renderedGeneric).toHaveLength(rawGeneric.length)
+    expect(renderedGeneric.length).toBeGreaterThan(1)
+
+    // ③ 每条 generic 事项的原文都还找得到（逐条核对，⛔ 不静默丢失）
+    for (const item of rawGeneric) {
+      expect(issues.some((issue) => issue.rawMessage === item.message)).toBe(true)
+    }
+  })
+
+  it('真实数据的整体去重账目：有身份的合并、无身份的全留', () => {
+    const issues = normalizedIssues({
+      planUnresolved: REAL_PLAN_UNRESOLVED,
+      roadmapUnresolved: REAL_ROADMAP_UNRESOLVED,
+      roadmapWarnings: REAL_ROADMAP_WARNINGS,
+      repairUnresolved: REAL_REPAIR_UNRESOLVED,
+      courseNameById: {},
+    })
+
+    // 11 条带课程号的「补修认定需确认」：plan 11 条 + roadmap warnings 11 条
+    // = 同一批事项说两遍 ⇒ 合并为 **11** 条（跨来源去重生效）
+    const withId = issues.filter(
+      (issue) => issue.kind === 'makeup_confirmation' && issue.courseId,
+    )
+    expect(withId).toHaveLength(11)
+
+    // 3 条无身份的 generic ⇒ **全部保留**（本轮 blocker：旧实现只剩 1 条）
+    const withoutId = issues.filter(
+      (issue) =>
+        !issue.courseId &&
+        issue.rawMessage &&
+        !/\b[A-Z]{2,}[0-9]{2,}[A-Z]?\b/.test(issue.rawMessage),
+    )
+    expect(withoutId).toHaveLength(3)
+
+    // 3 门不在培养方案中的课程（roadmap，含教学班号）⇒ 3 条
+    const unmapped = issues.filter((issue) => issue.classId)
+    expect(unmapped.length).toBeGreaterThanOrEqual(3)
+
+    // 主界面文案里不得出现任何机器码
+    for (const issue of issues) {
+      expect(issue.message).not.toMatch(
+        /\b(schedule_unknown|no_alternatives|all_conflict|manual_confirmation|recommended_semester)\b/,
+      )
+    }
+  })
+
+  it('Test 6 — 只有 CLEAR 候选给「采用调整」，UNKNOWN / CONFLICT 不给', () => {
+    const wrapper = mount(PendingAdjustments, {
+      props: {
+        planResult: {
+          status: 'partially_feasible',
+          selected_classes: [],
+          changes: [],
+          risks: [],
+          unresolved: [],
+        } as never,
+        repairProposals: {
+          semester: '2026-1',
+          proposals: [
+            {
+              proposal_id: 'clear',
+              semester: '2026-1',
+              course_id: 'CSE201',
+              current_class_id: '01',
+              candidate_class_id: '02',
+              original_state: 'CONFLICT',
+              candidate_state: 'CLEAR',
+              reason: 'ok',
+            },
+            {
+              proposal_id: 'unknown',
+              semester: '2026-1',
+              course_id: 'CSE201',
+              current_class_id: '01',
+              candidate_class_id: '03',
+              original_state: 'CONFLICT',
+              candidate_state: 'UNKNOWN',
+              reason: 'unknown',
+            },
+            {
+              proposal_id: 'conflict',
+              semester: '2026-1',
+              course_id: 'CSE201',
+              current_class_id: '01',
+              candidate_class_id: '04',
+              original_state: 'CONFLICT',
+              candidate_state: 'CONFLICT',
+              reason: 'conflict',
+            },
+          ],
+          unresolved: [],
+        } as never,
+        courseNameById: { CSE201: 'Python 程序设计' },
+        offerings: [] as never,
+      },
+    })
+
+    // CLEAR ⇒ 可执行
+    expect(wrapper.find('[data-testid="case-a-repair-apply-CSE201-02"]').exists()).toBe(true)
+    // UNKNOWN / CONFLICT 兄弟候选 ⇒ ⛔ 不给可执行按钮
+    expect(wrapper.find('[data-testid="case-a-repair-apply-CSE201-03"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="case-a-repair-apply-CSE201-04"]').exists()).toBe(false)
+    expect(
+      wrapper.find('[data-testid="case-a-repair-not-actionable-CSE201-03"]').exists(),
+    ).toBe(true)
+    expect(
+      wrapper.find('[data-testid="case-a-repair-not-actionable-CSE201-04"]').exists(),
+    ).toBe(true)
+
+    // 三张候选仍然都展示（信息不丢），只是其中只有一张可点
+    expect(wrapper.findAll('[data-testid="case-a-repair-candidate"]')).toHaveLength(3)
+  })
+})
+
+describe('Test 1–4 — dedup 语义逐条锁定', () => {
+  it('Test 1: 两个不同的 generic manual_confirmation（无 course/class）→ 两条', () => {
+    const issues = normalizedIssues({
+      planUnresolved: [
+        { type: 'manual_confirmation', message: '当前课表含已知时间冲突，仍保留当前选择事实。' },
+        { type: 'manual_confirmation', message: '容量处理规则尚未确认，不能认证学校实际可选性。' },
+      ],
+    })
+    expect(issues).toHaveLength(2)
+  })
+
+  it('Test 2: 同一 generic 事项来自两个来源 → 一条', () => {
+    const message = '当前课表含已知时间冲突，仍保留当前选择事实。'
+    const issues = normalizedIssues({
+      planUnresolved: [{ type: 'manual_confirmation', message }],
+      roadmapWarnings: [message],
+    })
+    expect(issues).toHaveLength(1)
+  })
+
+  it('Test 3: 同课程不同教学班 → 两条', () => {
+    const issues = normalizedIssues({
+      planUnresolved: [
+        { type: 'schedule_unknown', message: '课程 PUB178 教学班 202616253 排课信息缺失。' },
+        { type: 'schedule_unknown', message: '课程 PUB178 教学班 202616999 排课信息缺失。' },
+      ],
+    })
+    expect(issues).toHaveLength(2)
+  })
+
+  it('Test 4: 同课程同教学班、跨来源重复（同一类别）→ 一条', () => {
+    const issues = normalizedIssues({
+      planUnresolved: [
+        { type: 'schedule_unknown', message: '课程 CSE204 教学班 202616001 排课信息缺失。' },
+      ],
+      // 同一类别（都明确是 schedule_unknown），但措辞不同
+      roadmapUnresolved: [
+        '课程 CSE204 教学班 202616001 的排课信息尚未同步，暂时无法判断是否冲突（schedule_unknown）。',
+      ],
+      roadmapWarnings: ['课程 CSE204 教学班 202616001 排课信息暂不完整（schedule_unknown）。'],
+    })
+    // 身份相同 ⇒ 合并为一条（跨来源去重），且类别由权威 code 决定
+    expect(issues).toHaveLength(1)
+    expect(issues[0].courseId).toBe('CSE204')
+    expect(issues[0].classId).toBe('202616001')
+    expect(issues[0].kind).toBe('schedule_unknown')
+  })
+
+  it('⛔ 宽泛词不得抢走类别：含"冲突"但真正原因是排课信息缺失', () => {
+    const issues = normalizedIssues({
+      planUnresolved: [
+        { type: 'schedule_unknown', message: '课程 CSE204 教学班 202616001 排课信息缺失。' },
+      ],
+      // 这句话里同时出现"冲突"，但真正的问题是**排课信息尚未同步**
+      roadmapUnresolved: [
+        '课程 CSE204 教学班 202616001 的排课信息尚未同步，暂时无法判断是否冲突（schedule_unknown）。',
+      ],
+    })
+    // 类别应由**原因明确**的信号（排课信息）决定，并据此与上一条跨来源合并
+    expect(issues).toHaveLength(1)
+    expect(issues[0].kind).toBe('schedule_unknown')
+  })
+
+  it('同课程同教学班但**类别不同**（排课信息缺失 vs 无替代班）→ 两条', () => {
+    const issues = normalizedIssues({
+      planUnresolved: [
+        { type: 'schedule_unknown', message: '课程 CSE204 教学班 202616001 排课信息缺失。' },
+      ],
+      repairUnresolved: [
+        '课程 CSE204 教学班 202616001 没有可确认无冲突的同课程候选（no_alternatives）。',
+      ],
+    })
+    // 这是两个**不同**的逻辑问题，⛔ 不得为了页面干净而合并
+    expect(issues).toHaveLength(2)
+    expect(new Set(issues.map((issue) => issue.kind))).toEqual(
+      new Set(['schedule_unknown', 'no_alternatives']),
+    )
+  })
+
+  it('无身份且文案为空时也不会互相吞并（fail-safe）', () => {
+    const issues = normalizedIssues({
+      planUnresolved: [
+        { type: 'manual_confirmation', message: '' },
+        { type: 'manual_confirmation', message: '' },
+      ],
+    })
+    // 完全相同的空文案 ⇒ 视为同一件事，合并为一条（这正是"同来源重复"）
+    expect(issues).toHaveLength(1)
+  })
+})
+
 describe('Test A/B — 机器码不得出现在真实渲染的主界面', () => {
   it('Test A: schedule_unknown 渲染为中文，主界面不含机器码', async () => {
     const wrapper = await mountPageWith({
