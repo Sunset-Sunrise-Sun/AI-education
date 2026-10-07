@@ -225,6 +225,10 @@ def future_semesters_after(
     if last_index <= current_index:
         raise CaseARoadmapError("未来学期上界不晚于当前学期，无法生成未来路线图。")
 
+    # ⚠️ 顺序不变量（结构上成立，无需运行时校验）：
+    #    未来学期由 `range(current_index + 1, last_index + 1)` 生成，
+    #   因此 `curriculum_semester` 与 `semester_index` **必然**严格递增且不重复。
+    #   ⛔ 本函数不会重排调用方给出的顺序，也不会猜测顺序 —— 顺序完全由学期号链决定。
     return tuple(
         FutureSemester(
             semester_label=chain.label_by_index[index],
