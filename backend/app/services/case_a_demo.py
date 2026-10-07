@@ -6,6 +6,7 @@ import os
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import Literal
 
 from app.course_data import (
     CaseAScopeError,
@@ -48,6 +49,14 @@ from app.services.completed_courses_pdf_ingest import (
     import_completed_courses_pdf_bytes,
 )
 
+#: 上传成绩单与已确认已修事实之间的**唯一**受支持关系。
+#:
+#: ⛔ 这里**故意只有一个取值**：不存在 `bound`。
+#: 原因见 `CaseADemoRuntime._completed_binding` 的文档 —— 让上传行改写已确认的
+#: 满足事实需要伪造 provenance，因此那条路径被**按设计**删除，
+#: 而不是"保留一个永远不可达的取值"。
+CompletedBinding = Literal["not_bound"]
+
 CASE_A_DEMO_SCOPE_LABEL = "case-scoped:south+shenzhen"
 MANUAL_SCHEDULE_SOURCE = "manual-entry://current-schedule"
 
@@ -89,10 +98,10 @@ class CaseADemoRun:
     roadmap_note: str | None
     #: 本次实际使用的选修组 id（供响应如实回显，⛔ 不由 API 层另行猜测）。
     elective_group_id: str = CASE_A_ELECTIVE_GROUP_ID
-    #: 上传成绩单的绑定结果：`bound` / `not_bound`。
-    #: `not_bound` 表示**本次未采用上传行做满足判定**，已确认事实原样保留
-    #: （⛔ 不是静默抹掉，也⛔ 不是把上传行当成已确认事实）。
-    completed_binding: str = "bound"
+    #: 上传成绩单的绑定结果。**唯一**受支持的取值是 `not_bound`：
+    #: 本次**未采用**上传行做满足判定，培养方案已确认事实原样保留。
+    #: ⛔ 不存在 `bound`（见 `_completed_binding` 文档：那条路径需要伪造 provenance）。
+    completed_binding: CompletedBinding = "not_bound"
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,10 +166,6 @@ class CaseADemoRuntime:
                 "（请改用不含官方课程号的成绩单导出，或以人工认定处理）。"
             )
         return self.base_case
-
-    def _curriculum(self, imported: CompletedCoursesPdfImport) -> CurriculumCaseProvider:
-        _binding, case = self._completed_binding(imported)
-        return CurriculumCaseProvider(case)
 
     def _validate_schedule(
         self,

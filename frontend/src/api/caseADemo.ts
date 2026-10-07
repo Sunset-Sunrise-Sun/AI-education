@@ -42,18 +42,18 @@ export interface CaseADemoResponse {
   /**
    * 上传成绩单与**已确认**已修事实的绑定结果。
    *
-   * - `not_bound` —— 上传行没有官方课程号，因此本次**未采用**上传行做满足判定，
-   *   培养方案已确认的满足事实原样保留。⛔ 必须向用户**可见地**说明，
-   *   否则用户会误以为上传的 PDF 参与了 satisfaction 判定。
-   * - `bound` —— 预留取值；当前后端**按设计**不会返回它
-   *   （见 `backend/app/services/case_a_demo.py::_completed_binding`：
-   *    改写已确认满足事实需要伪造 provenance，因此一律 fail closed）。
+   * **唯一**受支持的取值是 `not_bound`：上传行没有官方课程号，
+   * 因此本次**未采用**上传行做满足判定，培养方案已确认的满足事实原样保留。
    *
-   * ⚠️ 前端把除 `bound` 以外的任何取值都当作"未绑定"来**如实展示**，
-   * ⛔ 不会因为出现未知取值就静默不提示。
+   * ⛔ **不存在** `bound` 取值。让上传行改写已确认满足事实需要伪造 provenance，
+   * 因此后端**按设计**删除了那条路径（见
+   * `backend/app/services/case_a_demo.py::_completed_binding`）。
+   *
+   * ⚠️ 前端**不**对这个字段做"已绑定 ⇒ 不提示"的分支：
+   * 只要后端给了说明就展示说明，没有任何取值可以抑制这条 provenance 提示。
    */
   completed_binding: string
-  /** 面向用户的绑定说明（`bound` 时为 `null`）。 */
+  /** 面向用户的绑定说明（后端始终给出；缺失时前端用保守文案兜底）。 */
   completed_binding_note: string | null
 }
 

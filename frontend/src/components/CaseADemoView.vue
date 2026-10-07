@@ -135,14 +135,13 @@ const resultCourseNames = computed(() => {
 /**
  * 上传成绩单是否**真的**参与了满足判定。
  *
- * ⛔ 只有后端明确返回 `bound` 才算绑定成功；其余任何取值（含未知取值）
- *    一律按"未绑定"如实提示 —— 宁可多提示，⛔ 也不让用户误以为
- *    上传的 PDF 决定了哪些课算已修完。
+ * ⛔ 这里**没有**"已绑定 ⇒ 不提示"的分支：后端只有 `not_bound` 一种受支持语义
+ *    （见 `backend/app/services/case_a_demo.py::_completed_binding`），
+ *    因此这条 provenance 提示**始终**展示 —— 没有任何取值可以抑制它。
  */
 const bindingNotice = computed(() => {
   const current = result.value
   if (!current) return ''
-  if (current.completed_binding === 'bound') return ''
   return (
     current.completed_binding_note ||
     '上传的成绩单没有参与「已修完 / 已满足」的判定，培养方案已确认的事实原样保留。'

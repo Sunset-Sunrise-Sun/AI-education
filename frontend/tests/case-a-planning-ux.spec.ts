@@ -755,41 +755,36 @@ describe('显式换班：页面编排（确认才生效）', () => {
     expect(html.indexOf('case-a-binding-notice')).toBeLessThan(html.indexOf('补修缺口分析'))
   })
 
-  it('renders no not_bound warning when the backend reports a bound binding', async () => {
-    const wrapper = mount(CaseADemoView)
-    await flushPromises()
-    const input = wrapper.get('[data-testid="case-a-pdf"]')
-    const file = new File(['%PDF-1.4'], 'transcript.pdf', { type: 'application/pdf' })
-    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
-    await input.trigger('change')
-    // 控制用例：后端明确 bound 时不得显示"未参与判定"的告警
-    runCaseADemo.mockResolvedValue(
-      planResponse({ completed_binding: 'bound', completed_binding_note: null }),
-    )
-    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
-    await flushPromises()
+  it('never suppresses the provenance disclosure for ANY binding value', async () => {
+    // ⛔ 后端只有 `not_bound` 一种受支持语义；前端**不得**存在任何可以抑制这条
+    //    provenance 提示的取值分支（包括历史上被删除的 `bound`）。
+    for (const value of ['not_bound', 'bound', 'something_new', '']) {
+      const wrapper = mount(CaseADemoView)
+      await flushPromises()
+      const input = wrapper.get('[data-testid="case-a-pdf"]')
+      const file = new File(['%PDF-1.4'], 'transcript.pdf', { type: 'application/pdf' })
+      Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+      await input.trigger('change')
+      runCaseADemo.mockResolvedValue(
+        planResponse({
+          completed_binding: value,
+          completed_binding_note: value === 'bound' ? null : '后端给出的绑定说明',
+        }),
+      )
+      await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+      await flushPromises()
 
-    expect(wrapper.find('[data-testid="case-a-binding-notice"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="case-a-transcript-binding-note"]').exists()).toBe(false)
-    // 方案本身照常渲染
-    expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(true)
-  })
-
-  it('treats an unknown binding value as not bound (never silently hides it)', async () => {
-    const wrapper = mount(CaseADemoView)
-    await flushPromises()
-    const input = wrapper.get('[data-testid="case-a-pdf"]')
-    const file = new File(['%PDF-1.4'], 'transcript.pdf', { type: 'application/pdf' })
-    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
-    await input.trigger('change')
-    runCaseADemo.mockResolvedValue(
-      planResponse({ completed_binding: 'something_new', completed_binding_note: null }),
-    )
-    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
-    await flushPromises()
-
-    // ⛔ 未知取值也必须如实提示，而不是默认当作已绑定
-    expect(wrapper.find('[data-testid="case-a-binding-notice"]').exists()).toBe(true)
+      const notice = wrapper.find('[data-testid="case-a-binding-notice"]')
+      expect(notice.exists(), `disclosure must render for binding=${value}`).toBe(true)
+      expect(notice.text()).toContain('未参与')
+      // 说明原文优先；缺失时用保守文案兜底，⛔ 绝不留空
+      if (value === 'bound') {
+        expect(notice.text()).toContain('培养方案已确认的事实原样保留')
+      } else {
+        expect(notice.text()).toContain('后端给出的绑定说明')
+      }
+      wrapper.unmount()
+    }
   })
 
   it('only an explicit click calls repair apply, with the full identity', async () => {

@@ -16,6 +16,7 @@ from app.services.case_a_demo import (
     CASE_A_DEMO_SCOPE_LABEL,
     CaseADemoInputError,
     CaseADemoRuntime,
+    CompletedBinding,
     get_case_a_demo_runtime,
 )
 from app.services.case_a_roadmap import requirement_kind_label
@@ -144,13 +145,15 @@ class CaseADemoPlanResponse(BaseModel):
     roadmap_note: str | None
     #: 上传成绩单与**已确认**已修事实的绑定结果。
     #:
-    #: - `bound` —— 上传行按精确课程身份绑定成功，本次满足判定基于上传行；
-    #: - `not_bound` —— 上传行**没有**官方课程号（真实成绩单即如此），
-    #:   因此本次**未**采用上传行做满足判定，培养方案已确认事实**原样保留**。
+    #: **唯一**受支持的取值是 `not_bound`：上传行**没有**官方课程号
+    #: （真实成绩单即如此），因此本次**未**采用上传行做满足判定，
+    #: 培养方案已确认事实**原样保留**。
     #:
+    #: ⛔ **不存在** `bound` 取值：让上传行改写已确认满足事实需要伪造 provenance，
+    #:    见 `app.services.case_a_demo._completed_binding` 的文档。
     #: ⛔ `not_bound` **不是**"已确认事实被抹掉"，也⛔ **不是**"上传行被当成已确认事实"。
-    completed_binding: str
-    #: 面向用户的绑定说明（`bound` 时为 `None`）。
+    completed_binding: CompletedBinding
+    #: 面向用户的绑定说明（始终非空：未绑定时必须给出说明）。
     completed_binding_note: str | None
 
 
@@ -268,11 +271,13 @@ def create_case_a_plan(
     )
 
 
-def _binding_note(binding: str) -> str | None:
-    """上传成绩单绑定结果的**如实**说明（⛔ 不含任何成绩/姓名/学号）。"""
+def _binding_note(binding: CompletedBinding) -> str:
+    """上传成绩单绑定结果的**如实**说明（⛔ 不含任何成绩/姓名/学号）。
 
-    if binding == "bound":
-        return None
+    ⛔ 这里没有 `bound` 分支：`CompletedBinding` 只有 `not_bound` 一个取值，
+    因此说明**始终**存在 —— 前端不可能收到一个"没有说明的未绑定状态"。
+    """
+
     return (
         "上传的成绩单没有官方课程号，无法与培养方案已确认的已修事实安全绑定；"
         "本次未使用上传行做满足判定，培养方案已确认的满足事实原样保留。"
