@@ -18,6 +18,27 @@
 - 真实入口不引用 `mock_service`，Provider 运行期异常不被吞掉，也不会回退到 Mock；
 - 永久 Mock 通道仍为 `/api/v1/mock/*`，只有该路径携带 `X-Data-Source: mock`。
 
+## 教师信息：TEACHER ENRICHMENT = BLOCKED_BY_MISSING_LOCAL_RAW_SOURCE
+
+人工验收看到页面大量「任课教师：待核验」。**本机现有的原始 Course Data 里没有教师姓名**，
+因此**不可能**在不抓新数据的前提下恢复教师。审计证据（`_caseA-validation/`，⛔ 不入库）：
+
+```text
+south-campus.json     2898 rows | row keys = classNumber, courseName, courseNum,
+shenzhen-campus.json  1171 rows |            limitNumber, score, selectedNumber,
+                                             teachingTimePlaceStr, yearTerm
+两文件合计 4069 rows：携带 teachingName 字段的行 = 0；非空 teachingName = 0
+teachingTimePlaceStr 解析出 12011 个 segment：教师段为 REDACTED 的 = 0
+```
+
+即：采集器的字段最小化白名单**根本不含 `teachingName`**，
+而 `teachingTimePlaceStr` 里的教师段在**保存前**就已按设计剥离
+（不是脱敏标记，是直接不存在）。
+⚠️ 唯一可能拿到教师姓名的路径是**再次访问实时教务接口**，⛔ 本轮不做。
+
+结论：教师展示本轮**不伪造、不推断**；页面改用中性文案「教师信息暂未同步」，
+并把「待核验」留给真正影响决策的状态（例如排课信息缺失）。
+
 ## Case A production runtime wiring（Gate C，✅ 已实现）
 
 - `backend/app/services/planning_runtime.py` 现在是**环境驱动、fail closed** 的装配边界：

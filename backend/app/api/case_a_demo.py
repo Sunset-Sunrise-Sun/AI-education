@@ -129,6 +129,37 @@ class AcademicRoadmapPayload(BaseModel):
     warnings: list[str]
 
 
+class CurrentElectiveItem(BaseModel):
+    """当前学期**可考虑的专业选修**（候选；⛔ 不自动加入方案）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    course_id: str
+    course_name: str
+    credit: float
+    available_class_count: int
+    conflicting_class_count: int
+    unknown_schedule_class_count: int
+    clear_class_count: int
+    #: 唯一已确认无冲突教学班时给出班号；多个候选时为 `null`（由用户自己选）。
+    unique_clear_class_id: str | None
+    #: 面向用户的中文冲突说明（⛔ 不含机器码）。
+    conflict_label: str
+
+
+class CurrentSemesterLoadPayload(BaseModel):
+    """当前学期学分负荷摘要（产品层口径）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    selected_credit: float
+    suggested_makeup_credit: float
+    suggested_elective_credit: float
+    projected_total_credit: float
+    max_credit: float
+    exceeds_max: bool
+    #: 产品级默认上限说明（⛔ 不是学校政策声明）。
+    policy_note: str
+
+
 class CaseADemoPlanResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     transcript: TranscriptSummary
@@ -155,6 +186,10 @@ class CaseADemoPlanResponse(BaseModel):
     completed_binding: CompletedBinding
     #: 面向用户的绑定说明（始终非空：未绑定时必须给出说明）。
     completed_binding_note: str | None
+    #: 当前学期**可考虑的专业选修**（最多 3 门；⛔ 只是候选，不自动加入方案）。
+    current_elective_recommendations: list[CurrentElectiveItem]
+    #: 当前学期学分负荷摘要（含产品级上限）。
+    current_load: CurrentSemesterLoadPayload
 
 
 class CaseADemoRepairApplyRequest(BaseModel):
@@ -268,6 +303,32 @@ def create_case_a_plan(
         roadmap_note=run.roadmap_note,
         completed_binding=run.completed_binding,
         completed_binding_note=_binding_note(run.completed_binding),
+        current_elective_recommendations=[
+            CurrentElectiveItem(
+                course_id=item.course_id,
+                course_name=item.course_name,
+                credit=item.credit,
+                available_class_count=item.available_class_count,
+                conflicting_class_count=item.conflicting_class_count,
+                unknown_schedule_class_count=item.unknown_schedule_class_count,
+                clear_class_count=item.clear_class_count,
+                unique_clear_class_id=item.unique_clear_class_id,
+                conflict_label=item.conflict_label,
+            )
+            for item in run.current_elective_recommendations
+        ],
+        current_load=CurrentSemesterLoadPayload(
+            selected_credit=run.current_load.selected_credit,
+            suggested_makeup_credit=run.current_load.suggested_makeup_credit,
+            suggested_elective_credit=run.current_load.suggested_elective_credit,
+            projected_total_credit=run.current_load.projected_total_credit,
+            max_credit=run.current_load.max_credit,
+            exceeds_max=run.current_load.exceeds_max,
+            policy_note=(
+                "本学期学分上限为产品默认值；若你在偏好中设置了更低的学分上限，以你的设置为准。"
+                "⛔ 这不是学校政策声明。"
+            ),
+        ),
     )
 
 

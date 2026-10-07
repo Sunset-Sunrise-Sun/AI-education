@@ -15,7 +15,7 @@ import type { CourseOffering, MakeupTask, PlanResult } from '../types/contracts'
  * - 数据**全部**来自 `PlanResult.selected_classes` + 后端返回的 `course_offerings`；
  * - ⛔ 不修改 PlanResult、⛔ 不推断、⛔ 不补数据；
  * - `selected_classes` 是 Planner 的**建议**，不是"已经选上"；
- * - 教师为空显示"任课教师：待核验"（当前没有真实教师数据）；
+ * - 教师为空显示"教师信息暂未同步"（当前没有真实教师数据）；
  * - `meetings = []` 显示"当前数据中无排课信息"（⛔ 不等于没有课、⛔ 不等于无冲突）。
  */
 const props = defineProps<{
@@ -49,7 +49,7 @@ function tagsFor(block: ScheduleBlock): CourseTag[] {
 
 function teacherText(teacher: string | null): string {
   const value = teacher?.trim()
-  if (!value) return '任课教师：待核验'
+  if (!value) return '教师信息暂未同步'
   if (value.toLocaleLowerCase() === 'redacted') return '任课教师：信息已脱敏'
   return `任课教师：${value}`
 }

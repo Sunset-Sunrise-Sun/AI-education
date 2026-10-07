@@ -10,7 +10,7 @@
  * 6. 重复课程不会重复加入；
  * 7. 本学期周课表可渲染 selected_classes；
  * 8. selected class 能按身份 join 到 CourseOffering；
- * 9. 教师为空 → “任课教师：待核验”；
+ * 9. 教师缺失 → “教师信息暂未同步”；
  * 10. `selection_required` 呈现为"待确认"，不是已自动修复；
  * 11. 后端没有 roadmap 字段时**不渲染**未来学期区块、⛔ 不造假数据；
  * 12. 教学班搜索结果仍不超过 20 条。
@@ -218,7 +218,7 @@ describe('本学期周课表', () => {
     expect(wrapper.findAll('[data-testid="case-a-weekly-day"]')).toHaveLength(7)
   })
 
-  it('教师为空时显示“任课教师：待核验”，有值时正常显示', () => {
+  it('教师缺失时显示“教师信息暂未同步”，有值时正常显示', () => {
     const withAndWithout = mount(WeeklyScheduleView, {
       props: {
         planResult: {
@@ -253,7 +253,7 @@ describe('本学期周课表', () => {
         preferredCourses: [],
       },
     })
-    expect(noTeacher.text()).toContain('任课教师：待核验')
+    expect(noTeacher.text()).toContain('教师信息暂未同步')
   })
 
   it('匹配不到教学班时不绘制、不编造时间', () => {
@@ -454,7 +454,7 @@ describe('补修标签语义：只有 required 才算补修', () => {
 })
 
 describe('待确认的调整', () => {
-  it('selection_required 呈现为待确认提示，不表示已自动修复', () => {
+  it('没有结构化候选时给出中性空状态，且不造假按钮', () => {
     const wrapper = mount(PendingAdjustments, {
       props: {
         planResult: {
@@ -469,18 +469,15 @@ describe('待确认的调整', () => {
         courseNameById: {},
       },
     })
-    const card = wrapper.get('[data-testid="case-a-selection-required"]')
-    expect(card.text()).toContain('发现可调整的教学班')
-    // 确认提示（在校区块的说明里，不在单条卡片上）
-    expect(wrapper.text()).toContain('当前版本需要你确认后才能调整')
-    // ⛔ 不得表现成系统已经替用户换班
+    // 统一待确认中心的原则：只有**真实结构化候选**才渲染可操作卡片。
+    // 后端没有给结构化候选时，这里不伪造一张卡片，也不提供假按钮。
+    expect(wrapper.get('[data-testid="case-a-adjustments-empty"]').exists()).toBe(true)
+    expect(wrapper.findAll('button')).toHaveLength(0)
     expect(wrapper.text()).not.toContain('已自动')
     expect(wrapper.text()).not.toContain('已替换')
-    // ⛔ 不得提供一个假的“确认调整”按钮
-    expect(wrapper.findAll('button')).toHaveLength(0)
   })
 
-  it('changes 只作为建议展示，并说明尚未应用', () => {
+  it('plan_result.changes 不再单独重复展示（已并入统一待确认中心）', () => {
     const wrapper = mount(PendingAdjustments, {
       props: {
         planResult: {
@@ -493,10 +490,12 @@ describe('待确认的调整', () => {
         courseNameById: { CSE201: 'Python 程序设计' },
       },
     })
-    const line = wrapper.get('[data-testid="case-a-adjustment-change"]')
-    expect(line.text()).toContain('01 → 02')
-    expect(line.text()).toContain('原班时间冲突')
-    expect(wrapper.text()).toContain('尚未应用')
+    // ⛔ 旧的「系统提出的调整建议」区块已删除：它与结构化换班建议是同一件事，
+    //    重复展示是人工验收明确指出的缺陷。
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(false)
+    // 没有结构化候选 ⇒ 仍然是中性空状态，且不出现机器码
+    expect(wrapper.get('[data-testid="case-a-adjustments-empty"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('from_class')
   })
 
   it('没有待确认事项时给出中性空状态', () => {
@@ -550,13 +549,20 @@ describe('结构化换班建议（explicit confirm only）', () => {
       ],
       unresolved: [],
     })
-    const item = wrapper.get('[data-testid="case-a-repair-proposal"]')
+    const item = wrapper.get('[data-testid="case-a-repair-course"]')
     expect(item.text()).toContain('Python 程序设计')
-    expect(wrapper.get('[data-testid="case-a-repair-flow"]').text()).toContain('01 → 02')
+    // 课程名是主文案，课程号是次级信息
+    expect(item.text()).toContain('CSE201')
+    expect(item.text()).not.toContain('schedule_unknown')
+    const candidate = wrapper.get('[data-testid="case-a-repair-candidate"]')
+    expect(candidate.text()).toContain('02')
+    // 状态中文化：⛔ 不显示 CLEAR 这类机器取值
+    expect(candidate.text()).toContain('已确认与你的课表不冲突')
+    expect(candidate.text()).not.toContain('CLEAR')
     // 候选的时间 / 地点来自 identity join 到的 CourseOffering
     expect(item.text()).toContain('周一')
     expect(item.text()).toContain('南校园')
-    expect(item.text()).toContain('任课教师：待核验')
+    expect(item.text()).toContain('教师信息暂未同步')
   })
 
   it('never applies a proposal on render — only an explicit click emits apply', async () => {
@@ -598,18 +604,24 @@ describe('结构化换班建议（explicit confirm only）', () => {
           risks: [],
           unresolved: [{ type: 'selection_required', message: '需要人工选择教学班' }],
         },
-        repairProposals: { semester: '2026-1', proposals: [], unresolved: [] },
+        // 后端给出"无法生成建议"的结构化原因 ⇒ 只显示摘要，不铺卡片
+        repairProposals: {
+          semester: '2026-1',
+          proposals: [],
+          unresolved: ['课程 CSE201 没有可确认无冲突的同课程候选（no_alternatives）。'],
+        },
         courseNameById: {},
         offerings: [],
       },
     })
-    expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(false)
     // ⛔ 没有任何「采用调整」按钮（策略说明文字里提到这个词是允许的）
     expect(wrapper.findAll('button').filter((b) => b.text().includes('采用调整'))).toHaveLength(0)
-    // 仍然如实提示"需要明确选择"，但⛔ 不假装系统已经能自动替换
-    expect(wrapper.get('[data-testid="case-a-selection-required"]').text()).toContain(
-      '需要明确选择',
-    )
+    // 只显示一条摘要 + 中文原因；⛔ 机器码不作为主文案
+    const summary = wrapper.get('[data-testid="case-a-repair-blockers-summary"]').text()
+    expect(summary).toContain('1 门课程暂时无法生成可靠的换班建议')
+    expect(wrapper.get('[data-testid="case-a-repair-blocker-row"]').text()).toContain('没有同课程替代班')
+    expect(summary).not.toContain('no_alternatives')
   })
 
   it('暂不调整 only hides the row locally and never emits apply', async () => {
@@ -629,21 +641,29 @@ describe('结构化换班建议（explicit confirm only）', () => {
       ],
       unresolved: [],
     })
-    await wrapper.get('[data-testid="case-a-repair-dismiss-CSE201-02"]').trigger('click')
-    expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="case-a-repair-dismiss-CSE201"]').trigger('click')
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(false)
     expect(wrapper.emitted('apply')).toBeUndefined()
   })
 
-  it('shows structured unresolved reasons without parsing any message string', () => {
+  it('shows blocker reasons in Chinese, details collapsed by default', async () => {
     const wrapper = mountAdjustments({
       semester: '2026-1',
       proposals: [],
       unresolved: ['课程 MAR108 在当前数据范围内没有其他可确认无冲突的教学班。'],
     })
-    expect(wrapper.get('[data-testid="case-a-repair-unresolved"]').text()).toContain(
-      '没有其他可确认无冲突的教学班',
+    // 默认只显示摘要：⛔ 不默认铺开逐条卡片
+    expect(wrapper.find('[data-testid="case-a-repair-blocker"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="case-a-repair-blockers-summary"]').text()).toContain(
+      '暂时无法生成可靠的换班建议',
     )
-    expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(false)
+    // 展开后才出现逐条详情，且机器码只在技术详情里
+    await wrapper.get('[data-testid="case-a-repair-blockers-toggle"]').trigger('click')
+    const detail = wrapper.get('[data-testid="case-a-repair-blocker"]')
+    expect(detail.text()).toContain('MAR108')
+    expect(detail.text()).toContain('没有同课程替代班')
+    expect(detail.get('details').text()).toContain('查看技术详情')
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(false)
   })
 })
 
@@ -732,7 +752,7 @@ describe('显式换班：页面编排（确认才生效）', () => {
 
   it('renders the real structured proposal and never applies it on render', async () => {
     const wrapper = await mountAndPlan()
-    expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(true)
     // ⛔ 渲染本身绝不触发 apply
     expect(applyCaseARepair).not.toHaveBeenCalled()
   })
@@ -846,7 +866,7 @@ describe('显式换班：页面编排（确认才生效）', () => {
 
   it('does not present the stale pre-repair plan as current after an applied repair', async () => {
     const wrapper = await mountAndPlan()
-    expect(wrapper.findAll('[data-testid="case-a-adjustment-change"]').length).toBe(1)
+    expect(wrapper.findAll('[data-testid="case-a-repair-course"]').length).toBe(1)
 
     applyCaseARepair.mockResolvedValue({
       status: 'applied',
@@ -866,7 +886,7 @@ describe('显式换班：页面编排（确认才生效）', () => {
 
     // 旧方案整块暂停展示，并明确标记"待刷新"
     expect(wrapper.find('[data-testid="case-a-plan-stale"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(false)
     // ⛔ 旧方案里的 unresolved 事实**不得被清空**（那等于静默丢掉人工复核项）：
     //    它们仍保留在数据里（上方用例覆盖），这里只验证它们不再被当作当前结论展示。
     expect(wrapper.get('[data-testid="case-a-repair-notice"]').text()).toContain('已按你的确认')
@@ -874,7 +894,7 @@ describe('显式换班：页面编排（确认才生效）', () => {
 
   it('keeps the stale mark when the silent replan actually FAILS', async () => {
     const wrapper = await mountAndPlan()
-    expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(true)
 
     applyCaseARepair.mockResolvedValue({
       status: 'applied',
@@ -895,8 +915,8 @@ describe('显式换班：页面编排（确认才生效）', () => {
     // 换班已生效 ⇒ 必须保持"待刷新"
     expect(wrapper.get('[data-testid="case-a-plan-stale"]').text()).toContain('换班之前')
     // ⛔ 陈旧方案内容不得作为当前方案展示
-    expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(false)
     // 如实说明重算失败，并给出用户可执行的下一步
     const failure = wrapper.get('[data-testid="case-a-repair-error"]').text()
     expect(failure).toContain('重新生成方案失败')
@@ -956,7 +976,7 @@ describe('显式换班：页面编排（确认才生效）', () => {
     expect(wrapper.get('[data-testid="case-a-repair-notice"]').text()).toContain('未生效')
     // 未生效 ⇒ 课表没变 ⇒ 原方案仍然有效，⛔ 不应标记为待刷新
     expect(wrapper.find('[data-testid="case-a-plan-stale"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(true)
   })
 })
 
@@ -1150,7 +1170,12 @@ describe('Case A 页面（Phase 1）', () => {
     expect(wrapper.find('[data-testid="case-a-weekly-schedule"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="case-a-weekly-block"]')).toHaveLength(1)
     expect(wrapper.find('[data-testid="case-a-pending-adjustments"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="case-a-selection-required"]').exists()).toBe(true)
+    // 这个 fixture **没有**结构化换班候选 ⇒ 统一待确认中心给出中性空状态。
+    // ⛔ 旧实现会为 `selection_required` 再渲染一张"需要明确选择"的提示卡，
+    //    那与换班建议是同一件事，重复展示已按人工验收要求删除。
+    expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="case-a-adjustments-empty"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="case-a-selection-required"]').exists()).toBe(false)
     // ⛔ 后端未返回 roadmap → 整块不渲染
     expect(wrapper.find('[data-testid="case-a-future-roadmap"]').exists()).toBe(false)
     expect(wrapper.text()).toContain('本学期推荐课表')

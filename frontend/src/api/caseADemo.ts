@@ -55,6 +55,41 @@ export interface CaseADemoResponse {
   completed_binding: string
   /** 面向用户的绑定说明（后端始终给出；缺失时前端用保守文案兜底）。 */
   completed_binding_note: string | null
+  /**
+   * 当前学期**可考虑的专业选修**（最多 3 门）。
+   *
+   * ⛔ 只是候选：不自动加入方案、不自动选教学班；用户明确选择后才加入。
+   * ⛔ 只由 Curriculum 选修组成员 ∩ 已接受教学班的**精确 `course_id`** 推导。
+   */
+  current_elective_recommendations: CurrentElectiveItem[]
+  /** 当前学期学分负荷摘要（含产品级上限）。 */
+  current_load: CurrentSemesterLoad
+}
+
+/** 当前学期可考虑的专业选修（候选）。 */
+export interface CurrentElectiveItem {
+  course_id: string
+  course_name: string
+  credit: number
+  available_class_count: number
+  conflicting_class_count: number
+  unknown_schedule_class_count: number
+  clear_class_count: number
+  /** 唯一已确认无冲突教学班时给出班号；多个候选时为 `null`。 */
+  unique_clear_class_id: string | null
+  /** 面向用户的中文冲突说明（⛔ 不含机器码）。 */
+  conflict_label: string
+}
+
+/** 当前学期学分负荷摘要。 */
+export interface CurrentSemesterLoad {
+  selected_credit: number
+  suggested_makeup_credit: number
+  suggested_elective_credit: number
+  projected_total_credit: number
+  max_credit: number
+  exceeds_max: boolean
+  policy_note: string
 }
 
 /** 显式换班的响应：应用后的课表 + 重新计算的建议。 */

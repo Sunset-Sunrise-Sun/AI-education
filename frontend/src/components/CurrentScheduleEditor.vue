@@ -15,7 +15,7 @@ import type { CourseOffering } from '../types/contracts'
  * - 批量加入复用既有 `toggleCurrentScheduleOffering`（经 `applyBatchAdd`），
  *   ⛔ 不绕过重复检查；同一门课出现多个教学班时 **fail closed** 并提示用户先保留一个；
  * - `meetings = []` 使用中性文案（⛔ 不等于没有课 / 无冲突）；
- * - 教师为空显示"任课教师：待核验"（⛔ 不造教师数据）；
+ * - 教师为空显示"教师信息暂未同步"（⛔ 不造教师数据）；
  * - ⛔ 本轮**不做**截图识别：入口只弹说明，不上传、不 OCR、不调用模型。
  */
 const props = defineProps<{
@@ -135,7 +135,7 @@ const visibleSchedule = computed(() =>
 
 function teacherText(offering: CourseOffering): string {
   const value = offering.teacher?.trim()
-  if (!value) return '任课教师：待核验'
+  if (!value) return '教师信息暂未同步'
   if (value.toLocaleLowerCase() === 'redacted') return '任课教师：信息已脱敏'
   return `任课教师：${value}`
 }

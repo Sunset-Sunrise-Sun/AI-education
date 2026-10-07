@@ -23,6 +23,7 @@ import PendingAdjustments from './PendingAdjustments.vue'
 import PlanResultPanel from './PlanResultPanel.vue'
 import PreferenceForm from './PreferenceForm.vue'
 import PreferencePanel from './PreferencePanel.vue'
+import CurrentElectiveSection from './CurrentElectiveSection.vue'
 import SectionCard from './SectionCard.vue'
 import WeeklyScheduleView from './WeeklyScheduleView.vue'
 
@@ -148,6 +149,63 @@ const bindingNotice = computed(() => {
   )
 })
 
+/* ---- 学业方案总览（用户第一眼看到的东西） ---- */
+const overviewCredit = computed(() => {
+  const load = result.value?.current_load
+  return load ? `${load.projected_total_credit} 学分` : '—'
+})
+const overviewMakeup = computed(() => {
+  const tasks = result.value?.makeup_tasks ?? []
+  const required = tasks.filter((task) => task.status === 'required').length
+  const pending = tasks.filter(
+    (task) => task.status === 'manual_confirmation' || task.status === 'possibly_equivalent',
+  ).length
+  if (required === 0 && pending === 0) return '暂无'
+  return pending > 0 ? `${required} 门（${pending} 门待确认）` : `${required} 门`
+})
+const overviewElective = computed(() => {
+  const load = result.value?.current_load
+  return load ? `${load.suggested_elective_credit} 学分` : '—'
+})
+const overviewActionCount = computed(() => {
+  const proposals = result.value?.repair_proposals
+  if (!proposals) return '0 项'
+  const courses = new Set(proposals.proposals.map((item) => item.course_id))
+  return `${courses.size + proposals.unresolved.length} 项`
+})
+const overviewTermCount = computed(() => {
+  const terms = result.value?.roadmap?.future_semesters ?? []
+  return terms.length > 0 ? `${terms.length} 个` : '暂无'
+})
+
+/** 最多两条最关键的提示（⛔ 不把 21 条 unresolved 堆给用户）。 */
+const overviewHints = computed(() => {
+  const hints: string[] = []
+  const current = result.value
+  if (!current) return hints
+  const load = current.current_load
+  if (load?.exceeds_max) {
+    hints.push(
+      `本学期预计 ${load.projected_total_credit} 学分，超过你设置的上限 ${load.max_credit} 学分，建议减少选课。`,
+    )
+  }
+  const courses = new Set((current.repair_proposals?.proposals ?? []).map((p) => p.course_id))
+  if (courses.size > 0) {
+    hints.push(`有 ${courses.size} 门课程可以换到与你课表不冲突的教学班，需要你确认后才会生效。`)
+  }
+  const elective = current.current_elective_recommendations ?? []
+  if (elective.length > 0 && hints.length < 2) {
+    hints.push(
+      `你的专业选修还差学分，本学期有 ${elective.length} 门可选专业课程（见下方「本学期专业选修建议」）。`,
+    )
+  }
+  const blockers = current.repair_proposals?.unresolved ?? []
+  if (blockers.length > 0 && hints.length < 2) {
+    hints.push(`另有 ${blockers.length} 门课程暂时无法给出可靠的换班建议，可在「需要你处理」里查看原因。`)
+  }
+  return hints.slice(0, 2)
+})
+
 async function loadOfferings(): Promise<void> {
   error.value = ''
   try {
@@ -190,6 +248,16 @@ function removeOffering(offering: CourseOffering): void {
 
 /* 意向课程（课程级，写入 Preference.preferredCourses；重复课程不会重复加入） */
 const preferredCourses = computed(() => form.value.preference.preferredCourses)
+
+/**
+ * 「加入考虑」= 把该课程写入意向课程（`preference.preferredCourses`）。
+ *
+ * ⛔ 只是**偏好**，⛔ 不是选课，也⛔ 不代表学校已认定；
+ * 用户点「生成并优化我的转专业学业方案」后才会重新规划。
+ */
+function addElectiveToIntent(payload: { courseId: string }): void {
+  addPreferred(payload.courseId)
+}
 
 function addPreferred(courseId: string): void {
   form.value = {
@@ -379,6 +447,36 @@ onMounted(loadOfferings)
       </p>
 
       <template v-if="result && !planStale">
+        <!-- ① 学业方案总览：用户第一眼要知道"这学期怎么上、我要处理什么、未来怎么走" -->
+        <section class="overview" data-testid="case-a-overview">
+          <h2 class="overview__title">我的转专业方案</h2>
+          <div class="overview__grid">
+            <div>
+              <strong data-testid="case-a-overview-credit">{{ overviewCredit }}</strong>
+              <span>本学期预计学分</span>
+            </div>
+            <div>
+              <strong data-testid="case-a-overview-makeup">{{ overviewMakeup }}</strong>
+              <span>补修课程</span>
+            </div>
+            <div>
+              <strong data-testid="case-a-overview-elective">{{ overviewElective }}</strong>
+              <span>专业选修学分</span>
+            </div>
+            <div>
+              <strong data-testid="case-a-overview-actions">{{ overviewActionCount }}</strong>
+              <span>需要我确认</span>
+            </div>
+            <div>
+              <strong data-testid="case-a-overview-terms">{{ overviewTermCount }}</strong>
+              <span>未来学期</span>
+            </div>
+          </div>
+          <ul v-if="overviewHints.length > 0" class="overview__hints" data-testid="case-a-overview-hints">
+            <li v-for="(hint, index) in overviewHints" :key="index">{{ hint }}</li>
+          </ul>
+        </section>
+
         <!-- ⛔ 必须在下方的方案结果**之前**如实说明：上传的成绩单有没有参与满足判定 -->
         <p v-if="bindingNotice" class="case-a-binding" data-testid="case-a-binding-notice">
           <strong>上传的成绩单未参与「已修完 / 已满足」判定。</strong>
@@ -412,6 +510,18 @@ onMounted(loadOfferings)
             :current-schedule="form.currentSchedule"
             :makeup-tasks="result.makeup_tasks"
             :preferred-courses="preferredCourses"
+          />
+        </SectionCard>
+
+        <SectionCard
+          :mock="false"
+          title="本学期专业选修建议"
+          subtitle="候选来自培养方案选修组 ∩ 本学期已接受教学班；⛔ 系统不会替你选课。"
+        >
+          <CurrentElectiveSection
+            :recommendations="result.current_elective_recommendations"
+            :load="result.current_load"
+            @add="addElectiveToIntent"
           />
         </SectionCard>
 
@@ -536,6 +646,53 @@ onMounted(loadOfferings)
   border-radius: var(--radius-sm);
   font-size: 13px;
   line-height: 1.7;
+}
+
+/* 学业方案总览：页面第一屏，先回答"这学期怎么样、我要做什么"。 */
+.overview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.overview__title {
+  margin: 0;
+  font-size: 18px;
+  color: var(--text);
+}
+
+.overview__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 12px;
+}
+
+.overview__grid div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.overview__grid strong {
+  font-size: 18px;
+  color: #3276df;
+}
+
+.overview__grid span {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.overview__hints {
+  margin: 0;
+  padding-left: 20px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.8;
 }
 
 .case-a-apply-notice {

@@ -1,25 +1,32 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { RepairProposal, RepairProposalSet } from '../types/caseAPlanning'
+import type { RepairProposalSet } from '../types/caseAPlanning'
 import type { CourseOffering, PlanResult } from '../types/contracts'
+import { EMPTY_MEETINGS_DATA_TEXT, formatMeetingLine } from '../utils/labels'
 import {
-  EMPTY_MEETINGS_DATA_TEXT,
-  displayOrDash,
-  formatMeetingLine,
-} from '../utils/labels'
+  MAX_INITIAL_CANDIDATES,
+  buildRepairView,
+  type CourseRepairGroup,
+} from '../utils/repairView'
 
 /**
- * 待你确认的调整。
+ * 「需要你处理」—— 页面**唯一**的待确认中心。
  *
- * 数据来源与边界（⛔ 不得越界）：
+ * 人工验收发现的问题与本组件的修复（⛔ 不得回退）：
  *
- * - **结构化换班建议**来自后端 `repair_proposals`；本组件**不做**任何换班算法；
- * - ⛔ 不从 `plan_result.unresolved[].message` / `reason` 里解析 `class_id` 等业务字段：
- *   身份一律取自结构化字段（`course_id` / `current_class_id` / `candidate_class_id`）；
- * - ⛔ 生成建议**不等于**应用建议：只有用户点击「采用调整」才会 emit `apply`，
- *   由页面调用后端 repair apply 接口；
- * - ⛔ 本组件不修改 `current_schedule`，也不自行判定替换是否成功；
- * - 「暂不调整」只是**本地视图**收起（⛔ 不改后端状态、⛔ 不删建议）。
+ * 1. 同一门课的 N 个候选教学班曾被铺成 N 张卡片（劳动教育 PUB178 × 60）
+ *    ⇒ 现在按 `semester + course_id` 分组成**一门课一张卡片**；
+ * 2. 每门课默认只显示前 `MAX_INITIAL_CANDIDATES`（3）个候选，其余折叠为
+ *    「查看其余 N 个」；
+ * 3. 「无法给出换班建议」曾铺 11 张大卡片、主文案还是 `UNKNOWN` / `schedule_unknown`
+ *    ⇒ 现在只显示**一条摘要**（按原因分类计数），详情默认折叠；
+ * 4. 机器码只出现在「技术详情」里，⛔ 不作为主文案；
+ * 5. ⛔ 没有 CLEAR 候选时不使用「可确认」字样，改称「可考虑的替代教学班」。
+ *
+ * 其余边界保持不变：
+ * - ⛔ 不做任何换班算法；身份一律取自结构化字段；
+ * - ⛔ 生成建议 ≠ 应用建议：只有用户点击「采用调整」才 emit `apply`；
+ * - ⛔ 不自行判定替换是否成功；「暂不调整」只是本地收起。
  */
 const props = withDefaults(
   defineProps<{
@@ -42,51 +49,44 @@ const emit = defineEmits<{
   ): void
 }>()
 
-const SELECTION_REQUIRED_TITLE = '发现可调整的教学班'
-const SELECTION_REQUIRED_BODY =
-  '系统找到了其他无时间冲突的教学班，当前版本需要你确认后才能调整。'
+/** 用户本地「暂不调整」的课程号（纯视图状态）。 */
+const dismissedCourses = ref<Set<string>>(new Set())
+/** 已展开全部候选的课程号。 */
+const expandedCourses = ref<Set<string>>(new Set())
+/** 「无法生成建议」详情是否展开。 */
+const blockersOpen = ref(false)
 
-/** 用户本地"暂不调整"的建议 id（纯视图状态）。 */
-const dismissed = ref<Set<string>>(new Set())
-
-function dismiss(proposalId: string): void {
-  const next = new Set(dismissed.value)
-  next.add(proposalId)
-  dismissed.value = next
+function toggleExpand(courseId: string): void {
+  const next = new Set(expandedCourses.value)
+  if (next.has(courseId)) next.delete(courseId)
+  else next.add(courseId)
+  expandedCourses.value = next
 }
 
-const changes = computed(() => props.planResult?.changes ?? [])
+function dismiss(courseId: string): void {
+  const next = new Set(dismissedCourses.value)
+  next.add(courseId)
+  dismissedCourses.value = next
+}
 
-const allProposals = computed<RepairProposal[]>(() => props.repairProposals?.proposals ?? [])
-const visibleProposals = computed(() =>
-  allProposals.value.filter((item) => !dismissed.value.has(item.proposal_id)),
+const repairView = computed(() =>
+  buildRepairView(
+    props.repairProposals?.proposals ?? [],
+    props.repairProposals?.unresolved ?? [],
+    props.courseNameById,
+    MAX_INITIAL_CANDIDATES,
+  ),
 )
 
-const selectionRequired = computed(
-  () => (props.planResult?.unresolved ?? []).filter((item) => item.type === 'selection_required'),
+const visibleGroups = computed(() =>
+  repairView.value.groups.filter((group) => !dismissedCourses.value.has(group.courseId)),
 )
 
-const otherUnresolved = computed(
-  () => (props.planResult?.unresolved ?? []).filter((item) => item.type !== 'selection_required'),
-)
+const blockerCount = computed(() => repairView.value.blockers.length)
 
-const proposalUnresolved = computed(() => props.repairProposals?.unresolved ?? [])
-
-/**
- * 只有**没有**任何结构化候选时，才退回"只有提示、没有候选"的说明。
- * ⛔ 这**不是**失败：它表示当前输入里没有可确认无冲突的候选。
- */
-const showSelectionNotice = computed(
-  () => allProposals.value.length === 0 && selectionRequired.value.length > 0,
-)
-
+/** 只有真实结构化候选才允许出现「采用调整」。 */
 const hasAnything = computed(
-  () =>
-    changes.value.length > 0 ||
-    visibleProposals.value.length > 0 ||
-    showSelectionNotice.value ||
-    proposalUnresolved.value.length > 0 ||
-    otherUnresolved.value.length > 0,
+  () => visibleGroups.value.length > 0 || blockerCount.value > 0,
 )
 
 const offeringByKey = computed(() => {
@@ -97,55 +97,58 @@ const offeringByKey = computed(() => {
   return map
 })
 
-function offeringOf(proposal: RepairProposal, classId: string): CourseOffering | null {
-  return offeringByKey.value.get(`${proposal.semester}::${proposal.course_id}::${classId}`) ?? null
+function offeringOf(courseId: string, classId: string): CourseOffering | null {
+  const semester = props.repairProposals?.semester ?? ''
+  return offeringByKey.value.get(`${semester}::${courseId}::${classId}`) ?? null
 }
 
-function courseLabel(courseId: string): string {
-  const name = props.courseNameById[courseId]
-  return name ? `${courseId} · ${name}` : courseId
+/** 折叠后仍可见的候选 / 是否还有更多。 */
+function visibleCandidates(group: CourseRepairGroup) {
+  if (expandedCourses.value.has(group.courseId)) return group.candidates
+  return group.candidates.slice(0, MAX_INITIAL_CANDIDATES)
 }
 
-/** 任课教师：缺数据时如实显示"待核验"，⛔ 不编造。 */
+function hiddenCount(group: CourseRepairGroup): number {
+  return Math.max(0, group.candidates.length - MAX_INITIAL_CANDIDATES)
+}
+
+/** 任课教师：缺数据时如实说明"暂未同步"，⛔ 不编造。 */
 function teacherText(offering: CourseOffering | null): string {
   const value = offering?.teacher?.trim()
-  if (!value) return '任课教师：待核验'
-  if (value.toLowerCase() === 'redacted') return '任课教师：信息已脱敏'
+  if (!value) return '教师信息暂未同步'
+  if (value.toLowerCase() === 'redacted') return '教师信息暂未同步'
   return `任课教师：${value}`
 }
 
 /** 上课时间：`meetings = []` 表示**排课信息未知**，⛔ 不得说成"无课/无冲突"。 */
 function meetingText(offering: CourseOffering | null): string {
-  if (!offering) return '上课信息待核验'
+  if (!offering) return '排课信息尚未同步'
   if (offering.meetings.length === 0) return EMPTY_MEETINGS_DATA_TEXT
   return offering.meetings.map((item) => formatMeetingLine(item)).join('；')
 }
 
 function placeText(offering: CourseOffering | null): string {
-  if (!offering || offering.meetings.length === 0) return '校区 / 教室待核验'
+  if (!offering || offering.meetings.length === 0) return '校区 / 教室尚未同步'
   const parts = offering.meetings
     .map((item) => [item.campus, item.classroom].filter(Boolean).join(' / '))
     .filter((value) => value.length > 0)
-  return parts.length > 0 ? parts.join('；') : '校区 / 教室待核验'
+  return parts.length > 0 ? parts.join('；') : '校区 / 教室尚未同步'
 }
 
-/** 原班状态：`UNKNOWN` = 排课信息待核验，⛔ 不写成"已确认冲突"。 */
+/** 候选状态的中文说明（⛔ 不显示 CLEAR / UNKNOWN 等机器取值）。 */
 function stateLabel(state: string): string {
-  if (state === 'CONFLICT') return '已确认时间冲突'
+  if (state === 'CLEAR') return '已确认与你的课表不冲突'
+  if (state === 'CONFLICT') return '与你的课表冲突'
   if (state === 'UNKNOWN') return '排课信息待核验'
-  return state
+  return '状态待核验'
 }
 
-function stateTagClass(state: string): string {
-  return state === 'CONFLICT' ? 'tag--unresolved-manual' : 'tag--unresolved-schedule'
-}
-
-function onApply(proposal: RepairProposal): void {
+function onApply(courseId: string, fromClassId: string, toClassId: string): void {
   emit('apply', {
-    semester: proposal.semester,
-    courseId: proposal.course_id,
-    fromClassId: proposal.current_class_id,
-    toClassId: proposal.candidate_class_id,
+    semester: props.repairProposals?.semester ?? '',
+    courseId,
+    fromClassId,
+    toClassId,
   })
 }
 </script>
@@ -153,166 +156,132 @@ function onApply(proposal: RepairProposal): void {
 <template>
   <div class="adjust" data-testid="case-a-pending-adjustments">
     <p v-if="!hasAnything" class="adjust__empty" data-testid="case-a-adjustments-empty">
-      本次方案没有需要你确认的调整项。
+      目前没有需要你处理的事项：本学期方案里没有等待你确认的调整。
     </p>
 
     <template v-else>
-      <!-- 提醒：换班必须由你确认 -->
       <p class="adjust__hint" data-testid="case-a-adjustments-policy">
-        以下调整由后端返回；系统<strong>不会自行改变</strong>你的当前课表，
-        只有你点击「采用调整」之后才会生效。
+        系统<strong>不会自行改变</strong>你的课表；只有你点击「采用调整」之后才会生效。
       </p>
 
-      <!-- 已提出但**尚未应用**的调整建议 -->
-      <section v-if="changes.length > 0" class="adjust__group">
-        <h3 class="adjust__title">系统提出的调整建议（{{ changes.length }} 项，尚未应用）</h3>
+      <!-- ① 可操作的换班：一门课一张卡片 -->
+      <section v-if="visibleGroups.length > 0" class="adjust__group">
+        <h3 class="adjust__title">可以换班（{{ visibleGroups.length }} 门课程）</h3>
         <ul class="adjust__list">
           <li
-            v-for="change in changes"
-            :key="`${change.course_id}-${change.from_class}-${change.to_class}`"
+            v-for="group in visibleGroups"
+            :key="group.courseId"
             class="adjust__item"
-            data-testid="case-a-adjustment-change"
+            data-testid="case-a-repair-course"
           >
             <div class="adjust__item-head">
-              <strong>{{ courseLabel(change.course_id) }}</strong>
-              <span class="mono adjust__flow">
-                {{ displayOrDash(change.from_class) }} → {{ displayOrDash(change.to_class) }}
-              </span>
+              <strong data-testid="case-a-repair-course-name">{{ group.courseName }}</strong>
+              <span class="mono adjust__code">{{ group.courseId }}</span>
+              <span class="tag">{{ group.headline }}</span>
             </div>
-            <p class="adjust__reason">{{ change.reason }}</p>
-          </li>
-        </ul>
-      </section>
+            <p class="adjust__reason">{{ group.note }}</p>
+            <p class="adjust__meta">
+              当前教学班：<span class="mono">{{ group.currentClassId ?? '—' }}</span>
+            </p>
 
-      <!-- 结构化换班建议（可确认执行） -->
-      <section v-if="visibleProposals.length > 0" class="adjust__group">
-        <h3 class="adjust__title">
-          可确认的换班建议（{{ visibleProposals.length }} 项，尚未应用）
-        </h3>
-        <p class="adjust__hint">
-          每条建议都给出了具体的候选教学班。确认后系统只会把该课程的当前教学班
-          替换为你选择的那一个，并重新校验整份课表。
-        </p>
-        <ul class="adjust__list">
-          <li
-            v-for="proposal in visibleProposals"
-            :key="proposal.proposal_id"
-            class="adjust__item"
-            data-testid="case-a-repair-proposal"
-          >
-            <div class="adjust__item-head">
-              <strong>{{ courseLabel(proposal.course_id) }}</strong>
-              <span class="mono adjust__flow" data-testid="case-a-repair-flow">
-                {{ proposal.current_class_id }} → {{ proposal.candidate_class_id }}
-              </span>
-              <span class="tag" :class="stateTagClass(proposal.original_state)">
-                {{ stateLabel(proposal.original_state) }}
-              </span>
-            </div>
-
-            <dl class="adjust__detail">
-              <div class="adjust__detail-row">
-                <dt>当前教学班</dt>
-                <dd class="mono">{{ proposal.current_class_id }}</dd>
-              </div>
-              <div class="adjust__detail-row">
-                <dt>候选教学班</dt>
-                <dd class="mono">{{ proposal.candidate_class_id }}</dd>
-              </div>
-              <div class="adjust__detail-row">
-                <dt>候选上课时间</dt>
-                <dd>{{ meetingText(offeringOf(proposal, proposal.candidate_class_id)) }}</dd>
-              </div>
-              <div class="adjust__detail-row">
-                <dt>候选校区 / 教室</dt>
-                <dd>{{ placeText(offeringOf(proposal, proposal.candidate_class_id)) }}</dd>
-              </div>
-              <div class="adjust__detail-row">
-                <dt>候选任课教师</dt>
-                <dd>{{ teacherText(offeringOf(proposal, proposal.candidate_class_id)) }}</dd>
-              </div>
-              <div class="adjust__detail-row">
-                <dt>当前班任课教师</dt>
-                <dd>{{ teacherText(offeringOf(proposal, proposal.current_class_id)) }}</dd>
-              </div>
-            </dl>
-
-            <p class="adjust__reason">{{ proposal.reason }}</p>
+            <ul class="adjust__candidates">
+              <li
+                v-for="candidate in visibleCandidates(group)"
+                :key="candidate.classId"
+                class="adjust__candidate"
+                data-testid="case-a-repair-candidate"
+              >
+                <div class="adjust__candidate-head">
+                  <span class="mono">{{ candidate.classId }}</span>
+                  <span
+                    class="tag"
+                    :class="candidate.confirmedClear ? '' : 'tag--unresolved-schedule'"
+                  >{{ stateLabel(candidate.state) }}</span>
+                </div>
+                <p class="adjust__candidate-detail">
+                  {{ meetingText(offeringOf(group.courseId, candidate.classId)) }}
+                  · {{ placeText(offeringOf(group.courseId, candidate.classId)) }}
+                  · {{ teacherText(offeringOf(group.courseId, candidate.classId)) }}
+                </p>
+                <div class="adjust__actions">
+                  <button
+                    class="button button--small"
+                    type="button"
+                    :disabled="applying"
+                    :data-testid="`case-a-repair-apply-${group.courseId}-${candidate.classId}`"
+                    @click="onApply(group.courseId, group.currentClassId ?? '', candidate.classId)"
+                  >
+                    采用调整
+                  </button>
+                </div>
+              </li>
+            </ul>
 
             <div class="adjust__actions">
               <button
-                class="button button--small"
+                v-if="hiddenCount(group) > 0 && !expandedCourses.has(group.courseId)"
+                class="button button--small button--ghost"
                 type="button"
-                :disabled="applying"
-                :data-testid="`case-a-repair-apply-${proposal.course_id}-${proposal.candidate_class_id}`"
-                @click="onApply(proposal)"
+                :data-testid="`case-a-repair-expand-${group.courseId}`"
+                @click="toggleExpand(group.courseId)"
               >
-                采用调整
+                查看其余 {{ hiddenCount(group) }} 个候选
               </button>
               <button
-                class="button button--small"
+                class="button button--small button--ghost"
                 type="button"
-                :data-testid="`case-a-repair-dismiss-${proposal.course_id}-${proposal.candidate_class_id}`"
-                @click="dismiss(proposal.proposal_id)"
+                :data-testid="`case-a-repair-dismiss-${group.courseId}`"
+                @click="dismiss(group.courseId)"
               >
-                暂不调整
+                保留当前班
               </button>
             </div>
           </li>
         </ul>
       </section>
 
-      <!-- 没有可确认候选时的中性说明（⛔ 不是失败，也不替用户决定） -->
-      <section v-if="showSelectionNotice" class="adjust__group">
-        <h3 class="adjust__title">{{ SELECTION_REQUIRED_TITLE }}（{{ selectionRequired.length }} 项）</h3>
-        <p class="adjust__hint">{{ SELECTION_REQUIRED_BODY }}</p>
-        <ul class="adjust__list">
+      <!-- ② 无法生成建议：只显示一条摘要，详情默认折叠 -->
+      <section v-if="blockerCount > 0" class="adjust__group">
+        <h3 class="adjust__title" data-testid="case-a-repair-blockers-summary">
+          有 {{ blockerCount }} 门课程暂时无法生成可靠的换班建议
+        </h3>
+        <ul class="adjust__summary">
           <li
-            v-for="(item, index) in selectionRequired"
-            :key="`selection-required-${index}`"
+            v-for="row in repairView.blockerSummary"
+            :key="row.kind"
+            data-testid="case-a-repair-blocker-row"
+          >
+            {{ row.count }} 门：{{ row.label }}
+          </li>
+        </ul>
+        <button
+          class="button button--small button--ghost"
+          type="button"
+          data-testid="case-a-repair-blockers-toggle"
+          @click="blockersOpen = !blockersOpen"
+        >
+          {{ blockersOpen ? '收起详情' : '查看详情' }}
+        </button>
+
+        <ul v-if="blockersOpen" class="adjust__list">
+          <li
+            v-for="blocker in repairView.blockers"
+            :key="`${blocker.courseId}-${blocker.reasonKind}`"
             class="adjust__item adjust__item--pending"
-            data-testid="case-a-selection-required"
+            data-testid="case-a-repair-blocker"
           >
             <div class="adjust__item-head">
-              <span class="tag tag--unresolved-selection">需要明确选择</span>
+              <strong>{{ blocker.courseName }}</strong>
+              <span v-if="blocker.courseId" class="mono adjust__code">{{ blocker.courseId }}</span>
             </div>
-            <p class="adjust__reason">{{ item.message }}</p>
-            <p class="adjust__note">
-              当前输入里没有可确认无冲突的候选教学班，因此系统不会替你决定，也不会改动课表。
+            <p class="adjust__reason">{{ blocker.reasonLabel }}</p>
+            <p v-if="blocker.currentClassId" class="adjust__meta">
+              当前教学班：<span class="mono">{{ blocker.currentClassId }}</span>
             </p>
-          </li>
-        </ul>
-      </section>
-
-      <!-- 无法给出建议的教学班（结构化原因） -->
-      <section v-if="proposalUnresolved.length > 0" class="adjust__group">
-        <h3 class="adjust__title">无法给出换班建议的课程（{{ proposalUnresolved.length }} 项）</h3>
-        <ul class="adjust__list">
-          <li
-            v-for="(item, index) in proposalUnresolved"
-            :key="`proposal-unresolved-${index}`"
-            class="adjust__item adjust__item--pending"
-            data-testid="case-a-repair-unresolved"
-          >
-            <p class="adjust__reason">{{ item }}</p>
-          </li>
-        </ul>
-      </section>
-
-      <!-- 其他未决事项 -->
-      <section v-if="otherUnresolved.length > 0" class="adjust__group">
-        <h3 class="adjust__title">其他待确认事项（{{ otherUnresolved.length }} 项）</h3>
-        <ul class="adjust__list">
-          <li
-            v-for="(item, index) in otherUnresolved"
-            :key="`${item.type}-${index}`"
-            class="adjust__item"
-            data-testid="case-a-adjustment-unresolved"
-          >
-            <div class="adjust__item-head">
-              <span class="mono">{{ item.type }}</span>
-            </div>
-            <p class="adjust__reason">{{ item.message }}</p>
+            <details class="adjust__tech">
+              <summary>查看技术详情</summary>
+              <p class="adjust__raw">{{ blocker.rawMessage }}</p>
+            </details>
           </li>
         </ul>
       </section>
@@ -330,7 +299,9 @@ function onApply(proposal: RepairProposal): void {
 .adjust__empty,
 .adjust__hint,
 .adjust__reason,
-.adjust__note {
+.adjust__meta,
+.adjust__candidate-detail,
+.adjust__raw {
   margin: 0;
 }
 
@@ -360,13 +331,21 @@ function onApply(proposal: RepairProposal): void {
   line-height: 1.7;
 }
 
-.adjust__list {
+.adjust__list,
+.adjust__candidates,
+.adjust__summary {
   display: flex;
   flex-direction: column;
   gap: 8px;
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.adjust__summary {
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.8;
 }
 
 .adjust__item {
@@ -384,41 +363,38 @@ function onApply(proposal: RepairProposal): void {
   background: #fffdf5;
 }
 
-.adjust__item-head {
+.adjust__item-head,
+.adjust__candidate-head {
   display: flex;
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
 }
 
-.adjust__flow {
+.adjust__code {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.adjust__meta {
   color: #475569;
   font-size: 12px;
 }
 
-.adjust__detail {
+.adjust__candidate {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  margin: 0;
+  padding: 10px 12px;
+  border-left: 3px solid #dbeafe;
+  background: #f8fafc;
+  border-radius: var(--radius-sm);
 }
 
-.adjust__detail-row {
-  display: grid;
-  grid-template-columns: 120px minmax(0, 1fr);
-  gap: 8px;
+.adjust__candidate-detail {
+  color: var(--text-muted);
   font-size: 12px;
   line-height: 1.7;
-}
-
-.adjust__detail-row dt {
-  color: var(--text-muted);
-}
-
-.adjust__detail-row dd {
-  margin: 0;
-  color: #334155;
-  overflow-wrap: anywhere;
 }
 
 .adjust__reason {
@@ -427,10 +403,15 @@ function onApply(proposal: RepairProposal): void {
   line-height: 1.7;
 }
 
-.adjust__note {
-  color: #b45309;
+.adjust__tech {
   font-size: 12px;
-  line-height: 1.7;
+  color: var(--text-muted);
+}
+
+.adjust__raw {
+  margin-top: 4px;
+  color: #64748b;
+  overflow-wrap: anywhere;
 }
 
 .adjust__actions {

@@ -43,7 +43,8 @@ historical（或未被裁决）的区间不参与未来规划，并如实记入 
 
 from __future__ import annotations
 
-from collections.abc import Sequence, Set as AbstractSet
+from collections.abc import Mapping, Sequence, Set as AbstractSet
+from dataclasses import dataclass
 from dataclasses import dataclass
 
 from app.curriculum.case import CurriculumCase
@@ -57,16 +58,38 @@ from app.models.contracts import CourseOffering, MakeupStatus, MakeupTask
 from app.path_planner import AcademicRoadmap, FutureSemester, build_academic_roadmap
 
 __all__ = [
+    "CASE_A_CURRENT_HARD_MAX_CREDIT",
+    "CASE_A_FUTURE_HARD_MAX_CREDIT",
+    "CASE_A_FUTURE_SOFT_TARGET_CREDIT",
     "CaseARoadmapError",
+    "CurrentElectiveRecommendation",
+    "CurrentSemesterLoad",
     "CurriculumTermChain",
     "bind_current_semester_courses",
     "build_case_a_roadmap",
+    "current_semester_load",
     "derive_term_chain",
     "future_semesters_after",
     "observed_term_facts",
+    "recommend_current_electives",
     "requirement_kind_label",
     "resolve_course_target_terms",
 ]
+
+#: 产品级学期学分政策（Case A 编排层，⛔ 不是学校政策声明）。
+#:
+#: - `HARD_MAX`：任何学期（当前与未来）的建议学分**不得超过**它；超出的课程
+#:   顺延到后续学期，而不是把一学期塞成 40/50 学分；
+#: - `SOFT_TARGET`：常规目标区间上限。规划时以 `SOFT_TARGET` 作为每学期预算，
+#:   使学分分布更贴近真实可执行负荷；当某个学期**必须**多修才能满足截止学期时，
+#:   允许上浮到 `HARD_MAX`，但仍不得突破它。
+#:
+#: ⚠️ 用户显式给出的 `Preference.max_credit` **优先**于这两个默认值
+#: （且用户值超过 HARD_MAX 时按 HARD_MAX 收口：⛔ 不因用户输入就产出不可执行的学期）。
+CASE_A_FUTURE_SOFT_TARGET_CREDIT = 26.0
+CASE_A_FUTURE_HARD_MAX_CREDIT = 30.0
+#: 当前学期（section-level）学分的硬上限；与未来学期同口径。
+CASE_A_CURRENT_HARD_MAX_CREDIT = 30.0
 
 
 class CaseARoadmapError(ValueError):
@@ -353,6 +376,205 @@ def _is_member(course: CurriculumCourse, group: CurriculumGroup) -> bool:
     return course.group_id is not None and course.group_id == group.group_id
 
 
+@dataclass(frozen=True, slots=True)
+class CurrentElectiveRecommendation:
+    """当前学期**可考虑的专业选修**（只由 Curriculum × accepted offerings 推导）。
+
+    ⛔ 不按课程名匹配、⛔ 不推断等价、⛔ 不猜测开课；只使用
+    `CSE-ELECTIVE-POOL` 的**真实成员**与**已接受**教学班的精确 `course_id` 交集。
+    """
+
+    course_id: str
+    course_name: str
+    credit: float
+    #: 本学期可用教学班数（已接受 offerings 中该课程的教学班个数）。
+    available_class_count: int
+    #: 与当前课表**已知**冲突的教学班数（UNKNOWN 不计入冲突）。
+    conflicting_class_count: int
+    #: 排课信息待核验（`meetings=[]` 或含空 meetings）的教学班数。
+    unknown_schedule_class_count: int
+    #: 已确认无冲突的教学班数。
+    clear_class_count: int
+    #: 唯一 CLEAR 教学班时直接给出其班号；否则为 None（需用户自己选）。
+    unique_clear_class_id: str | None
+    #: 面向用户的冲突状态说明（中文化，⛔ 不出现机器码）。
+    conflict_label: str
+
+
+def recommend_current_electives(
+    case: CurriculumCase,
+    current_schedule: Sequence[CourseOffering],
+    offerings: Sequence[CourseOffering],
+    *,
+    elective_group_id: str,
+    already_taken_course_ids: AbstractSet[str] | None = None,
+    remaining_elective_credit: float | None = None,
+    max_courses: int = 3,
+) -> tuple[CurrentElectiveRecommendation, ...]:
+    """给出本学期**可考虑的专业选修**建议（最多 `max_courses` 门）。
+
+    用途：当"选修还缺学分"时，本学期方案里**不应该一门选修都没有**，
+    但⛔ 也不能把整个选修池塞进方案。因此这里只**列出候选**供用户自己选择，
+    ⛔ 不自动加入、⛔ 不自动选教学班。
+
+    排序（确定性，⛔ 无评分）：
+    CLEAR 数多者优先 → 未知排课少者优先 → 学分大者优先 → `course_id` 升序。
+    """
+
+    if not isinstance(case, CurriculumCase):
+        raise CaseARoadmapError("case 必须是 CurriculumCase。")
+    if remaining_elective_credit is not None and remaining_elective_credit <= 0:
+        return ()
+    group = _elective_group(case, elective_group_id)
+    taken = set(already_taken_course_ids or ())
+
+    # 精确身份：选修组成员 ∩ 本学期已接受教学班
+    members = {
+        course.course_id: course
+        for course in case.new.courses
+        if course.group_id == group.group_id
+    }
+    sections_by_course: dict[str, list[CourseOffering]] = {}
+    for item in offerings:
+        if item.course_id in members:
+            sections_by_course.setdefault(item.course_id, []).append(item)
+
+    # 当前课表的**已知**时间占用（UNKNOWN 教学班不参与冲突判定，⛔ 不假装无冲突）
+    busy: set[tuple[int, int]] = set()
+    for item in current_schedule:
+        for meeting in item.meetings:
+            if meeting.weekday is None or meeting.start_section is None:
+                continue
+            end = meeting.end_section if meeting.end_section is not None else meeting.start_section
+            for section in range(meeting.start_section, end + 1):
+                busy.add((meeting.weekday, section))
+
+    def sections_busy(sections: list[CourseOffering]) -> bool:
+        for item in sections:
+            for meeting in item.meetings:
+                if meeting.weekday is None or meeting.start_section is None:
+                    continue
+                end = (
+                    meeting.end_section
+                    if meeting.end_section is not None
+                    else meeting.start_section
+                )
+                for section in range(meeting.start_section, end + 1):
+                    if (meeting.weekday, section) in busy:
+                        return True
+        return False
+
+    recommendations: list[CurrentElectiveRecommendation] = []
+    for course_id, sections in sections_by_course.items():
+        if course_id in taken:
+            continue
+        course = members[course_id]
+        clear: list[str] = []
+        unknown = 0
+        conflict = 0
+        for item in sections:
+            if not item.meetings:
+                unknown += 1
+                continue
+            if sections_busy([item]):
+                conflict += 1
+            else:
+                clear.append(item.class_id)
+
+        if clear:
+            label = "已找到与当前课表不冲突的教学班"
+        elif conflict and not unknown:
+            label = "当前候选教学班均与你的课表冲突"
+        elif unknown and not conflict:
+            label = "排课信息尚未同步，需要你确认后再判断冲突"
+        else:
+            label = "部分候选与课表冲突，另有候选排课信息尚未同步"
+        recommendations.append(
+            CurrentElectiveRecommendation(
+                course_id=course_id,
+                course_name=course.course_name,
+                credit=float(course.credit),
+                available_class_count=len(sections),
+                conflicting_class_count=conflict,
+                unknown_schedule_class_count=unknown,
+                clear_class_count=len(clear),
+                unique_clear_class_id=clear[0] if len(clear) == 1 else None,
+                conflict_label=label,
+            )
+        )
+
+    recommendations.sort(
+        key=lambda item: (
+            -item.clear_class_count,
+            item.unknown_schedule_class_count,
+            -item.credit,
+            item.course_id,
+        )
+    )
+    return tuple(recommendations[:max_courses])
+
+
+@dataclass(frozen=True, slots=True)
+class CurrentSemesterLoad:
+    """当前学期**学分负荷**摘要（产品层；⛔ 不改变 Planner 结果）。
+
+    用于让用户第一眼看到"这学期会不会超载"，而不是自己去加总。
+    """
+
+    #: 当前课表里已确认的学分（按精确课程身份、去重）。
+    selected_credit: float
+    #: Planner 建议新增的补修学分（不在当前课表内的建议课程）。
+    suggested_makeup_credit: float
+    #: 建议的专业选修学分（当前学期可考虑的选修，最多 3 门）。
+    suggested_elective_credit: float
+    #: 预计合计 = selected + suggested_makeup + suggested_elective。
+    projected_total_credit: float
+    #: 生效的学分上限（用户 `Preference.max_credit` 优先，否则产品默认 30）。
+    max_credit: float
+    #: `projected_total > max_credit`。⛔ 产品层不产出超限建议；该标记用于如实提示。
+    exceeds_max: bool
+
+
+def current_semester_load(
+    *,
+    current_schedule: Sequence[CourseOffering],
+    planned_course_ids: Sequence[str],
+    credit_by_course_id: Mapping[str, float],
+    recommendations: Sequence[CurrentElectiveRecommendation] = (),
+    user_max_credit: float | None = None,
+) -> CurrentSemesterLoad:
+    """计算当前学期学分负荷（确定性；⛔ 不含任何推断）。
+
+    - 已选学分只统计**当前课表**中能按精确 `course_id` 对上培养方案课程的课；
+    - 建议补修学分统计 Planner 建议里**当前课表没有**的课；
+    - 建议选修学分统计本轮的选修候选；
+    - 上限 = 用户设置优先，否则 `CASE_A_CURRENT_HARD_MAX_CREDIT`。
+    """
+
+    have = {item.course_id for item in current_schedule}
+    selected = sum(
+        credit_by_course_id.get(course_id, 0.0)
+        for course_id in sorted({item.course_id for item in current_schedule})
+    )
+    makeup = sum(
+        credit_by_course_id.get(course_id, 0.0)
+        for course_id in sorted(set(planned_course_ids) - have)
+    )
+    elective = sum(item.credit for item in recommendations)
+    limit = CASE_A_CURRENT_HARD_MAX_CREDIT
+    if user_max_credit is not None and float(user_max_credit) > 0:
+        limit = min(float(user_max_credit), CASE_A_CURRENT_HARD_MAX_CREDIT)
+    total = round(selected + makeup + elective, 3)
+    return CurrentSemesterLoad(
+        selected_credit=round(selected, 3),
+        suggested_makeup_credit=round(makeup, 3),
+        suggested_elective_credit=round(elective, 3),
+        projected_total_credit=total,
+        max_credit=limit,
+        exceeds_max=total > limit,
+    )
+
+
 def _elective_group(case: CurriculumCase, group_id: str) -> CurriculumGroup:
     matches = [item for item in case.new.groups if item.group_id == group_id]
     if not matches:
@@ -371,6 +593,7 @@ def build_case_a_roadmap(
     elective_group_id: str | None = None,
     current_semester_courses: Sequence = (),
     elective_current_semester_course_ids: Sequence[str] | None = None,
+    user_max_credit: float | None = None,
 ) -> AcademicRoadmap:
     """由 Curriculum 事实构建**课程级**未来路线图（⛔ 不触碰任何 CourseOffering）。
 
@@ -464,6 +687,25 @@ def build_case_a_roadmap(
             sorted(dict.fromkeys(kept))
         )
 
+    # ---- 学期学分预算：产品级默认 + 用户上限优先 --------------------------------
+    #
+    # ⛔ 旧行为是 `per_semester_credit_budget=None`（不设上限），真实数据下曾产出
+    #    **53.5 学分**的学期 —— 对学生没有可执行意义。现在：
+    #    - 硬上限 = 用户 `Preference.max_credit`（若给出且更严）否则 HARD_MAX(30)；
+    #    - 软目标 = min(用户上限, SOFT_TARGET(26))；
+    #    - ⛔ 任何学期都不得 > 硬上限；排不下的课顺延，实在排不下 ⇒ unresolved。
+    effective_hard = CASE_A_FUTURE_HARD_MAX_CREDIT
+    if user_max_credit is not None:
+        if isinstance(user_max_credit, bool) or not isinstance(user_max_credit, (int, float)):
+            raise CaseARoadmapError("user_max_credit 必须是数字或 None。")
+        if float(user_max_credit) <= 0:
+            raise CaseARoadmapError("user_max_credit 必须为正数或 None。")
+        # 用户更严的上限优先；更宽松的上限**不能**突破产品硬上限。
+        effective_hard = min(float(user_max_credit), CASE_A_FUTURE_HARD_MAX_CREDIT)
+    effective_soft = min(CASE_A_FUTURE_SOFT_TARGET_CREDIT, effective_hard)
+    hard_budget = {label: effective_hard for label in semester_map}
+    soft_budget = {label: effective_soft for label in semester_map}
+
     roadmap = build_academic_roadmap(
         version=case.new,
         semesters=semester_map,
@@ -474,7 +716,9 @@ def build_case_a_roadmap(
         elective_group_id=elective_group_id,
         elective_completed_course_ids=elective_completed_course_ids,
         elective_current_semester_course_ids=elective_current_semester_course_ids,
-        per_semester_credit_budget=None,
+        # 产品级学分政策：软目标 + 硬上限（⛔ 不再是 None ⇒ 不再产出 53.5 学分学期）。
+        per_semester_credit_budget=hard_budget,
+        per_semester_soft_budget=soft_budget,
         recommended_semester_by_course=recommended_index,
     )
     extra = (*term_unresolved, *overlap_unresolved)

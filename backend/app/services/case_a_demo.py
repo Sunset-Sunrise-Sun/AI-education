@@ -40,8 +40,12 @@ from app.planner import RestrictedPlannerProvider
 from app.path_planner import AcademicRoadmap
 from app.services.case_a_roadmap import (
     CaseARoadmapError,
+    CurrentElectiveRecommendation,
+    CurrentSemesterLoad,
     bind_current_semester_courses,
     build_case_a_roadmap,
+    current_semester_load,
+    recommend_current_electives,
 )
 from app.services.completed_courses_pdf_ingest import (
     PDF_MEDIA_TYPE,
@@ -98,6 +102,10 @@ class CaseADemoRun:
     roadmap_note: str | None
     #: 本次实际使用的选修组 id（供响应如实回显，⛔ 不由 API 层另行猜测）。
     elective_group_id: str = CASE_A_ELECTIVE_GROUP_ID
+    #: 当前学期**可考虑的专业选修**（最多 3 门；⛔ 只是候选，不自动加入方案）。
+    current_elective_recommendations: tuple[CurrentElectiveRecommendation, ...] = ()
+    #: 当前学期**学分负荷**摘要（含产品级上限）。
+    current_load: CurrentSemesterLoad | None = None
     #: 上传成绩单的绑定结果。**唯一**受支持的取值是 `not_bound`：
     #: 本次**未采用**上传行做满足判定，培养方案已确认事实原样保留。
     #: ⛔ 不存在 `bound`（见 `_completed_binding` 文档：那条路径需要伪造 provenance）。
@@ -260,23 +268,74 @@ class CaseADemoRuntime:
                 elective_group_id=self.elective_group_id,
                 current_semester_courses=current_courses,
                 elective_current_semester_course_ids=elective_current_ids,
+                # 用户显式学分上限**优先**；未设置时由 Case A 层套用产品默认（30）。
+                user_max_credit=preference.max_credit,
             )
             if binding_unresolved:
                 roadmap = _with_extra_notes(roadmap, binding_unresolved)
         except CaseARoadmapError as exc:
             # ⛔ 不编造路线图：如实说明为什么无法构建（只含结构性说明）。
             roadmap_note = f"未来学期路线图无法构建：{exc}"
+
+        # ---- 当前学期专业选修建议（产品层；⛔ 不改 RestrictedPlanner 语义） --------
+        #
+        # 只由 Curriculum 选修组成员 ∩ 本学期**已接受**教学班推导，精确 `course_id`。
+        # ⛔ 不自动加入方案、⛔ 不自动选教学班；用户明确选择后才加入。
+        #
+        # ⚠️ 门控用的是**真实未覆盖需求** `requirement − completed − current`，
+        #    ⛔ **不是** `roadmap.elective_remaining_credit`。后者是"路线图排完之后"
+        #    的剩余量：只要未来学期把选修缺口排满，它就是 0，于是本学期会出现
+        #    "缺 23 学分选修，但本学期一门可选选修都不提示"的产品缺口
+        #    （人工验收正是看到了这个）。真实未覆盖需求 > 0 且本学期确实有可选的
+        #    培养方案选修课时，就应当提示 —— 这不改变任何冻结的规划语义。
+        remaining_elective: float | None = None
+        if roadmap is not None:
+            requirement = roadmap.elective_requirement_credit
+            completed = roadmap.elective_completed_credit
+            current = roadmap.elective_current_semester_credit
+            if requirement is not None and completed is not None:
+                remaining_elective = round(requirement - completed - current, 3)
+        credit_by_course = {
+            course.course_id: float(course.credit) for course in effective_case.new.courses
+        }
+        recommendations: tuple[CurrentElectiveRecommendation, ...] = ()
+        if remaining_elective is None or remaining_elective > 0:
+            try:
+                recommendations = recommend_current_electives(
+                    effective_case,
+                    current_schedule,
+                    offerings,
+                    elective_group_id=self.elective_group_id,
+                    already_taken_course_ids=completed_course_ids | set(elective_current_ids),
+                    remaining_elective_credit=remaining_elective,
+                )
+            except CaseARoadmapError:
+                # 选修组不可用等结构性原因 ⇒ 不给建议（⛔ 不猜）
+                recommendations = ()
+        load = current_semester_load(
+            current_schedule=current_schedule,
+            # ⛔ PlanResult 是冻结契约：建议课程从 `selected_classes` 的**课程号**取，
+            #    不新增字段，也不改动公共 Schema。
+            planned_course_ids=[item.course_id for item in result.selected_classes],
+            credit_by_course_id=credit_by_course,
+            recommendations=recommendations,
+            user_max_credit=preference.max_credit,
+        )
+        # ⚠️ 全部使用关键字参数：字段顺序曾经在新增字段时错位过一次，
+        #    位置参数会让这类错误只在运行时才暴露。
         return CaseADemoRun(
-            imported,
-            tasks,
-            offerings,
-            preference,
-            result,
-            repair_proposals,
-            roadmap,
-            roadmap_note,
-            self.elective_group_id,
-            binding,
+            transcript=imported,
+            makeup_tasks=tasks,
+            offerings=offerings,
+            preference=preference,
+            plan_result=result,
+            repair_proposals=repair_proposals,
+            roadmap=roadmap,
+            roadmap_note=roadmap_note,
+            elective_group_id=self.elective_group_id,
+            current_elective_recommendations=recommendations,
+            current_load=load,
+            completed_binding=binding,
         )
 
 

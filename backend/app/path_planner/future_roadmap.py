@@ -380,6 +380,7 @@ def build_academic_roadmap(
     elective_completed_course_ids: Sequence[str] | None = None,
     elective_current_semester_course_ids: Sequence[str] | None = None,
     per_semester_credit_budget: Mapping[str, float] | None = None,
+    per_semester_soft_budget: Mapping[str, float] | None = None,
     recommended_semester_by_course: Mapping[str, int] | None = None,
 ) -> AcademicRoadmap:
     """生成**课程级**未来学期路线图（只依赖培养方案事实）。
@@ -490,6 +491,12 @@ def build_academic_roadmap(
         item.semester_label: item.curriculum_semester for item in declared
     }
     budget = _require_credits(per_semester_credit_budget)
+    soft_budget = _require_credits(per_semester_soft_budget)
+    # ⛔ 软目标不得高于硬上限；若调用方给反了，按硬上限收口（fail safe）。
+    for label, value in list(soft_budget.items()):
+        hard = budget.get(label)
+        if hard is not None and value > hard:
+            soft_budget[label] = hard
 
     if current_semester is not None:
         if not isinstance(current_semester, str) or not current_semester.strip():
@@ -735,28 +742,56 @@ def build_academic_roadmap(
     used_credit: dict[str, float] = {label: 0.0 for label in labels}
 
     # ---- 1) 必修课：先修顺序 → 截止学期（硬）→ 建议学期（偏好）→ 学分预算 --------
-    for course in required_queue:
-        placement = _place_required(
-            course,
-            recommended=recommended_by_course,
-            curriculum_semesters=tuple(
-                item.curriculum_semester for item in declared
-            ),
-            position_by_curriculum_semester=position_by_curriculum_semester,
-            curriculum_semester_of=curriculum_semester_of,
-            budget=budget,
-            used_credit=used_credit,
-            prerequisite_edges=prerequisite_edges,
-            placed_curriculum_semester=placed_curriculum_semester,
-            unresolved=unresolved,
-        )
-        if placement is None:
-            continue
-        placements.append(placement)
-        placed_curriculum_semester[course.course_id] = curriculum_semester_of[
-            placement.semester_label
-        ]
-        used_credit[placement.semester_label] += float(course.credit)
+    #
+    # ⚠️ **两轮放置**：先按 `soft_budget`（产品级的常规目标，例如 26 学分）排；
+    #    排不下的课再按 `budget`（硬上限，例如 30 学分）重试一次。
+    #    这样既得到贴近真实负荷的分布，又不会因为"软目标"把课
+    #    **过度顺延**到超出培养年限而变成 unresolved。
+    #    ⛔ 两轮都排不下时才真正顺延/报 unresolved，且**绝不**突破硬上限。
+    def _place_required_pass(cap: Mapping[str, float]) -> list[str]:
+        """按给定预算排必修，返回**本轮未能放置**的课程号（原顺序）。"""
+
+        failed: list[str] = []
+        for course in required_queue:
+            if soft_only and course.course_id in placed_curriculum_semester:
+                continue
+            placement = _place_required(
+                course,
+                recommended=recommended_by_course,
+                curriculum_semesters=tuple(item.curriculum_semester for item in declared),
+                position_by_curriculum_semester=position_by_curriculum_semester,
+                curriculum_semester_of=curriculum_semester_of,
+                budget=cap,
+                used_credit=used_credit,
+                prerequisite_edges=prerequisite_edges,
+                placed_curriculum_semester=placed_curriculum_semester,
+                unresolved=unresolved,
+            )
+            if placement is None:
+                failed.append(course.course_id)
+                continue
+            placements.append(placement)
+            placed_curriculum_semester[course.course_id] = curriculum_semester_of[
+                placement.semester_label
+            ]
+            used_credit[placement.semester_label] += float(course.credit)
+        return failed
+
+    soft_only = bool(soft_budget)
+    if soft_only:
+        deferred = _place_required_pass(soft_budget)
+        # 第二轮：只对"软目标排不下"的课放宽到硬上限重试。
+        # 先把这些课**本轮**产生的噪声 unresolved 去掉（第二轮会重新判定）。
+        if deferred:
+            deferred_set = set(deferred)
+            unresolved[:] = [
+                item
+                for item in unresolved
+                if not any(course_id in item for course_id in deferred_set)
+            ]
+            _place_required_pass(budget)
+    else:
+        _place_required_pass(budget)
 
     # ---- 2) 选修：只选**足够满足 group 最低学分**的学分 --------------------------
     if group is not None and elective_requirement is not None and elective_remaining is not None:
