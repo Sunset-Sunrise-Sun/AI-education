@@ -12,9 +12,9 @@ import {
  *
  * 核心设计边界：
  * - status / selected_classes / changes / risks / objective_summary 原样展示；
- * - ⛔ `unresolved` **不再**在本组件渲染明细：待确认事项统一由「需要你处理」
+ * - ⛔ `unresolved` **不再**在本组件渲染明细：待确认事项统一归入各产品区块
  *   （`PendingIssuesCenter`）以归一化中文展示，避免重复与机器码外泄；
- *   本组件只给出「还有 N 项，见需要你处理」的指引；
+ *   本组件只给出「还有 N 项，见对应区块」的指引；
  * - 强化 changes 调班前后对比与原因阐释；
  * - 明确划分风险等级（高/中/低）。
  */
@@ -186,7 +186,7 @@ function courseLabel(courseId: string): string {
     </section>
 
     <!-- 4. 未解决事项：⛔ 本组件不再直接渲染 plan_result.unresolved。
-         待确认事项统一由「需要你处理」（PendingIssuesCenter）以归一化中文展示，
+         待确认事项统一归入各产品区块（见 utils/issueRouting.ts）以归一化中文展示，
          本组件只保留方案摘要，避免同一事项在两处重复且泄露机器码。 -->
     <section v-if="planResult.unresolved.length > 0" class="plan-section plan-section--unresolved">
       <div class="plan-section__header">
@@ -201,7 +201,7 @@ function courseLabel(courseId: string): string {
 
       <p class="empty-state" data-testid="plan-result-unresolved-delegated">
         本方案仍有 {{ planResult.unresolved.length }} 项需要你确认。为便于阅读，
-        这些事项已统一放在页面「<strong>需要你处理</strong>」区域，并已翻译为中文说明；
+        这些事项已按归属放入对应产品区块（当前页面为「<strong>本学期推荐课表</strong>」等），并已翻译为中文说明；
         ⛔ 这里不再重复列出，避免同一事项出现两次。
       </p>
     </section>

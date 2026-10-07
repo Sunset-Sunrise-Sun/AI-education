@@ -748,6 +748,27 @@ describe('显式换班：页面编排（确认才生效）', () => {
       completed_binding_note:
         '上传的成绩单没有官方课程号，无法与培养方案已确认的已修事实安全绑定；' +
         '本次未使用上传行做满足判定，培养方案已确认的满足事实原样保留。',
+      // ---- 最终交互轮的加法式字段（规划覆盖元数据） ----
+      applied_manual_confirmations: [],
+      rejected_manual_confirmations: [],
+      applied_elective_sections: [],
+      rejected_elective_selections: [],
+      effective_makeup_tasks: [],
+      planning_only_disclosure: {
+        basis: '基于你的确认',
+        scope: '仅用于本次规划',
+        authority: '不是学校官方认定结果',
+      },
+      current_elective_recommendations: [],
+      current_load: {
+        selected_credit: 0,
+        suggested_makeup_credit: 0,
+        suggested_elective_credit: 0,
+        projected_total_credit: 0,
+        max_credit: 30,
+        exceeds_max: false,
+        policy_note: '产品默认上限。',
+      },
       ...overrides,
     }
   }
@@ -1167,6 +1188,27 @@ describe('Case A 页面（Phase 1）', () => {
         current_schedule: 'selected accepted offering',
         planner: 'actual RestrictedPlanner execution',
         is_full_semester: false,
+      },
+      // 最终交互轮新增字段（规划覆盖元数据）
+      applied_manual_confirmations: [],
+      rejected_manual_confirmations: [],
+      applied_elective_sections: [],
+      rejected_elective_selections: [],
+      effective_makeup_tasks: [],
+      planning_only_disclosure: {
+        basis: '基于你的确认',
+        scope: '仅用于本次规划',
+        authority: '不是学校官方认定结果',
+      },
+      current_elective_recommendations: [],
+      current_load: {
+        selected_credit: 0,
+        suggested_makeup_credit: 0,
+        suggested_elective_credit: 0,
+        projected_total_credit: 0,
+        max_credit: 30,
+        exceeds_max: false,
+        policy_note: '产品默认上限。',
       },
     })
 

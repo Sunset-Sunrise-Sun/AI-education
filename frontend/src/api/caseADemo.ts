@@ -64,6 +64,21 @@ export interface CaseADemoResponse {
   current_elective_recommendations: CurrentElectiveItem[]
   /** 当前学期学分负荷摘要（含产品级上限）。 */
   current_load: CurrentSemesterLoad
+  /**
+   * 本轮**实际生效**的"本次规划按已满足处理"确认（精确 `course_id`）。
+   * ⛔ 只影响本次规划；`makeup_tasks` 里的来源可核验基础评估保持不变。
+   */
+  applied_manual_confirmations: string[]
+  /** 被拒绝的确认输入（⛔ 不静默丢弃）。 */
+  rejected_manual_confirmations: RejectedOverrideItem[]
+  /** 本轮实际加入本学期方案的选修教学班。 */
+  applied_elective_sections: AppliedElectiveItem[]
+  /** 被拒绝的选修选择（⛔ 不静默丢弃）。 */
+  rejected_elective_selections: RejectedOverrideItem[]
+  /** 有效补救任务（含用户确认）；`makeup_tasks` 仍是来源可核验的基础评估。 */
+  effective_makeup_tasks: MakeupTask[]
+  /** 三项披露文案（基于你的确认 / 仅用于本次规划 / 不是学校官方认定结果）。 */
+  planning_only_disclosure: PlanningOnlyDisclosure
 }
 
 /** 当前学期可考虑的专业选修（候选）。 */
@@ -90,6 +105,40 @@ export interface CurrentSemesterLoad {
   max_credit: number
   exceeds_max: boolean
   policy_note: string
+}
+
+/** 被拒绝的覆盖输入（结构化中文原因）。 */
+export interface RejectedOverrideItem {
+  course_id: string
+  reason: string
+}
+
+/** 已加入本学期方案的选修教学班。 */
+export interface AppliedElectiveItem {
+  course_id: string
+  course_name: string
+  class_id: string
+  credit: number
+}
+
+/** 三项披露文案：必须**同时**展示（⛔ 不是学校官方认定结果）。 */
+export interface PlanningOnlyDisclosure {
+  basis: string
+  scope: string
+  authority: string
+}
+
+/** 用户明确选择的选修教学班（精确身份）。 */
+export interface ElectiveSelectionInput {
+  semester: string
+  course_id: string
+  class_id: string
+}
+
+/** 计划请求的规划覆盖输入（run-local、可撤销）。 */
+export interface PlanningOverrideInput {
+  userConfirmedManualTaskKeys: string[]
+  electiveSelections: ElectiveSelectionInput[]
 }
 
 /** 显式换班的响应：应用后的课表 + 重新计算的建议。 */
@@ -133,7 +182,18 @@ export async function runCaseADemo(input: {
   currentSchedule: CourseOffering[]
   manualScheduleAttested: boolean
   preference: Preference
+  /**
+   * 规划覆盖（run-local、可撤销）：本次规划确认"按已满足处理"的课程号，
+   * 以及用户明确加入本学期方案的选修教学班。
+   *
+   * ⛔ 前端只提交**用户意图**；所有学分/路线图/冲突结论都由服务端一次 recompute 产出。
+   */
+  override?: PlanningOverrideInput
 }): Promise<CaseADemoResponse> {
+  const override = input.override ?? {
+    userConfirmedManualTaskKeys: [],
+    electiveSelections: [],
+  }
   return checkedJson<CaseADemoResponse>(
     await fetch(CASE_A_DEMO_PLAN_ENDPOINT, {
       method: 'POST',
@@ -144,6 +204,12 @@ export async function runCaseADemo(input: {
         current_schedule: input.currentSchedule,
         manual_schedule_attested: input.manualScheduleAttested,
         preference: input.preference,
+        user_confirmed_manual_task_keys: override.userConfirmedManualTaskKeys,
+        elective_selections: override.electiveSelections.map((item) => ({
+          semester: item.semester,
+          course_id: item.course_id,
+          class_id: item.class_id,
+        })),
       }),
     }),
   )

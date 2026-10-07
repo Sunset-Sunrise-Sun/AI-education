@@ -10,7 +10,7 @@ import {
 } from '../utils/repairView'
 
 /**
- * 「需要你处理」—— 页面**唯一**的待确认中心。
+ * 换班候选区：只负责**可执行**的换班（⛔ 没有独立待处理区块）。
  *
  * 人工验收发现的问题与本组件的修复（⛔ 不得回退）：
  *
@@ -90,7 +90,7 @@ const actionableGroups = computed(() =>
 
 /**
  * ⛔ 非可执行的候选组与「无法生成建议」清单**不在这里**渲染：
- * 它们已由 `normalizedIssues` 归一化为中文条目，统一在「需要你处理」展示。
+ * 它们已由 `normalizedIssues` 归一化为中文条目，归属区块内展示。
  * 本组件只保留可点击的换班卡片，避免同一门课在两处出现。
  */
 const hasAnything = computed(() => actionableGroups.value.length > 0)
@@ -162,7 +162,7 @@ function onApply(courseId: string, fromClassId: string, toClassId: string): void
 <template>
   <div class="adjust" data-testid="case-a-pending-adjustments">
     <p v-if="!hasAnything" class="adjust__empty" data-testid="case-a-adjustments-empty">
-      目前没有需要你处理的事项：本学期方案里没有等待你确认的调整。
+      本学期推荐课表里没有等待你确认的换班。
     </p>
 
     <template v-else>
@@ -257,7 +257,7 @@ function onApply(courseId: string, fromClassId: string, toClassId: string): void
       </section>
 
       <!-- ⛔ 非可执行的候选与「无法生成建议」清单不在这里渲染：
-           它们已由 `normalizedIssues` 归一化为中文，统一在「需要你处理」展示。 -->
+           它们已由 `normalizedIssues` 归一化为中文，在归属区块内展示。 -->
     </template>
   </div>
 </template>

@@ -3,7 +3,12 @@ import { computed, ref } from 'vue'
 import { groupIssues, type NormalizedIssue } from '../utils/studentIssues'
 
 /**
- * 「需要你处理」—— 页面**唯一**的待确认事项列表。
+ * ⚠️ **已退役（不再由页面挂载）**：最终产品形态取消了独立的待处理区块，
+ * 议题改为归属到各自的产品区块（见 `utils/issueRouting.ts` + `IssueList.vue`）。
+ *
+ * 本组件仅保留给单元测试与历史对照，⛔ 不要再把它接回主流程。
+ *
+ * 原设计：「需要你处理」—— 统一的待确认事项列表。
  *
  * 数据来源：`CaseADemoView` 里**唯一**的 `normalizedIssues`（统合
  * `plan_result.unresolved` + `roadmap.unresolved` + `roadmap.warnings` +

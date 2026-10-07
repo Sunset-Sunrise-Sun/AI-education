@@ -24,9 +24,11 @@ import PlanResultPanel from './PlanResultPanel.vue'
 import PreferenceForm from './PreferenceForm.vue'
 import PreferencePanel from './PreferencePanel.vue'
 import CurrentElectiveSection from './CurrentElectiveSection.vue'
-import PendingIssuesCenter from './PendingIssuesCenter.vue'
+import IssueList from './IssueList.vue'
 import SectionCard from './SectionCard.vue'
 import { normalizedIssues, type NormalizedIssue } from '../utils/studentIssues'
+import { routeIssues } from '../utils/issueRouting'
+import type { ElectiveSelectionInput } from '../api/caseADemo'
 import WeeklyScheduleView from './WeeklyScheduleView.vue'
 
 /** 说明卡的固定内容：⛔ 不承诺"系统会自动替换课程"，真实语义是"找候选 → 提建议 → 用户确认"。 */
@@ -158,7 +160,7 @@ const bindingNotice = computed(() => {
  *   +  repair_proposals.unresolved
  *
  * ⛔ 任何子组件都不得再自行解析 raw unresolved：
- *    唯一的消费方是「需要你处理」里的 `PendingIssuesCenter`。
+ *    消费方是各归属区块里的 `IssueList`（⛔ 不再有独立待处理区块）。
  */
 const normalizedIssueList = computed<NormalizedIssue[]>(() => {
   const current = result.value
@@ -170,6 +172,100 @@ const normalizedIssueList = computed<NormalizedIssue[]>(() => {
     repairUnresolved: current.repair_proposals?.unresolved ?? [],
     courseNameById: resultCourseNames.value,
   })
+})
+
+/* ---- 议题归属（⛔ 没有独立的「需要你处理」区块） ----
+ *
+ * 每个议题都必须落到所属产品区块；归不到的进「详细依据」，⛔ 不静默丢弃。
+ */
+const routedIssues = computed(() => routeIssues(normalizedIssueList.value))
+
+/* ---- 规划覆盖（run-local、可撤销） ----
+ *
+ * ⛔ 前端只保存**用户意图**：确认过的课程号、明确加入方案的选修教学班。
+ *    学分 / 课表 / 冲突 / 路线图结论一律由服务端一次 recompute 产出。
+ */
+const confirmedManualKeys = ref<string[]>([])
+const selectedElectives = ref<ElectiveSelectionInput[]>([])
+
+/** 当前生效的披露文案（服务端提供，保证措辞一致）。 */
+const planningDisclosure = computed(() => result.value?.planning_only_disclosure ?? null)
+
+/**
+ * 统一的 recompute 管线：任何交互最终都只调用 `submit()`，
+ * ⛔ 不允许组件各自改学分 / 课表 / 路线图状态。
+ */
+async function submitOverride(): Promise<void> {
+  await submit({ silent: true })
+}
+
+function onConfirmManual(payload: { courseIds: string[] }): void {
+  const next = new Set([...confirmedManualKeys.value, ...payload.courseIds])
+  confirmedManualKeys.value = [...next].sort()
+  void submitOverride()
+}
+
+function onUndoManual(payload: { courseId: string }): void {
+  confirmedManualKeys.value = confirmedManualKeys.value.filter((k) => k !== payload.courseId)
+  void submitOverride()
+}
+
+function onAddElective(payload: { courseId: string; classId: string; semester: string }): void {
+  const key = `${payload.semester}::${payload.courseId}::${payload.classId}`
+  const exists = selectedElectives.value.some(
+    (item) => `${item.semester}::${item.course_id}::${item.class_id}` === key,
+  )
+  if (exists) return
+  selectedElectives.value = [
+    ...selectedElectives.value,
+    { semester: payload.semester, course_id: payload.courseId, class_id: payload.classId },
+  ]
+  void submitOverride()
+}
+
+function onRemoveElective(payload: { courseId: string; classId: string; semester: string }): void {
+  selectedElectives.value = selectedElectives.value.filter(
+    (item) =>
+      !(
+        item.semester === payload.semester &&
+        item.course_id === payload.courseId &&
+        item.class_id === payload.classId
+      ),
+  )
+  void submitOverride()
+}
+
+/**
+ * 有效课表（用于周课表与学分展示）= 已认证当前课表 + 已加入方案的选修。
+ *
+ * ⚠️ 只用于**展示**：真正的学分/冲突结论来自服务端 recompute 结果。
+ */
+/* 课表来源区分（⛔ 建议/草稿不得说成已选课） */
+const appliedElectiveCount = computed(
+  () => result.value?.applied_elective_sections.length ?? 0,
+)
+const plannedNewCourseCount = computed(() => {
+  const current = result.value
+  if (!current) return 0
+  const have = new Set(form.value.currentSchedule.map((o) => o.course_id))
+  const applied = new Set(
+    (current.applied_elective_sections ?? []).map((s) => s.course_id),
+  )
+  return current.plan_result.selected_classes.filter(
+    (item) => !have.has(item.course_id) && !applied.has(item.course_id),
+  ).length
+})
+
+const effectiveSchedule = computed(() => {
+  const applied = result.value?.applied_elective_sections ?? []
+  const chosen = applied
+    .map((item) =>
+      result.value?.course_offerings.find(
+        (o) => o.course_id === item.course_id && o.class_id === item.class_id,
+      ),
+    )
+    .filter((o): o is NonNullable<typeof o> => Boolean(o))
+  return [...form.value.currentSchedule, ...chosen]
 })
 
 /* ---- 学业方案总览（用户第一眼看到的东西） ---- */
@@ -191,7 +287,7 @@ const overviewElective = computed(() => {
   return load ? `${load.suggested_elective_credit} 学分` : '—'
 })
 const overviewActionCount = computed(() => {
-  // ⚠️ 用**去重后**的统一 view model 计数，与「需要你处理」里看到的条数一致；
+  // ⚠️ 用**去重后**的统一 view model 计数，与各区块里显示的条数一致；
   //    ⛔ 不再各自累加 repair courses + repair unresolved + plan unresolved（那是重复计数）。
   return `${normalizedIssueList.value.length} 项`
 })
@@ -223,7 +319,7 @@ const overviewHints = computed(() => {
   }
   const blockers = current.repair_proposals?.unresolved ?? []
   if (blockers.length > 0 && hints.length < 2) {
-    hints.push(`另有 ${blockers.length} 门课程暂时无法给出可靠的换班建议，可在「需要你处理」里查看原因。`)
+    hints.push(`另有 ${blockers.length} 门课程暂时无法给出可靠的换班建议，详见「本学期推荐课表」。`)
   }
   return hints.slice(0, 2)
 })
@@ -320,6 +416,12 @@ async function submit(options: { silent?: boolean } = {}): Promise<void> {
       currentSchedule: request.current_schedule,
       manualScheduleAttested: form.value.manualAttestation.attested,
       preference: request.preference,
+      // ⚠️ 唯一的 recompute 入口：把**完整**用户意图提交给服务端，
+      //    ⛔ 前端不自己算学分 / 课表 / 冲突 / 路线图。
+      override: {
+        userConfirmedManualTaskKeys: confirmedManualKeys.value,
+        electiveSelections: selectedElectives.value,
+      },
     })
     // 只有**重新规划成功**才解除"待刷新"状态。
     planStale.value = false
@@ -519,21 +621,34 @@ onMounted(loadOfferings)
           </p>
         </SectionCard>
 
+        <!-- ① 补修缺口分析（含规划确认交互） -->
         <SectionCard :mock="false" title="补修缺口分析" :badge-count="result.makeup_tasks.length">
-          <MakeupTaskList :tasks="result.makeup_tasks" />
-        </SectionCard>
-
-        <SectionCard :mock="false" title="本学期推荐课表" subtitle="按真实教学班绘制；这是 Planner 的建议，不代表已经选上课。">
-          <WeeklyScheduleView
-            :plan-result="result.plan_result"
-            :offerings="result.course_offerings"
-            :semester="form.semester"
-            :current-schedule="form.currentSchedule"
-            :makeup-tasks="result.makeup_tasks"
-            :preferred-courses="preferredCourses"
+          <MakeupTaskList
+            :tasks="result.makeup_tasks"
+            :confirmed-keys="result.applied_manual_confirmations"
+            :disclosure="planningDisclosure"
+            :pending="loading"
+            @confirm="onConfirmManual"
+            @undo="onUndoManual"
           />
+          <!-- 议题归属：认定 / 补修 / 可能等同 -->
+          <IssueList
+            v-if="routedIssues.makeup.length > 0"
+            :issues="routedIssues.makeup"
+            owner-label="认定与补修"
+          />
+          <ul
+            v-if="result.rejected_manual_confirmations.length > 0"
+            class="case-a-rejections"
+            data-testid="case-a-rejected-confirmations"
+          >
+            <li v-for="item in result.rejected_manual_confirmations" :key="item.course_id">
+              {{ item.course_id }}：{{ item.reason }}
+            </li>
+          </ul>
         </SectionCard>
 
+        <!-- ② 本学期专业选修建议（可加入方案） -->
         <SectionCard
           :mock="false"
           title="本学期专业选修建议"
@@ -542,16 +657,56 @@ onMounted(loadOfferings)
           <CurrentElectiveSection
             :recommendations="result.current_elective_recommendations"
             :load="result.current_load"
-            @add="addElectiveToIntent"
+            :applied="result.applied_elective_sections"
+            :rejected="result.rejected_elective_selections"
+            :offerings="result.course_offerings"
+            :pending="loading"
+            :semester="form.semester"
+            @add="onAddElective"
+            @remove="onRemoveElective"
+          />
+          <!-- 议题归属：选修成员 / 选修选择 -->
+          <IssueList
+            v-if="routedIssues.elective.length > 0"
+            :issues="routedIssues.elective"
+            owner-label="专业选修"
           />
         </SectionCard>
 
+        <!-- ③ 本学期推荐课表（下游结果） -->
         <SectionCard
           :mock="false"
-          title="需要你处理"
-          subtitle="系统只给出建议；你确认后才会生效。⛔ 不会自动改变你的课表。"
+          title="本学期推荐课表"
+          subtitle="按真实教学班绘制；以下为规划建议，不代表已完成教务选课。"
         >
-          <!-- ① 可执行的换班（只有已确认无冲突的候选才可点） -->
+          <p class="case-a-disclaimer" data-testid="case-a-timetable-disclaimer">
+            以下为规划建议，不代表已完成教务选课。
+          </p>
+          <!-- 如实区分三类来源：⛔ 不把建议/草稿说成已选课 -->
+          <ul class="case-a-schedule-legend" data-testid="case-a-schedule-legend">
+            <li>当前已选：{{ form.currentSchedule.length }} 门（你本人当前课表）</li>
+            <li>
+              规划新增/建议：{{ plannedNewCourseCount }} 门（Planner 建议，尚未完成选课）
+            </li>
+            <li>
+              你加入方案的选修：{{ appliedElectiveCount }} 门（规划草稿，⛔ 不代表选课结果）
+            </li>
+          </ul>
+          <WeeklyScheduleView
+            :plan-result="result.plan_result"
+            :offerings="result.course_offerings"
+            :semester="form.semester"
+            :current-schedule="effectiveSchedule"
+            :makeup-tasks="result.makeup_tasks"
+            :preferred-courses="preferredCourses"
+          />
+          <!-- 议题归属：冲突 / 换班 / 容量 / 排课 -->
+          <IssueList
+            v-if="routedIssues.timetable.length > 0"
+            :issues="routedIssues.timetable"
+            owner-label="本学期排课"
+          />
+          <!-- 合法的换班动作留在**课程上下文**里（⛔ 只有 CLEAR 才可点） -->
           <PendingAdjustments
             :plan-result="result.plan_result"
             :repair-proposals="result.repair_proposals"
@@ -561,11 +716,9 @@ onMounted(loadOfferings)
             :show-issues="false"
             @apply="applyRepair"
           />
-
-          <!-- ② 其余待确认事项：**唯一**来源 `normalizedIssues`，主文案已是中文 -->
-          <PendingIssuesCenter :issues="normalizedIssueList" />
         </SectionCard>
 
+        <!-- ④ 未来学期修读路径 -->
         <SectionCard
           v-if="result.roadmap && result.roadmap.future_semesters.length > 0"
           :mock="false"
@@ -573,6 +726,12 @@ onMounted(loadOfferings)
           subtitle="课程级规划，不含具体教学班。"
         >
           <FutureRoadmapView :roadmap="result.roadmap" />
+          <!-- 议题归属：未来排课 / 预算 / 未决 -->
+          <IssueList
+            v-if="routedIssues.roadmap.length > 0"
+            :issues="routedIssues.roadmap"
+            owner-label="未来学期"
+          />
         </SectionCard>
 
         <!-- 后端明确说明无法构建路线图时如实展示（⛔ 不补假数据） -->
@@ -585,24 +744,45 @@ onMounted(loadOfferings)
           <p class="case-a-secondary" data-testid="case-a-roadmap-note">{{ result.roadmap_note }}</p>
         </SectionCard>
 
-        <SectionCard :mock="false" title="本次规划数据">
-          <div class="case-a-coverage" data-testid="case-a-coverage-summary">
-            <div><strong>{{ result.transcript.record_count }}</strong><span>成绩单课程</span></div>
-            <div><strong>{{ result.course_offerings.length }}</strong><span>真实教学班</span></div>
-            <div><strong>南 + 深</strong><span>数据范围</span></div>
-            <div><strong>否</strong><span>全校完整学期数据</span></div>
-          </div>
-          <p class="case-a-secondary">
-            4069 条教学班仅作为规划候选池使用，不在页面中逐条铺开。
-          </p>
-        </SectionCard>
+        <!-- ⑤ 详细依据（默认折叠）：技术细节与兜底议题的归属地 -->
+        <SectionCard :mock="false" title="详细依据">
+          <details class="case-a-details" data-testid="case-a-detailed-evidence">
+            <summary>展开查看方案依据、数据范围与技术细节</summary>
 
-        <SectionCard :mock="false" title="我的选课需求">
-          <PreferencePanel :preference="result.preference" :course-name-by-id="resultCourseNames" />
-        </SectionCard>
+            <h4 class="case-a-details__title">本次规划数据</h4>
+            <div class="case-a-coverage" data-testid="case-a-coverage-summary">
+              <div><strong>{{ result.transcript.record_count }}</strong><span>成绩单课程</span></div>
+              <div><strong>{{ result.course_offerings.length }}</strong><span>真实教学班</span></div>
+              <div><strong>南 + 深</strong><span>数据范围</span></div>
+              <div><strong>否</strong><span>全校完整学期数据</span></div>
+            </div>
+            <p class="case-a-secondary">
+              4069 条教学班仅作为规划候选池使用，不在页面中逐条铺开。
+            </p>
 
-        <SectionCard :mock="false" title="推荐方案" tone="primary">
-          <PlanResultPanel :plan-result="result.plan_result" :course-name-by-id="resultCourseNames" />
+            <h4 class="case-a-details__title">我的选课需求</h4>
+            <PreferencePanel
+              :preference="result.preference"
+              :course-name-by-id="resultCourseNames"
+            />
+
+            <h4 class="case-a-details__title">推荐方案（Planner 输出）</h4>
+            <PlanResultPanel
+              :plan-result="result.plan_result"
+              :course-name-by-id="resultCourseNames"
+            />
+
+            <!-- 兜底：归不到具体区块的议题在这里如实展示，⛔ 不静默丢弃 -->
+            <template v-if="routedIssues.detailedEvidence.length > 0">
+              <h4 class="case-a-details__title">
+                其它需确认事项（{{ routedIssues.detailedEvidence.length }} 项）
+              </h4>
+              <IssueList
+                :issues="routedIssues.detailedEvidence"
+                owner-label="其它"
+              />
+            </template>
+          </details>
         </SectionCard>
 
         <SectionCard :mock="false" title="数据与计算说明">
@@ -665,6 +845,14 @@ onMounted(loadOfferings)
   border-radius: var(--radius-sm);
   font-size: 13px;
   line-height: 1.7;
+}
+
+.case-a-schedule-legend {
+  margin: 0 0 8px;
+  padding-left: 18px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.8;
 }
 
 /* 上传成绩单未参与满足判定：provenance 说明必须显眼且在下文结果之前。 */

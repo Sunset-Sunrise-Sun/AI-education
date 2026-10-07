@@ -19,10 +19,50 @@ from app.services.case_a_demo import (
     CompletedBinding,
     get_case_a_demo_runtime,
 )
+from app.services.case_a_planning_override import (
+    PLANNING_ONLY_DISCLOSURE,
+    ElectiveSelection,
+)
 from app.services.case_a_roadmap import requirement_kind_label
 from app.services.completed_courses_ingest import CompletedCoursesImportRejected, MAX_UPLOAD_BYTES
 
 router = APIRouter(prefix="/case-a-demo", tags=["case-a-demo"])
+
+
+class CaseAElectiveSelection(BaseModel):
+    """用户明确选择的选修教学班（精确身份 `semester + course_id + class_id`）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    semester: str = ""
+    course_id: str = Field(min_length=1)
+    class_id: str = ""
+
+
+class RejectedOverrideItem(BaseModel):
+    """被拒绝的覆盖输入（结构化；⛔ 不静默丢弃）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    course_id: str
+    reason: str
+
+
+class AppliedElectiveItem(BaseModel):
+    """本轮实际加入本学期方案的选修教学班（精确身份）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    course_id: str
+    course_name: str
+    class_id: str
+    credit: float
+
+
+class PlanningOnlyDisclosurePayload(BaseModel):
+    """三项披露文案：必须**同时**展示（⛔ 不是学校官方认定结果）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    basis: str
+    scope: str
+    authority: str
 
 
 class CaseADemoPlanRequest(BaseModel):
@@ -32,7 +72,11 @@ class CaseADemoPlanRequest(BaseModel):
     current_schedule: list[CourseOffering]
     manual_schedule_attested: bool = False
     preference: Preference
-
+    #: 用户本次规划确认"按已满足处理"的课程号（**精确 `course_id`**，run-local，可撤销）。
+    #: ⛔ 只覆盖本次规划，不改写来源可核验的基础评估。
+    user_confirmed_manual_task_keys: list[str] = Field(default_factory=list)
+    #: 用户明确加入本学期方案的选修教学班（服务端复核 CLEAR 后才生效）。
+    elective_selections: list[CaseAElectiveSelection] = Field(default_factory=list)
 
 class TranscriptSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -190,6 +234,21 @@ class CaseADemoPlanResponse(BaseModel):
     current_elective_recommendations: list[CurrentElectiveItem]
     #: 当前学期学分负荷摘要（含产品级上限）。
     current_load: CurrentSemesterLoadPayload
+    #: ---- 规划覆盖（run-local；⛔ 不改写来源可核验的基础评估） ----
+    #:
+    #: 本轮**实际生效**的"按已满足处理"确认（已通过校验的精确课程号）。
+    applied_manual_confirmations: list[str]
+    #: 被拒绝的确认输入（结构化中文原因；⛔ 不静默丢弃）。
+    rejected_manual_confirmations: list[RejectedOverrideItem]
+    #: 本轮实际加入本学期方案的选修教学班（精确身份）。
+    applied_elective_sections: list[AppliedElectiveItem]
+    #: 被拒绝的选修选择（结构化中文原因；⛔ 不静默丢弃）。
+    rejected_elective_selections: list[RejectedOverrideItem]
+    #: 有效（effective）补救任务：被确认的 `manual_confirmation` 在本轮视为已满足。
+    #: ⚠️ `makeup_tasks` 始终保留**来源可核验**的基础评估，两者不得混为一谈。
+    effective_makeup_tasks: list[MakeupTask]
+    #: 三项披露文案（必须同时出现；⛔ 不是学校官方认定结果）。
+    planning_only_disclosure: PlanningOnlyDisclosurePayload
 
 
 class CaseADemoRepairApplyRequest(BaseModel):
@@ -267,6 +326,16 @@ def create_case_a_plan(
             current_schedule=request.current_schedule,
             manual_schedule_attested=request.manual_schedule_attested,
             preference=request.preference,
+            # 规划覆盖（run-local、可撤销）：⛔ 不改写来源可核验的基础评估。
+            user_confirmed_manual_task_keys=tuple(request.user_confirmed_manual_task_keys),
+            elective_selections=tuple(
+                ElectiveSelection(
+                    semester=item.semester,
+                    course_id=item.course_id,
+                    class_id=item.class_id,
+                )
+                for item in request.elective_selections
+            ),
         )
     except CaseADemoInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
@@ -329,6 +398,31 @@ def create_case_a_plan(
                 "⛔ 这不是学校政策声明。"
             ),
         ),
+        # ---- 规划覆盖（run-local） ----
+        applied_manual_confirmations=list(run.override.applied_course_ids),
+        rejected_manual_confirmations=[
+            RejectedOverrideItem(course_id=course_id, reason=reason)
+            for course_id, reason in run.override.rejected_course_ids
+        ],
+        applied_elective_sections=[
+            AppliedElectiveItem(
+                course_id=item.course_id,
+                course_name=item.course_name,
+                class_id=item.class_id,
+                credit=float(item.credit),
+            )
+            for item in run.override.accepted_elective_sections
+        ],
+        rejected_elective_selections=[
+            RejectedOverrideItem(course_id=course_id, reason=reason)
+            # ⚠️ 选修被拒的原因由 `resolve_elective_selections` 产出，
+            #    经 `build_outcome` 放进 `rejected_elective_course_ids`。
+            for course_id, reason in run.override.rejected_elective_course_ids
+        ],
+        # ⚠️ `makeup_tasks` 是**来源可核验**的基础评估，保持不变；
+        #    `effective_makeup_tasks` 是本次规划看到的版本（含用户确认）。
+        effective_makeup_tasks=list(run.override.effective_tasks),
+        planning_only_disclosure=PlanningOnlyDisclosurePayload(**PLANNING_ONLY_DISCLOSURE),
     )
 
 

@@ -118,8 +118,22 @@ const warnings = computed(() => props.roadmap?.warnings ?? [])
         </span>
       </header>
 
-      <p v-if="semester.courses.length === 0" class="roadmap__term-empty">
-        该学期按当前培养方案事实没有需要安排的课程。
+      <!-- ⚠️ 空学期诚实性：只有**确实没有任何学分**时才说"不需要安排课程"。
+           如果学分 > 0 而课程列表为空（结构上不应发生），⛔ 不得谎称没有课程。 -->
+      <p
+        v-if="semester.courses.length === 0 && semester.total_credit === 0"
+        class="roadmap__term-empty"
+        data-testid="case-a-roadmap-empty-term"
+      >
+        按当前方案，该学期暂不需要额外安排课程。
+      </p>
+      <p
+        v-else-if="semester.courses.length === 0"
+        class="roadmap__term-empty roadmap__term-empty--inconsistent"
+        data-testid="case-a-roadmap-empty-term-inconsistent"
+      >
+        该学期建议学分 {{ credit(semester.total_credit) }} 学分，但明细未随数据返回；
+        ⛔ 系统不会凭空补课程，请以“建议学分”为准。
       </p>
 
       <ul v-else class="roadmap__list">

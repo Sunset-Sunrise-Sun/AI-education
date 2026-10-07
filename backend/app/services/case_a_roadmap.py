@@ -420,6 +420,7 @@ def recommend_current_electives(
     already_taken_course_ids: AbstractSet[str] | None = None,
     remaining_elective_credit: float | None = None,
     max_courses: int = 3,
+    only_class_ids: Mapping[str, AbstractSet[str]] | None = None,
 ) -> tuple[CurrentElectiveRecommendation, ...]:
     """给出本学期**可考虑的专业选修**建议（最多 `max_courses` 门）。
 
@@ -429,6 +430,10 @@ def recommend_current_electives(
 
     排序（确定性，⛔ 无评分）：
     CLEAR 数多者优先 → 未知排课少者优先 → 学分大者优先 → `course_id` 升序。
+
+    `only_class_ids`：可选。`course_id -> {class_id, ...}`，只对**这些教学班**
+    判定 CLEAR/UNKNOWN/CONFLICT。用于"用户明确选择了某个教学班"时的**服务端复核**，
+    使"可选择的"与"被推荐的"永远共用同一套冲突判定（⛔ 不复制判定逻辑）。
     """
 
     if not isinstance(case, CurriculumCase):
@@ -437,6 +442,7 @@ def recommend_current_electives(
         return ()
     group = _elective_group(case, elective_group_id)
     taken = set(already_taken_course_ids or ())
+    restrict = dict(only_class_ids or {})
 
     # 精确身份：选修组成员 ∩ 本学期已接受教学班
     members = {
@@ -478,6 +484,13 @@ def recommend_current_electives(
     for course_id, sections in sections_by_course.items():
         if course_id in taken:
             continue
+        # ⚠️ 服务端复核：用户明确选择了某个教学班时，只对该教学班判定状态，
+        #    这样"能否加入方案"与"推荐里的 CLEAR 数"用的是**同一套**判定。
+        allowed_classes = restrict.get(course_id)
+        if allowed_classes is not None:
+            sections = [item for item in sections if item.class_id in allowed_classes]
+            if not sections:
+                continue
         course = members[course_id]
         clear: list[str] = []
         unknown = 0

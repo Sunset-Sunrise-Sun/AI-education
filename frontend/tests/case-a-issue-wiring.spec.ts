@@ -84,6 +84,16 @@ function planResponse(overrides: Record<string, unknown> = {}) {
       exceeds_max: false,
       policy_note: '产品默认上限。',
     },
+    applied_manual_confirmations: [],
+    rejected_manual_confirmations: [],
+    applied_elective_sections: [],
+    rejected_elective_selections: [],
+    effective_makeup_tasks: [],
+    planning_only_disclosure: {
+      basis: '基于你的确认',
+      scope: '仅用于本次规划',
+      authority: '不是学校官方认定结果',
+    },
     provenance: {
       transcript: 'user-uploaded SYSU transcript PDF',
       curriculum: 'Case A target curriculum',
@@ -457,11 +467,11 @@ describe('Test A/B — 机器码不得出现在真实渲染的主界面', () => 
       },
     })
 
-    const center = pendingCenterText(wrapper)
-    const centerPrimary = primaryText(wrapper.find('[data-testid="case-a-pending-center"]'))
-    expect(center).toContain('排课信息')
+    // 议题已归属到「本学期推荐课表」区块
+    const issue = wrapper.get('[data-testid="case-a-issue"]')
+    expect(issue.text()).toContain('排课信息')
     // 主界面（不含折叠的技术详情）不得出现机器码
-    expect(centerPrimary).not.toContain('schedule_unknown')
+    expect(primaryText(wrapper)).not.toContain('schedule_unknown')
 
     // 页面整体主界面同样不得出现机器码或 `type:` 前缀
     const whole = primaryText(wrapper)
@@ -470,6 +480,8 @@ describe('Test A/B — 机器码不得出现在真实渲染的主界面', () => 
   })
 
   it('Test B: 未知机器码渲染为中性中文，展开技术详情后才可见原始取值', async () => {
+    // ⚠️ 未知 type 归为 `other` ⇒ 归属「未来学期修读路径」，
+    //    因此这里必须提供 roadmap，否则该区块不渲染、议题也就看不到。
     const wrapper = await mountPageWith({
       plan_result: {
         status: 'partially_feasible',
@@ -479,10 +491,38 @@ describe('Test A/B — 机器码不得出现在真实渲染的主界面', () => 
         unresolved: [{ type: 'some_new_internal_state', message: '' }],
         objective_summary: null,
       },
+      roadmap: {
+        current_semester: '2026-1',
+        current_semester_planned_course_ids: [],
+        // ⚠️ 必须有至少一个未来学期，否则「未来学期修读路径」区块整体不渲染
+        future_semesters: [
+          {
+            semester_label: '2026-2',
+            curriculum_semester: 3,
+            semester_index: 1,
+            courses: [],
+            required_credit: 0,
+            elective_credit: 0,
+            total_credit: 0,
+            warnings: [],
+          },
+        ],
+        elective: {
+          requirement_credit: 23,
+          completed_credit: 0,
+          current_semester_credit: 0,
+          planned_credit: 0,
+          remaining_credit: 23,
+          gap_credit: 23,
+          group_id: 'CSE-ELECTIVE-POOL',
+        },
+        unresolved: [],
+        warnings: [],
+      },
     })
 
     // 主界面：中性中文兜底，⛔ 不回显 raw code
-    expect(pendingCenterText(wrapper)).toContain('该事项需要进一步确认')
+    expect(primaryText(wrapper)).toContain('该事项需要进一步确认')
     expect(primaryText(wrapper)).not.toContain('some_new_internal_state')
 
     // 技术详情（折叠区内）保留原始取值，供排查
@@ -569,9 +609,11 @@ describe('Test E/F — 旧 raw 渲染路径已删除', () => {
     expect(text).not.toContain('type:')
     expect(text).not.toContain('schedule_unknown')
     expect(text).not.toContain('manual_confirmation')
-    // 但仍如实告知还有待确认事项，并指向统一区域
-    expect(text).toContain('需要你处理')
+    // 但仍如实告知还有待确认事项，并指向归属区块（⛔ 没有独立待处理区块）
+    expect(text).toContain('待确认事项')
+    expect(text).toContain('对应产品区块')
     expect(text).toContain('2')
+    expect(text).not.toContain('需要你处理')
   })
 
   it('Test F: FutureRoadmapView 默认不出现 raw token（no_alternatives / recommended_semester）', () => {
@@ -641,9 +683,9 @@ describe('Test G — 只有一个待确认主区域', () => {
       },
     })
 
-    // ① 只有一个「需要你处理」容器
-    const centers = wrapper.findAll('[data-testid="case-a-pending-center"]')
-    expect(centers).toHaveLength(1)
+    // ① ⛔ 不再有独立的「需要你处理」容器；议题改为归属到各自区块
+    expect(wrapper.findAll('[data-testid="case-a-pending-center"]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-testid="case-a-issue-list"]').length).toBeGreaterThan(0)
 
     // ② 同一门课的同一类问题只出现一次
     const cards = wrapper.findAll('[data-testid="case-a-issue"]')
@@ -663,10 +705,10 @@ describe('Test G — 只有一个待确认主区域', () => {
     expect(wrapper.find('[data-testid="case-a-pending-adjustments"]').exists()).toBe(true)
   })
 
-  it('无待确认事项时给出中性空状态，不编造内容', async () => {
+  it('无待确认事项时不渲染任何议题列表，也不编造内容', async () => {
     const wrapper = await mountPageWith({})
-    expect(wrapper.find('[data-testid="case-a-issues-empty"]').exists()).toBe(true)
-    expect(pendingCenterText(wrapper)).toContain('没有需要你处理的事项')
+    expect(wrapper.findAll('[data-testid="case-a-issue-list"]')).toHaveLength(0)
+    expect(wrapper.findAll('[data-testid="case-a-issue"]')).toHaveLength(0)
   })
 })
 

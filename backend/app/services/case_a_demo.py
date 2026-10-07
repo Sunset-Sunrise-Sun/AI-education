@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from app.course_data import (
@@ -38,6 +38,13 @@ from app.models.contracts import (
 from app.path_planner import RepairProposalSet, generate_repair_proposals
 from app.planner import RestrictedPlannerProvider
 from app.path_planner import AcademicRoadmap
+from app.services.case_a_planning_override import (
+    ElectiveSelection,
+    PlanningViewCurriculumProvider,
+    build_outcome,
+    merge_elective_sources,
+    resolve_elective_selections,
+)
 from app.services.case_a_roadmap import (
     CaseARoadmapError,
     CurrentElectiveRecommendation,
@@ -106,6 +113,8 @@ class CaseADemoRun:
     current_elective_recommendations: tuple[CurrentElectiveRecommendation, ...] = ()
     #: 当前学期**学分负荷**摘要（含产品级上限）。
     current_load: CurrentSemesterLoad | None = None
+    #: 本次规划的覆盖结果（run-local；⛔ 不改写基础评估）。
+    override: PlanningOverrideOutcome = field(default_factory=lambda: build_outcome(()))
     #: 上传成绩单的绑定结果。**唯一**受支持的取值是 `not_bound`：
     #: 本次**未采用**上传行做满足判定，培养方案已确认事实原样保留。
     #: ⛔ 不存在 `bound`（见 `_completed_binding` 文档：那条路径需要伪造 provenance）。
@@ -208,6 +217,8 @@ class CaseADemoRuntime:
         current_schedule: list[CourseOffering],
         preference: Preference,
         manual_schedule_attested: bool,
+        user_confirmed_manual_task_keys: Sequence[str] = (),
+        elective_selections: Sequence[ElectiveSelection] = (),
     ) -> CaseADemoRun:
         if semester != self.course_data.scope.semester:
             raise CaseADemoInputError("semester does not match the configured Case A scope")
@@ -222,16 +233,60 @@ class CaseADemoRuntime:
         binding = "not_bound"
         effective_case = self._completed_binding(imported)
         curriculum = CurriculumCaseProvider(effective_case)
+        #: ⛔ **来源可核验的基础评估**：12 satisfied + 11 manual_confirmation。
+        #   这一份必须原样返回给前端，任何用户确认都**不得**改写它。
         tasks = curriculum.get_makeup_tasks()
+
+        # ---- 规划的"用户确认"覆盖（run-local；⛔ 不动基础评估） -------------------
+        #
+        # 用户可以把部分 `manual_confirmation` 标记为"本次规划按已满足处理"。
+        # 这只影响**本次规划**的有效任务集，基础评估 `tasks` 保持不变，
+        # 因此页面可以同时展示"来源事实"与"基于你的确认"的可撤销状态。
+        override = build_outcome(
+            tasks,
+            confirmed_course_ids=user_confirmed_manual_task_keys,
+            rejected_electives=(),
+        )
+        effective_tasks = override.effective_tasks
+
         offerings = self.course_data.get_course_offerings(semester)
+
+        # ---- 用户明确选择的选修教学班（服务端复核 CLEAR） -------------------------
+        resolved_electives, rejected_elective_selections = resolve_elective_selections(
+            effective_case,
+            merge_elective_sources(elective_selections, default_semester=semester),
+            offerings,
+            elective_group_id=self.elective_group_id,
+            current_schedule=current_schedule,
+        )
+        #: 有效课表 = 已认证的当前课表 + 用户明确选择的选修教学班。
+        #: ⚠️ 选修"加入本学期方案"是**规划草稿**，⛔ 不代表已完成教务选课；
+        #:    它必须计入负荷、冲突检测与未来选修账目，且移除后**完全可逆**。
+        effective_schedule = [*current_schedule, *resolved_electives]
+
+        override = build_outcome(
+            tasks,
+            confirmed_course_ids=user_confirmed_manual_task_keys,
+            accepted_electives=resolved_electives,
+            rejected_electives=rejected_elective_selections,
+        )
+        effective_tasks = override.effective_tasks
+        accepted_electives = resolved_electives
+
+        #: 规划视图：把用户本次确认的 `manual_confirmation` 呈现为已满足。
+        #: ⛔ 不改基础 case / 培养方案 / provenance，只是本次规划看到的任务副本。
+        planning_provider = PlanningViewCurriculumProvider(
+            inner=curriculum,
+            confirmed_course_ids=override.applied_course_ids,
+        )
         orchestrator = PlanningOrchestrator(
-            curriculum=curriculum,
+            curriculum=planning_provider,
             course_data=self.course_data,
             planner=self.planner,
         )
         result = orchestrator.build_plan(
             semester=semester,
-            current_schedule=current_schedule,
+            current_schedule=effective_schedule,
             preference=preference,
         )
         # 当前学期结构化换班建议：**只生成**，⛔ 不应用、⛔ 不改 current_schedule。
@@ -249,11 +304,14 @@ class CaseADemoRuntime:
         # ⛔ `completed_course_ids` 必须传入：已确认满足的课**不能**同时作为"本学期在修"
         #    再计一次学分（否则同一 curriculum course identity 会被双计）。
         completed_course_ids = {
-            task.course_id for task in tasks if task.status is MakeupStatus.SATISFIED
+            task.course_id for task in effective_tasks if task.status is MakeupStatus.SATISFIED
         }
         current_courses, elective_current_ids, binding_unresolved = bind_current_semester_courses(
             effective_case,
-            current_schedule,
+            # ⚠️ 必须用**有效课表**（当前课表 + 用户已加入方案的选修）：
+            #    否则用户选中的选修不会参与冲突检测、也不会计入本学期选修学分，
+            #    未来学期的选修缺口账目就会与页面不一致。
+            effective_schedule,
             elective_group_id=self.elective_group_id,
             completed_course_ids=completed_course_ids,
         )
@@ -262,7 +320,8 @@ class CaseADemoRuntime:
         try:
             roadmap = build_case_a_roadmap(
                 effective_case,
-                makeup_tasks=tasks,
+                # 路线图吃**有效**任务：被确认的课视为已满足，不再进入未来学期。
+                makeup_tasks=effective_tasks,
                 current_semester_label=semester,
                 last_curriculum_semester=self.roadmap_last_semester,
                 elective_group_id=self.elective_group_id,
@@ -303,7 +362,9 @@ class CaseADemoRuntime:
             try:
                 recommendations = recommend_current_electives(
                     effective_case,
-                    current_schedule,
+                    # ⚠️ 推荐要**排除用户已加入方案**的选修：已选择的不该再出现为"可加入"，
+                    #    否则会出现"已加入"与"可加入"同时存在，且学分被重复计算。
+                    effective_schedule,
                     offerings,
                     elective_group_id=self.elective_group_id,
                     already_taken_course_ids=completed_course_ids | set(elective_current_ids),
@@ -312,13 +373,17 @@ class CaseADemoRuntime:
             except CaseARoadmapError:
                 # 选修组不可用等结构性原因 ⇒ 不给建议（⛔ 不猜）
                 recommendations = ()
+        # ⚠️ 学分口径（⛔ 不得双计）：`effective_schedule` **已经包含**用户加入方案的
+        #    选修，`current_semester_load` 的 `selected_credit` 会把它算进"当前已选"，
+        #    因此这里**不能**再把已选选修当作 `recommendations` 传一遍。
+        #    `recommendations` 只承载"尚未选择、仅供考虑"的候选。
         load = current_semester_load(
-            current_schedule=current_schedule,
+            current_schedule=effective_schedule,
             # ⛔ PlanResult 是冻结契约：建议课程从 `selected_classes` 的**课程号**取，
             #    不新增字段，也不改动公共 Schema。
             planned_course_ids=[item.course_id for item in result.selected_classes],
             credit_by_course_id=credit_by_course,
-            recommendations=recommendations,
+            recommendations=(),
             user_max_credit=preference.max_credit,
         )
         # ⚠️ 全部使用关键字参数：字段顺序曾经在新增字段时错位过一次，
@@ -336,6 +401,7 @@ class CaseADemoRuntime:
             current_elective_recommendations=recommendations,
             current_load=load,
             completed_binding=binding,
+            override=override,
         )
 
 
