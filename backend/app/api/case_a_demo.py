@@ -142,6 +142,16 @@ class CaseADemoPlanResponse(BaseModel):
     roadmap: AcademicRoadmapPayload | None
     #: `roadmap is None` 时的结构性说明。
     roadmap_note: str | None
+    #: 上传成绩单与**已确认**已修事实的绑定结果。
+    #:
+    #: - `bound` —— 上传行按精确课程身份绑定成功，本次满足判定基于上传行；
+    #: - `not_bound` —— 上传行**没有**官方课程号（真实成绩单即如此），
+    #:   因此本次**未**采用上传行做满足判定，培养方案已确认事实**原样保留**。
+    #:
+    #: ⛔ `not_bound` **不是**"已确认事实被抹掉"，也⛔ **不是**"上传行被当成已确认事实"。
+    completed_binding: str
+    #: 面向用户的绑定说明（`bound` 时为 `None`）。
+    completed_binding_note: str | None
 
 
 class CaseADemoRepairApplyRequest(BaseModel):
@@ -253,6 +263,20 @@ def create_case_a_plan(
         repair_proposals=_proposal_summary(run.repair_proposals),
         roadmap=_roadmap_payload(run.roadmap, group_id=run.elective_group_id),
         roadmap_note=run.roadmap_note,
+        completed_binding=run.completed_binding,
+        completed_binding_note=_binding_note(run.completed_binding),
+    )
+
+
+def _binding_note(binding: str) -> str | None:
+    """上传成绩单绑定结果的**如实**说明（⛔ 不含任何成绩/姓名/学号）。"""
+
+    if binding == "bound":
+        return None
+    return (
+        "上传的成绩单没有官方课程号，无法与培养方案已确认的已修事实安全绑定；"
+        "本次未使用上传行做满足判定，培养方案已确认的满足事实原样保留。"
+        "⛔ 系统不会按课程名或学分猜测课程是否已修。"
     )
 
 

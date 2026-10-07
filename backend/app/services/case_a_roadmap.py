@@ -47,18 +47,19 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from app.curriculum.case import CurriculumCase
-from app.curriculum.requirements import CurriculumGroup, RequirementKind
+from app.curriculum.requirements import CurriculumCourse, CurriculumGroup, RequirementKind
 from app.curriculum.terms import (
     AcademicTerm,
     SCOPE_FUTURE,
     parse_academic_term,
 )
-from app.models.contracts import MakeupStatus, MakeupTask
+from app.models.contracts import CourseOffering, MakeupStatus, MakeupTask
 from app.path_planner import AcademicRoadmap, FutureSemester, build_academic_roadmap
 
 __all__ = [
     "CaseARoadmapError",
     "CurriculumTermChain",
+    "bind_current_semester_courses",
     "build_case_a_roadmap",
     "derive_term_chain",
     "future_semesters_after",
@@ -275,6 +276,66 @@ def observed_term_facts(case: CurriculumCase) -> tuple[AcademicTerm, ...]:
             if parsed is not None:
                 found.add((parsed.year, parsed.half))
     return tuple(AcademicTerm(year=year, half=half) for year, half in sorted(found))
+
+
+def bind_current_semester_courses(
+    case: CurriculumCase,
+    current_schedule: Sequence[CourseOffering],
+    *,
+    elective_group_id: str | None = None,
+) -> tuple[tuple[CurriculumCourse, ...], tuple[str, ...], tuple[str, ...]]:
+    """把**本学期真实教学班**按**精确课程身份**绑定到培养方案课程。
+
+    ⛔ 只按 `course_id` 精确匹配：⛔ 不按课程名匹配、⛔ 不模糊匹配、⛔ 不推断等价。
+    绑定结果返回 `(已绑定的培养方案课程, 归属选修组的课程号, 未解析说明)`。
+
+    - 一门课在本学期选了**多个教学班**时只算**一次**（按培养方案课程身份去重）；
+    - 教学班课程号不在培养方案里 ⇒ 记入 unresolved 且**不**计入任何学分；
+    - `elective_group_id=None` ⇒ 不做选修组判定，第二个返回值是空元组。
+    """
+
+    if not isinstance(case, CurriculumCase):
+        raise CaseARoadmapError("case 必须是 CurriculumCase。")
+    by_id: dict[str, CurriculumCourse] = {}
+    for course in case.new.courses:
+        by_id.setdefault(course.course_id, course)
+
+    group: CurriculumGroup | None = None
+    if elective_group_id is not None:
+        # ⚠️ 组不存在时**不在这里**抛错：组校验是 `build_case_a_roadmap` 的职责
+        #    （它会对未知组 fail closed）。本函数只做精确身份绑定，
+        #    没有该组时自然没有成员可计入 ⇒ 返回空元组。
+        group = next(
+            (item for item in case.new.groups if item.group_id == elective_group_id), None
+        )
+
+    bound: dict[str, CurriculumCourse] = {}
+    unresolved: list[str] = []
+    for item in current_schedule:
+        course = by_id.get(item.course_id)
+        if course is None:
+            unresolved.append(
+                f"本学期课程 {item.course_id}（教学班 {item.class_id}）不在培养方案课程中；"
+                f"⛔ 无法按精确课程身份绑定，未计入学分，需人工确认。"
+            )
+            continue
+        # 同一门课的多个教学班只算一次（按培养方案课程身份去重）。
+        bound.setdefault(course.course_id, course)
+
+    elective_ids = tuple(
+        sorted(
+            course_id
+            for course_id, course in bound.items()
+            if group is not None and _is_member(course, group)
+        )
+    )
+    return tuple(bound[course_id] for course_id in sorted(bound)), elective_ids, tuple(unresolved)
+
+
+def _is_member(course: CurriculumCourse, group: CurriculumGroup) -> bool:
+    """是否属于该培养方案分组（**精确** `group_id` 相等，⛔ 不推断、不模糊匹配）。"""
+
+    return course.group_id is not None and course.group_id == group.group_id
 
 
 def _elective_group(case: CurriculumCase, group_id: str) -> CurriculumGroup:

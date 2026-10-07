@@ -761,7 +761,7 @@ describe('显式换班：页面编排（确认才生效）', () => {
     })
   })
 
-  it('does not keep stale pre-repair suggestions next to the new timetable', async () => {
+  it('does not present the stale pre-repair plan as current after an applied repair', async () => {
     const wrapper = await mountAndPlan()
     expect(wrapper.findAll('[data-testid="case-a-adjustment-change"]').length).toBe(1)
 
@@ -775,17 +775,53 @@ describe('显式换班：页面编排（确认才生效）', () => {
       remaining_conflicts: [],
       repair_proposals: { semester: '2026-1', proposals: [], unresolved: [] },
     })
-    // 重新规划**故意**在本次不返回（模拟慢请求），验证不会留下陈旧建议
+    // 重新规划**故意**在本次不返回（模拟慢请求），验证不会把旧方案当作当前方案
     runCaseADemo.mockImplementation(() => new Promise(() => {}))
 
     await wrapper.get('[data-testid="case-a-repair-apply-CSE201-02"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.findAll('[data-testid="case-a-adjustment-change"]').length).toBe(0)
+    // 旧方案整块暂停展示，并明确标记"待刷新"
+    expect(wrapper.find('[data-testid="case-a-plan-stale"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(false)
+    // ⛔ 旧方案里的 unresolved 事实**不得被清空**（那等于静默丢掉人工复核项）：
+    //    它们仍保留在数据里（上方用例覆盖），这里只验证它们不再被当作当前结论展示。
     expect(wrapper.get('[data-testid="case-a-repair-notice"]').text()).toContain('已按你的确认')
   })
 
-  it('surfaces a rejected repair and leaves the timetable to the server value', async () => {
+  it('lifts the stale marker once the recomputed plan arrives', async () => {
+    const wrapper = await mountAndPlan()
+    applyCaseARepair.mockResolvedValue({
+      status: 'applied',
+      applied: true,
+      schedule: [OFFERINGS[1]],
+      changes: [],
+      reason: '已应用',
+      revalidated: true,
+      remaining_conflicts: [],
+      repair_proposals: { semester: '2026-1', proposals: [], unresolved: [] },
+    })
+    runCaseADemo.mockResolvedValue(
+      planResponse({
+        plan_result: {
+          status: 'feasible',
+          selected_classes: [{ course_id: 'CSE201', class_id: '02' }],
+          changes: [],
+          risks: [],
+          unresolved: [{ type: 'schedule_unknown', message: '排课信息待核验' }],
+        },
+      }),
+    )
+
+    await wrapper.get('[data-testid="case-a-repair-apply-CSE201-02"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="case-a-plan-stale"]').exists()).toBe(false)
+    // 重新规划返回的 unresolved 如实展示（没有被清空）
+    expect(wrapper.text()).toContain('排课信息待核验')
+  })
+
+  it('keeps the plan valid when the repair is rejected', async () => {
     const wrapper = await mountAndPlan()
     applyCaseARepair.mockResolvedValue({
       status: 'rejected',
@@ -801,8 +837,10 @@ describe('显式换班：页面编排（确认才生效）', () => {
     await flushPromises()
 
     expect(wrapper.get('[data-testid="case-a-repair-error"]').text()).toContain('候选不属于该课程')
-    // ⛔ 不得假装成功
     expect(wrapper.get('[data-testid="case-a-repair-notice"]').text()).toContain('未生效')
+    // 未生效 ⇒ 课表没变 ⇒ 原方案仍然有效，⛔ 不应标记为待刷新
+    expect(wrapper.find('[data-testid="case-a-plan-stale"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(true)
   })
 })
 

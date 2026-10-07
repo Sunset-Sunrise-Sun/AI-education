@@ -47,6 +47,16 @@ const manualOpen = ref(false)
 const applying = ref(false)
 const applyError = ref('')
 const applyNotice = ref('')
+/**
+ * 换班已应用、但**重新规划尚未返回**：此时 `result.plan_result` 描述的是
+ * **换班前**的课表，与已经改变的当前课表互相矛盾。
+ *
+ * ⛔ 不得把这种"半新半旧"的结果当作当前方案展示：
+ *    - ⛔ 不清空 `unresolved` 里与换班无关的警告（那等于**静默丢掉**必须人工复核的事实）；
+ *    - ⛔ 也不继续按旧结果渲染课表/建议/路线图。
+ * 因此改为**整块标记为待刷新并暂停展示**，直到重新规划真正成功。
+ */
+const planStale = ref(false)
 
 /**
  * 应用一条换班建议：**唯一**可信来源是后端。
@@ -54,7 +64,9 @@ const applyNotice = ref('')
  * 边界：
  * - 请求带**完整身份**（semester / course_id / from_class_id / to_class_id）；
  * - 课表只采用**后端返回的 schedule**，⛔ 前端不自行拼一张"看起来对"的课表；
- * - 后端拒绝时如实显示原因，⛔ 不假装替换成功、⛔ 不自动重试别的候选。
+ * - 后端拒绝时如实显示原因，⛔ 不假装替换成功、⛔ 不自动重试别的候选；
+ * - 应用成功后把旧方案标记为**待刷新**（见 `planStale`），
+ *   ⛔ 不修改、也不隐藏旧方案里的 unresolved 事实。
  */
 async function applyRepair(payload: {
   semester: string
@@ -77,25 +89,24 @@ async function applyRepair(payload: {
     })
     // 课表只采用后端返回结果（⛔ 不本地推断）。
     form.value = invalidateManualAttestation(form.value, applied.schedule).form
-    if (result.value) {
-      result.value = {
-        ...result.value,
-        repair_proposals: applied.repair_proposals,
-        // ⚠️ 换班成功后旧 `plan_result` 描述的是**换班前**的课表：
-        //    在重新规划返回之前，它的 `changes` 与新课表**互相矛盾**。
-        //    因此这里先清空旧建议，等 `submit({silent:true})` 用真实重算结果覆盖，
-        //    ⛔ 不保留会误导用户的陈旧建议。
-        plan_result: applied.applied
-          ? { ...result.value.plan_result, changes: [], unresolved: [] }
-          : result.value.plan_result,
+    if (!applied.applied) {
+      // 未生效 ⇒ 课表没变 ⇒ 原方案仍然有效，保持原样并如实说明。
+      applyError.value = applied.reason
+      applyNotice.value = `该调整未生效：${applied.reason}`
+      return
+    }
+    // 生效 ⇒ 旧方案立刻失效。
+    planStale.value = true
+    applyNotice.value = `已按你的确认把 ${payload.courseId} 从 ${payload.fromClassId} 调整为 ${payload.toClassId}。`
+    // 重新规划（后端计算）；成功后统一用新结果替换旧方案。
+    if (transcript.value) {
+      try {
+        await submit({ silent: true })
+      } catch {
+        applyError.value =
+          '换班已生效，但重新生成方案失败：下方方案已标记为待刷新，请重新点击「生成并优化我的转专业学业方案」。'
       }
     }
-    applyNotice.value = applied.applied
-      ? `已按你的确认把 ${payload.courseId} 从 ${payload.fromClassId} 调整为 ${payload.toClassId}。`
-      : `该调整未生效：${applied.reason}`
-    if (!applied.applied) applyError.value = applied.reason
-    // 换班后重新规划，刷新本学期周课表与后续建议（仍是后端计算）。
-    if (applied.applied && transcript.value) await submit({ silent: true })
   } catch (cause) {
     applyError.value = cause instanceof Error ? cause.message : '换班请求失败。'
   } finally {
@@ -205,8 +216,13 @@ async function submit(options: { silent?: boolean } = {}): Promise<void> {
       manualScheduleAttested: form.value.manualAttestation.attested,
       preference: request.preference,
     })
+    // 只有**重新规划成功**才解除"待刷新"状态。
+    planStale.value = false
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '方案生成失败，请检查输入后重试。'
+    // silent 调用（换班后的自动重算）失败时向上抛，让调用方如实说明；
+    // 同时保留 planStale = true，⛔ 不把旧方案伪装成当前方案。
+    if (options.silent) throw cause
   } finally {
     loading.value = false
   }
@@ -335,7 +351,18 @@ onMounted(loadOfferings)
       </div>
       <p v-if="error" class="state state--error" role="alert">{{ error }}</p>
 
-      <template v-if="result">
+      <p v-if="applyNotice" class="case-a-apply-notice" data-testid="case-a-repair-notice">
+        {{ applyNotice }}
+      </p>
+      <p v-if="applyError" class="case-a-error" data-testid="case-a-repair-error">
+        {{ applyError }}
+      </p>
+      <p v-if="planStale" class="case-a-stale" data-testid="case-a-plan-stale">
+        课表已按你的确认更新，但下方方案还是<strong>换班之前</strong>的结果，因此暂停展示，
+        正在用新的当前课表重新生成；你也可以直接重新点击「生成并优化我的转专业学业方案」。
+      </p>
+
+      <template v-if="result && !planStale">
         <SectionCard :mock="false" title="成绩单识别结果" :badge-count="result.transcript.record_count">
           <p>
             已识别 {{ result.transcript.record_count }} 门已修课程，覆盖 {{ result.transcript.term_count }} 个学期。
@@ -359,12 +386,6 @@ onMounted(loadOfferings)
         </SectionCard>
 
         <SectionCard :mock="false" title="待你确认的调整" subtitle="系统只提出建议；你确认后才会生效。">
-          <p v-if="applyNotice" class="case-a-apply-notice" data-testid="case-a-repair-notice">
-            {{ applyNotice }}
-          </p>
-          <p v-if="applyError" class="case-a-error" data-testid="case-a-repair-error">
-            {{ applyError }}
-          </p>
           <PendingAdjustments
             :plan-result="result.plan_result"
             :repair-proposals="result.repair_proposals"
@@ -455,10 +476,44 @@ onMounted(loadOfferings)
 .case-a-lead,
 .case-a-secondary,
 .case-a-empty,
+.case-a-stale,
+.case-a-apply-notice,
+.case-a-error,
 .case-a-submit-wrap p,
 .case-a-selected-item p,
 .case-a-class-main p {
   margin: 0;
+}
+
+/* 换班已生效、方案待重新生成：明确说明"下方不是当前方案"。 */
+.case-a-stale {
+  padding: 12px 14px;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #f3d9a4;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.case-a-apply-notice {
+  padding: 10px 12px;
+  color: #166534;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.case-a-error {
+  padding: 10px 12px;
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.7;
 }
 
 .case-a-eyebrow {
