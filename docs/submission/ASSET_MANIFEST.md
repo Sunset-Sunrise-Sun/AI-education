@@ -2,6 +2,8 @@
 
 > 用途：说明 `docs/submission/` 下每份材料是干什么的、谁可以改、当前是什么状态。
 > 状态取值：`READY`（可直接使用） / `LOCKED`（不得随意修改） / `WAITING`（等待定稿或素材） / `DRAFT`（可继续打磨）。
+>
+> **事实基线：最终产品 HEAD = 最终 RC HEAD = `db7d1727d2af1d1a0aaf08d20eae1e1528c02721`**（2026-10-07）。
 
 ## 主材料（11 份，商科交接包使用的就是这些）
 
@@ -17,32 +19,35 @@
 | `FINAL_FACT_SHEET.md` | 一页事实数字与能力边界 | ⛔ 不允许随意修改 | LOCKED |
 | `SCREENSHOT_PLAN.md` | 最终截图计划与配文 | 等界面定稿后执行 | READY（已执行，保留为重拍依据） |
 | `screenshots/SCREENSHOT_INDEX.md` | 最终截图目录的逐张索引与隐私核对 | 材料维护者 | READY |
-| `screenshots/*.png` | 12 张最终 RC 界面真实截图 | 界面变化时必须重拍 | READY |
+| `screenshots/*.png` | 16 张最终 RC 界面真实截图（基于 `db7d172` 重拍） | 界面变化时必须重拍 | READY |
 | `ASSET_MANIFEST.md` | 本文件，素材说明 | 材料维护者 | READY |
 | `BUSINESS_TEAM_HANDOFF.md` | 给商科同学的完整交接说明 | 商科可补充提问 | READY |
 
-## 仓库内保留的旧材料（不在商科交接包里）
+## 已归档的旧材料（`legacy/`，不在商科交接包里）
 
-这些是早前一轮提交材料，保留在仓库作为历史记录。
-它们的口径基于更早的演示快照，**与当前产品事实不完全一致**，⛔ 不要直接发给商科同学。
+这些是早前一轮提交材料，已移到 `docs/submission/legacy/` 作为历史记录。
+它们的口径基于更早的演示快照（`51eaccb` 与更早），**与当前产品事实不一致**，
+⛔ 不要直接发给商科同学，⛔ 不要用它们里面的截图或数字。
 
 | 文件 | 说明 | 当前状态 |
 |---|---|---|
-| `OPC_FINAL_4MIN_DEMO.md` | 早前 4 分钟演示稿 | 历史记录（口径已过时） |
-| `OPC_FINAL_SLIDES_CONTENT.md` | 早前幻灯片内容 | 历史记录（口径已过时） |
-| `OPC_PITCH_PACK.md` | 早前路演包 | 历史记录（口径已过时） |
-| `OPC_JUDGE_QA_SHORT.md` | 早前评委问答速查 | 历史记录（部分仍可用，需按新事实复核） |
-| `OPC_PORTAL_INFO_TEMPLATE.md` | 门户信息模板 | 历史记录 |
-| `FINAL_CLAIM_MATRIX.md` | 早前跨材料一致性矩阵 | 历史记录 |
-| `FINAL_SUBMISSION_CHECKLIST.md` | 早前提交清单 | 历史记录 |
-| `DEMO_VERSION_LOCK.md` | 早前演示版本锁定 | 历史记录 |
-| `OFFICIAL_RULE_CHECK.md` | 赛事规则核对 | 历史记录 |
-| `REHEARSAL_LOG.md` | 排练记录 | 历史记录 |
-| `VIDEO_RECORDING_PLAN.md` | 视频录制计划 | 历史记录 |
-| `SCREENSHOT_INDEX.md` | 早前截图索引（对应旧界面） | 历史记录（⛔ 不得用旧截图冒充定稿界面） |
-| `assets/*.png` | 早前界面截图 | 历史记录（旧界面） |
+| `legacy/OPC_FINAL_4MIN_DEMO.md` | 早前 4 分钟演示稿 | 已归档 |
+| `legacy/OPC_FINAL_SLIDES_CONTENT.md` | 早前幻灯片内容 | 已归档 |
+| `legacy/OPC_PITCH_PACK.md` | 早前路演包 | 已归档 |
+| `legacy/OPC_JUDGE_QA_SHORT.md` | 早前评委问答速查 | 已归档（部分内容仍可参考，但须按新事实复核） |
+| `legacy/OPC_PORTAL_INFO_TEMPLATE.md` | 门户信息模板 | 已归档 |
+| `legacy/FINAL_CLAIM_MATRIX.md` | 早前跨材料一致性矩阵 | 已归档 |
+| `legacy/FINAL_SUBMISSION_CHECKLIST.md` | 早前提交清单 | 已归档 |
+| `legacy/DEMO_VERSION_LOCK.md` | 早前演示版本锁定 | 已归档 |
+| `legacy/OFFICIAL_RULE_CHECK.md` | 赛事规则核对 | 已归档 |
+| `legacy/REHEARSAL_LOG.md` | 排练记录 | 已归档 |
+| `legacy/VIDEO_RECORDING_PLAN.md` | 视频录制计划 | 已归档 |
+| `legacy/SCREENSHOT_INDEX.md` | 早前截图索引（对应旧界面） | 已归档 |
+| `legacy/assets/*.png` | 早前界面截图（旧界面） | 已归档 |
+| `legacy/学航转衔_OPC_答辩稿.pptx` | 早前答辩稿 | 已归档 |
 | `tools/*.html` | 架构图与取景工具 | 可参考复用 |
-| `学航转衔_OPC_答辩稿.pptx` | 早前答辩稿 | 历史记录 |
+
+> ⚠️ 当前有效的截图索引在 `screenshots/SCREENSHOT_INDEX.md`，不要与 `legacy/SCREENSHOT_INDEX.md` 混淆。
 
 ## 依赖的仓库内事实文档（只读参考，不修改）
 
