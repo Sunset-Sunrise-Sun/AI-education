@@ -708,6 +708,11 @@ describe('显式换班：页面编排（确认才生效）', () => {
       },
       roadmap: ROADMAP,
       roadmap_note: null,
+      // 真实成绩单没有官方课程号 ⇒ 默认就是 not_bound（这也是后端当前的行为）
+      completed_binding: 'not_bound',
+      completed_binding_note:
+        '上传的成绩单没有官方课程号，无法与培养方案已确认的已修事实安全绑定；' +
+        '本次未使用上传行做满足判定，培养方案已确认的满足事实原样保留。',
       ...overrides,
     }
   }
@@ -730,6 +735,61 @@ describe('显式换班：页面编排（确认才生效）', () => {
     expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(true)
     // ⛔ 渲染本身绝不触发 apply
     expect(applyCaseARepair).not.toHaveBeenCalled()
+  })
+
+  it('visibly discloses not_bound provenance BEFORE the plan results', async () => {
+    const wrapper = await mountAndPlan()
+    // 用户可见的绑定说明必须存在
+    const notice = wrapper.get('[data-testid="case-a-binding-notice"]')
+    expect(notice.text()).toContain('未参与')
+    expect(notice.text()).toContain('已修完 / 已满足')
+    // 后端给的说明原文也如实展示
+    expect(notice.text()).toContain('没有官方课程号')
+    // 成绩单卡里再说明一次：已满足课程不是来自上传的 PDF
+    expect(wrapper.get('[data-testid="case-a-transcript-binding-note"]').text()).toContain(
+      '不是来自你上传的 PDF',
+    )
+    // 位置要求：说明必须在「补修缺口分析」**之前**出现
+    const html = wrapper.html()
+    expect(html.indexOf('case-a-binding-notice')).toBeGreaterThan(-1)
+    expect(html.indexOf('case-a-binding-notice')).toBeLessThan(html.indexOf('补修缺口分析'))
+  })
+
+  it('renders no not_bound warning when the backend reports a bound binding', async () => {
+    const wrapper = mount(CaseADemoView)
+    await flushPromises()
+    const input = wrapper.get('[data-testid="case-a-pdf"]')
+    const file = new File(['%PDF-1.4'], 'transcript.pdf', { type: 'application/pdf' })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    // 控制用例：后端明确 bound 时不得显示"未参与判定"的告警
+    runCaseADemo.mockResolvedValue(
+      planResponse({ completed_binding: 'bound', completed_binding_note: null }),
+    )
+    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="case-a-binding-notice"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="case-a-transcript-binding-note"]').exists()).toBe(false)
+    // 方案本身照常渲染
+    expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(true)
+  })
+
+  it('treats an unknown binding value as not bound (never silently hides it)', async () => {
+    const wrapper = mount(CaseADemoView)
+    await flushPromises()
+    const input = wrapper.get('[data-testid="case-a-pdf"]')
+    const file = new File(['%PDF-1.4'], 'transcript.pdf', { type: 'application/pdf' })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    runCaseADemo.mockResolvedValue(
+      planResponse({ completed_binding: 'something_new', completed_binding_note: null }),
+    )
+    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+    await flushPromises()
+
+    // ⛔ 未知取值也必须如实提示，而不是默认当作已绑定
+    expect(wrapper.find('[data-testid="case-a-binding-notice"]').exists()).toBe(true)
   })
 
   it('only an explicit click calls repair apply, with the full identity', async () => {
@@ -786,6 +846,39 @@ describe('显式换班：页面编排（确认才生效）', () => {
     expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(false)
     // ⛔ 旧方案里的 unresolved 事实**不得被清空**（那等于静默丢掉人工复核项）：
     //    它们仍保留在数据里（上方用例覆盖），这里只验证它们不再被当作当前结论展示。
+    expect(wrapper.get('[data-testid="case-a-repair-notice"]').text()).toContain('已按你的确认')
+  })
+
+  it('keeps the stale mark when the silent replan actually FAILS', async () => {
+    const wrapper = await mountAndPlan()
+    expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(true)
+
+    applyCaseARepair.mockResolvedValue({
+      status: 'applied',
+      applied: true,
+      schedule: [OFFERINGS[1]],
+      changes: [{ course_id: 'CSE201', from_class: '01', to_class: '02', reason: '已换班' }],
+      reason: '已应用',
+      revalidated: true,
+      remaining_conflicts: [],
+      repair_proposals: { semester: '2026-1', proposals: [], unresolved: [] },
+    })
+    // ⚠️ 关键：重新规划**真的失败**（不是永不返回）。旧方案绝不能因此被当成当前方案。
+    runCaseADemo.mockRejectedValue(new Error('Case A demo request failed (HTTP 503).'))
+
+    await wrapper.get('[data-testid="case-a-repair-apply-CSE201-02"]').trigger('click')
+    await flushPromises()
+
+    // 换班已生效 ⇒ 必须保持"待刷新"
+    expect(wrapper.get('[data-testid="case-a-plan-stale"]').text()).toContain('换班之前')
+    // ⛔ 陈旧方案内容不得作为当前方案展示
+    expect(wrapper.find('[data-testid="case-a-adjustment-change"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(false)
+    // 如实说明重算失败，并给出用户可执行的下一步
+    const failure = wrapper.get('[data-testid="case-a-repair-error"]').text()
+    expect(failure).toContain('重新生成方案失败')
+    expect(failure).toContain('重新点击')
+    // 换班本身的成功提示仍然保留（⛔ 不让失败提示掩盖已生效的换班）
     expect(wrapper.get('[data-testid="case-a-repair-notice"]').text()).toContain('已按你的确认')
   })
 

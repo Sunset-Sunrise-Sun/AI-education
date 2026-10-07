@@ -152,12 +152,21 @@ python -m pytest tests/test_mock_data_schema.py -v
 | GET | `/health` | `{"status": "ok", ...}` | 服务存活。不检查数据库或上游模块（尚未接入） |
 | GET | `/api/v1/health` | 同上 | 带版本前缀的同一探针 |
 | GET | `/api/v1/mock/makeup-tasks` | `MakeupTask[]` | **Curriculum 模块本应输出**的补修任务 |
-| GET | `/api/v1/mock/course-offerings` | `CourseOffering[]` | **Course Data 模块本应输出**的教学班，全部 `data_source = "mock"` |
+| GET | `/api/v1/mock/course-offerings` | `CourseOffering[]` | **Course Data 模块本应输出**的教学班；该 Mock 通道内 `data_source` 全部为 `"mock"` |
 | GET | `/api/v1/mock/preference` | `Preference` | **Agent 解析自然语言后本应产出**的偏好 |
 | GET | `/api/v1/mock/plan-result` | `PlanResult` | **Planner 本应输出**的排课结果 |
 | GET | `/api/v1/mock/demo` | 上述四个对象的聚合 | 前端原型阶段只调一个接口用，属附加能力 |
+| POST | `/api/v1/plan` | `PlanResult` | **生产真实入口**。未装配时 `503 real_pipeline_not_configured`，⛔ 不回退 Mock |
+| POST | `/api/v1/completed-courses/import` | 摄取结果 | 通用已修课程 XLSX 摄取（次要兼容路径） |
+| POST | `/api/v1/completed-courses/import-pdf` | 摄取结果 | 成绩单 PDF 摄取（Case A 主路径） |
+| GET | `/api/v1/case-a-demo/offerings` | `CourseOffering[]` | Case A 演示：已验收的**南 + 深圳** scoped 教学班 |
+| POST | `/api/v1/case-a-demo/plan` | Case A 加法式响应 | Case A 闭环：补修 / 建议换班 / 路线图 / 选修账 |
+| POST | `/api/v1/case-a-demo/repair/apply` | 应用结果 | **显式确认**换班；⛔ 生成建议时绝不自动应用 |
 
-**所有响应都带 `X-Data-Source: mock` 响应头。** 这是刻意的：调用方不可能把演示数据误认成真实教务数据。
+**只有 `/api/v1/mock/*` 路径的响应带 `X-Data-Source: mock` 响应头**（由
+`app/main.py` 的中间件按路径前缀添加）。真实入口与 Case A 演示通道**不带**该响应头，
+且 ⛔ **不会**被标记成 Mock；`CourseOffering.data_source` 在 Case A 演示通道取值为 `"real"`。
+这样调用方既不可能把演示数据误认成真实教务数据，也不可能把真实数据误认成 Mock。
 
 > ⚠️ `/api/v1/mock/*` 是**永久只读的 Mock 通道**：不是计算，也不会变成真实数据接口。
 > 它只回放 `/mock_data/` 下的演示数据，任何阶段都不会返回真实教务数据；
@@ -225,10 +234,13 @@ Case A 演示通道:        /api/v1/case-a-demo/*          ->  已验收 scoped 
 
 1. 按第 5 节启动服务（看到 `Uvicorn running on http://127.0.0.1:8000` 即为启动成功）；
 2. 浏览器打开 http://127.0.0.1:8000/docs ；
-3. 调 `GET /health`，确认返回 `status: ok` 且 `data_source: mock`；
+3. 调 `GET /health`，确认返回 `status: ok`（该探针的 `data_source` 字段仅表示
+   **默认装配**为 Mock 通道，⛔ 不代表其它接口的来源）；
 4. 调 `GET /api/v1/mock/demo`，确认返回四个键：
    `makeup_tasks`、`course_offerings`、`preference`、`plan_result`；
-5. 在浏览器开发者工具的 Network 面板里确认响应头包含 `X-Data-Source: mock`；
+5. 在浏览器开发者工具的 Network 面板里，确认**该 `/api/v1/mock/*` 请求**的响应头
+   包含 `X-Data-Source: mock`；若同时调了 `/api/v1/plan` 或 `/api/v1/case-a-demo/*`，
+   确认它们的响应头里**没有**该标记；
 6. 调 `GET /api/v1/mock/plan-result`，确认 `unresolved` 里有 `manual_confirmation` 项
    ——系统应当**诚实暴露待人工确认的部分**，而不是假装已经全部解决；
 7. （可选）把 `mock_data/course_offerings.json` 里某个教学班的

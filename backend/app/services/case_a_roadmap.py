@@ -43,7 +43,7 @@ historical（或未被裁决）的区间不参与未来规划，并如实记入 
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Sequence, Set as AbstractSet
 from dataclasses import dataclass
 
 from app.curriculum.case import CurriculumCase
@@ -283,6 +283,7 @@ def bind_current_semester_courses(
     current_schedule: Sequence[CourseOffering],
     *,
     elective_group_id: str | None = None,
+    completed_course_ids: AbstractSet[str] | None = None,
 ) -> tuple[tuple[CurriculumCourse, ...], tuple[str, ...], tuple[str, ...]]:
     """把**本学期真实教学班**按**精确课程身份**绑定到培养方案课程。
 
@@ -291,11 +292,17 @@ def bind_current_semester_courses(
 
     - 一门课在本学期选了**多个教学班**时只算**一次**（按培养方案课程身份去重）；
     - 教学班课程号不在培养方案里 ⇒ 记入 unresolved 且**不**计入任何学分；
+    - `completed_course_ids` 中的课程（已确认满足 / 已计入已完成学分）
+      ⇒ **不**计入本学期学分，并记入 unresolved。
+      原因：同一 curriculum course identity ⛔ **绝不**同时在
+      `elective_completed_credit` 与 `elective_current_semester_credit` 里各算一次；
+      一门课不可能既"已确认修完"又"本学期在修"，这是**矛盾状态**，必须如实报告。
     - `elective_group_id=None` ⇒ 不做选修组判定，第二个返回值是空元组。
     """
 
     if not isinstance(case, CurriculumCase):
         raise CaseARoadmapError("case 必须是 CurriculumCase。")
+    already_completed = set(completed_course_ids or ())
     by_id: dict[str, CurriculumCourse] = {}
     for course in case.new.courses:
         by_id.setdefault(course.course_id, course)
@@ -317,6 +324,14 @@ def bind_current_semester_courses(
             unresolved.append(
                 f"本学期课程 {item.course_id}（教学班 {item.class_id}）不在培养方案课程中；"
                 f"⛔ 无法按精确课程身份绑定，未计入学分，需人工确认。"
+            )
+            continue
+        if course.course_id in already_completed:
+            # ⛔ 双计分防线：已完成身份不得再作为"本学期在修"计一次。
+            unresolved.append(
+                f"本学期课程 {course.course_id} 已被记为**已确认完成**，"
+                f"不能同时计为本学期在修学分；⛔ 本次只算一次（计入已完成），"
+                f"需人工确认这条本学期记录是否应保留。"
             )
             continue
         # 同一门课的多个教学班只算一次（按培养方案课程身份去重）。
@@ -430,6 +445,25 @@ def build_case_a_roadmap(
             sorted(course_id for course_id in satisfied_course_ids if course_id in member_ids)
         )
 
+    # ---- 已完成 / 本学期 选修身份必须**互斥**（⛔ 同一课程身份不得双计分） -------------
+    # 第二道防线：即使调用方传入了重叠集合，账目也必须只算一次，并如实报告矛盾。
+    overlap_unresolved: list[str] = []
+    if elective_current_semester_course_ids is not None:
+        completed_set = set(elective_completed_course_ids or ())
+        kept: list[str] = []
+        for course_id in elective_current_semester_course_ids:
+            if course_id in completed_set:
+                overlap_unresolved.append(
+                    f"选修课程 {course_id} 同时出现在**已确认完成**与**本学期在修**中；"
+                    f"⛔ 同一课程身份只计一次（计入已完成），本次不计入本学期学分，"
+                    f"需人工确认这条本学期记录是否应保留。"
+                )
+                continue
+            kept.append(course_id)
+        elective_current_semester_course_ids = tuple(
+            sorted(dict.fromkeys(kept))
+        )
+
     roadmap = build_academic_roadmap(
         version=case.new,
         semesters=semester_map,
@@ -443,8 +477,9 @@ def build_case_a_roadmap(
         per_semester_credit_budget=None,
         recommended_semester_by_course=recommended_index,
     )
-    if term_unresolved:
-        roadmap = _with_extra_unresolved(roadmap, term_unresolved)
+    extra = (*term_unresolved, *overlap_unresolved)
+    if extra:
+        roadmap = _with_extra_unresolved(roadmap, extra)
     return roadmap
 
 

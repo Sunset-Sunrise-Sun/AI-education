@@ -132,6 +132,23 @@ const resultCourseNames = computed(() => {
   return map
 })
 
+/**
+ * 上传成绩单是否**真的**参与了满足判定。
+ *
+ * ⛔ 只有后端明确返回 `bound` 才算绑定成功；其余任何取值（含未知取值）
+ *    一律按"未绑定"如实提示 —— 宁可多提示，⛔ 也不让用户误以为
+ *    上传的 PDF 决定了哪些课算已修完。
+ */
+const bindingNotice = computed(() => {
+  const current = result.value
+  if (!current) return ''
+  if (current.completed_binding === 'bound') return ''
+  return (
+    current.completed_binding_note ||
+    '上传的成绩单没有参与「已修完 / 已满足」的判定，培养方案已确认的事实原样保留。'
+  )
+})
+
 async function loadOfferings(): Promise<void> {
   error.value = ''
   try {
@@ -363,10 +380,24 @@ onMounted(loadOfferings)
       </p>
 
       <template v-if="result && !planStale">
+        <!-- ⛔ 必须在下方的方案结果**之前**如实说明：上传的成绩单有没有参与满足判定 -->
+        <p v-if="bindingNotice" class="case-a-binding" data-testid="case-a-binding-notice">
+          <strong>上传的成绩单未参与「已修完 / 已满足」判定。</strong>
+          {{ bindingNotice }}
+        </p>
+
         <SectionCard :mock="false" title="成绩单识别结果" :badge-count="result.transcript.record_count">
           <p>
             已识别 {{ result.transcript.record_count }} 门已修课程，覆盖 {{ result.transcript.term_count }} 个学期。
             成绩单未提供官方课程号时，系统不会自动伪造或强行认定课程身份。
+          </p>
+          <p
+            v-if="bindingNotice"
+            class="case-a-secondary"
+            data-testid="case-a-transcript-binding-note"
+          >
+            本次未使用上传行推导满足状态；下方「补修缺口分析」中的已满足课程来自培养方案
+            已确认的事实，而不是来自你上传的 PDF。
           </p>
         </SectionCard>
 
@@ -477,6 +508,7 @@ onMounted(loadOfferings)
 .case-a-secondary,
 .case-a-empty,
 .case-a-stale,
+.case-a-binding,
 .case-a-apply-notice,
 .case-a-error,
 .case-a-submit-wrap p,
@@ -491,6 +523,17 @@ onMounted(loadOfferings)
   color: #92400e;
   background: #fffbeb;
   border: 1px solid #f3d9a4;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* 上传成绩单未参与满足判定：provenance 说明必须显眼且在下文结果之前。 */
+.case-a-binding {
+  padding: 12px 14px;
+  color: #1e40af;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
   border-radius: var(--radius-sm);
   font-size: 13px;
   line-height: 1.7;

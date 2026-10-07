@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
 
 import pytest
@@ -205,6 +206,50 @@ def test_plan_response_roadmap_fails_closed_without_term_facts(
     assert body["roadmap"] is None
     assert body["roadmap_note"]
     assert "路线图" in body["roadmap_note"]
+
+
+def test_plan_response_exposes_completed_binding_at_the_api_layer(
+    runtime_and_pdf: tuple[CaseADemoRuntime, bytes],
+) -> None:
+    """API 层必须暴露 `completed_binding` / `completed_binding_note`（⛔ 不只是 runtime 对象）。
+
+    真实成绩单没有官方课程号 ⇒ 必须是 `not_bound` + 明确说明，
+    这样前端才能向用户**可见地**声明"上传的 PDF 没有参与满足判定"。
+    """
+
+    runtime, pdf = runtime_and_pdf
+    app.dependency_overrides[get_case_a_demo_runtime] = lambda: runtime
+    try:
+        response = TestClient(app).post(
+            "/api/v1/case-a-demo/plan",
+            json={
+                "semester": SEMESTER,
+                "transcript_pdf_base64": base64.b64encode(pdf).decode("ascii"),
+                "current_schedule": [],
+                "manual_schedule_attested": False,
+                "preference": {
+                    "max_credit": None,
+                    "avoid_cross_campus": False,
+                    "preferred_courses": [],
+                    "avoid_times": [],
+                    "notes": None,
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["completed_binding"] == "not_bound"
+    note = body["completed_binding_note"]
+    assert note, "not_bound must carry a user-facing explanation"
+    # ⛔ 说明里不得泄漏任何个人数据 / 具体分数
+    assert "姓名" not in note
+    assert "学号" not in note
+    assert "GPA" not in note
+    assert not re.search(r"\b\d{2,3}(\.\d+)?\s*分\b", note), "must not quote any score"
+    assert "官方课程号" in note
 
 
 def test_repair_apply_requires_full_identity_and_revalidates(

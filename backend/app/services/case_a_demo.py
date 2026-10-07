@@ -26,7 +26,14 @@ from app.curriculum.case_a_decisions import (
 )
 from app.curriculum.plan_profiles import ELECTIVE_POOL_GROUP_ID
 from app.integration import PlanningOrchestrator
-from app.models.contracts import CourseOffering, DataSource, MakeupTask, PlanResult, Preference
+from app.models.contracts import (
+    CourseOffering,
+    DataSource,
+    MakeupStatus,
+    MakeupTask,
+    PlanResult,
+    Preference,
+)
 from app.path_planner import RepairProposalSet, generate_repair_proposals
 from app.planner import RestrictedPlannerProvider
 from app.path_planner import AcademicRoadmap
@@ -100,71 +107,56 @@ class CaseADemoRuntime:
 
     def _completed_binding(
         self, imported: CompletedCoursesPdfImport
-    ) -> tuple[str, CurriculumCase]:
+    ) -> CurriculumCase:
         """决定上传的成绩单能否**安全绑定**到已确认的已修事实。
 
         背景（⛔ 不得回退）：基础 case 的已确认满足事实来自
         `rules`（绑定 `case-owner-confirmed://case-a/d4`）**与基础 case 自己的
-        `completed` 行**。上传的 PDF 若无法绑定，替换 `completed` 并清空 `rules`
+        `completed` 行**。上传的 PDF 若替换 `completed` 并清空 `rules`，
         会**静默抹掉**这些已确认事实（真实基线 = 12 satisfied + 11 manual_confirmation），
         从而使已满足的要求被重新规划。
 
-        三种结果：
+        ## 为什么**不存在** `bound` 结果（⛔ 不得重新引入）
+
+        `CurriculumCase` 把 `completed` 行**硬绑定**在它们自己的 `source_id` 上：
 
         ```text
-        bound       每一行都有已确认课程号、课程号集合与基础 case 完全一致、
-                    且不存在"已确认通过却被上传行标为未通过"的矛盾
-                    ⇒ 用上传行；已确认满足事实由同一套 rules 继续生效
-        not_bound   上传行没有任何课程号（真实成绩单就是这种：PDF 不含官方课程号）
-                    ⇒ ⛔ 保留基础 case 的已确认事实与 rules，
-                      并**明确标记**本次未采用上传行做满足判定（⛔ 不静默）
-        contradict  上传行与已确认事实互相矛盾
-                    （部分有课程号 / 出现未知课程号 / 把已确认通过的课标成未通过）
-                    ⇒ fail closed，⛔ 不猜测哪一侧正确
+        行的 source_id != case.completed_source_id
+            ⇒ CurriculumNormalizationError("completed records do not belong to the supplied source")
+        ```
+
+        因此"用上传行替换已确认行"**在模型层面**不可能成立：
+        上传件的 `source_id` 是 `upload:pdf:sha256:...`，而已确认行属于
+        `case-owner-confirmed://case-a/d4`。要让它成立只能：
+        ① 把已确认行**伪造成**来自上传件（伪造 provenance，⛔ 禁止）；或
+        ② 把上传行**伪造成**属于已确认来源（同样是伪造，⛔ 禁止）。
+
+        两种做法都会让"这条满足事实来自哪里"变得不可核验，因此本实现
+        **按设计 fail closed**：
+
+        ```text
+        上传行为空或全部没有课程号   ⇒ 保留基础 case 的已确认事实与 rules，
+        （真实成绩单就是这种：PDF     本次**未采用上传行**做满足判定，
+          不提供官方课程号）          并明确标记 `not_bound`（⛔ 不静默）
+        任何一行带有课程号           ⇒ fail closed：
+        （无论是否与已确认课程号一致） ⛔ 上传件与已确认来源是**两个不同的来源**，
+                                      无法在不伪造 provenance 的前提下改写满足事实
         ```
 
         ⛔ 任何情况下都不把 `manual_confirmation` / `possibly_equivalent` 提升为满足。
         """
 
         rows = tuple(imported.courses)
-        confirmed = {row.course_id: row for row in self.base_case.completed if row.course_id}
-
         identified = [row for row in rows if row.course_id is not None]
-        if not identified:
-            # 真实成绩单：PDF 不提供官方课程号 ⇒ 无法绑定。
-            return "not_bound", self.base_case
-
-        unknown = sorted(row.course_id for row in identified if row.course_id not in confirmed)
-        if unknown:
+        if identified:
+            # ⛔ 这里**故意**不区分"课程号是否一致"：上传件与已确认来源是两个来源，
+            #    改写满足事实需要伪造 provenance（见上方说明）。
             raise CaseADemoInputError(
-                "上传的成绩单包含培养方案已确认事实之外的课程号；"
-                "⛔ 无法安全绑定，拒绝在不确定的已修事实上继续规划。"
+                "上传的成绩单包含官方课程号，但本系统无法在**不伪造来源**的前提下"
+                "用上传行改写培养方案已确认的满足事实；⛔ 拒绝继续"
+                "（请改用不含官方课程号的成绩单导出，或以人工认定处理）。"
             )
-        for row in identified:
-            original = confirmed.get(row.course_id)
-            if original is not None and original.passed and not row.passed:
-                raise CaseADemoInputError(
-                    f"上传的成绩单把已确认通过的课程 {row.course_id} 标为未通过；"
-                    f"⛔ 两侧事实矛盾，拒绝继续。"
-                )
-        if len(identified) != len(rows):
-            raise CaseADemoInputError(
-                "上传的成绩单只有部分记录带有课程号；⛔ 无法安全绑定，拒绝继续。"
-            )
-        if {row.course_id for row in identified} != set(confirmed):
-            raise CaseADemoInputError(
-                "上传的成绩单与培养方案已确认的已修事实范围不一致；"
-                "⛔ 无法安全绑定，拒绝在不确定的已修事实上继续规划。"
-            )
-        return "bound", replace(
-            self.base_case,
-            completed=rows,
-            completed_source_id=imported.source_id,
-            completed_complete=True,
-            completed_completeness_evidence=(
-                f"user-uploaded-sysu-transcript-pdf:sha256:{imported.artifact_sha256}"
-            ),
-        )
+        return self.base_case
 
     def _curriculum(self, imported: CompletedCoursesPdfImport) -> CurriculumCaseProvider:
         _binding, case = self._completed_binding(imported)
@@ -214,7 +206,8 @@ class CaseADemoRuntime:
             declared_length=len(pdf_bytes),
             media_type=PDF_MEDIA_TYPE,
         )
-        binding, effective_case = self._completed_binding(imported)
+        binding = "not_bound"
+        effective_case = self._completed_binding(imported)
         curriculum = CurriculumCaseProvider(effective_case)
         tasks = curriculum.get_makeup_tasks()
         offerings = self.course_data.get_course_offerings(semester)
@@ -239,10 +232,17 @@ class CaseADemoRuntime:
         # ⚠️ 本学期真实教学班按**精确课程身份**绑定到培养方案课程后再传入，
         #    否则 `elective_current_semester_credit` 永远是 0，
         #    使 `requirement - completed - current = planned + remaining` 在真实接口上不成立。
+        #
+        # ⛔ `completed_course_ids` 必须传入：已确认满足的课**不能**同时作为"本学期在修"
+        #    再计一次学分（否则同一 curriculum course identity 会被双计）。
+        completed_course_ids = {
+            task.course_id for task in tasks if task.status is MakeupStatus.SATISFIED
+        }
         current_courses, elective_current_ids, binding_unresolved = bind_current_semester_courses(
             effective_case,
             current_schedule,
             elective_group_id=self.elective_group_id,
+            completed_course_ids=completed_course_ids,
         )
         roadmap: AcademicRoadmap | None = None
         roadmap_note: str | None = None

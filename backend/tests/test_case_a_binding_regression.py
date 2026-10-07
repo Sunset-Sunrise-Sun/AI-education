@@ -22,7 +22,10 @@ from app.services.case_a_demo import (
     CaseADemoRuntime,
     _with_approved_scope_decisions,
 )
-from app.services.case_a_roadmap import bind_current_semester_courses
+from app.services.case_a_roadmap import (
+    bind_current_semester_courses,
+    build_case_a_roadmap,
+)
 
 from tests import pdf_fixtures
 from tests.test_case_a_roadmap_api import _case_payload, _course, _plan
@@ -227,62 +230,59 @@ def _completed_row(course_id: str | None, passed: bool):  # type: ignore[no-unty
     )
 
 
-def test_contradicting_import_fails_closed(tmp_path: Path) -> None:
-    """上传行与已确认事实矛盾 ⇒ fail closed（⛔ 不猜测哪一侧正确）。"""
+def test_any_official_course_id_upload_fails_closed_by_design(tmp_path: Path) -> None:
+    """⛔ 只要上传行带官方课程号就 fail closed —— 这是**设计**，不是缺陷。
+
+    原因（见 `_completed_binding` 文档）：`CurriculumCase` 把 `completed` 行硬绑定在
+    自己的 `source_id` 上，上传件与已确认来源是**两个来源**；
+    用上传行改写满足事实只能靠伪造 provenance。因此本实现明确 fail closed，
+    而不是"宣称支持 bound 但构造失败"。
+    """
 
     runtime = _runtime(tmp_path, _satisfaction_payload())
 
-    # ① 未知课程号：不在培养方案已确认事实中
-    with pytest.raises(CaseADemoInputError, match="已确认事实之外"):
+    # ① 与已确认课程号完全一致（Codex 复现的那条路径）⇒ 仍然 fail closed
+    with pytest.raises(CaseADemoInputError, match="不伪造来源"):
+        runtime._completed_binding(_import_with(tmp_path, [_completed_row("CSE310", True)]))  # noqa: SLF001
+
+    # ② 未知课程号 ⇒ 同样 fail closed（同一条信息，⛔ 不区分"是否一致"）
+    with pytest.raises(CaseADemoInputError, match="不伪造来源"):
         runtime._completed_binding(_import_with(tmp_path, [_completed_row("UNKNOWN-9", True)]))  # noqa: SLF001
 
-    # ② 把已确认通过的课程标为未通过
-    with pytest.raises(CaseADemoInputError, match="标为未通过"):
-        runtime._completed_binding(_import_with(tmp_path, [_completed_row("CSE310", False)]))  # noqa: SLF001
-
-    # ③ 部分有课程号、部分没有 ⇒ 无法安全绑定
-    with pytest.raises(CaseADemoInputError, match="部分记录带有课程号"):
+    # ③ 部分有课程号、部分没有 ⇒ 同样 fail closed
+    with pytest.raises(CaseADemoInputError, match="不伪造来源"):
         runtime._completed_binding(  # noqa: SLF001
             _import_with(tmp_path, [_completed_row("CSE310", True), _completed_row(None, True)])
         )
 
-    # ④ 空行集合等价于"没有课程号" ⇒ not_bound（保留已确认事实），⛔ 不是矛盾
-    binding, _case = runtime._completed_binding(_import_with(tmp_path, []))  # noqa: SLF001
-    assert binding == "not_bound"
+    # ④ 已确认通过的课被标成未通过 ⇒ 也 fail closed（同样是带课程号的上传）
+    with pytest.raises(CaseADemoInputError, match="不伪造来源"):
+        runtime._completed_binding(_import_with(tmp_path, [_completed_row("CSE310", False)]))  # noqa: SLF001
 
-    # ⑤ 有课程号、且全部已知、但范围与已确认事实不一致（多出一门已确认事实之外的课
-    #    已在 ① 覆盖）⇒ 这里用"缺了一门已确认课程"的等价场景：
-    #    把两门都已确认的课程只上传其中一门。
-    payload_two = _satisfaction_payload()
-    payload_two["completed"]["records"].append(  # type: ignore[index]
-        {
-            "course_id": "PAST-1",
-            "course_name": "示例已过必修",
-            "credit": 2.0,
-            "semester": "2025-1",
-            "passed": True,
-            "course_type": "公必",
-            "course_id_status": "confirmed",
-            "id_match_source": "synthetic://completed/scope",
-        }
-    )
-    runtime_two = _runtime(tmp_path, payload_two)
-    from app.curriculum.completed_courses import CompletedCourse, CourseIdStatus
 
-    only_cse310 = CompletedCourse(
-        course_id="CSE310",
-        course_name="示例操作系统",
-        credit=3.0,
-        semester="2025-2",
-        passed=True,
-        course_type="专必",
-        course_id_status=CourseIdStatus.CONFIRMED,
-        id_match_source="synthetic://completed",
-        source_id="synthetic://completed",
-        source_record="row:1",
-    )
-    with pytest.raises(CaseADemoInputError, match="范围不一致"):
-        runtime_two._completed_binding(_import_with(tmp_path, [only_cse310]))  # noqa: SLF001
+def test_not_bound_keeps_a_valid_constructible_case(tmp_path: Path) -> None:
+    """`not_bound` 必须返回一个**能真正构造**的有效 case（⛔ 不是"宣称可用却构不出"）。
+
+    这正是 Codex 复现的问题：旧 `bound` 分支替换 `completed_source_id` 后
+    `CurriculumCase` 直接拒绝构造（`rules: configuration is outside the supplied case`
+    / `completed records do not belong to the supplied source`）。
+    """
+
+    from app.curriculum import CurriculumCaseProvider
+
+    runtime = _runtime(tmp_path, _satisfaction_payload())
+
+    # 空行集合与"全部无课程号"都必须走 not_bound，且返回的 case 必须可用
+    for rows in ([], [_completed_row(None, True), _completed_row(None, True)]):
+        effective = runtime._completed_binding(_import_with(tmp_path, rows))  # noqa: SLF001
+        assert effective is runtime.base_case or effective.completed_source_id == runtime.base_case.completed_source_id
+        # 关键：能真正构造 provider 并产出补修任务（⛔ 不会抛 CurriculumNormalizationError）
+        tasks = CurriculumCaseProvider(effective).get_makeup_tasks()
+        statuses = {task.course_id: task.status.value for task in tasks}
+        # 已确认满足事实保留
+        assert statuses.get("CSE310") == "satisfied"
+        # ⛔ manual_confirmation / possibly_equivalent 未被提升
+        assert statuses.get("TODO-1") != "satisfied"
 
 
 # ---------------------------------------------------------------------------
@@ -352,3 +352,68 @@ def test_nonexact_current_schedule_course_is_unresolved_with_zero_credit(tmp_pat
     assert elective_ids == ()
     assert len(unresolved) == 1
     assert "NOT-IN-CURRICULUM" in unresolved[0]
+
+
+def test_completed_and_current_elective_overlap_is_counted_once(tmp_path: Path) -> None:
+    """⛔ 同一选修课程身份**不得**同时计入已完成与本学期（双计分）。
+
+    构造真实矛盾状态：`EL-1` 既被确认为**已满足**（计入 completed），
+    又出现在本学期课表里。两个身份集合必须互斥 ⇒ 只算一次 + 确定性报告 + 不重复规划。
+    """
+
+    from app.models.contracts import MakeupStatus, MakeupTask
+
+    runtime = _runtime(tmp_path, _satisfaction_payload())
+    offerings = runtime.course_data.get_course_offerings(SEMESTER)
+    elective_offering = next(
+        (item for item in offerings if item.course_id == "EL-1"), None
+    )
+    assert elective_offering is not None, "fixture must carry an accepted EL-1 class"
+
+    # ① 第一道防线：binder 收到 completed 身份时必须拒绝把它算作"本学期在修"
+    courses, elective_ids, unresolved = bind_current_semester_courses(
+        runtime.base_case,
+        [elective_offering],
+        elective_group_id=GROUP,
+        completed_course_ids={"EL-1"},
+    )
+    assert "EL-1" not in {course.course_id for course in courses}
+    assert elective_ids == ()
+    assert any("已被记为**已确认完成**" in item for item in unresolved)
+
+    # ② 第二道防线：即使调用方把重叠集合强行传进路线图，账目也只算一次并报告。
+    #    `elective_completed_course_ids` 由**已确认满足**的补修任务推导，
+    #    因此这里用真实路径制造重叠：EL-1 既 satisfied，又在本学期课表里。
+    #    注意 `current_semester_courses` 要传**培养方案课程**（不是教学班）。
+    el1_course = next(
+        course for course in runtime.base_case.new.courses if course.course_id == "EL-1"
+    )
+    roadmap = build_case_a_roadmap(
+        runtime.base_case,
+        makeup_tasks=[
+            MakeupTask(
+                course_id="EL-1",
+                course_name="示例选修 1",
+                credit=3.0,
+                status=MakeupStatus.SATISFIED,
+            )
+        ],
+        current_semester_label=SEMESTER,
+        elective_group_id=GROUP,
+        current_semester_courses=[el1_course],
+        elective_current_semester_course_ids=["EL-1"],
+    )
+    # 只算一次：已完成得 3 学分，本学期**不再**重复计入
+    assert roadmap.elective_completed_credit == 3.0
+    assert roadmap.elective_current_semester_credit == 0.0
+    # 确定性报告
+    assert any("只计一次" in item and "EL-1" in item for item in roadmap.unresolved)
+    # 账目恒等式仍然成立
+    assert (
+        roadmap.elective_requirement_credit
+        - roadmap.elective_completed_credit
+        - roadmap.elective_current_semester_credit
+        == roadmap.elective_planned_credit + roadmap.elective_remaining_credit
+    )
+    # ⛔ 该课程不得再被排入未来学期
+    assert "EL-1" not in set(roadmap.future_course_ids)
