@@ -285,6 +285,40 @@ def test_not_bound_keeps_a_valid_constructible_case(tmp_path: Path) -> None:
         assert statuses.get("TODO-1") != "satisfied"
 
 
+def test_curriculum_provider_construction_matches_the_single_return_contract(
+    tmp_path: Path,
+) -> None:
+    """直接锁定单返回值契约，⛔ 防止 `_binding, case = ...` 这类过期解包回归。
+
+    历史缺陷：`_curriculum()` 曾写成
+    `_binding, case = self._completed_binding(imported)`，
+    而 `_completed_binding()` 只返回一个 `CurriculumCase`
+    ⇒ `TypeError: cannot unpack non-iterable CurriculumCase object`
+    （Codex 独立复现）。该 helper 已删除；这里同时验证：
+    ① 返回值**不可迭代解包**；② 用它构造 provider 是正确的用法；
+    ③ 死 helper 不会回来。
+    """
+
+    from app.curriculum import CurriculumCaseProvider
+    from app.services.case_a_demo import CaseADemoRuntime
+
+    runtime = _runtime(tmp_path, _satisfaction_payload())
+    effective = runtime._completed_binding(_import_with(tmp_path, []))  # noqa: SLF001
+
+    # ① 单值返回：任何"解包两个"的写法都必须失败
+    with pytest.raises(TypeError):
+        _binding, _case = effective  # type: ignore[misc]  # noqa: F841
+
+    # ② 正确用法：直接交给 provider
+    tasks = CurriculumCaseProvider(effective).get_makeup_tasks()
+    assert tasks, "the returned case must project makeup tasks"
+
+    # ③ 死 helper 必须保持删除状态
+    assert not hasattr(CaseADemoRuntime, "_curriculum"), (
+        "_curriculum() must stay removed: it was dead code carrying the stale unpack"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Blocker #2 — current-semester elective credit must reach the runtime
 # ---------------------------------------------------------------------------

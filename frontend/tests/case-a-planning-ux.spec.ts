@@ -787,6 +787,34 @@ describe('显式换班：页面编排（确认才生效）', () => {
     }
   })
 
+  it('falls back to the safe disclosure when the note is MISSING entirely', async () => {
+    // ⛔ 最保守的契约：后端可能（将来）不给 note，甚至整个字段缺失；
+    //    这两种情况都**必须**保留 provenance 提示，⛔ 不允许静默压制。
+    for (const patch of [
+      { completed_binding_note: null },
+      { completed_binding_note: undefined },
+      { completed_binding_note: '' },
+    ]) {
+      const wrapper = mount(CaseADemoView)
+      await flushPromises()
+      const input = wrapper.get('[data-testid="case-a-pdf"]')
+      const file = new File(['%PDF-1.4'], 'transcript.pdf', { type: 'application/pdf' })
+      Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+      await input.trigger('change')
+      runCaseADemo.mockResolvedValue(planResponse(patch))
+      await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+      await flushPromises()
+
+      const notice = wrapper.find('[data-testid="case-a-binding-notice"]')
+      expect(notice.exists(), `disclosure must survive note=${JSON.stringify(patch)}`).toBe(true)
+      // 兜底文案必须说明"没有参与判定"，且两处提示都在
+      expect(notice.text()).toContain('未参与')
+      expect(notice.text()).toContain('培养方案已确认的事实原样保留')
+      expect(wrapper.find('[data-testid="case-a-transcript-binding-note"]').exists()).toBe(true)
+      wrapper.unmount()
+    }
+  })
+
   it('only an explicit click calls repair apply, with the full identity', async () => {
     const wrapper = await mountAndPlan()
     applyCaseARepair.mockResolvedValue({
