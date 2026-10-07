@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { AcademicRoadmap, RoadmapSemester } from '../types/caseAPlanning'
+import { loadLabel, type LoadTone } from '../utils/creditPolicy'
 
 /**
  * 未来学期修读路径（真实 `AcademicRoadmap`）。
@@ -26,6 +27,11 @@ const elective = computed(() => props.roadmap?.elective ?? null)
 function credit(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—'
   return String(Math.round(value * 100) / 100)
+}
+
+/** 学期负荷标签：口径与阈值集中在 `utils/creditPolicy.ts`（含 26/30/35 三档）。 */
+function loadTone(total: number): LoadTone {
+  return loadLabel(total).tone
 }
 
 /** 培养方案学期号文案：⛔ 不把它说成"列表第 N 项"。 */
@@ -93,7 +99,22 @@ const warnings = computed(() => props.roadmap?.warnings ?? [])
       <header class="roadmap__term-head">
         <h3 class="roadmap__term-title">{{ semester.semester_label }}</h3>
         <span class="roadmap__term-sub">{{ curriculumTermText(semester) }}</span>
-        <span class="tag tag--source-real">共 {{ credit(semester.total_credit) }} 学分</span>
+        <span class="tag tag--source-real">
+          建议学分：{{ credit(semester.total_credit) }}
+        </span>
+        <span
+          class="tag"
+          :class="{
+            'tag--load-normal': loadTone(semester.total_credit) === 'normal',
+            'tag--unresolved-schedule': loadTone(semester.total_credit) === 'full',
+            'tag--unresolved-manual':
+              loadTone(semester.total_credit) === 'heavy' ||
+              loadTone(semester.total_credit) === 'over',
+          }"
+          data-testid="case-a-roadmap-load"
+        >
+          负荷：{{ loadLabel(semester.total_credit).text }}
+        </span>
       </header>
 
       <p v-if="semester.courses.length === 0" class="roadmap__term-empty">

@@ -139,6 +139,18 @@ function extractCourseId(text: string): string | null {
   return match ? match[1] : null
 }
 
+/**
+ * 从文本里提取**教学班号**（仅用于去重键，⛔ 不构造业务事实）。
+ *
+ * ⚠️ 为什么必须进去重键：同一门课的**不同教学班**可能各自产生一条问题。
+ * 如果键里只有 `kind + course_id`，就会把两个**不同的教学班问题**错误合并成一条，
+ * 用户会因此丢掉一条真实待办。因此键里带上教学班身份。
+ */
+function extractClassId(text: string): string | null {
+  const match = /教学班\s*(\d{4,})/.exec(text)
+  return match ? match[1] : null
+}
+
 function titleFor(courseId: string | null, nameById: Record<string, string>): string {
   if (!courseId) return '需要你确认'
   const name = nameById[courseId]
@@ -263,6 +275,7 @@ export function normalizedIssues(input: NormalizeInput): NormalizedIssue[] {
     const text = message.trim()
     if (!text) continue
     const courseId = extractCourseId(text)
+    const classId = extractClassId(text)
     const lower = text.toLowerCase()
     const kind: IssueKind = lower.includes('没有其他') || lower.includes('没有可')
       ? 'no_alternatives'
@@ -271,10 +284,11 @@ export function normalizedIssues(input: NormalizeInput): NormalizedIssue[] {
       ? '暂时没有该课程的其他教学班可选'
       : '现有的候选教学班都与你的课表冲突'
     push({
-      id: `${kind}::${courseId ?? ''}::${human}`,
+      // ⚠️ 去重键带上**教学班身份**：同一门课的不同教学班是**不同**待办，⛔ 不得合并
+      id: `${kind}::${courseId ?? ''}::${classId ?? ''}::${human}`,
       kind,
       title: titleFor(courseId, nameById),
-      detail: courseId ?? '',
+      detail: classId ? `${courseId ?? ''} · 教学班 ${classId}` : (courseId ?? ''),
       message: human,
       rawCode: null,
       rawMessage: text,

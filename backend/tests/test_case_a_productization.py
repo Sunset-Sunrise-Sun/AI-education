@@ -19,6 +19,7 @@ import pytest
 from app.curriculum.case import load_curriculum_case
 from app.models.contracts import CourseOffering, DataSource, Meeting
 from app.services.case_a_roadmap import (
+    CASE_A_CURRENT_HARD_MAX_CREDIT,
     CASE_A_FUTURE_HARD_MAX_CREDIT,
     CASE_A_FUTURE_SOFT_TARGET_CREDIT,
     recommend_current_electives,
@@ -107,10 +108,13 @@ def test_user_max_credit_takes_priority_but_cannot_exceed_hard_max(tmp_path: Pat
 
 
 def test_default_policy_constants(tmp_path: Path) -> None:
-    """产品级默认：软目标 26、硬上限 30（⛔ 不是学校政策声明）。"""
+    """产品级默认：未来软目标 26 / 未来硬上限 35；当前学期上限 30（⛔ 两者不同）。"""
 
     assert CASE_A_FUTURE_SOFT_TARGET_CREDIT == 26.0
-    assert CASE_A_FUTURE_HARD_MAX_CREDIT == 30.0
+    assert CASE_A_FUTURE_HARD_MAX_CREDIT == 35.0
+    # ⛔ 当前学期与未来学期的上限**不同**，不得混用
+    assert CASE_A_CURRENT_HARD_MAX_CREDIT == 30.0
+    assert CASE_A_CURRENT_HARD_MAX_CREDIT != CASE_A_FUTURE_HARD_MAX_CREDIT
 
 
 def test_impossible_load_is_reported_instead_of_overfilling(tmp_path: Path) -> None:
@@ -339,3 +343,82 @@ def test_no_recommendation_when_nothing_is_outstanding(tmp_path: Path) -> None:
         )
         == ()
     )
+
+
+def test_future_plan_absorption_does_not_hide_the_current_recommendation(tmp_path: Path) -> None:
+    """⛔ 关键回归：未来学期把选修缺口排满时，本学期**仍然**要给出可选选修。
+
+    人工验收正是看到这个：`roadmap.elective_remaining_credit == 0`（因为路线图把
+    23 学分选修全排进未来学期），于是本学期选修面板静默显示 0。
+    门控必须用**真实未覆盖需求**（`requirement − completed − current`），
+    而不是"排完之后还剩多少"。
+    """
+
+    case = load_curriculum_case(
+        _write(tmp_path, _payload(courses=_elective_courses(), groups=_group_records()))
+    )
+    from app.services.case_a_roadmap import build_case_a_roadmap
+
+    roadmap = build_case_a_roadmap(
+        case,
+        makeup_tasks=[],
+        current_semester_label=SEMESTER,
+        elective_group_id=GROUP,
+    )
+    # 路线图确实把缺口吸收掉了……
+    assert roadmap.elective_remaining_credit == 0.0
+    assert roadmap.elective_planned_credit > 0.0
+
+    # ……但真实未覆盖需求仍为正，因此本学期建议**必须**存在
+    uncovered = (
+        roadmap.elective_requirement_credit
+        - roadmap.elective_completed_credit
+        - roadmap.elective_current_semester_credit
+    )
+    assert uncovered > 0, "fixture must still owe elective credit"
+    recs = recommend_current_electives(
+        case,
+        [],
+        [_offering("EL-1", "01")],
+        elective_group_id=GROUP,
+        remaining_elective_credit=uncovered,
+    )
+    assert [item.course_id for item in recs] == ["EL-1"], (
+        "absorbing the gap into future semesters must not hide the current-semester "
+        "elective recommendation"
+    )
+
+
+def test_current_semester_load_uses_the_30_cap_not_the_future_35() -> None:
+    """⛔ 当前学期上限 30 与未来硬上限 35 是**两个**阈值，不得混用。"""
+
+    from app.services.case_a_roadmap import current_semester_load
+
+    load = current_semester_load(
+        current_schedule=[],
+        planned_course_ids=[],
+        credit_by_course_id={},
+        recommendations=(),
+        user_max_credit=None,
+    )
+    assert load.max_credit == CASE_A_CURRENT_HARD_MAX_CREDIT == 30.0
+
+    # 用户更低的上限优先
+    strict = current_semester_load(
+        current_schedule=[],
+        planned_course_ids=[],
+        credit_by_course_id={},
+        recommendations=(),
+        user_max_credit=18.0,
+    )
+    assert strict.max_credit == 18.0
+
+    # 用户给更高值 ⇒ 仍被当前学期上限收口（⛔ 不得借用未来的 35）
+    loose = current_semester_load(
+        current_schedule=[],
+        planned_course_ids=[],
+        credit_by_course_id={},
+        recommendations=(),
+        user_max_credit=40.0,
+    )
+    assert loose.max_credit == 30.0

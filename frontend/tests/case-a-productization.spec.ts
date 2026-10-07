@@ -12,6 +12,12 @@ import {
   type RawRepairProposal,
 } from '@/utils/repairView'
 import { humanizeIssueCode, normalizedIssues, summarizeByKind } from '@/utils/studentIssues'
+import {
+  CURRENT_HARD_MAX_CREDIT,
+  FUTURE_HARD_MAX_CREDIT,
+  FUTURE_SOFT_TARGET_CREDIT,
+  loadLabel,
+} from '@/utils/creditPolicy'
 
 describe('issue humanization — ⛔ 机器码不得作为主文案', () => {
   it('translates known internal codes into Chinese', () => {
@@ -178,5 +184,75 @@ describe('repair grouping — 一门课一张卡片', () => {
 
   it('exposes the default initial candidate count used by the UI', () => {
     expect(MAX_INITIAL_CANDIDATES).toBe(3)
+  })
+})
+
+describe('credit policy — 26 / 30 / 35 三档（当前学期与未来学期不同）', () => {
+  it('labels future semesters by the product thresholds', () => {
+    expect(loadLabel(20).text).toBe('正常')
+    expect(loadLabel(26).text).toBe('正常')
+    expect(loadLabel(26.5).text).toBe('较满')
+    expect(loadLabel(30).text).toBe('较满')
+    expect(loadLabel(30.5).text).toBe('很满')
+    expect(loadLabel(35).text).toBe('很满')
+  })
+
+  it('treats 30–35 as VALID (very heavy), not forbidden', () => {
+    for (const value of [31, 33.5, 34, 35]) {
+      const label = loadLabel(value)
+      expect(label.tone, `${value} must not be treated as invalid`).not.toBe('over')
+      expect(label.text).toBe('很满')
+    }
+  })
+
+  it('flags anything above the hard max so a >35 semester cannot pass unnoticed', () => {
+    expect(loadLabel(35.5).tone).toBe('over')
+    expect(loadLabel(53.5).text).toBe('超出上限')
+  })
+
+  it('keeps the current-semester cap separate from the future hard max', () => {
+    expect(CURRENT_HARD_MAX_CREDIT).toBe(30)
+    expect(FUTURE_HARD_MAX_CREDIT).toBe(35)
+    expect(CURRENT_HARD_MAX_CREDIT).not.toBe(FUTURE_HARD_MAX_CREDIT)
+    expect(FUTURE_SOFT_TARGET_CREDIT).toBe(26)
+  })
+})
+
+describe('issue dedup — ⛔ 不得合并不同的教学班问题', () => {
+  it('keeps two DIFFERENT classes of the same course as two issues', () => {
+    const issues = normalizedIssues({
+      repairUnresolved: [
+        '课程 PUB178 的当前教学班 202616253 状态为 CONFLICT，没有可确认无冲突的同课程候选（no_alternatives）；需要人工核验。',
+        '课程 PUB178 的当前教学班 202616999 状态为 CONFLICT，没有可确认无冲突的同课程候选（no_alternatives）；需要人工核验。',
+      ],
+      courseNameById: { PUB178: '劳动教育' },
+    })
+    // 同一门课的**不同教学班**是不同待办 ⇒ 必须保留两条
+    expect(issues).toHaveLength(2)
+    expect(issues.every((issue) => issue.courseId === 'PUB178')).toBe(true)
+    const details = issues.map((issue) => issue.detail).sort()
+    expect(details[0]).toContain('202616253')
+    expect(details[1]).toContain('202616999')
+  })
+
+  it('still collapses the SAME class reported by different backend lists', () => {
+    const sameClass = '课程 PUB178 的当前教学班 202616253 状态为 CONFLICT（no_alternatives）；需要人工核验。'
+    const issues = normalizedIssues({
+      repairUnresolved: [sameClass, sameClass],
+      courseNameById: { PUB178: '劳动教育' },
+    })
+    expect(issues).toHaveLength(1)
+  })
+
+  it('never echoes an unknown machine code in the primary message', () => {
+    const issues = normalizedIssues({
+      planUnresolved: [
+        { type: 'brand_new_internal_state', course_id: 'X1', message: '' },
+      ],
+      courseNameById: { X1: '示例课程' },
+    })
+    expect(issues).toHaveLength(1)
+    expect(issues[0].message).not.toContain('brand_new_internal_state')
+    expect(issues[0].message).toBe('需要确认')
   })
 })
