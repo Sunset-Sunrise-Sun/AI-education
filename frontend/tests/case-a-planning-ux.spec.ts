@@ -989,8 +989,14 @@ describe('显式换班：页面编排（确认才生效）', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-testid="case-a-plan-stale"]').exists()).toBe(false)
-    // 重新规划返回的 unresolved 如实展示（没有被清空）
-    expect(wrapper.text()).toContain('排课信息待核验')
+    // 重新规划返回的 unresolved 如实展示（没有被清空）：
+    // 议题现在只在**唯一的底部提醒区**渲染且默认折叠，因此先展开它。
+    const reminders = wrapper.find('[data-testid="case-a-reminders-toggle"]')
+    if (reminders.exists()) {
+      await reminders.trigger('click')
+      await flushPromises()
+    }
+    expect(wrapper.text()).toContain('排课信息')
   })
 
   it('keeps the plan valid when the repair is rejected', async () => {

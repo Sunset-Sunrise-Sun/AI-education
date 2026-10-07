@@ -100,6 +100,11 @@ CASE_A_FUTURE_SOFT_TARGET_CREDIT = 26.0
 CASE_A_FUTURE_HARD_MAX_CREDIT = 35.0
 #: 当前学期（section-level）学分的硬上限；⛔ 与未来上限不是同一个值。
 CASE_A_CURRENT_HARD_MAX_CREDIT = 30.0
+#: 当前学期专业选修**展示上限**（⛔ 不是培养方案规则）。
+#:
+#: 只影响"列出几门候选"，⛔ 不影响选修学分要求、冲突判定或规划结果。
+#: 取值需覆盖真实选修池规模，避免再次出现"排在第 4 位之后就被静默藏掉"。
+CASE_A_ELECTIVE_DISPLAY_LIMIT = 50
 
 
 class CaseARoadmapError(ValueError):
@@ -425,7 +430,13 @@ def recommend_current_electives(
     elective_group_id: str,
     already_taken_course_ids: AbstractSet[str] | None = None,
     remaining_elective_credit: float | None = None,
-    max_courses: int = 3,
+    #: 产品展示上限：⛔ 不再只用 3 门。
+    #:
+    #: 早期默认 3 门会让排在第 4 位之后的选修（真实数据里正是
+    #: CSE335 数据库系统原理 / CSE337 数据库系统实验）**静默消失**，
+    #: 用户既看不到、也无法加入。产品要求是"要么可见，要么可达"，
+    #: 因此这里放宽到能覆盖当前真实选修池的规模（前端仍会做渐进披露）。
+    max_courses: int = CASE_A_ELECTIVE_DISPLAY_LIMIT,
     only_class_ids: Mapping[str, AbstractSet[str]] | None = None,
 ) -> tuple[CurrentElectiveRecommendation, ...]:
     """给出本学期**可考虑的专业选修**建议（最多 `max_courses` 门）。

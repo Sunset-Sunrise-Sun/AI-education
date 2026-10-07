@@ -47,6 +47,19 @@ function tagsFor(block: ScheduleBlock): CourseTag[] {
   })
 }
 
+/**
+ * 课程类别标签（来自**真实数据**，⛔ 不按课程名/编号猜测）。
+ *
+ * - `makeupTasks[].status === 'required'` ⇒ 必修（培养方案明确要求补修）
+ * - 其余出现在课表里的课程 ⇒ 专业选修
+ *   （本 Case 的课表由培养方案课程与选修池候选构成，因此这个二分是如实的）
+ */
+function categoryOf(block: ScheduleBlock): { key: string; label: string } {
+  const task = props.makeupTasks.find((item) => item.course_id === block.courseId)
+  if (task?.status === 'required') return { key: 'required', label: '必修' }
+  return { key: 'elective', label: '专业选修' }
+}
+
 function teacherText(teacher: string | null): string {
   const value = teacher?.trim()
   if (!value) return '教师信息暂未同步'
@@ -75,6 +88,26 @@ function blockAt(weekday: number, section: number): ScheduleBlock | null {
       本周课表来自 Planner 的 <strong>建议教学班</strong>（`selected_classes`）与已返回的真实教学班数据；
       ⛔ 不代表已经完成选课或注册。
     </p>
+
+    <!-- 图例：让用户一眼看懂标签含义 -->
+    <ul class="weekly__legend" data-testid="case-a-weekly-legend">
+      <li>
+        <span class="weekly__category weekly__category--required">必修</span>
+        培养方案明确要求
+      </li>
+      <li>
+        <span class="weekly__category weekly__category--elective">专业选修</span>
+        专业选修组课程或你已加入方案的选修
+      </li>
+      <li>
+        <span class="weekly__tag weekly__tag--current">当前</span>
+        你本人当前课表里已有
+      </li>
+      <li>
+        <span class="weekly__tag weekly__tag--makeup">补修</span>
+        需要补修的课程
+      </li>
+    </ul>
 
     <p v-if="isEmpty" class="weekly__empty" data-testid="case-a-weekly-empty">
       本次建议方案中没有可绘制的教学班（或建议教学班在已返回的教学班数据中不存在）。
@@ -106,6 +139,13 @@ function blockAt(weekday: number, section: number): ScheduleBlock | null {
               >
                 <div class="weekly__block-head">
                   <strong>{{ blockAt(day.weekday, section)!.courseName }}</strong>
+                  <span
+                    class="weekly__category"
+                    :class="`weekly__category--${categoryOf(blockAt(day.weekday, section)!).key}`"
+                    data-testid="case-a-weekly-category"
+                  >
+                    {{ categoryOf(blockAt(day.weekday, section)!).label }}
+                  </span>
                   <span
                     v-for="tag in tagsFor(blockAt(day.weekday, section)!)"
                     :key="tag"
@@ -146,6 +186,47 @@ function blockAt(weekday: number, section: number): ScheduleBlock | null {
 </template>
 
 <style scoped>
+.weekly__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  list-style: none;
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.weekly__legend li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.weekly__category {
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+/* 标签色统一：必修=蓝、专业选修=浅蓝 */
+.weekly__category--required {
+  color: #1d4ed8;
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
+.weekly__category--elective {
+  color: #0369a1;
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+}
+
 .weekly {
   display: flex;
   flex-direction: column;

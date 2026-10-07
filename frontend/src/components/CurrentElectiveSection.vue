@@ -52,7 +52,35 @@ const emit = defineEmits<{
   (event: 'remove', payload: { courseId: string; classId: string; semester: string }): void
 }>()
 
-const items = computed(() => props.recommendations ?? [])
+const allItems = computed(() => props.recommendations ?? [])
+/**
+ * 默认展示的候选数（渐进披露）。
+ *
+ * ⚠️ 服务端**不再**只给 3 门（否则排在第 4 位之后的选修会被静默藏掉，
+ *    真实数据里正是 CSE335/CSE337）。这里用一个**可见的**上限，
+ *    其余通过「查看其余 N 门」和筛选可达：⛔ 不是静默截断。
+ */
+const INITIAL_VISIBLE = 6
+const expanded = ref(false)
+const query = ref('')
+
+const filteredItems = computed(() => {
+  const q = query.value.trim().toLowerCase()
+  if (!q) return allItems.value
+  return allItems.value.filter(
+    (item) =>
+      item.course_name.toLowerCase().includes(q) ||
+      item.course_id.toLowerCase().includes(q),
+  )
+})
+
+const hiddenCount = computed(() =>
+  Math.max(0, filteredItems.value.length - INITIAL_VISIBLE),
+)
+
+const items = computed(() =>
+  expanded.value ? filteredItems.value : filteredItems.value.slice(0, INITIAL_VISIBLE),
+)
 const appliedItems = computed(() => props.applied ?? [])
 const rejections = computed(() => props.rejected ?? [])
 const appliedIds = computed(() => new Set(appliedItems.value.map((i) => i.course_id)))
@@ -170,8 +198,47 @@ const loadLine = computed(() => {
 
     <template v-else>
       <p class="elective__intro" data-testid="elective-intro">
-        以下为本学期<strong>可加入方案</strong>的专业选修；⛔ 系统不会替你选课，
-        加入后仅是规划草稿，不代表已完成教务选课。
+        以下为本学期<strong>可加入方案</strong>的专业选修（共 {{ filteredItems.length }} 门，
+        默认显示前 {{ Math.min(INITIAL_VISIBLE, filteredItems.length) }} 门）；
+        ⛔ 系统不会替你选课，加入后仅是规划草稿，不代表已完成教务选课。
+      </p>
+
+      <div class="elective__tools">
+        <label class="elective__search">
+          <span>筛选：</span>
+          <input
+            v-model="query"
+            type="search"
+            placeholder="输入课程名或课程号，例如 数据库 / CSE335"
+            data-testid="elective-search"
+          />
+        </label>
+        <button
+          v-if="hiddenCount > 0 && !expanded"
+          class="button button--small button--ghost"
+          type="button"
+          data-testid="elective-expand"
+          @click="expanded = true"
+        >
+          查看其余 {{ hiddenCount }} 门
+        </button>
+        <button
+          v-if="expanded && filteredItems.length > INITIAL_VISIBLE"
+          class="button button--small button--ghost"
+          type="button"
+          data-testid="elective-collapse"
+          @click="expanded = false"
+        >
+          收起
+        </button>
+      </div>
+
+      <p
+        v-if="filteredItems.length === 0"
+        class="elective__empty"
+        data-testid="elective-search-empty"
+      >
+        没有匹配「{{ query }}」的专业选修候选。
       </p>
 
       <ul class="elective__list">
@@ -307,6 +374,29 @@ const loadLine = computed(() => {
 .elective__check {
   color: #16a34a;
   font-weight: 700;
+}
+
+.elective__tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.elective__search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.elective__search input {
+  min-width: 260px;
+  padding: 5px 8px;
+  font-size: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
 }
 
 .elective__list {

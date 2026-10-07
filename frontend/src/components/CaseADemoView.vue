@@ -24,7 +24,7 @@ import PlanResultPanel from './PlanResultPanel.vue'
 import PreferenceForm from './PreferenceForm.vue'
 import PreferencePanel from './PreferencePanel.vue'
 import CurrentElectiveSection from './CurrentElectiveSection.vue'
-import IssueList from './IssueList.vue'
+import PendingReminders from './PendingReminders.vue'
 import SectionCard from './SectionCard.vue'
 import { normalizedIssues, type NormalizedIssue } from '../utils/studentIssues'
 import { routeIssues } from '../utils/issueRouting'
@@ -160,7 +160,8 @@ const bindingNotice = computed(() => {
  *   +  repair_proposals.unresolved
  *
  * ⛔ 任何子组件都不得再自行解析 raw unresolved：
- *    消费方是各归属区块里的 `IssueList`（⛔ 不再有独立待处理区块）。
+ *    页面底部**唯一**的提醒区（`PendingReminders`）消费它；
+ *    各模块内部只保留自己的可操作交互（⛔ 不再重复铺开大卡片）。
  */
 const normalizedIssueList = computed<NormalizedIssue[]>(() => {
   const current = result.value
@@ -180,22 +181,6 @@ const normalizedIssueList = computed<NormalizedIssue[]>(() => {
  */
 const routedIssues = computed(() => routeIssues(normalizedIssueList.value))
 
-/**
- * 「详细依据」里兜底展示的议题。
- *
- * ⚠️ 这里**总是**包含归属未来路径的议题：
- *    未来路径区块的存在与否取决于 `roadmap` / `future_semesters`，
- *    而议题的归属不取决于它。若只在区块可见时才由该区块渲染，那么
- *    `roadmap = null` 或 `future_semesters = []` 时这些议题就会**静默消失**。
- *
- *    宁可重复显示，也不允许丢失 —— 因此兜底区**始终**覆盖它们。
- *    区块可见时同一议题会在两处出现，这是有意为之的 fail-safe。
- */
-const evidenceIssues = computed<NormalizedIssue[]>(() => [
-  ...routedIssues.value.detailedEvidence,
-  ...routedIssues.value.roadmap,
-])
-
 /* ---- 规划覆盖（run-local、可撤销） ----
  *
  * ⛔ 前端只保存**用户意图**：确认过的课程号、明确加入方案的选修教学班。
@@ -204,6 +189,20 @@ const evidenceIssues = computed<NormalizedIssue[]>(() => [
 const confirmedManualKeys = ref<string[]>([])
 const selectedElectives = ref<ElectiveSelectionInput[]>([])
 
+/**
+ * 哪个模块正在更新（⛔ 不做整页 loading）。
+ *
+ * 交互动作只在**对应模块**显示"更新中"，避免用户误以为整份培养方案被重做，
+ * 也避免整页重绘打断滚动位置。
+ */
+const pendingModule = ref<'makeup' | 'elective' | 'repair' | null>(null)
+/** 对应模块的轻量反馈（关闭后自动消失）。 */
+const moduleNotice = ref<{ module: 'makeup' | 'elective' | 'repair'; text: string } | null>(null)
+
+function noticeFor(module: 'makeup' | 'elective' | 'repair'): string {
+  return moduleNotice.value?.module === module ? moduleNotice.value.text : ''
+}
+
 /** 当前生效的披露文案（服务端提供，保证措辞一致）。 */
 const planningDisclosure = computed(() => result.value?.planning_only_disclosure ?? null)
 
@@ -211,26 +210,40 @@ const planningDisclosure = computed(() => result.value?.planning_only_disclosure
  * 统一的 recompute 管线：任何交互最终都只调用 `submit()`，
  * ⛔ 不允许组件各自改学分 / 课表 / 路线图状态。
  */
-async function submitOverride(): Promise<void> {
+async function submitOverride(module: 'makeup' | 'elective' | 'repair'): Promise<void> {
+  pendingModule.value = module
+  moduleNotice.value = null
   try {
     await submit({ silent: true })
+    // 轻量、模块内的成功反馈（⛔ 不是整页提示）
+    moduleNotice.value = {
+      module,
+      text:
+        module === 'makeup'
+          ? '已根据你的确认更新方案（本学期课表与未来路径已同步）'
+          : module === 'elective'
+            ? '已根据你的选修选择更新本学期课表与学分'
+            : '已根据你的确认更新本学期课表',
+    }
   } catch {
     // ⚠️ 必须捕获：`submit()` 在 silent 模式下会把失败向上抛（换班流程需要它
     //    来决定是否保留"待刷新"），但交互式重算是由模板事件触发的，没有调用方
     //    接住它 —— 不捕获就会变成未处理的 Promise 拒绝。
     //    失败已经写进 `error.value`（用户可见），因此这里只做兜底。
+  } finally {
+    pendingModule.value = null
   }
 }
 
 function onConfirmManual(payload: { courseIds: string[] }): void {
   const next = new Set([...confirmedManualKeys.value, ...payload.courseIds])
   confirmedManualKeys.value = [...next].sort()
-  void submitOverride()
+  void submitOverride('makeup')
 }
 
 function onUndoManual(payload: { courseId: string }): void {
   confirmedManualKeys.value = confirmedManualKeys.value.filter((k) => k !== payload.courseId)
-  void submitOverride()
+  void submitOverride('makeup')
 }
 
 function onAddElective(payload: { courseId: string; classId: string; semester: string }): void {
@@ -245,7 +258,7 @@ function onAddElective(payload: { courseId: string; classId: string; semester: s
     ...others,
     { semester: payload.semester, course_id: payload.courseId, class_id: payload.classId },
   ]
-  void submitOverride()
+  void submitOverride('elective')
 }
 
 function onRemoveElective(payload: { courseId: string; classId: string; semester: string }): void {
@@ -257,7 +270,7 @@ function onRemoveElective(payload: { courseId: string; classId: string; semester
         item.class_id === payload.classId
       ),
   )
-  void submitOverride()
+  void submitOverride('elective')
 }
 
 /**
@@ -696,19 +709,27 @@ onMounted(loadOfferings)
 
         <!-- ① 补修缺口分析（含规划确认交互） -->
         <SectionCard :mock="false" title="补修缺口分析" :badge-count="result.makeup_tasks.length">
+          <p
+            v-if="pendingModule === 'makeup'"
+            class="case-a-module-status"
+            data-testid="case-a-makeup-pending"
+          >
+            正在按你的确认更新方案…
+          </p>
+          <p
+            v-else-if="noticeFor('makeup')"
+            class="case-a-module-notice"
+            data-testid="case-a-makeup-notice"
+          >
+            {{ noticeFor('makeup') }}
+          </p>
           <MakeupTaskList
             :tasks="result.makeup_tasks"
             :confirmed-keys="result.applied_manual_confirmations"
             :disclosure="planningDisclosure"
-            :pending="loading"
+            :pending="pendingModule === 'makeup'"
             @confirm="onConfirmManual"
             @undo="onUndoManual"
-          />
-          <!-- 议题归属：认定 / 补修 / 可能等同 -->
-          <IssueList
-            v-if="routedIssues.makeup.length > 0"
-            :issues="routedIssues.makeup"
-            owner-label="认定与补修"
           />
           <ul
             v-if="result.rejected_manual_confirmations.length > 0"
@@ -727,22 +748,30 @@ onMounted(loadOfferings)
           title="本学期专业选修建议"
           subtitle="候选来自培养方案选修组 ∩ 本学期已接受教学班；⛔ 系统不会替你选课。"
         >
+          <p
+            v-if="pendingModule === 'elective'"
+            class="case-a-module-status"
+            data-testid="case-a-elective-pending"
+          >
+            正在按你的选择更新本学期课表与学分…
+          </p>
+          <p
+            v-else-if="noticeFor('elective')"
+            class="case-a-module-notice"
+            data-testid="case-a-elective-notice"
+          >
+            {{ noticeFor('elective') }}
+          </p>
           <CurrentElectiveSection
             :recommendations="result.current_elective_recommendations"
             :load="result.current_load"
             :applied="result.applied_elective_sections"
             :rejected="result.rejected_elective_selections"
             :offerings="result.course_offerings"
-            :pending="loading"
+            :pending="pendingModule === 'elective'"
             :semester="form.semester"
             @add="onAddElective"
             @remove="onRemoveElective"
-          />
-          <!-- 议题归属：选修成员 / 选修选择 -->
-          <IssueList
-            v-if="routedIssues.elective.length > 0"
-            :issues="routedIssues.elective"
-            owner-label="专业选修"
           />
         </SectionCard>
 
@@ -754,6 +783,13 @@ onMounted(loadOfferings)
         >
           <p class="case-a-disclaimer" data-testid="case-a-timetable-disclaimer">
             以下为规划建议，不代表已完成教务选课。
+          </p>
+          <p
+            v-if="noticeFor('repair')"
+            class="case-a-module-notice"
+            data-testid="case-a-timetable-notice"
+          >
+            {{ noticeFor('repair') }}
           </p>
           <!-- 如实区分三类来源：⛔ 不把建议/草稿说成已选课 -->
           <ul class="case-a-schedule-legend" data-testid="case-a-schedule-legend">
@@ -772,12 +808,6 @@ onMounted(loadOfferings)
             :current-schedule="effectiveSchedule"
             :makeup-tasks="result.makeup_tasks"
             :preferred-courses="preferredCourses"
-          />
-          <!-- 议题归属：冲突 / 换班 / 容量 / 排课 -->
-          <IssueList
-            v-if="routedIssues.timetable.length > 0"
-            :issues="routedIssues.timetable"
-            owner-label="本学期排课"
           />
           <!-- 合法的换班动作留在**课程上下文**里（⛔ 只有 CLEAR 才可点） -->
           <PendingAdjustments
@@ -799,12 +829,6 @@ onMounted(loadOfferings)
           subtitle="课程级规划，不含具体教学班。"
         >
           <FutureRoadmapView :roadmap="result.roadmap" />
-          <!-- 议题归属：未来排课 / 预算 / 未决 -->
-          <IssueList
-            v-if="routedIssues.roadmap.length > 0"
-            :issues="routedIssues.roadmap"
-            owner-label="未来学期"
-          />
         </SectionCard>
 
         <!-- 后端明确说明无法构建路线图时如实展示（⛔ 不补假数据） -->
@@ -845,14 +869,16 @@ onMounted(loadOfferings)
               :course-name-by-id="resultCourseNames"
             />
 
-            <!-- 兜底：归不到具体区块的议题在这里如实展示，⛔ 不静默丢弃 -->
-            <template v-if="evidenceIssues.length > 0">
-              <h4 class="case-a-details__title">
-                其它需确认事项（{{ evidenceIssues.length }} 项）
-              </h4>
-              <IssueList :issues="evidenceIssues" owner-label="其它" />
-            </template>
           </details>
+        </SectionCard>
+
+        <!-- ★ 页面唯一提醒区（默认折叠，只做汇总；⛔ 不再在模块内重复铺开） -->
+        <SectionCard
+          :mock="false"
+          title="待确认与提醒"
+          subtitle="各模块的可操作确认完成后，这里只汇总仍需要注意的事项。"
+        >
+          <PendingReminders :issues="normalizedIssueList" />
         </SectionCard>
 
         <SectionCard :mock="false" title="数据与计算说明">
@@ -923,6 +949,21 @@ onMounted(loadOfferings)
   color: #475569;
   font-size: 12px;
   line-height: 1.8;
+}
+
+.case-a-module-status,
+.case-a-module-notice {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.case-a-module-status {
+  color: var(--text-muted);
+}
+
+.case-a-module-notice {
+  color: #166534;
 }
 
 /* 上传成绩单未参与满足判定：provenance 说明必须显眼且在下文结果之前。 */

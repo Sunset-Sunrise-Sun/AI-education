@@ -346,11 +346,7 @@ describe('补修缺口分析', () => {
     const wrapper = await mountPage()
     const before = runCaseADemo.mock.calls.length
 
-    const checkbox = wrapper.get('[data-testid="makeup-select-CSE101"]')
-    await checkbox.setValue(true)
-    const submit = wrapper.get('[data-testid="makeup-confirm-submit"]')
-    expect(submit.text()).toContain('1')
-    await submit.trigger('click')
+    await wrapper.get('[data-testid="makeup-confirm-CSE101"]').trigger('click')
     await flushPromises()
 
     // ✅ 真的发起了重算请求（⛔ 不是本地改状态）
@@ -383,11 +379,17 @@ describe('补修缺口分析', () => {
     expect(row.text()).toContain(DISCLOSURE.basis)
     expect(wrapper.find('[data-testid="makeup-user-confirmed-CSE101"]').exists()).toBe(true)
 
-    // 三项披露同时出现
-    const panel = wrapper.get('[data-testid="makeup-confirm-panel"]').text()
-    expect(panel).toContain(DISCLOSURE.basis)
-    expect(panel).toContain(DISCLOSURE.scope)
-    expect(panel).toContain(DISCLOSURE.authority)
+    // 三项披露同时出现（操作披露 + 结果状态披露）
+    const disclosure = wrapper.get('[data-testid="makeup-confirm-disclosure"]').text()
+    expect(disclosure).toContain(DISCLOSURE.basis)
+    expect(disclosure).toContain(DISCLOSURE.scope)
+    expect(disclosure).toContain(DISCLOSURE.authority)
+    // 明确声明不改学校系统记录
+    expect(disclosure).toContain('不会修改学校教务系统记录')
+    const confirmed = wrapper.get('[data-testid="makeup-confirmed-title"]').text()
+    expect(confirmed).toContain(DISCLOSURE.basis)
+    expect(confirmed).toContain(DISCLOSURE.scope)
+    expect(confirmed).toContain(DISCLOSURE.authority)
 
     // ⛔ 来源可核验的基础评估没有被改写
     const payload = planResponse()
@@ -643,6 +645,9 @@ describe('页面结构与议题归属', () => {
         unresolved: ['课程 CSE207 没有可确认无冲突的同课程候选（no_alternatives）。'],
       },
     })
+    // 议题只在**唯一的底部提醒区**渲染，默认折叠 ⇒ 先展开
+    await wrapper.get('[data-testid="case-a-reminders-toggle"]').trigger('click')
+    await flushPromises()
     const rendered = wrapper.findAll('[data-testid="case-a-issue"]').length
     expect(rendered).toBeGreaterThan(0)
 
@@ -668,7 +673,7 @@ describe('页面结构与议题归属', () => {
     expect(unownedIssueIds(expected)).toEqual([])
   })
 
-  it('⛔ roadmap 为 null（且无说明）时，归属未来路径的议题仍不丢失', async () => {
+  it('⛔ roadmap 为 null（且无说明）时，议题仍不丢失（统一提醒区兜底）', async () => {
     const wrapper = await mountPage({
       roadmap: null,
       roadmap_note: null,
@@ -681,15 +686,16 @@ describe('页面结构与议题归属', () => {
         objective_summary: null,
       },
     })
-    // 未来路径区块不存在 ⇒ 议题必须改由「详细依据」兜底展示
+    // 未来路径区块不存在，但议题必须出现在**唯一**的底部提醒区里
     expect(wrapper.find('[data-testid="case-a-roadmap-note"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="case-a-reminders-toggle"]').trigger('click')
+    await flushPromises()
     const cards = wrapper.findAll('[data-testid="case-a-issue"]')
-    expect(cards).toHaveLength(1)
-    expect(cards[0].text()).toContain('CSE206')
-    expect(wrapper.find('[data-testid="case-a-detailed-evidence"]').exists()).toBe(true)
+    expect(cards.length).toBeGreaterThanOrEqual(1)
+    expect(cards.some((c) => c.text().includes('CSE206'))).toBe(true)
   })
 
-  it('⛔ roadmap.future_semesters 为空时，归属未来路径的议题仍不丢失', async () => {
+  it('⛔ roadmap.future_semesters 为空时，议题仍不丢失（统一提醒区兜底）', async () => {
     const emptyRoadmap = {
       current_semester: '2026-1',
       current_semester_planned_course_ids: [],
@@ -718,8 +724,9 @@ describe('页面结构与议题归属', () => {
         objective_summary: null,
       },
     })
+    await wrapper.get('[data-testid="case-a-reminders-toggle"]').trigger('click')
+    await flushPromises()
     const cards = wrapper.findAll('[data-testid="case-a-issue"]')
-    // 兜底区始终覆盖，因此至少出现一次（可见时可能重复 —— fail-safe 优先）
     expect(cards.length).toBeGreaterThanOrEqual(1)
     expect(cards.some((c) => c.text().includes('CSE206'))).toBe(true)
   })
@@ -882,7 +889,7 @@ describe('空学期诚实性', () => {
 // ---------------------------------------------------------------------------
 
 describe('MakeupTaskList 交互细节', () => {
-  it('只有未确认的 manual_confirmation 才有勾选框', () => {
+  it('只有未确认的 manual_confirmation 才有逐条操作按钮', () => {
     const wrapper = mount(MakeupTaskList, {
       props: {
         tasks: makeupTasks() as never,
@@ -890,9 +897,32 @@ describe('MakeupTaskList 交互细节', () => {
         disclosure: DISCLOSURE,
       },
     })
-    expect(wrapper.find('[data-testid="makeup-select-CSE101"]').exists()).toBe(true)
-    // 已满足项不可勾选
-    expect(wrapper.find('[data-testid="makeup-select-MAR103"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="makeup-confirm-CSE101"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="makeup-defer-CSE101"]').exists()).toBe(true)
+    // 已满足项没有操作按钮
+    expect(wrapper.find('[data-testid="makeup-confirm-MAR103"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="makeup-defer-MAR103"]').exists()).toBe(false)
+  })
+
+  it('「暂不确认」是本地视图状态，撤销后回到待确认', async () => {
+    const wrapper = mount(MakeupTaskList, {
+      props: { tasks: makeupTasks() as never, confirmedKeys: [], disclosure: DISCLOSURE },
+    })
+    await wrapper.get('[data-testid="makeup-defer-CSE101"]').trigger('click')
+    expect(wrapper.get('[data-testid="makeup-deferred-CSE101"]').text()).toContain('暂不确认')
+    // ⛔ 暂不确认不提交任何请求
+    expect(wrapper.emitted('confirm')).toBeUndefined()
+    await wrapper.get('[data-testid="makeup-undefer-CSE101"]').trigger('click')
+    expect(wrapper.find('[data-testid="makeup-deferred-CSE101"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="makeup-confirm-CSE101"]').exists()).toBe(true)
+  })
+
+  it('单项确认发出"完整期望状态"（已有确认 + 本项）', async () => {
+    const wrapper = mount(MakeupTaskList, {
+      props: { tasks: makeupTasks() as never, confirmedKeys: ['CSE103'], disclosure: DISCLOSURE },
+    })
+    await wrapper.get('[data-testid="makeup-confirm-CSE101"]').trigger('click')
+    expect(wrapper.emitted('confirm')?.[0]?.[0]).toEqual({ courseIds: ['CSE101', 'CSE103'] })
   })
 
   it('已确认项不再可勾选（从待确认移出）', () => {

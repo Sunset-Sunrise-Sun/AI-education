@@ -20,6 +20,7 @@ from app.curriculum.case import load_curriculum_case
 from app.models.contracts import CourseOffering, DataSource, Meeting
 from app.services.case_a_roadmap import (
     CASE_A_CURRENT_HARD_MAX_CREDIT,
+    CASE_A_ELECTIVE_DISPLAY_LIMIT,
     CASE_A_FUTURE_HARD_MAX_CREDIT,
     CASE_A_FUTURE_SOFT_TARGET_CREDIT,
     recommend_current_electives,
@@ -315,7 +316,15 @@ def test_multiple_clear_classes_require_the_user_to_choose(tmp_path: Path) -> No
     assert recs[0].clear_class_count == 2
 
 
-def test_at_most_three_courses_are_recommended(tmp_path: Path) -> None:
+def test_all_elective_members_are_surfaced_not_silently_capped(tmp_path: Path) -> None:
+    """⛔ 选修候选不得因为一个隐藏的显示上限而消失。
+
+    ⚠️ 回归背景：默认上限曾经是 **3**，于是排在第 4 位之后的选修在真实 Case A 数据里
+    **静默消失**（正是 CSE335 数据库系统原理 / CSE337 数据库系统实验）。
+    产品要求是"要么可见、要么可达"，因此默认上限必须覆盖真实选修池规模，
+    前端只做**可见的**渐进披露（查看更多 / 筛选）。
+    """
+
     courses = [_course("PAST-1", "示例已过必修", 2.0, term="2025-1")]
     courses += [
         _course(f"EL-{i}", f"示例选修 {i}", 3.0, term="2026-2",
@@ -329,7 +338,31 @@ def test_at_most_three_courses_are_recommended(tmp_path: Path) -> None:
     recs = recommend_current_electives(
         case, [], offerings, elective_group_id=GROUP, remaining_elective_credit=15.0
     )
-    assert len(recs) == 3
+    # 5 门成员全部返回（⛔ 不是被截断到 3）
+    assert len(recs) == 5
+    assert {r.course_id for r in recs} == {f"EL-{i}" for i in range(1, 6)}
+    # 默认上限足够大，不会重演"第 4 位之后被藏掉"
+    assert CASE_A_ELECTIVE_DISPLAY_LIMIT >= 5
+
+
+def test_explicit_max_courses_still_bounds_the_list(tmp_path: Path) -> None:
+    """显式传入的 `max_courses` 仍然生效（上限本身没有被移除）。"""
+
+    courses = [_course("PAST-1", "示例已过必修", 2.0, term="2025-1")]
+    courses += [
+        _course(f"EL-{i}", f"示例选修 {i}", 3.0, term="2026-2",
+                requirement="elective", group_id=GROUP)
+        for i in range(1, 6)
+    ]
+    case = load_curriculum_case(
+        _write(tmp_path, _payload(courses=courses, groups=_group_records()))
+    )
+    offerings = [_offering(f"EL-{i}", "01") for i in range(1, 6)]
+    recs = recommend_current_electives(
+        case, [], offerings, elective_group_id=GROUP, remaining_elective_credit=15.0,
+        max_courses=2,
+    )
+    assert len(recs) == 2
 
 
 def test_no_recommendation_when_nothing_is_outstanding(tmp_path: Path) -> None:

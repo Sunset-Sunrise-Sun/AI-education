@@ -44,8 +44,14 @@ const emit = defineEmits<{
 }>()
 
 const activeFilter = ref<'all' | MakeupStatus>('all')
-const selected = ref<Set<string>>(new Set())
 const evidenceOpen = ref<Set<string>>(new Set())
+/**
+ * 用户点了「暂不确认」的课程号（**纯本地视图状态**）。
+ *
+ * ⛔ 不提交给服务端：它只是"本次先放着"的界面标记，
+ *    撤销后回到"待人工确认"，不改变任何来源事实。
+ */
+const deferred = ref<Set<string>>(new Set())
 
 const DEFAULT_DISCLOSURE: PlanningOnlyDisclosure = {
   basis: '基于你的确认',
@@ -85,6 +91,8 @@ const selectableTasks = computed(() =>
 interface Row {
   task: MakeupTask
   confirmedByUser: boolean
+  /** 用户点了"暂不确认"（纯本地视图状态）。 */
+  deferred: boolean
   displayStatus: MakeupStatus
 }
 
@@ -94,6 +102,7 @@ const rows = computed<Row[]>(() =>
     return {
       task,
       confirmedByUser,
+      deferred: deferred.value.has(task.course_id),
       displayStatus: confirmedByUser ? 'satisfied' : task.status,
     }
   }),
@@ -116,11 +125,16 @@ const displayStats = computed(() => {
   return counts
 })
 
-function toggleSelect(courseId: string): void {
-  const next = new Set(selected.value)
-  if (next.has(courseId)) next.delete(courseId)
-  else next.add(courseId)
-  selected.value = next
+function defer(courseId: string): void {
+  const next = new Set(deferred.value)
+  next.add(courseId)
+  deferred.value = next
+}
+
+function undoDefer(courseId: string): void {
+  const next = new Set(deferred.value)
+  next.delete(courseId)
+  deferred.value = next
 }
 
 function toggleEvidence(courseId: string): void {
@@ -130,19 +144,20 @@ function toggleEvidence(courseId: string): void {
   evidenceOpen.value = next
 }
 
-function selectAll(): void {
-  selected.value = new Set(selectableTasks.value.map((t) => t.course_id))
+/**
+ * 单项确认（"确认可转换"）。
+ *
+ * ⚠️ 提交的是**完整期望状态**（已有确认 + 本项），与服务端"整体采用"的语义一致。
+ * ⛔ 提交后不本地改状态：结论等服务端 recompute 返回。
+ */
+function confirmOne(courseId: string): void {
+  undoDefer(courseId)
+  emit('confirm', { courseIds: [...new Set([...props.confirmedKeys, courseId])].sort() })
 }
 
-function clearSelection(): void {
-  selected.value = new Set()
-}
-
-function submitConfirm(): void {
-  const courseIds = [...selected.value].sort()
-  if (courseIds.length === 0) return
-  // ⛔ 提交后**不本地改状态**：结论等服务端 recompute 返回。
-  emit('confirm', { courseIds })
+/** 单项撤销（"撤销确认"）：从完整期望状态里移除本项。 */
+function undoOne(courseId: string): void {
+  emit('undo', { courseId })
 }
 </script>
 
@@ -204,80 +219,50 @@ function submitConfirm(): void {
       </div>
     </div>
 
-    <!-- 规划确认操作区（只在有可确认项、或已有确认时出现） -->
-    <section
+    <!-- 披露（⛔ 每次出现都必须完整口径） -->
+    <p
       v-if="selectableTasks.length > 0 || confirmedKeys.length > 0"
-      class="confirm-panel"
-      data-testid="makeup-confirm-panel"
+      class="confirm-panel__lead"
+      data-testid="makeup-confirm-disclosure"
     >
-      <p class="confirm-panel__lead" data-testid="makeup-confirm-disclosure">
-        勾选后可标记为<strong>本次规划按已满足处理</strong>：
-        {{ disclosureText.basis }}、{{ disclosureText.scope }}；{{ disclosureText.authority }}。
+      下表「待人工确认」项可逐条选择<strong>确认可转换</strong>（{{ disclosureText.basis }}、{{
+        disclosureText.scope
+      }}；{{ disclosureText.authority }}，也<strong>不会修改学校教务系统记录</strong>）。
+    </p>
+
+    <div v-if="confirmedKeys.length > 0" class="confirm-panel__confirmed">
+      <p class="confirm-panel__confirmed-title" data-testid="makeup-confirmed-title">
+        已按你的确认移入「已满足」（{{ confirmedKeys.length }} 项）—— {{ disclosureText.basis }}、{{
+          disclosureText.scope
+        }}；{{ disclosureText.authority }}
       </p>
-
-      <div v-if="selectableTasks.length > 0" class="confirm-panel__actions">
-        <button
-          type="button"
-          class="button button--small button--ghost"
-          data-testid="makeup-select-all"
-          @click="selectAll"
+      <ul class="confirm-panel__list">
+        <li
+          v-for="key in confirmedKeys"
+          :key="key"
+          class="confirm-panel__item"
+          data-testid="makeup-confirmed-item"
         >
-          全选可确认项
-        </button>
-        <button
-          type="button"
-          class="button button--small button--ghost"
-          :disabled="selected.size === 0"
-          data-testid="makeup-clear-selection"
-          @click="clearSelection"
-        >
-          清空选择
-        </button>
-        <button
-          type="button"
-          class="button button--small"
-          :disabled="selected.size === 0 || pending"
-          data-testid="makeup-confirm-submit"
-          :aria-busy="pending"
-          @click="submitConfirm"
-        >
-          {{ pending ? '正在重新规划…' : `确认所选并重新规划（${selected.size}）` }}
-        </button>
-      </div>
-
-      <div v-if="confirmedKeys.length > 0" class="confirm-panel__confirmed">
-        <p class="confirm-panel__confirmed-title" data-testid="makeup-confirmed-title">
-          本次规划已确认满足（{{ confirmedKeys.length }} 项）—— {{ disclosureText.basis }}、
-          {{ disclosureText.scope }}；{{ disclosureText.authority }}
-        </p>
-        <ul class="confirm-panel__list">
-          <li
-            v-for="key in confirmedKeys"
-            :key="key"
-            class="confirm-panel__item"
-            data-testid="makeup-confirmed-item"
+          <span class="mono">{{ key }}</span>
+          <span class="confirm-panel__badge">{{ disclosureText.basis }}</span>
+          <button
+            type="button"
+            class="button button--small button--ghost"
+            :disabled="pending"
+            :data-testid="`makeup-undo-${key}`"
+            @click="undoOne(key)"
           >
-            <span class="mono">{{ key }}</span>
-            <span class="confirm-panel__badge">{{ disclosureText.basis }}</span>
-            <button
-              type="button"
-              class="button button--small button--ghost"
-              :disabled="pending"
-              :data-testid="`makeup-undo-${key}`"
-              @click="emit('undo', { courseId: key })"
-            >
-              撤销确认
-            </button>
-          </li>
-        </ul>
-      </div>
-    </section>
+            撤销确认
+          </button>
+        </li>
+      </ul>
+    </div>
 
     <div class="table-wrap">
       <table class="table">
         <thead>
           <tr>
-            <th scope="col" style="width: 34px;">选择</th>
+            <th scope="col" style="width: 190px;">本次规划操作</th>
             <th scope="col" style="width: 220px;">课程名称与编号</th>
             <th scope="col" style="width: 70px;">学分</th>
             <th scope="col" style="width: 190px;">判定状态</th>
@@ -293,15 +278,53 @@ function submitConfirm(): void {
             class="task-row"
             :data-testid="`makeup-row-${row.task.course_id}`"
           >
-            <td>
-              <input
-                v-if="row.task.status === 'manual_confirmation' && !row.confirmedByUser"
-                type="checkbox"
-                :checked="selected.has(row.task.course_id)"
-                :data-testid="`makeup-select-${row.task.course_id}`"
-                :aria-label="`确认 ${row.task.course_name}`"
-                @change="toggleSelect(row.task.course_id)"
-              />
+            <td class="makeup-actions-cell">
+              <!-- 待人工确认：逐条给出可操作按钮（⛔ 不是只读展示） -->
+              <template v-if="row.task.status === 'manual_confirmation' && !row.confirmedByUser">
+                <template v-if="row.deferred">
+                  <span class="tag tag--deferred" :data-testid="`makeup-deferred-${row.task.course_id}`">
+                    暂不确认
+                  </span>
+                  <button
+                    type="button"
+                    class="button button--small button--ghost"
+                    :data-testid="`makeup-undefer-${row.task.course_id}`"
+                    @click="undoDefer(row.task.course_id)"
+                  >
+                    撤销
+                  </button>
+                </template>
+                <template v-else>
+                  <button
+                    type="button"
+                    class="button button--small"
+                    :disabled="pending"
+                    :data-testid="`makeup-confirm-${row.task.course_id}`"
+                    @click="confirmOne(row.task.course_id)"
+                  >
+                    确认可转换
+                  </button>
+                  <button
+                    type="button"
+                    class="button button--small button--ghost"
+                    :disabled="pending"
+                    :data-testid="`makeup-defer-${row.task.course_id}`"
+                    @click="defer(row.task.course_id)"
+                  >
+                    暂不确认
+                  </button>
+                </template>
+              </template>
+              <button
+                v-else-if="row.confirmedByUser"
+                type="button"
+                class="button button--small button--ghost"
+                :disabled="pending"
+                :data-testid="`makeup-undo-${row.task.course_id}`"
+                @click="undoOne(row.task.course_id)"
+              >
+                撤销确认
+              </button>
               <span v-else class="text-muted">—</span>
             </td>
             <td>
@@ -460,6 +483,19 @@ function submitConfirm(): void {
   color: #166534;
   background: #dcfce7;
   border-radius: 999px;
+}
+
+.makeup-actions-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+.tag--deferred {
+  color: #92400e;
+  background: #fef3c7;
+  border-color: #fcd34d;
 }
 
 .tag--user-confirmed {

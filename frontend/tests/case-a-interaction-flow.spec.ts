@@ -308,8 +308,7 @@ describe('端到端交互流程（有状态后端替身）', () => {
     expect(wrapper.get('[data-testid="case-a-credit-load"]').text()).toContain('预计合计 0 学分')
 
     // ---- ① 确认 CSE101 ----
-    await wrapper.get('[data-testid="makeup-select-CSE101"]').setValue(true)
-    await wrapper.get('[data-testid="makeup-confirm-submit"]').trigger('click')
+    await wrapper.get('[data-testid="makeup-confirm-CSE101"]').trigger('click')
     await flushPromises()
 
     expect([...server.confirmed]).toEqual(['CSE101'])
@@ -340,8 +339,7 @@ describe('端到端交互流程（有状态后端替身）', () => {
     expect(legend).toContain('你加入方案的选修：1 门')
 
     // ---- ③ 再确认一门（累积意图，不是覆盖） ----
-    await wrapper.get('[data-testid="makeup-select-CSE103"]').setValue(true)
-    await wrapper.get('[data-testid="makeup-confirm-submit"]').trigger('click')
+    await wrapper.get('[data-testid="makeup-confirm-CSE103"]').trigger('click')
     await flushPromises()
     expect([...server.confirmed].sort()).toEqual(['CSE101', 'CSE103'])
     // 计数为 0 的"待人工确认"筛选消失
@@ -411,8 +409,7 @@ describe('端到端交互流程（有状态后端替身）', () => {
     const wrapper = await mountPage()
 
     // ① 提交一个会被服务端拒绝的确认
-    await wrapper.get('[data-testid="makeup-select-CSE101"]').setValue(true)
-    await wrapper.get('[data-testid="makeup-confirm-submit"]').trigger('click')
+    await wrapper.get('[data-testid="makeup-confirm-CSE101"]').trigger('click')
     await flushPromises()
 
     // 拒绝原因如实可见
@@ -432,10 +429,9 @@ describe('端到端交互流程（有状态后端替身）', () => {
     }
     expect(nextBody.override?.userConfirmedManualTaskKeys).toEqual([])
 
-    // ③ 用户仍可重试（无需刷新页面）：重新勾选并提交
-    expect(wrapper.find('[data-testid="makeup-select-CSE101"]').exists()).toBe(true)
-    await wrapper.get('[data-testid="makeup-select-CSE101"]').setValue(true)
-    await wrapper.get('[data-testid="makeup-confirm-submit"]').trigger('click')
+    // ③ 用户仍可重试（无需刷新页面）：重新点击"确认可转换"
+    expect(wrapper.find('[data-testid="makeup-confirm-CSE101"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="makeup-confirm-CSE101"]').trigger('click')
     await flushPromises()
     // 服务端仍拒绝（本临时场景如此），但请求确实带上了重试意图
     const retryBody = runCaseADemo.mock.calls.at(-1)?.[0] as {
@@ -514,8 +510,7 @@ describe('端到端交互流程（有状态后端替身）', () => {
     const wrapper = await mountPage()
     const afterInitial = runCaseADemo.mock.calls.length
 
-    await wrapper.get('[data-testid="makeup-select-CSE101"]').setValue(true)
-    await wrapper.get('[data-testid="makeup-confirm-submit"]').trigger('click')
+    await wrapper.get('[data-testid="makeup-confirm-CSE101"]').trigger('click')
     await flushPromises()
     expect(runCaseADemo.mock.calls.length).toBe(afterInitial + 1)
 
@@ -530,8 +525,7 @@ describe('端到端交互流程（有状态后端替身）', () => {
     const wrapper = await mountPage()
 
     runCaseADemo.mockRejectedValue(new Error('Case A demo request failed (HTTP 500).'))
-    await wrapper.get('[data-testid="makeup-select-CSE101"]').setValue(true)
-    await wrapper.get('[data-testid="makeup-confirm-submit"]').trigger('click')
+    await wrapper.get('[data-testid="makeup-confirm-CSE101"]').trigger('click')
     await flushPromises()
 
     // 该行**没有**被本地改写成"已满足"（⛔ 无乐观更新）

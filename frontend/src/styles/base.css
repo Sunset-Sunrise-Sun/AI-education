@@ -2105,3 +2105,82 @@ code.mono {
     text-align: center;
   }
 }
+
+/* ==========================================================================
+   UX POLISH: 视觉层级 + 统一标签色
+   --------------------------------------------------------------------------
+   字号阶梯（严格递增，便于"看一眼就知道结构"）：
+     页面主标题 26 > 一级模块标题 19 > 二级标题 15 > 卡片标题 14 > 辅助说明 12
+   标签色口径（全站统一，⛔ 不再各处自定义）：
+     已满足 = 绿 / 待人工确认 = 橙 / 选修建议 = 蓝 / 排课待确认 = 蓝灰
+   ========================================================================== */
+
+:root {
+  --fx-page-title: 26px;
+  --fx-module-title: 19px;
+  --fx-section-title: 15px;
+  --fx-card-title: 14px;
+  --fx-help: 12px;
+
+  --fx-ok-bg: #dcfce7;
+  --fx-ok-border: #86efac;
+  --fx-ok-text: #166534;
+
+  --fx-pending-bg: #fef3c7;
+  --fx-pending-border: #fcd34d;
+  --fx-pending-text: #92400e;
+
+  --fx-elective-bg: #dbeafe;
+  --fx-elective-border: #93c5fd;
+  --fx-elective-text: #1d4ed8;
+
+  --fx-schedule-bg: #eef2ff;
+  --fx-schedule-border: #c7d2fe;
+  --fx-schedule-text: #4338ca;
+}
+
+/* 一级模块标题：与卡片标题拉开差距 */
+.section-card__title,
+.section-card > header h2,
+.section-card > header h3 {
+  font-size: var(--fx-module-title);
+  line-height: 1.35;
+}
+
+/* 二级标题 */
+.section-card h4 {
+  font-size: var(--fx-section-title);
+}
+
+/* 辅助说明统一 */
+.section-card p,
+.section-card li {
+  font-size: var(--fx-help);
+}
+
+/* --- 统一标签色 --- */
+.tag--status-satisfied,
+.tag--user-confirmed {
+  background: var(--fx-ok-bg);
+  border-color: var(--fx-ok-border);
+  color: var(--fx-ok-text);
+}
+
+.tag--status-manual_confirmation,
+.tag--deferred {
+  background: var(--fx-pending-bg);
+  border-color: var(--fx-pending-border);
+  color: var(--fx-pending-text);
+}
+
+.tag--status-required {
+  background: var(--fx-elective-bg);
+  border-color: var(--fx-elective-border);
+  color: var(--fx-elective-text);
+}
+
+.tag--status-possibly_equivalent {
+  background: var(--fx-schedule-bg);
+  border-color: var(--fx-schedule-border);
+  color: var(--fx-schedule-text);
+}

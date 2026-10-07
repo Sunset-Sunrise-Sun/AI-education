@@ -127,6 +127,18 @@ function primaryText(wrapper: ReturnType<typeof mount>): string {
   return host.textContent ?? ''
 }
 
+/**
+ * The issues are now rendered only inside the single bottom reminder block,
+ * which is collapsed by default. Any assertion about issue content must expand it first.
+ */
+async function expandReminders(wrapper: ReturnType<typeof mount>): Promise<void> {
+  const toggle = wrapper.find('[data-testid="case-a-reminders-toggle"]')
+  if (toggle.exists()) {
+    await toggle.trigger('click')
+    await flushPromises()
+  }
+}
+
 async function mountPageWith(overrides: Record<string, unknown> = {}) {
   runCaseADemo.mockResolvedValue(planResponse(overrides))
   const wrapper = mount(CaseADemoView)
@@ -467,7 +479,8 @@ describe('Test A/B — 机器码不得出现在真实渲染的主界面', () => 
       },
     })
 
-    // 议题已归属到「本学期推荐课表」区块
+    // 议题在唯一的底部提醒区（默认折叠 ⇒ 先展开）
+    await expandReminders(wrapper)
     const issue = wrapper.get('[data-testid="case-a-issue"]')
     expect(issue.text()).toContain('排课信息')
     // 主界面（不含折叠的技术详情）不得出现机器码
@@ -522,6 +535,7 @@ describe('Test A/B — 机器码不得出现在真实渲染的主界面', () => 
     })
 
     // 主界面：中性中文兜底，⛔ 不回显 raw code
+    await expandReminders(wrapper)
     expect(primaryText(wrapper)).toContain('该事项需要进一步确认')
     expect(primaryText(wrapper)).not.toContain('some_new_internal_state')
 
@@ -561,6 +575,7 @@ describe('Test C/D — 去重：跨来源合并，但不同教学班必须保留
       },
     })
 
+    await expandReminders(wrapper)
     const cards = wrapper.findAll('[data-testid="case-a-issue"]')
     const sameCourse = cards.filter((card) => card.text().includes('CSE204'))
     expect(sameCourse).toHaveLength(1)
@@ -683,11 +698,12 @@ describe('Test G — 只有一个待确认主区域', () => {
       },
     })
 
-    // ① ⛔ 不再有独立的「需要你处理」容器；议题改为归属到各自区块
+    // ① ⛔ 不再有独立的「需要你处理」容器；只剩一个统一提醒区
     expect(wrapper.findAll('[data-testid="case-a-pending-center"]')).toHaveLength(0)
-    expect(wrapper.findAll('[data-testid="case-a-issue-list"]').length).toBeGreaterThan(0)
+    expect(wrapper.findAll('[data-testid="case-a-reminders"]')).toHaveLength(1)
 
     // ② 同一门课的同一类问题只出现一次
+    await expandReminders(wrapper)
     const cards = wrapper.findAll('[data-testid="case-a-issue"]')
     const cse204 = cards.filter((card) => card.text().includes('CSE204'))
     expect(cse204).toHaveLength(1)
@@ -707,7 +723,7 @@ describe('Test G — 只有一个待确认主区域', () => {
 
   it('无待确认事项时不渲染任何议题列表，也不编造内容', async () => {
     const wrapper = await mountPageWith({})
-    expect(wrapper.findAll('[data-testid="case-a-issue-list"]')).toHaveLength(0)
+    expect(wrapper.find('[data-testid="case-a-reminders-none"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="case-a-issue"]')).toHaveLength(0)
   })
 })
