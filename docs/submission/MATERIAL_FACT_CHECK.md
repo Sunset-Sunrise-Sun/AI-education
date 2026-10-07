@@ -4,7 +4,7 @@
 > 任何对外材料、PPT、宣传页、演示话术，写完之后都要拿这份表逐条对照。
 > 本表只回答一个问题：**这句话有没有实现证据。**
 >
-> 本版已按**最终产品 / RC HEAD `695834a`** 更新：补修确认为**逐条操作**，页面底部只有**一个统一提醒区**，
+> 本版已按**最终产品 / RC HEAD `56013e5`** 更新：补修确认为**逐条操作**，页面底部只有**一个统一提醒区**，
 > 专业选修候选不再截断，课表业务类别标签改为**仅有依据时出现**。
 
 ## 核对基线
@@ -12,15 +12,15 @@
 | 项 | 值 |
 |---|---|
 | 材料分支 | `docs/opc-submission-package` |
-| **产品事实基线 HEAD** | **`695834a45905166321422eeeef0d8f46c83add0d`** |
-| **最终 RC HEAD** | **`695834a45905166321422eeeef0d8f46c83add0d`**（`release/case-a-path-planning-rc`） |
+| **产品事实基线 HEAD** | **`56013e5108b53ee7d663a8577dd687946c366c36`** |
+| **最终 RC HEAD** | **`56013e5108b53ee7d663a8577dd687946c366c36`**（`release/case-a-path-planning-rc`） |
 | 产品评审状态 | **独立评审 = PASS；最终 RC 验证 = PASS** |
-| 历史基线（已被取代） | `7a7bb9d` → `0cd91dc` → `95976ae` → `db7d172` → 本版 `695834a` |
+| 历史基线（已被取代） | `7a7bb9d` → `0cd91dc` → `95976ae` → `db7d172` → 本版 `56013e5` |
 | 核对时间 | 2026-10-07 |
 | 核对方式 | 逐条对照产品基线的代码、状态文档、演示手册与最终 RC 验证记录 |
 
-> ✅ **产品与 RC 已定稿**：RC 分支 `release/case-a-path-planning-rc` 指向 `695834a`。
-> 本轮交付的截图全部基于 `695834a` 重拍；基于 `db7d172` 的上一版截图已作废并替换。
+> ✅ **产品与 RC 已定稿**：RC 分支 `release/case-a-path-planning-rc` 指向 `56013e5`。
+> 本轮交付的截图全部基于 `56013e5` 重拍；基于 `db7d172` 的上一版截图已作废并替换。
 
 ## 三档标记的含义
 
@@ -77,9 +77,9 @@
 | 用户可以对**待人工确认**项做**规划层确认**，系统据此重新计算学业方案 | `frontend/src/components/MakeupTaskList.vue`（`makeup-confirm-panel`、`makeup-select-*`、`makeup-confirm-submit`） |
 | 界面逐字披露：**基于你的确认**、**仅用于本次规划**、**不是学校官方认定结果** | 同上，`DEFAULT_DISCLOSURE` 与确认标题、确认面板首句 |
 | 确认后该项在**本次规划**里按已满足处理，并有明确标记 | `makeup-confirmed-title`「本次规划已确认满足（N 项）」；`makeup-user-confirmed-*` 标记 |
-| 确认可**撤销** | `makeup-undo-*` 按钮「撤销确认」 |
+| 确认可**撤销**，且由**同一个按钮**承担：确认成功后按钮文案变为「✓ 已确认」 | `makeup-undo-*`；`confirmationLabel()` 返回 `row.confirmedByUser ? '✓ 已确认' : '确认可转换'` |
 | 用户确认**不会**改写 source-backed 基线（23 / 12 / 11 不变） | Issue #61 最终验证：`SOURCE ASSESSMENT = 12 satisfied / 11 manual_confirmation (12/11: True)` |
-| 逐条确认按钮需显式点击，且只在待确认行出现 | `确认可转换`；`makeup-confirm-<course>` |
+| 逐条确认按钮需显式点击，且只在待确认行出现；确认后同一按钮转为撤销入口 | `确认可转换` → `✓ 已确认`；`makeup-confirm-<course>` / `makeup-undo-<course>` |
 | 被服务端**拒绝**的确认会如实显示，且不会变成不可撤销的隐形意图 | Issue #61 最终 blocker 修复（`reconcilePlanningIntent`）；`case-a-rejected-confirmations` |
 
 > ⛔ **不得写**：AI 自动认定课程等价 / 系统自动批准补修认定 / 学校已经确认。
@@ -94,10 +94,10 @@
 | **唯一 CLEAR** 可直接作为建议教学班加入（仍需显式点击） | `item.unique_clear_class_id` 分支；按钮文案「加入本学期方案」 |
 | **多个 CLEAR** 必须由用户显式选择教学班，系统不自动挑 | `elective-multi-clear-hint`；`elective-section-<course>-<class>` 选择项 |
 | **只有 UNKNOWN / CONFLICT** 时不提供加入按钮，并说明原因 | `elective-blocked-reason` |
-| 已加入显示「已加入本学期方案」并可**撤销** | `elective-applied`、`elective-applied-state`、`elective-remove-*`「撤销」 |
+| 已加入显示「已加入本学期方案」，且加入按钮文案变为「✓ 已加入，可撤销」，点它就是撤销 | `elective-applied`、`elective-applied-state`；`actionLabel()` 返回 `applied ? '✓ 已加入，可撤销' : '加入本学期方案'` |
 | 已加入标注为**规划草稿**，不代表已完成教务选课 | 逐字：「已加入本学期方案（规划草稿，⛔ 不代表已完成教务选课）」 |
 | 被服务端拒绝的选修选择如实展示，不静默丢弃 | `elective-rejections` |
-| 真实 Case A 候选为 CSE317 / CSE321 / CSE323 | Issue #61 最终验证 `ELECTIVES = CSE317, CSE321, CSE323`；本次截图复核一致 |
+| 真实 Case A 候选共 10 门（加入一门后候选列表变为 9 门，因为已加入的课程退出候选池）；首批为 CSE317 / CSE321 / CSE323 | 本次实测：intro 计数 10、展开后 10 项；加入一门后计数 9。Issue #61 最终验证 `ELECTIVES = CSE317, CSE321, CSE323` |
 
 > ⛔ **不得写**：系统自动替学生选课 / 自动教务选课 / 自动决定教学班。
 
@@ -108,9 +108,9 @@
 | 最终主流程为五段：补修缺口分析 → 本学期专业选修建议 → 本学期推荐课表 → 未来学期修读路径 → 详细依据 | `frontend/src/components/CaseADemoView.vue` 的 `SectionCard` 顺序 |
 | **页面底部只有一个统一提醒区**，只做汇总，可操作的确认在各自模块内完成 | `frontend/src/components/PendingReminders.vue`（`case-a-reminders`）；标题逐字「待确认与提醒（N 项）」 |
 | ⛔ **没有**独立的大块"待处理事项／待你确认的调整"模块 | 同上；`PendingIssuesCenter` 不再是顶层区块 |
-| 补修确认改为**逐条操作**：每行「确认可转换」/「暂不确认」，已确认可「撤销确认」 | `MakeupTaskList.vue`（`makeup-confirm-<course>`、`makeup-deferred-<course>`、`makeup-undo-<key>`） |
+| 补修确认改为**逐条操作**且收敛为**单一主操作**：未确认显示「确认可转换」，确认成功后同一按钮变为「✓ 已确认」，再点即撤销 | `MakeupTaskList.vue`（`makeup-confirm-<course>`、`makeup-deferred-<course>`、`makeup-undo-<key>`） |
 | 确认入口上方的逐字披露包含「也不会修改学校教务系统记录」 | `makeup-confirm-disclosure` 逐字 |
-| 专业选修候选**不再被截断**：本次真实数据 **10 门**，默认显示前 6 门，可展开其余或按课程名/课程号筛选 | `CurrentElectiveSection.vue`（`INITIAL_VISIBLE = 6`、`elective-expand`、`elective-collapse`、`elective-search`）；后端显示上限 50 |
+| 专业选修候选**不再被截断**：本次真实数据 **10 门**，默认显示前 6 门，可展开其余或按课程名/课程号筛选（加入一门后候选列表变为 9 门） | `CurrentElectiveSection.vue`（`INITIAL_VISIBLE = 6`、`elective-expand`、`elective-collapse`、`elective-search`）；后端显示上限 50 |
 | 课表用**来源图例**区分三种课程 | `case-a-schedule-legend`：`当前已选` / `规划新增·建议` / `你加入方案的选修` |
 | 课表**业务类别标签仅有依据时出现**：必修需显式 `required` 证据；专业选修需确知属于选修组或用户已加入方案；其余不显示 | `WeeklyScheduleView.vue`（`categoryOf()`、`case-a-weekly-category`）；提交主题 "label course categories only on explicit evidence" |
 | ⛔ 界面**没有**公选 / 跨专业 / 实验类别标签 | 同上（代码只定义 `required` 与 `elective` 两类） |
@@ -336,9 +336,9 @@
 3. **"待确认"不是丢人的词。** 它是本产品的设计选择，主动讲出来是加分项。
 4. **同一份材料里前后口径必须一致。** 定稿前全文检索：`23`、`12`、`11`、`4069`、`南校园`、`深圳`、`30`、`26`、`35`、`34.0`、`教师`、`确认`、`加入本学期方案`、`撤销`。
 5. **发现本表与代码不一致时，以代码为准，并更新本表。**
-6. **⛔ 不要写"35 尚未落地"** —— 已在 `95976ae` 落地，并纳入最终 RC `695834a`。
+6. **⛔ 不要写"35 尚未落地"** —— 已在 `95976ae` 落地，并纳入最终 RC `56013e5`。
 7. **⛔ 不要写"待你确认的调整""需要你处理"这类独立大区块** —— 本轮已取消独立模块，待确认事项按归属收口在各区块内部。
-8. **按钮名必须与最终界面一致**：`确认可转换`、`暂不确认`、`撤销确认`、`加入本学期方案`、`撤销`、`查看其余 N 门`、`采用调整`、`保留当前班`。
+8. **按钮名必须与最终界面一致**：`确认可转换`（确认后同一按钮变 `✓ 已确认`）、`加入本学期方案`（加入后同一按钮变 `✓ 已加入，可撤销`）、`查看其余 N 门`、`采用调整`、`保留当前班`。
 
 ---
 
@@ -349,7 +349,7 @@
 | 教师信息补齐状态 | 本表、宣传页、PPT 大纲 | `[待 teacher enrichment 确认]`（本轮为 `BLOCKED_BY_MISSING_LOCAL_RAW_SOURCE`） |
 | 团队名称与联系方式 | 宣传页 | `[待负责人确认]` |
 
-> ✅ 最终截图**已就绪**（`docs/submission/screenshots/`，17 张，基于 `695834a` 重拍）。
+> ✅ 最终截图**已就绪**（`docs/submission/screenshots/`，18 张，基于 `56013e5` 重拍）。
 > ✅ 评委支撑材料**已就绪**（`docs/submission/support/`，8 份 PDF）。
 > 产品 HEAD、RC HEAD、学分口径（30 / 26 / 35）与能力边界均已定稿，**不再属于等待项**。
 > 以上两项是素材类工作，不影响事实正确性。

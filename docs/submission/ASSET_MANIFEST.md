@@ -3,7 +3,7 @@
 > 用途：说明 `docs/submission/` 下每份材料是干什么的、谁可以改、当前是什么状态。
 > 状态取值：`READY`（可直接使用） / `LOCKED`（不得随意修改） / `WAITING`（等待定稿或素材） / `DRAFT`（可继续打磨）。
 >
-> **事实基线：最终产品 HEAD = 最终 RC HEAD = `695834a45905166321422eeeef0d8f46c83add0d`**（2026-10-07）。
+> **事实基线：最终产品 HEAD = 最终 RC HEAD = `56013e5108b53ee7d663a8577dd687946c366c36`**（2026-10-07）。
 
 ## 主材料（11 份，商科交接包使用的就是这些）
 
@@ -19,7 +19,7 @@
 | `FINAL_FACT_SHEET.md` | 一页事实数字与能力边界 | ⛔ 不允许随意修改 | LOCKED |
 | `SCREENSHOT_PLAN.md` | 最终截图计划与配文 | 等界面定稿后执行 | READY（已执行，保留为重拍依据） |
 | `screenshots/SCREENSHOT_INDEX.md` | 最终截图目录的逐张索引与隐私核对 | 材料维护者 | READY |
-| `screenshots/*.png` | 17 张最终 RC 界面真实截图（基于 `695834a` 重拍） | 界面变化时必须重拍 | READY |
+| `screenshots/*.png` | 18 张最终 RC 界面真实截图（基于 `56013e5` 重拍） | 界面变化时必须重拍 | READY |
 | `support/*.pdf` | 面向评委的 8 份支撑材料 PDF | 事实变化时必须重新生成 | READY |
 | `ASSET_MANIFEST.md` | 本文件，素材说明 | 材料维护者 | READY |
 | `BUSINESS_TEAM_HANDOFF.md` | 给商科同学的完整交接说明 | 商科可补充提问 | READY |
