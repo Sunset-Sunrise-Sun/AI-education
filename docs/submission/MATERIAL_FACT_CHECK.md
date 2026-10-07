@@ -4,22 +4,23 @@
 > 任何对外材料、PPT、宣传页、演示话术，写完之后都要拿这份表逐条对照。
 > 本表只回答一个问题：**这句话有没有实现证据。**
 >
-> 本版已按产品最新事实基线重做。上一版以 `7a7bb9d` 为基线，把若干**其实已经实现**的能力
-> 误标成了"未来计划"，本版已纠正。
+> 本版已按**最终产品 / RC HEAD `95976ae`** 更新：未来学期硬上限 35 已升为 VERIFIED，
+> 最终 RC SHA 已填，所有"35 尚未落地"的表述已删除。
 
 ## 核对基线
 
 | 项 | 值 |
 |---|---|
 | 材料分支 | `docs/opc-submission-package` |
-| **产品事实基线 HEAD** | **`0cd91dca780d587e3f6e83d24814688721fca730`**（分支 `fix/manual-acceptance-productization`） |
-| 已通过独立评审的 RC HEAD | `40803a28ed1464334502fe6428a296799b941c08`（`release/case-a-path-planning-rc`） |
-| 产品评审状态 | Issue #57：`40803a2` 独立评审 = PASS（RC VALIDATION MAY PROCEED）；`0cd91dc` = REVIEW_READY，**等待针对该 HEAD 的评审** |
+| **产品事实基线 HEAD** | **`95976ae4510b3b62b0c3c83b45b0b1a04d86ec92`** |
+| **最终 RC HEAD** | **`95976ae4510b3b62b0c3c83b45b0b1a04d86ec92`**（`release/case-a-path-planning-rc`） |
+| 产品评审状态 | **独立评审 = PASS；最终 RC 验证 = PASS** |
+| 历史基线（已被取代） | `7a7bb9d` → `0cd91dc` → 本版 `95976ae` |
 | 核对时间 | 2026-10-07 |
 | 核对方式 | 逐条对照产品基线的代码、状态文档、接口文档、演示手册与人工验收清单 |
 
-> ⚠️ **产品 HEAD 可能继续前进**（尤其"未来学期学分硬上限 35"尚未落地）。
-> 产品 HEAD 一旦变化，本表与 `FINAL_FACT_SHEET.md` 必须同步更新；**材料不允许领先于代码**。
+> ✅ **产品与 RC 已定稿**：产品 HEAD 与 RC HEAD 是同一个 commit `95976ae`。
+> 材料中出现 `35`、`34.0`、RC 版本号的位置都已按此 HEAD 更新。
 
 ## 三档标记的含义
 
@@ -95,9 +96,12 @@
 | **学分负荷控制** | `backend/app/services/case_a_roadmap.py` 常量与 `current_semester_load()`；演示手册 §4 步骤 12 |
 | 当前学期默认学分上限 = **30**（用户设置的更严上限优先） | `CASE_A_CURRENT_HARD_MAX_CREDIT = 30.0`；`current_semester_load()` |
 | 未来学期**软目标 = 26 学分** | `CASE_A_FUTURE_SOFT_TARGET_CREDIT = 26.0` |
-| 未来学期硬上限**当前为 30 学分** | `CASE_A_FUTURE_HARD_MAX_CREDIT = 30.0`；演示手册 §4 步骤 12「每个学期都 ≤ 30 学分」 |
-| 用户显式学分上限优先；用户值超过硬上限时按硬上限收口 | `case_a_roadmap.py` §87–88 注释与实现 |
-| 真实 Case A 未来学期学分：2026-2 = 30.0、2027-1 = 28.5、2027-2 = 30.0、2028-1 = 17.0、2028-2 = 7.5，最大 30.0，0 unresolved | Issue #57 `0cd91dc` REVIEW_READY 实测（产品侧记录） |
+| 未来学期硬上限 = **35 学分** | `CASE_A_FUTURE_HARD_MAX_CREDIT = 35.0`（`backend/app/services/case_a_roadmap.py`） |
+| 当前学期上限与未来学期上限是**两个不同的值**（30 / 35），不得混用 | 同一文件常量注释明确写出该区别 |
+| 负荷标签口径：≤26 正常 / 26–30 较满 / 30–35 很满，⛔ 不得超过 35 | 同一文件常量注释；演示手册步骤 12 |
+| 真实 Case A 未来学期最大建议学分 = **34.0** | 最终 RC 验证实测（产品侧记录） |
+| 用户显式学分上限优先；用户值超过对应硬上限时按硬上限收口 | `case_a_roadmap.py` 常量注释与 `effective_hard` / `effective_soft` 实现 |
+| **统一确认与去重**：有身份时按 `kind + courseId + classId` 去重，无身份时按语义判别式去重，语义不同的问题不会被静默合并 | `frontend/src/utils/studentIssues.ts`（`issueKey`，`95976ae` 提交主题："correct dedup so distinct issues are never silently merged"） |
 | **统一的"需要你处理"中心**：页面唯一的待确认中心，去重归一 | `frontend/src/components/PendingAdjustments.vue`；`frontend/src/utils/studentIssues.ts`；演示手册 §4 步骤 8、14 |
 | **多候选课程聚合展示**：换班按课程分组，一门课一张卡片，默认 3 个候选，其余折叠 | `PendingAdjustments.vue`（`查看其余 N 个候选`）；`frontend/src/utils/repairView.ts`；演示手册 §4 步骤 8 |
 | 待确认事项按中文展示，原始机器码折叠在"查看技术详情" | 演示手册 §4 步骤 14 |
@@ -143,15 +147,13 @@
 
 # 二、CONDITIONAL
 
-> 这一档只剩**真正尚未确认**的事项。凡在本轮已由产品基线直接支持的能力，都已升为 VERIFIED。
+> 产品与 RC 已定稿，本档只剩**素材类**等待项。
+> 能力与数字类的"待确认"已全部结清。
 
 | 主张 | 现状 | 证据 / 说明 | 怎么用 |
 |---|---|---|---|
-| **未来学期学分硬上限 = 35** | ❌ **产品基线尚未包含**。基线常量为 `CASE_A_FUTURE_HARD_MAX_CREDIT = 30.0` | `backend/app/services/case_a_roadmap.py` 第 90 行 `CASE_A_FUTURE_HARD_MAX_CREDIT = 30.0`；演示手册步骤 12 写"≤ 30 学分" | **写成 `CONDITIONAL — awaiting final product HEAD`**。在最终 HEAD 落地 35 之前，⛔ 材料里不要写 35 |
-| **产品 HEAD `0cd91dc` 的独立评审** | 已 REVIEW_READY，**尚未有针对性评审结论**（上一轮 PASS 针对 `40803a2`） | Issue #57 评论链：`40803a2` = PASS；`0cd91dc` = REVIEW_READY（待评审） | 可以说"已通过 RC 阶段独立评审，最终产品化 HEAD 待评审" |
-| **最终 RC SHA** | 尚未冻结。`release/case-a-path-planning-rc` 仍指向 `40803a2`，产品化 HEAD 为其后的 `0cd91dc` | `git rev-parse origin/release/case-a-path-planning-rc` = `40803a2` | 版本号写成 `[待 RC SHA]` |
-| **最终界面文案与区块名称** | 产品基线界面已稳定可用，但仍在最后调整 | `CaseADemoView.vue`、`PendingAdjustments.vue`、`CurrentElectiveSection.vue` | 按钮名、区块名以定稿界面为准，占位 `[待 UI 定稿]` |
-| **最终截图** | 未拍摄 | `SCREENSHOT_PLAN.md` 为规划稿 | 占位 `[待最终截图]` |
+| **最终界面文案与区块名称** | 产品基线界面已定稿 | `CaseADemoView.vue`、`PendingAdjustments.vue`、`CurrentElectiveSection.vue` | 按钮名、区块名以实际界面为准 |
+| **最终截图** | ✅ 已采集（12 张，最终 RC 界面真实渲染） | `docs/submission/screenshots/` + `screenshots/SCREENSHOT_INDEX.md` | 可直接用于 PPT 与宣传页；配文须遵守索引里的"不能证明" |
 | **教师信息补齐** | `BLOCKED_BY_MISSING_LOCAL_RAW_SOURCE`。本机原始数据里没有教师姓名，不重新采集就无法恢复 | `docs/status/integration.md` | 统一说"教师信息暂未同步"；⛔ 不说"已完整覆盖" |
 | **团队名称与联系方式** | 仓库内无已确认信息 | — | 占位 `[待负责人确认]` |
 
@@ -220,11 +222,12 @@
 | 3 | 系统自动选课 / 自动换班 | 生成建议不改课表，用户明确确认后才应用 |
 | 4 | 全校完整本学期课程数据 | 真实教学班数据，范围是南校园 + 深圳校区，共 4069 条 |
 | 5 | 未来学期给你排好课表和老师 | 未来学期只做课程级规划，只有课程名 / 课程号 / 学分 / 必修选修 |
-| 6 | 未来学期可以塞 35 学分 | 当前产品硬上限是 30 学分；35 学分尚未落地 |
-| 7 | 用 AI 推理出缺哪些课 | 规则驱动 + 结构化数据 + 确定性规划，AI 增强待接入 |
-| 8 | 原始教务接口没有教师信息 | 当前 accepted 快照未保留教师字段，因此教师信息暂未同步 |
-| 9 | 这个班没有冲突 | 在已知信息范围内未发现冲突；排课信息缺失时整体仍是未知 |
-| 10 | 已经连上学校教务系统 | 不联网抓取，使用本地已验收数据 |
+| 6 | 未来学期学分上限是 30 | 当前学期上限是 30，**未来学期硬上限是 35**，两者不同 |
+| 7 | 未来学期可以随便排满 | 未来学期软目标 26、硬上限 35；排不下的课顺延，不硬塞 |
+| 8 | 用 AI 推理出缺哪些课 | 规则驱动 + 结构化数据 + 确定性规划，AI 增强待接入 |
+| 9 | 原始教务接口没有教师信息 | 当前 accepted 快照未保留教师字段，因此教师信息暂未同步 |
+| 10 | 这个班没有冲突 | 在已知信息范围内未发现冲突；排课信息缺失时整体仍是未知 |
+| 11 | 已经连上学校教务系统 | 不联网抓取，使用本地已验收数据 |
 
 ---
 
@@ -233,9 +236,9 @@
 1. **用肯定句讲已实现的，用限定句讲未实现的。** ⛔ 不用"基本上""差不多""即将上线"。
 2. **每个对外数字都要能指回上表的某一行。** 指不回去的数字，删掉。
 3. **"待确认"不是丢人的词。** 它是本产品的设计选择，主动讲出来是加分项。
-4. **同一份材料里前后口径必须一致。** 定稿前全文检索：`23`、`12`、`11`、`4069`、`南校园`、`深圳`、`30`、`26`、`35`、`教师`。
-5. **产品 HEAD 变化时必须更新本表。** 尤其"未来学期硬上限 35"落地之后。
-6. **发现本表与代码不一致时，以代码为准，并更新本表。**
+4. **同一份材料里前后口径必须一致。** 定稿前全文检索：`23`、`12`、`11`、`4069`、`南校园`、`深圳`、`30`、`26`、`35`、`34.0`、`教师`。
+5. **发现本表与代码不一致时，以代码为准，并更新本表。**
+6. **不要再写"35 尚未落地"** —— 该调整已在最终 HEAD `95976ae` 落地并纳入最终 RC。
 
 ---
 
@@ -243,9 +246,9 @@
 
 | 等待项 | 影响哪些文件 | 占位写法 |
 |---|---|---|
-| 未来学期硬上限 35 落地 | 本表、`FINAL_FACT_SHEET.md`、宣传页、PPT | `CONDITIONAL — awaiting final product HEAD` |
-| 最终 RC SHA | 本表、`FINAL_FACT_SHEET.md` | `[待 RC SHA]` |
-| 最终界面文案（UI 定稿） | 演示脚本、截图计划、宣传页 | `[待 UI 定稿]` |
-| 最终截图 | 演示脚本、PPT 大纲、截图计划 | `[待最终截图]` |
 | 教师信息补齐状态 | 本表、宣传页、PPT 大纲 | `[待 teacher enrichment 确认]`（本轮为 `BLOCKED_BY_MISSING_LOCAL_RAW_SOURCE`） |
 | 团队名称与联系方式 | 宣传页 | `[待负责人确认]` |
+
+> ✅ 最终截图**已就绪**（`docs/submission/screenshots/`，12 张）。
+> 产品 HEAD、RC HEAD、学分口径（30 / 26 / 35）与能力边界均已定稿，**不再属于等待项**。
+> 以上两项是素材类工作，不影响事实正确性。

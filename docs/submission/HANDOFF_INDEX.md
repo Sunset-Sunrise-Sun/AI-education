@@ -30,7 +30,7 @@
 每个文件是干什么的、谁可以改
 
 ### 9. SCREENSHOT_PLAN.md
-UI 定稿后补截图
+最终截图计划（已执行），实际截图见 `screenshots/`
 
 ### 10. BUSINESS_TEAM_HANDOFF.md
 给你的完整交接说明，遇到拿不准的看这里

@@ -15,7 +15,9 @@
 | `DEMO_SCRIPT_3MIN.md` | 3 分钟演示与答辩脚本 | 商科可改语气，⛔ 禁语清单不可删 | READY |
 | `MATERIAL_FACT_CHECK.md` | 全量主张事实核对（VERIFIED / CONDITIONAL / DO NOT CLAIM） | ⛔ 不允许随意修改 | LOCKED |
 | `FINAL_FACT_SHEET.md` | 一页事实数字与能力边界 | ⛔ 不允许随意修改 | LOCKED |
-| `SCREENSHOT_PLAN.md` | 最终截图计划与配文 | 等界面定稿后执行 | WAITING |
+| `SCREENSHOT_PLAN.md` | 最终截图计划与配文 | 等界面定稿后执行 | READY（已执行，保留为重拍依据） |
+| `screenshots/SCREENSHOT_INDEX.md` | 最终截图目录的逐张索引与隐私核对 | 材料维护者 | READY |
+| `screenshots/*.png` | 12 张最终 RC 界面真实截图 | 界面变化时必须重拍 | READY |
 | `ASSET_MANIFEST.md` | 本文件，素材说明 | 材料维护者 | READY |
 | `BUSINESS_TEAM_HANDOFF.md` | 给商科同学的完整交接说明 | 商科可补充提问 | READY |
 
