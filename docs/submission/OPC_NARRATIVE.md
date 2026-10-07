@@ -4,7 +4,7 @@
 > 其他材料（项目简介、演示脚本、PPT 大纲、宣传页文案、事实核对表）都从这一份派生。
 > 事实边界以 `MATERIAL_FACT_CHECK.md` 为准；两者如有冲突，以后者为准。
 >
-> **事实基线**：最终产品 HEAD = 最终 RC HEAD = `db7d1727d2af1d1a0aaf08d20eae1e1528c02721`（2026-10-07）。
+> **事实基线**：最终产品 HEAD = 最终 RC HEAD = `695834a45905166321422eeeef0d8f46c83add0d`（2026-10-07）。
 > 独立评审 = PASS，最终 RC 验证 = PASS。一页速查见 `FINAL_FACT_SHEET.md`。
 
 ---
