@@ -1,6 +1,13 @@
 # Integration 当前状态
 
 > 最后更新：2026-10-06
+>
+> ⚠️ **关于 `PROJECT_CONTEXT.md`**：外部 review 指令会要求先读 `/PROJECT_CONTEXT.md`，
+> 但该文件**不在本仓库中**（`git ls-files` 无此文件，仓库内也没有任何文件引用它）。
+> ⛔ 不要为了满足一份检查清单而**编造**一份项目背景文档；
+> 本仓库的背景事实以 `/AGENTS.md`、`/docs/ARCHITECTURE.md`、
+> `/docs/status/*.md` 与 `/docs/worklogs/*.md` 为准。
+> 如果确实需要 `PROJECT_CONTEXT.md`，应由负责人提供其内容。
 
 ## 当前能力
 

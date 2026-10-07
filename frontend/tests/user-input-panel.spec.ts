@@ -235,7 +235,15 @@ describe('current_schedule 输出为 CourseOffering[]', () => {
 
   it('空课表合法，且给出中性空状态', () => {
     const wrapper = mount(CurrentScheduleInput, {
-      props: { offerings: [], selected: [], dataSourceLabel: 'Mock' },
+      props: {
+        offerings: [],
+        selected: [],
+        dataSourceLabel: 'Mock',
+        // ⚠️ 与组件契约一致：这两个 prop 是**必填**的。
+        //    省略它们只会产生 Vue 警告，测试仍可能通过 —— 那种"靠警告换来的绿"没有意义。
+        semester: '2026-1',
+        manualProvenanceLabel: '本人手工录入，未经学校核验',
+      },
     })
     expect(wrapper.find('[data-testid="schedule-empty"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('当前课表可以留空继续')
@@ -243,7 +251,13 @@ describe('current_schedule 输出为 CourseOffering[]', () => {
 
   it('meetings=[] 的教学班沿用 DG-07D 中性文案，不推断无冲突', () => {
     const wrapper = mount(CurrentScheduleInput, {
-      props: { offerings: OFFERINGS, selected: [], dataSourceLabel: 'Mock' },
+      props: {
+        offerings: OFFERINGS,
+        selected: [],
+        dataSourceLabel: 'Mock',
+        semester: '2026-1',
+        manualProvenanceLabel: '本人手工录入，未经学校核验',
+      },
     })
     expect(wrapper.text()).toContain('当前数据中无排课信息')
     for (const forbidden of ['无冲突', '无需上课', '异步课程', '尚未排课']) {
