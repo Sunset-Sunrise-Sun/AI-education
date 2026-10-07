@@ -266,15 +266,25 @@ function onRemoveElective(payload: { courseId: string; classId: string; semester
  * ⚠️ 只用于**展示**：真正的学分/冲突结论来自服务端 recompute 结果。
  */
 /**
- * 本地选修意图 ↔ 服务端已接受身份对齐。
+ * 本地规划意图 ↔ 服务端**实际接受**的身份对齐。
  *
- * 规则：本地只保留服务端**已经接受**的身份。
- * ⛔ 被拒绝的身份由服务端返回 `rejected_elective_selections`（页面会显示原因），
- *    本地状态必须同步移除它，使用户可以重新选择、而不是被一条隐形意图卡住。
+ * 两类意图都必须对齐，否则会出现"隐形且不可撤销"的意图：
+ *
+ * - 选修身份：被拒绝的由 `rejected_elective_selections` 给出原因；
+ * - 补修确认：被拒绝的由 `rejected_manual_confirmations` 给出原因。
+ *
+ * ⚠️ 只对齐"服务端已接受"的那一份：被拒绝的 key **必须**从本地状态移除，
+ *    否则它会一直出现在后续每一次请求里，而页面上**没有**任何控件能撤销它
+ *    （撤销控件是按服务端已生效的 key 渲染的）——这正是 Review 指出的 blocker。
+ *    拒绝原因仍然可见，用户可以重新选择重试。
  */
-function reconcileElectiveIntent(): void {
+function reconcilePlanningIntent(): void {
   const current = result.value
   if (!current) return
+
+  // ---- 补修确认 ----
+  confirmedManualKeys.value = [...(current.applied_manual_confirmations ?? [])].sort()
+
   const keyOf = (courseId: string, classId: string) => `${courseId}::${classId}`
   const accepted = new Set(
     (current.applied_elective_sections ?? []).map((item) =>
@@ -487,7 +497,7 @@ async function submit(options: { silent?: boolean } = {}): Promise<void> {
     // ⚠️ 把本地意图与服务端**实际接受**的身份对齐：
     //    服务端拒绝了某个身份时，它不能继续留在本地状态里当作"已提交"，
     //    否则用户看不到、也撤不掉这条隐形意图。
-    reconcileElectiveIntent()
+    reconcilePlanningIntent()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '方案生成失败，请检查输入后重试。'
     // silent 调用（换班后的自动重算）失败时向上抛，让调用方如实说明；

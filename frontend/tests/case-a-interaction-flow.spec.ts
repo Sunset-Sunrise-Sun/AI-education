@@ -377,6 +377,78 @@ describe('端到端交互流程（有状态后端替身）', () => {
     expect(primary).not.toContain('type:')
   })
 
+  it('被拒绝的补修确认不会残留：后续请求不再携带它，且仍可重试', async () => {
+    const server = makeServer()
+    let call = 0
+    runCaseADemo.mockImplementation(async (input: never) => {
+      call += 1
+      const body = input as unknown as {
+        override?: { userConfirmedManualTaskKeys: string[]; electiveSelections: never[] }
+      }
+      const keys = body.override?.userConfirmedManualTaskKeys ?? []
+      const base = await server.handler({
+        override: { userConfirmedManualTaskKeys: [], electiveSelections: [] },
+      })
+      if (call === 1) return base
+      // 服务端把 CSE101 fail-closed 拒绝（例如它已不再符合确认条件）
+      if (keys.includes('CSE101')) {
+        return {
+          ...base,
+          applied_manual_confirmations: keys.filter((k) => k !== 'CSE101'),
+          rejected_manual_confirmations: [
+            {
+              course_id: 'CSE101',
+              reason: '该课程的评估状态不允许按已满足处理',
+            },
+          ],
+        }
+      }
+      return server.handler({
+        override: { userConfirmedManualTaskKeys: keys, electiveSelections: [] },
+      })
+    })
+
+    const wrapper = await mountPage()
+
+    // ① 提交一个会被服务端拒绝的确认
+    await wrapper.get('[data-testid="makeup-select-CSE101"]').setValue(true)
+    await wrapper.get('[data-testid="makeup-confirm-submit"]').trigger('click')
+    await flushPromises()
+
+    // 拒绝原因如实可见
+    expect(wrapper.get('[data-testid="case-a-rejected-confirmations"]').text()).toContain(
+      '不允许按已满足处理',
+    )
+    // ⛔ 没有被本地改写成"已满足"（无乐观更新）
+    expect(wrapper.find('[data-testid="makeup-user-confirmed-CSE101"]').exists()).toBe(false)
+    // ⛔ 也没有一个"撤销"控件对应这个被拒的 key（所以它必须从本地状态移除）
+    expect(wrapper.find('[data-testid="makeup-undo-CSE101"]').exists()).toBe(false)
+
+    // ② 触发另一次交互：请求里**不得**再包含被拒绝的 key
+    await wrapper.get('[data-testid="elective-add-CSE317"]').trigger('click')
+    await flushPromises()
+    const nextBody = runCaseADemo.mock.calls.at(-1)?.[0] as {
+      override?: { userConfirmedManualTaskKeys: string[] }
+    }
+    expect(nextBody.override?.userConfirmedManualTaskKeys).toEqual([])
+
+    // ③ 用户仍可重试（无需刷新页面）：重新勾选并提交
+    expect(wrapper.find('[data-testid="makeup-select-CSE101"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="makeup-select-CSE101"]').setValue(true)
+    await wrapper.get('[data-testid="makeup-confirm-submit"]').trigger('click')
+    await flushPromises()
+    // 服务端仍拒绝（本临时场景如此），但请求确实带上了重试意图
+    const retryBody = runCaseADemo.mock.calls.at(-1)?.[0] as {
+      override?: { userConfirmedManualTaskKeys: string[] }
+    }
+    expect(retryBody.override?.userConfirmedManualTaskKeys).toEqual(['CSE101'])
+
+    // ④ ⛔ 来源可核验的基础评估始终不变
+    const payload = wrapper.findAll('[data-testid="makeup-row-CSE101"]')
+    expect(payload.length).toBe(1)
+    expect(server.confirmed.size).toBe(0)
+  })
+
   it('被拒绝的选修身份不会残留：改选后请求只带更正后的身份', async () => {
     const server = makeServer()
     // 第一轮：服务端拒绝陈旧教学班；第二轮：接受更正后的教学班
