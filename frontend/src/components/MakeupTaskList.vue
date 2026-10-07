@@ -150,15 +150,18 @@ function submitConfirm(): void {
   <div class="makeup-container">
     <div class="section-toolbar">
       <div class="stats-pills">
+        <!-- "全部任务"是**导航**入口：只要还有任务就必须保留，
+             ⛔ 不要因为它没有专属状态就跟着计数隐藏。 -->
         <button
           type="button"
           class="filter-chip"
           :class="{ 'filter-chip--active': activeFilter === 'all' }"
+          data-testid="makeup-filter-all"
           @click="activeFilter = 'all'"
         >
           全部任务 ({{ tasks.length }})
         </button>
-        <!-- ⛔ 计数为 0 时不渲染该筛选（避免出现永远为空的 tab） -->
+        <!-- ⛔ 计数为 0 的**状态**筛选不渲染（避免出现永远为空的 tab） -->
         <button
           v-if="displayStats.required > 0"
           type="button"

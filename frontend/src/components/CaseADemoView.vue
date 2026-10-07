@@ -196,7 +196,14 @@ const planningDisclosure = computed(() => result.value?.planning_only_disclosure
  * ⛔ 不允许组件各自改学分 / 课表 / 路线图状态。
  */
 async function submitOverride(): Promise<void> {
-  await submit({ silent: true })
+  try {
+    await submit({ silent: true })
+  } catch {
+    // ⚠️ 必须捕获：`submit()` 在 silent 模式下会把失败向上抛（换班流程需要它
+    //    来决定是否保留"待刷新"），但交互式重算是由模板事件触发的，没有调用方
+    //    接住它 —— 不捕获就会变成未处理的 Promise 拒绝。
+    //    失败已经写进 `error.value`（用户可见），因此这里只做兜底。
+  }
 }
 
 function onConfirmManual(payload: { courseIds: string[] }): void {
