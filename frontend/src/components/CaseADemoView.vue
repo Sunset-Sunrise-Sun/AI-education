@@ -78,7 +78,17 @@ async function applyRepair(payload: {
     // 课表只采用后端返回结果（⛔ 不本地推断）。
     form.value = invalidateManualAttestation(form.value, applied.schedule).form
     if (result.value) {
-      result.value = { ...result.value, repair_proposals: applied.repair_proposals }
+      result.value = {
+        ...result.value,
+        repair_proposals: applied.repair_proposals,
+        // ⚠️ 换班成功后旧 `plan_result` 描述的是**换班前**的课表：
+        //    在重新规划返回之前，它的 `changes` 与新课表**互相矛盾**。
+        //    因此这里先清空旧建议，等 `submit({silent:true})` 用真实重算结果覆盖，
+        //    ⛔ 不保留会误导用户的陈旧建议。
+        plan_result: applied.applied
+          ? { ...result.value.plan_result, changes: [], unresolved: [] }
+          : result.value.plan_result,
+      }
     }
     applyNotice.value = applied.applied
       ? `已按你的确认把 ${payload.courseId} 从 ${payload.fromClassId} 调整为 ${payload.toClassId}。`

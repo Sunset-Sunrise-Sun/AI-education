@@ -647,6 +647,165 @@ describe('结构化换班建议（explicit confirm only）', () => {
   })
 })
 
+describe('显式换班：页面编排（确认才生效）', () => {
+  beforeEach(() => {
+    loadCaseAOfferings.mockReset()
+    runCaseADemo.mockReset()
+    applyCaseARepair.mockReset()
+    loadCaseAOfferings.mockResolvedValue(OFFERINGS)
+  })
+
+  function planResponse(overrides: Record<string, unknown> = {}) {
+    return {
+      transcript: {
+        source_id: 'pdf:1',
+        artifact_sha256: 'a'.repeat(64),
+        record_count: 4,
+        term_count: 2,
+        terms: ['2025-1', '2025-2'],
+        pending_course_id_count: 4,
+      },
+      makeup_tasks: [makeupTask('CSE201')],
+      course_offerings: OFFERINGS,
+      preference: { max_credit: null, avoid_cross_campus: false, preferred_courses: [], avoid_times: [], notes: null },
+      plan_result: {
+        status: 'partially_feasible',
+        selected_classes: [{ course_id: 'CSE201', class_id: '01' }],
+        changes: [
+          {
+            course_id: 'CSE201',
+            from_class: '01',
+            to_class: '02',
+            reason: '换到无冲突教学班',
+          },
+        ],
+        risks: [],
+        unresolved: [],
+      },
+      provenance: {
+        transcript: 't',
+        curriculum: 'c',
+        course_data: 'case-scoped:south+shenzhen',
+        current_schedule: 'selected accepted offering',
+        planner: 'actual RestrictedPlanner execution',
+        is_full_semester: false,
+      },
+      repair_proposals: {
+        semester: '2026-1',
+        proposals: [
+          {
+            proposal_id: 'p1',
+            semester: '2026-1',
+            course_id: 'CSE201',
+            current_class_id: '01',
+            candidate_class_id: '02',
+            original_state: 'CONFLICT',
+            candidate_state: 'CLEAR',
+            reason: '候选教学班与当前课表不冲突。',
+          },
+        ],
+        unresolved: [],
+      },
+      roadmap: ROADMAP,
+      roadmap_note: null,
+      ...overrides,
+    }
+  }
+
+  async function mountAndPlan() {
+    const wrapper = mount(CaseADemoView)
+    await flushPromises()
+    const input = wrapper.get('[data-testid="case-a-pdf"]')
+    const file = new File(['%PDF-1.4'], 'transcript.pdf', { type: 'application/pdf' })
+    Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
+    await input.trigger('change')
+    runCaseADemo.mockResolvedValue(planResponse())
+    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+    await flushPromises()
+    return wrapper
+  }
+
+  it('renders the real structured proposal and never applies it on render', async () => {
+    const wrapper = await mountAndPlan()
+    expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(true)
+    // ⛔ 渲染本身绝不触发 apply
+    expect(applyCaseARepair).not.toHaveBeenCalled()
+  })
+
+  it('only an explicit click calls repair apply, with the full identity', async () => {
+    const wrapper = await mountAndPlan()
+    applyCaseARepair.mockResolvedValue({
+      status: 'applied',
+      applied: true,
+      schedule: [OFFERINGS[1]],
+      changes: [
+        { course_id: 'CSE201', from_class: '01', to_class: '02', reason: '已换班' },
+      ],
+      reason: '已应用',
+      revalidated: true,
+      remaining_conflicts: [],
+      repair_proposals: { semester: '2026-1', proposals: [], unresolved: [] },
+    })
+    runCaseADemo.mockResolvedValue(planResponse({ repair_proposals: { semester: '2026-1', proposals: [], unresolved: [] } }))
+
+    await wrapper.get('[data-testid="case-a-repair-apply-CSE201-02"]').trigger('click')
+    await flushPromises()
+
+    expect(applyCaseARepair).toHaveBeenCalledTimes(1)
+    // 必须携带完整身份，⛔ 不接受"采用第一条建议"这类含糊输入
+    expect(applyCaseARepair.mock.calls[0][0]).toMatchObject({
+      semester: '2026-1',
+      courseId: 'CSE201',
+      fromClassId: '01',
+      toClassId: '02',
+    })
+  })
+
+  it('does not keep stale pre-repair suggestions next to the new timetable', async () => {
+    const wrapper = await mountAndPlan()
+    expect(wrapper.findAll('[data-testid="case-a-adjustment-change"]').length).toBe(1)
+
+    applyCaseARepair.mockResolvedValue({
+      status: 'applied',
+      applied: true,
+      schedule: [OFFERINGS[1]],
+      changes: [{ course_id: 'CSE201', from_class: '01', to_class: '02', reason: '已换班' }],
+      reason: '已应用',
+      revalidated: true,
+      remaining_conflicts: [],
+      repair_proposals: { semester: '2026-1', proposals: [], unresolved: [] },
+    })
+    // 重新规划**故意**在本次不返回（模拟慢请求），验证不会留下陈旧建议
+    runCaseADemo.mockImplementation(() => new Promise(() => {}))
+
+    await wrapper.get('[data-testid="case-a-repair-apply-CSE201-02"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-testid="case-a-adjustment-change"]').length).toBe(0)
+    expect(wrapper.get('[data-testid="case-a-repair-notice"]').text()).toContain('已按你的确认')
+  })
+
+  it('surfaces a rejected repair and leaves the timetable to the server value', async () => {
+    const wrapper = await mountAndPlan()
+    applyCaseARepair.mockResolvedValue({
+      status: 'rejected',
+      applied: false,
+      schedule: [OFFERINGS[0]],
+      changes: [],
+      reason: '候选不属于该课程',
+      revalidated: false,
+      remaining_conflicts: [],
+      repair_proposals: { semester: '2026-1', proposals: [], unresolved: [] },
+    })
+    await wrapper.get('[data-testid="case-a-repair-apply-CSE201-02"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="case-a-repair-error"]').text()).toContain('候选不属于该课程')
+    // ⛔ 不得假装成功
+    expect(wrapper.get('[data-testid="case-a-repair-notice"]').text()).toContain('未生效')
+  })
+})
+
 describe('未来学期修读路径（真实 AcademicRoadmap）', () => {  it('没有 roadmap 数据时整块不渲染，不造假数据', () => {
     const empty = mount(FutureRoadmapView, { props: { roadmap: null } })
     expect(empty.find('[data-testid="case-a-future-roadmap"]').exists()).toBe(false)
