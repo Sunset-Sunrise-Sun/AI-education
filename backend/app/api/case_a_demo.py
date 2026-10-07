@@ -186,6 +186,8 @@ class CurrentElectiveItem(BaseModel):
     clear_class_count: int
     #: 唯一已确认无冲突教学班时给出班号；多个候选时为 `null`（由用户自己选）。
     unique_clear_class_id: str | None
+    #: **精确的** CLEAR 教学班号集合；前端只对**这些**提供选择入口。
+    clear_class_ids: list[str]
     #: 面向用户的中文冲突说明（⛔ 不含机器码）。
     conflict_label: str
 
@@ -382,6 +384,7 @@ def create_case_a_plan(
                 unknown_schedule_class_count=item.unknown_schedule_class_count,
                 clear_class_count=item.clear_class_count,
                 unique_clear_class_id=item.unique_clear_class_id,
+                clear_class_ids=list(item.clear_class_ids),
                 conflict_label=item.conflict_label,
             )
             for item in run.current_elective_recommendations

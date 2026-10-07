@@ -60,9 +60,19 @@ const appliedIds = computed(() => new Set(appliedItems.value.map((i) => i.course
 /** 用户为"多个 CLEAR"课程显式选定的教学班。 */
 const chosenSections = ref<Record<string, string>>({})
 
-/** 该课程在本学期的已接受教学班，且服务端判定为无冲突（用于显式选择）。 */
-function clearSections(courseId: string): CourseOffering[] {
-  return props.offerings.filter((o) => o.course_id === courseId && o.meetings.length > 0)
+/**
+ * 该课程**服务端已确认无冲突**的教学班。
+ *
+ * ⛔ 只能用服务端给出的 `clear_class_ids`：
+ *    早期实现按"该课程有排课信息（`meetings.length > 0`）"筛选，
+ *    结果把 CONFLICT 的教学班也渲染成可点选项 —— 这是**不可接受的**，
+ *    因为用户可能因此确认一个已知冲突的教学班。
+ */
+function clearSections(courseId: string, clearClassIds: string[]): CourseOffering[] {
+  const allowed = new Set(clearClassIds)
+  return props.offerings.filter(
+    (o) => o.course_id === courseId && allowed.has(o.class_id),
+  )
 }
 
 function chooseSection(courseId: string, classId: string): void {
@@ -202,7 +212,7 @@ const loadLine = computed(() => {
             </p>
             <ul class="elective__sections">
               <li
-                v-for="section in clearSections(item.course_id)"
+                v-for="section in clearSections(item.course_id, item.clear_class_ids)"
                 :key="section.class_id"
                 class="elective__section"
               >

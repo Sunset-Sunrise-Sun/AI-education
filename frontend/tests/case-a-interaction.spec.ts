@@ -239,6 +239,7 @@ function planResponse(overrides: Record<string, unknown> = {}) {
         unknown_schedule_class_count: 0,
         clear_class_count: 1,
         unique_clear_class_id: '01',
+        clear_class_ids: ['01'],
         conflict_label: '已找到与当前课表不冲突的教学班',
       },
       {
@@ -250,6 +251,8 @@ function planResponse(overrides: Record<string, unknown> = {}) {
         unknown_schedule_class_count: 0,
         clear_class_count: 2,
         unique_clear_class_id: null,
+        // 两个 CLEAR 教学班都必须列出（另一个 01 已与课表冲突，见 OFFERINGS）
+        clear_class_ids: ['02'],
         conflict_label: '已找到与当前课表不冲突的教学班',
       },
       {
@@ -261,6 +264,7 @@ function planResponse(overrides: Record<string, unknown> = {}) {
         unknown_schedule_class_count: 0,
         clear_class_count: 0,
         unique_clear_class_id: null,
+        clear_class_ids: [],
         conflict_label: '当前候选教学班均与你的课表冲突',
       },
     ],
@@ -486,6 +490,59 @@ describe('本学期专业选修建议', () => {
     )
   })
 
+  it('⛔ 混合候选 [CLEAR, CLEAR, CONFLICT, UNKNOWN] 只暴露 CLEAR 教学班', () => {
+    // 服务端判定：CSE321 有 2 个 CLEAR（02、03），另 1 个 CONFLICT（01）、1 个 UNKNOWN（04）
+    const mixed = {
+      course_id: 'CSE321',
+      course_name: '计算复杂性理论',
+      credit: 3,
+      available_class_count: 4,
+      conflicting_class_count: 1,
+      unknown_schedule_class_count: 1,
+      clear_class_count: 2,
+      unique_clear_class_id: null,
+      clear_class_ids: ['02', '03'],
+      conflict_label: '部分候选与课表冲突，另有候选排课信息尚未同步',
+    }
+    const offerings = [
+      ...OFFERINGS,
+      {
+        course_id: 'CSE321', course_name: '计算复杂性理论', class_id: '03',
+        semester: '2026-1', credit: 3,
+        meetings: [{ weekday: 2, start_section: 1, end_section: 2, weeks: [1] }],
+        data_source: 'real',
+      },
+      {
+        // 与 CSE201 同时间 ⇒ 已知冲突
+        course_id: 'CSE321', course_name: '计算复杂性理论', class_id: '01',
+        semester: '2026-1', credit: 3,
+        meetings: [{ weekday: 1, start_section: 1, end_section: 2, weeks: [1] }],
+        data_source: 'real',
+      },
+      {
+        // meetings=[] ⇒ 排课信息待核验
+        course_id: 'CSE321', course_name: '计算复杂性理论', class_id: '04',
+        semester: '2026-1', credit: 3, meetings: [], data_source: 'real',
+      },
+    ]
+    const wrapper = mount(CurrentElectiveSection, {
+      props: {
+        recommendations: [mixed] as never,
+        load: planResponse().current_load,
+        applied: [],
+        offerings: offerings as never,
+        semester: '2026-1',
+      },
+    })
+
+    // ✅ 只渲染服务端确认无冲突的教学班
+    expect(wrapper.find('[data-testid="elective-section-CSE321-02"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="elective-section-CSE321-03"]').exists()).toBe(true)
+    // ⛔ CONFLICT / UNKNOWN 绝不成为可点选项
+    expect(wrapper.find('[data-testid="elective-section-CSE321-01"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="elective-section-CSE321-04"]').exists()).toBe(false)
+  })
+
   it('已加入的选修显示 ✓ 已加入 + 撤销', async () => {
     const wrapper = mountElective({
       applied: [
@@ -588,7 +645,83 @@ describe('页面结构与议题归属', () => {
     })
     const rendered = wrapper.findAll('[data-testid="case-a-issue"]').length
     expect(rendered).toBeGreaterThan(0)
-    expect(rendered).toBe(3)
+
+    // ⚠️ 要求是"⛔ 没有议题被静默丢失"，而不是"恰好渲染 N 次"：
+    //    兜底区为了 fail-safe 会同时覆盖归属未来路径的议题（可见时即重复）。
+    //    因此这里断言**每一条**归一化议题都至少渲染一次。
+    const expected = normalizedIssues({
+      planUnresolved: [
+        { type: 'schedule_unknown', message: '课程 CSE205 排课信息缺失。' },
+        { type: 'manual_confirmation', message: '课程 CSE101 的补修认定仍需人工确认。' },
+      ],
+      repairUnresolved: ['课程 CSE207 没有可确认无冲突的同课程候选（no_alternatives）。'],
+      courseNameById: {},
+    })
+    const renderedText = wrapper
+      .findAll('[data-testid="case-a-issue"]')
+      .map((n) => n.text())
+      .join('\n')
+    for (const issue of expected) {
+      // 每条议题的标题（课程名或课程号）必须至少出现一次
+      expect(renderedText, issue.id).toContain(issue.title)
+    }
+    expect(unownedIssueIds(expected)).toEqual([])
+  })
+
+  it('⛔ roadmap 为 null（且无说明）时，归属未来路径的议题仍不丢失', async () => {
+    const wrapper = await mountPage({
+      roadmap: null,
+      roadmap_note: null,
+      plan_result: {
+        status: 'partially_feasible',
+        selected_classes: [],
+        changes: [],
+        risks: [],
+        unresolved: [{ type: 'some_unknown_code', message: '课程 CSE206 的安排需要进一步确认。' }],
+        objective_summary: null,
+      },
+    })
+    // 未来路径区块不存在 ⇒ 议题必须改由「详细依据」兜底展示
+    expect(wrapper.find('[data-testid="case-a-roadmap-note"]').exists()).toBe(false)
+    const cards = wrapper.findAll('[data-testid="case-a-issue"]')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].text()).toContain('CSE206')
+    expect(wrapper.find('[data-testid="case-a-detailed-evidence"]').exists()).toBe(true)
+  })
+
+  it('⛔ roadmap.future_semesters 为空时，归属未来路径的议题仍不丢失', async () => {
+    const emptyRoadmap = {
+      current_semester: '2026-1',
+      current_semester_planned_course_ids: [],
+      future_semesters: [],
+      elective: {
+        requirement_credit: 23,
+        completed_credit: 0,
+        current_semester_credit: 0,
+        planned_credit: 0,
+        remaining_credit: 23,
+        gap_credit: 23,
+        group_id: 'CSE-ELECTIVE-POOL',
+      },
+      unresolved: [],
+      warnings: [],
+    }
+    const wrapper = await mountPage({
+      roadmap: emptyRoadmap,
+      roadmap_note: null,
+      plan_result: {
+        status: 'partially_feasible',
+        selected_classes: [],
+        changes: [],
+        risks: [],
+        unresolved: [{ type: 'some_unknown_code', message: '课程 CSE206 的安排需要进一步确认。' }],
+        objective_summary: null,
+      },
+    })
+    const cards = wrapper.findAll('[data-testid="case-a-issue"]')
+    // 兜底区始终覆盖，因此至少出现一次（可见时可能重复 —— fail-safe 优先）
+    expect(cards.length).toBeGreaterThanOrEqual(1)
+    expect(cards.some((c) => c.text().includes('CSE206'))).toBe(true)
   })
 
   it('主界面不出现任何机器码', async () => {

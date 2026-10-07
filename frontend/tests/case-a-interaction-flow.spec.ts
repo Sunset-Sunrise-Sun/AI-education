@@ -139,6 +139,7 @@ function makeServer() {
         unknown_schedule_class_count: 0,
         clear_class_count: 1,
         unique_clear_class_id: '01',
+        clear_class_ids: ['01'],
         conflict_label: '已找到与当前课表不冲突的教学班',
       },
       {
@@ -150,6 +151,7 @@ function makeServer() {
         unknown_schedule_class_count: 0,
         clear_class_count: 1,
         unique_clear_class_id: '01',
+        clear_class_ids: ['01'],
         conflict_label: '已找到与当前课表不冲突的教学班',
       },
     ]
@@ -373,6 +375,65 @@ describe('端到端交互流程（有状态后端替身）', () => {
     expect(primary).not.toContain('manual_confirmation')
     expect(primary).not.toContain('no_alternatives')
     expect(primary).not.toContain('type:')
+  })
+
+  it('被拒绝的选修身份不会残留：改选后请求只带更正后的身份', async () => {
+    const server = makeServer()
+    // 第一轮：服务端拒绝陈旧教学班；第二轮：接受更正后的教学班
+    let call = 0
+    runCaseADemo.mockImplementation(async (input: never) => {
+      call += 1
+      const body = input as unknown as {
+        override?: { electiveSelections: { course_id: string; class_id: string }[] }
+      }
+      if (call === 1) {
+        // 初始提交（无覆盖）
+        return server.handler({ override: { userConfirmedManualTaskKeys: [], electiveSelections: [] } })
+      }
+      const stale = (body.override?.electiveSelections ?? []).some(
+        (s) => s.course_id === 'CSE317' && s.class_id === 'STALE',
+      )
+      if (stale) {
+        // 服务端拒绝：不进入 applied，只给 rejected 原因
+        return {
+          ...(await server.handler({ override: { userConfirmedManualTaskKeys: [], electiveSelections: [] } })),
+          rejected_elective_selections: [
+            { course_id: 'CSE317', reason: '所选教学班不在已接受的教学班数据中，需重新选择' },
+          ],
+        }
+      }
+      return server.handler({
+        override: {
+          userConfirmedManualTaskKeys: [],
+          electiveSelections: body.override?.electiveSelections ?? [],
+        },
+      })
+    })
+
+    const wrapper = await mountPage()
+    const section = wrapper.findComponent({ name: 'CurrentElectiveSection' })
+    // 直接通过组件事件提交一个陈旧身份（等价于用户先前选了一个已失效的班）
+    section.vm.$emit('add', { courseId: 'CSE317', classId: 'STALE', semester: '2026-1' })
+    await flushPromises()
+
+    // 服务端拒绝了它，且页面如实显示原因
+    expect(wrapper.get('[data-testid="elective-rejections"]').text()).toContain(
+      '需重新选择',
+    )
+    // ⛔ 被拒身份不得留在"已加入方案"里
+    expect(wrapper.find('[data-testid="elective-applied"]').exists()).toBe(false)
+
+    // 用户改用合法教学班：请求里**只能**有更正后的身份
+    section.vm.$emit('add', { courseId: 'CSE317', classId: '01', semester: '2026-1' })
+    await flushPromises()
+    const lastBody = runCaseADemo.mock.calls.at(-1)?.[0] as {
+      override?: { electiveSelections: { course_id: string; class_id: string }[] }
+    }
+    expect(lastBody.override?.electiveSelections).toEqual([
+      { semester: '2026-1', course_id: 'CSE317', class_id: '01' },
+    ])
+    // 更正后成功加入
+    expect(wrapper.get('[data-testid="elective-applied"]').text()).toContain('通信原理')
   })
 
   it('每次交互都只调用一次 recompute（⛔ 无重复请求）', async () => {

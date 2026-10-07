@@ -409,6 +409,12 @@ class CurrentElectiveRecommendation:
     unique_clear_class_id: str | None
     #: 面向用户的冲突状态说明（中文化，⛔ 不出现机器码）。
     conflict_label: str
+    #: **精确的** CLEAR 教学班号集合（升序）。
+    #:
+    #: ⚠️ 前端必须只对**这些**教学班提供选择入口：⛔ 不允许用
+    #:    "该课程有排课信息" 之类的近似条件自己推断哪些班可选，
+    #:    否则会把 CONFLICT / UNKNOWN 的教学班也变成可点选项。
+    clear_class_ids: tuple[str, ...] = ()
 
 
 def recommend_current_electives(
@@ -522,6 +528,7 @@ def recommend_current_electives(
                 unknown_schedule_class_count=unknown,
                 clear_class_count=len(clear),
                 unique_clear_class_id=clear[0] if len(clear) == 1 else None,
+                clear_class_ids=tuple(sorted(clear)),
                 conflict_label=label,
             )
         )

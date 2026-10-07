@@ -180,6 +180,22 @@ const normalizedIssueList = computed<NormalizedIssue[]>(() => {
  */
 const routedIssues = computed(() => routeIssues(normalizedIssueList.value))
 
+/**
+ * 「详细依据」里兜底展示的议题。
+ *
+ * ⚠️ 这里**总是**包含归属未来路径的议题：
+ *    未来路径区块的存在与否取决于 `roadmap` / `future_semesters`，
+ *    而议题的归属不取决于它。若只在区块可见时才由该区块渲染，那么
+ *    `roadmap = null` 或 `future_semesters = []` 时这些议题就会**静默消失**。
+ *
+ *    宁可重复显示，也不允许丢失 —— 因此兜底区**始终**覆盖它们。
+ *    区块可见时同一议题会在两处出现，这是有意为之的 fail-safe。
+ */
+const evidenceIssues = computed<NormalizedIssue[]>(() => [
+  ...routedIssues.value.detailedEvidence,
+  ...routedIssues.value.roadmap,
+])
+
 /* ---- 规划覆盖（run-local、可撤销） ----
  *
  * ⛔ 前端只保存**用户意图**：确认过的课程号、明确加入方案的选修教学班。
@@ -218,13 +234,15 @@ function onUndoManual(payload: { courseId: string }): void {
 }
 
 function onAddElective(payload: { courseId: string; classId: string; semester: string }): void {
-  const key = `${payload.semester}::${payload.courseId}::${payload.classId}`
-  const exists = selectedElectives.value.some(
-    (item) => `${item.semester}::${item.course_id}::${item.class_id}` === key,
+  // ⚠️ 一门课在本地只保留**一个**待提交身份：用户改选教学班时必须**替换**，
+  //    ⛔ 不能叠加 —— 叠加会让下一次请求同时带上旧的和新的身份，
+  //    服务端按"重复输入一律拒绝"整门拒绝，用户的更正就永远无法生效
+  //    （而且被拒的身份会一直藏在本地状态里，形成不可撤销的隐形意图）。
+  const others = selectedElectives.value.filter(
+    (item) => !(item.semester === payload.semester && item.course_id === payload.courseId),
   )
-  if (exists) return
   selectedElectives.value = [
-    ...selectedElectives.value,
+    ...others,
     { semester: payload.semester, course_id: payload.courseId, class_id: payload.classId },
   ]
   void submitOverride()
@@ -247,6 +265,40 @@ function onRemoveElective(payload: { courseId: string; classId: string; semester
  *
  * ⚠️ 只用于**展示**：真正的学分/冲突结论来自服务端 recompute 结果。
  */
+/**
+ * 本地选修意图 ↔ 服务端已接受身份对齐。
+ *
+ * 规则：本地只保留服务端**已经接受**的身份。
+ * ⛔ 被拒绝的身份由服务端返回 `rejected_elective_selections`（页面会显示原因），
+ *    本地状态必须同步移除它，使用户可以重新选择、而不是被一条隐形意图卡住。
+ */
+function reconcileElectiveIntent(): void {
+  const current = result.value
+  if (!current) return
+  const keyOf = (courseId: string, classId: string) => `${courseId}::${classId}`
+  const accepted = new Set(
+    (current.applied_elective_sections ?? []).map((item) =>
+      keyOf(item.course_id, item.class_id),
+    ),
+  )
+  const kept = selectedElectives.value.filter((item) =>
+    accepted.has(keyOf(item.course_id, item.class_id)),
+  )
+  // 服务端已接受、但本地尚未记录的身份（例如重新加载后）补齐，
+  // 保证"下一次提交 = 完整期望状态"。
+  const known = new Set(kept.map((item) => keyOf(item.course_id, item.class_id)))
+  for (const item of current.applied_elective_sections ?? []) {
+    if (!known.has(keyOf(item.course_id, item.class_id))) {
+      kept.push({
+        semester: form.value.semester,
+        course_id: item.course_id,
+        class_id: item.class_id,
+      })
+    }
+  }
+  selectedElectives.value = kept
+}
+
 /* 课表来源区分（⛔ 建议/草稿不得说成已选课） */
 const appliedElectiveCount = computed(
   () => result.value?.applied_elective_sections.length ?? 0,
@@ -432,6 +484,10 @@ async function submit(options: { silent?: boolean } = {}): Promise<void> {
     })
     // 只有**重新规划成功**才解除"待刷新"状态。
     planStale.value = false
+    // ⚠️ 把本地意图与服务端**实际接受**的身份对齐：
+    //    服务端拒绝了某个身份时，它不能继续留在本地状态里当作"已提交"，
+    //    否则用户看不到、也撤不掉这条隐形意图。
+    reconcileElectiveIntent()
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : '方案生成失败，请检查输入后重试。'
     // silent 调用（换班后的自动重算）失败时向上抛，让调用方如实说明；
@@ -746,7 +802,7 @@ onMounted(loadOfferings)
           v-else-if="result.roadmap_note"
           :mock="false"
           title="未来学期修读路径"
-          subtitle="当前无法生成。"
+          subtitle="当前无法生成完整路线图。"
         >
           <p class="case-a-secondary" data-testid="case-a-roadmap-note">{{ result.roadmap_note }}</p>
         </SectionCard>
@@ -780,14 +836,11 @@ onMounted(loadOfferings)
             />
 
             <!-- 兜底：归不到具体区块的议题在这里如实展示，⛔ 不静默丢弃 -->
-            <template v-if="routedIssues.detailedEvidence.length > 0">
+            <template v-if="evidenceIssues.length > 0">
               <h4 class="case-a-details__title">
-                其它需确认事项（{{ routedIssues.detailedEvidence.length }} 项）
+                其它需确认事项（{{ evidenceIssues.length }} 项）
               </h4>
-              <IssueList
-                :issues="routedIssues.detailedEvidence"
-                owner-label="其它"
-              />
+              <IssueList :issues="evidenceIssues" owner-label="其它" />
             </template>
           </details>
         </SectionCard>

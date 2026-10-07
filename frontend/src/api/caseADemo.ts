@@ -92,6 +92,13 @@ export interface CurrentElectiveItem {
   clear_class_count: number
   /** 唯一已确认无冲突教学班时给出班号；多个候选时为 `null`。 */
   unique_clear_class_id: string | null
+  /**
+   * **精确的** CLEAR 教学班号集合。
+   *
+   * ⚠️ 前端只允许对**这些**教学班提供选择入口，⛔ 不得用"有排课信息"之类
+   *    的近似条件自行推断，否则 CONFLICT / UNKNOWN 的班也会变成可点选项。
+   */
+  clear_class_ids: string[]
   /** 面向用户的中文冲突说明（⛔ 不含机器码）。 */
   conflict_label: string
 }
