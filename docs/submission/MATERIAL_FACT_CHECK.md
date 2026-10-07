@@ -3,23 +3,30 @@
 > **这是整套提交材料里最重要的一份。**
 > 任何对外材料、PPT、宣传页、演示话术，写完之后都要拿这份表逐条对照。
 > 本表只回答一个问题：**这句话有没有实现证据。**
+>
+> 本版已按产品最新事实基线重做。上一版以 `7a7bb9d` 为基线，把若干**其实已经实现**的能力
+> 误标成了"未来计划"，本版已纠正。
 
 ## 核对基线
 
 | 项 | 值 |
 |---|---|
 | 材料分支 | `docs/opc-submission-package` |
-| 事实基线 commit | `7a7bb9d67cc1d5858cb9a63cc960f8b492eb86a5`（分支 `feature/case-a-course-data-current-schedule`） |
-| 产品仍在收尾的分支 | `fix/manual-acceptance-productization`（HEAD `40803a2`，已与事实基线分叉，未合并） |
+| **产品事实基线 HEAD** | **`0cd91dca780d587e3f6e83d24814688721fca730`**（分支 `fix/manual-acceptance-productization`） |
+| 已通过独立评审的 RC HEAD | `40803a28ed1464334502fe6428a296799b941c08`（`release/case-a-path-planning-rc`） |
+| 产品评审状态 | Issue #57：`40803a2` 独立评审 = PASS（RC VALIDATION MAY PROCEED）；`0cd91dc` = REVIEW_READY，**等待针对该 HEAD 的评审** |
 | 核对时间 | 2026-10-07 |
-| 核对方式 | 逐条对照仓库内代码、状态文档、接口文档与工作记录 |
+| 核对方式 | 逐条对照产品基线的代码、状态文档、接口文档、演示手册与人工验收清单 |
+
+> ⚠️ **产品 HEAD 可能继续前进**（尤其"未来学期学分硬上限 35"尚未落地）。
+> 产品 HEAD 一旦变化，本表与 `FINAL_FACT_SHEET.md` 必须同步更新；**材料不允许领先于代码**。
 
 ## 三档标记的含义
 
 | 标记 | 含义 | 材料里怎么用 |
 |---|---|---|
-| **VERIFIED** | 在事实基线分支上有实现或实测证据，可以直接写真话 | 可以自由润色语气，但事实不能改 |
-| **CONDITIONAL** | 只在尚未合并的分支上实现，或状态仍待确认 | 可以说，但必须加限定语，或先确认状态再定稿 |
+| **VERIFIED** | 在产品事实基线上有代码或实测证据，可以直接写真话 | 可以自由润色语气，但事实不能改 |
+| **CONDITIONAL** | 尚未最终确认（评审 / 数值 / 素材） | 可以说，但必须加限定语，或等确认后再定稿 |
 | **DO NOT CLAIM** | 没有证据，或与实现方向相反 | ⛔ 任何材料、任何场合都不要说 |
 
 ---
@@ -30,91 +37,123 @@
 
 | 主张 | 证据 |
 |---|---|
-| 项目定位为"学航·转衔：面向转专业学生的 AI 学业路径重构 Agent" | `AGENTS.md` 第 1 节项目目标；`README.md` 标题与 §1 |
-| 主要用户是转专业学生，次要用户是辅导员 / 教务人员 / 学院负责人 | `README.md` §2 目标用户表 |
-| 产品不定位为通用选课助手、课程问答机器人、教务系统替代品 | `README.md` §2「明确不做」；`docs/ARCHITECTURE.md` §1（不把通用四年选课、延毕预测纳入 MVP） |
-| 痛点表述为：培养方案差异难以自查、补修判定涉及正式规则、供给与课表约束叠加、结论不易解释 | `README.md` §2 痛点四条（原文"痛点（不夸大）"） |
+| 项目定位为"学航·转衔：面向转专业学生的 AI 学业路径重构 Agent" | `AGENTS.md` 第 1 节项目目标；`docs/ARCHITECTURE.md` §1 |
+| 主要用户是转专业学生，次要用户是辅导员 / 教务人员 / 学院负责人 | `docs/ARCHITECTURE.md` §1；`AGENTS.md` §1 |
+| 产品不定位为通用选课助手、课程问答机器人、教务系统替代品 | `docs/ARCHITECTURE.md` §1（不把通用四年选课、延毕预测纳入 MVP） |
+| 用户痛点：培养方案差异难自查、补修判定涉及正式规则、供给与课表约束叠加、结论不易解释 | `docs/ARCHITECTURE.md` §1–2；`AGENTS.md` §1 核心流程 |
 
 ## 2. 数据范围与来源
 
 | 主张 | 证据 |
 |---|---|
-| 本学期教学班使用**真实**教学班数据 | `docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md` §0、§4（从已验收 campus acceptance 派生真实数据集） |
-| 数据范围是**南校园 + 深圳校区** | 同上，`openingSchoolNumbers = ["5062201", "333291143"]`；`scope_label = "case-a-scoped:south+shenzhen"` |
-| 该数据集是 case-scoped，**不是**完整学期数据，**不是**全校数据 | 同上，`is_full_semester: false`、`is_whole_school: false`、`scope_kind: "case_scoped"` |
-| 系统不联网抓取教务系统，使用本地已验收数据 | `README.md` §9 零网络默认；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` E3 |
-| 成绩单中的姓名、学号、绩点不读取、不返回 | `docs/curriculum/PDF_TRANSCRIPT_INPUT.md` 隐私边界表；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` A1、E1 |
+| 使用**真实**教学班数据（`CourseOffering`） | 产品基线 `docs/status/integration.md`（真实 artifact smoke：4069 条真实教学班） |
+| 数据条数为 **4069 条 `CourseOffering`** | `docs/status/integration.md`：south-campus 2898 rows + shenzhen-campus 1171 rows = **4069** |
+| 数据范围是**南校园 + 深圳校区** | `backend/app/course_data/case_a_scope.py` `CASE_A_SCOPE_LABEL = "case-a-scoped:south+shenzhen"` |
+| 该数据集是 case-scoped，**不是**完整学期数据，**不是**全校数据 | 同上，`is_full_semester = false`、`is_whole_school = false` |
+| 学期为 `2026-1` | 演示手册 `APP_CASE_A_DEMO_SEMESTER="2026-1"`；`docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md` |
+| 系统不联网抓取教务系统，使用本地已验收数据 | `docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` E3 |
+| 成绩单中的姓名、学号、绩点不读取、不返回 | `docs/curriculum/PDF_TRANSCRIPT_INPUT.md` 隐私边界表；验收清单 A1、E1 |
+| 页面与请求中不出现 Cookie / Token / 学号 | 验收清单 E1；评审记录（diff 扫描无凭据、无私有材料） |
 
 ## 3. 培养要求评估（最关键的数字口径）
 
 | 主张 | 证据 |
 |---|---|
-| Case A 真实投影产出 **23 项历史培养要求评估** | `docs/status/curriculum.md`（"`get_makeup_tasks()` 成功返回 **makeup_task_count = 23**"） |
-| 其中 **12 项已确认满足** | 同上（"satisfied 12 / manual_confirmation 11 / required 0 / possibly_equivalent 0"） |
-| 其中 **11 项需要人工确认** | 同上 |
-| 这 23 项**全部是历史范围**条目，未来未满足条目不出现在评估结果里 | 同上（"23 条全部为 historical 条目，future unmet 条目不出现在 `MakeupTask[]` 中"） |
-| 培养要求状态分四种且**互不等同**：已满足 / 待人工确认 | `README.md` §3；`docs/interfaces/curriculum.md`；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` A2 |
-| 课程等价、学分差额、学院政策、条款歧义一律标记为待人工确认，系统不下正式结论 | `README.md` §3 人工确认模型；`docs/interfaces/curriculum.md` |
-| 目标专业选修组最低学分要求为 23 学分 | `docs/status/curriculum.md`（`CSE-ELECTIVE-POOL`，`minimum_credit = 23`，37 门成员） |
+| 真实投影产出 **23 项历史培养要求评估** | `docs/status/curriculum.md`（`makeup_task_count = 23`） |
+| 其中 **12 项已确认满足** | 同上（`satisfied 12`） |
+| 其中 **11 项需要人工确认** | 同上（`manual_confirmation 11`） |
+| 另有 0 项"已确认需补修"、0 项"可能等价" | 同上（`required 0 / possibly_equivalent 0`） |
+| 这 23 项全部是历史范围条目，未来未满足条目不出现在评估结果里 | 同上 |
+| 培养要求状态互不等同，`待人工确认` ≠ `需要补修` | `docs/interfaces/curriculum.md`；验收清单 A2 |
+| 课程等价、学分差额、学院政策、条款歧义一律待人工确认，系统不下正式结论 | `docs/interfaces/curriculum.md`；`docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §4.0.1 |
+| 目标专业**选修组最低学分要求为 23 学分** | `docs/status/curriculum.md`（`CSE-ELECTIVE-POOL`，`minimum_credit = 23`，37 门成员） |
+| 12 项已满足事实来自已确认的培养方案事实，**不依赖**上传成绩单的课程号 | `docs/status/integration.md`（成绩单 PDF 无官方课程号，已满足事实不依赖 `CompletedCourse.course_id`） |
 
-> ⚠️ **同一页可能同时出现两个 23，含义完全不同**，讲的时候必须区分：
+> ⚠️ **两个 23 必须分开讲，这是本套材料最容易出错的地方**：
 > - **23 项** = 历史培养要求评估条数（12 已满足 + 11 待人工确认）；
 > - **23 学分** = 目标专业选修组的最低毕业学分要求。
-> 把这两个混为一谈是本次材料最需要防的错误。
+> 一个是**条数**，一个是**学分**，含义完全不同。
 
-## 4. 本学期规划与确认机制
-
-| 主张 | 证据 |
-|---|---|
-| 本学期做**真实教学班级别**规划 | `docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md` §0、§5；`docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §0 |
-| 有冲突检测，且冲突是三态：已确认冲突 > 信息未知 > 在已知信息范围内未发现冲突 | `README.md` §3「冲突状态三态」 |
-| 排课信息为空表示**未知**，不等于没有冲突 | `README.md` §3；`docs/e2e/CASE_A_PLANNING_DEMO_RUNBOOK.md` §7；`docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §3 |
-| 有教学班替代建议，写成"当前班 → 候选班 + 原因" | `docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §3；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` C2 |
-| 生成建议**不会**改动课表 | 同上（"生成 ≠ 应用"，`generate_*` 只读） |
-| 换班必须用户**明确确认**后才应用 | `docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §3；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` C1、C3 |
-| 手工录入的当前课表默认不被采信，用户勾选确认后才进入规划 | `docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md` §5.2（用户级确认四条规则） |
-| 确认之后课表又被改动，确认自动作废 | 同上；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` A6 |
-| 页面显示的是**建议方案**，不代表已完成选课或注册 | `README.md` §3；`docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md` §5.4 |
-| 教师信息缺失时页面显示"待核验"，系统不编造教师 | `docs/e2e/CASE_A_PLANNING_DEMO_RUNBOOK.md` §6、§7；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` A8 |
-
-## 5. 未来学期
+## 4. 本轮已实现的产品能力（已从"未来计划"升为事实）
 
 | 主张 | 证据 |
 |---|---|
-| 未来学期只做**培养方案课程级**路径规划 | `docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §0、§4 |
-| 未来学期结构上**不出现**教学班号、教师、星期、节次、教室、校区、容量 | 同上 §4.1（字段集刻意最小，有专门测试锁定）；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` D2 |
-| 不预测未来教师、时间、教学班、容量 | 同上 §1（"把它们编出来就是伪造数据"） |
-| 未来学期排序依据培养方案学期号与先修关系，不按列表位置 | 同上 §4.0、§4.2 |
+| **成绩单 PDF 导入**：可上传成绩单并识别已修课程 | `docs/curriculum/PDF_TRANSCRIPT_INPUT.md`；`backend/app/curriculum/pdf_reader.py`；前端 `CaseADemoView.vue` 上传区 |
+| 成绩单不提供官方课程号，系统**不构造、不推断**课程号 | `docs/curriculum/PDF_TRANSCRIPT_INPUT.md`（全部记录 `course_id = None` + pending） |
+| 成绩单**不参与**"已修完 / 已满足"判定，页面有常驻披露 | Issue #57 评审已核（`not_bound` 披露渲染在结果**之前**，且无取值可抑制） |
+| **Case A 演示闭环**：成绩单 → 培养要求评估 → 本学期教学班 → 当前课表 → 偏好 → 受限规划 → 确认 → 课表 → 未来路径 | `docs/e2e/CASE_A_PLANNING_DEMO_RUNBOOK.md` §0、§4 |
+| **培养要求结果展示** | 验收清单 A2；`MakeupTaskList.vue` |
+| **本学期真实教学班规划**（精确到教学班） | 演示手册 §4 步骤 6；验收清单 C4 |
+| **冲突检测**：三态，`已确认冲突 > 信息未知 > 在已知信息范围内未发现冲突` | `backend/app/planner/conflicts.py`；`meetings=[]` ⇒ UNKNOWN |
+| **换班候选**：结构化建议（当前班 → 候选班 + 时间 / 校区 / 教室 + 原因） | `backend/app/path_planner/repair_proposals.py`；`PendingAdjustments.vue` |
+| **用户明确确认 repair**：只有点击"采用调整"才调用后端并生效 | 验收清单 C1、C3；评审已核（apply 需完整身份，无自动挑选） |
+| **未来学期 course-level roadmap** | `backend/app/path_planner/future_roadmap.py`；`FutureRoadmapView.vue`；验收清单 D1–D3 |
+| 未来学期**结构上不出现**教学班号 / 教师 / 星期 / 节次 / 教室 / 校区 / 容量 | `docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §4.1；API 层断言 + 前端测试断言 |
+| **专业选修学分规划**：按选修组最低学分补足即止，不超额规划 | 同上 §4.0.2、§4.3；验收清单 D4 |
+| **本学期专业选修建议**：本学期可考虑的专选候选，最多 3 门，含可用教学班数与冲突状态 | `frontend/src/components/CurrentElectiveSection.vue`；`recommend_current_electives()`；演示手册 §4 步骤 7 |
+| 选修建议**绝不自动选课**，只写"加入考虑"意向 | 同上（界面明确"系统不会替你选课"） |
+| **学分负荷控制** | `backend/app/services/case_a_roadmap.py` 常量与 `current_semester_load()`；演示手册 §4 步骤 12 |
+| 当前学期默认学分上限 = **30**（用户设置的更严上限优先） | `CASE_A_CURRENT_HARD_MAX_CREDIT = 30.0`；`current_semester_load()` |
+| 未来学期**软目标 = 26 学分** | `CASE_A_FUTURE_SOFT_TARGET_CREDIT = 26.0` |
+| 未来学期硬上限**当前为 30 学分** | `CASE_A_FUTURE_HARD_MAX_CREDIT = 30.0`；演示手册 §4 步骤 12「每个学期都 ≤ 30 学分」 |
+| 用户显式学分上限优先；用户值超过硬上限时按硬上限收口 | `case_a_roadmap.py` §87–88 注释与实现 |
+| 真实 Case A 未来学期学分：2026-2 = 30.0、2027-1 = 28.5、2027-2 = 30.0、2028-1 = 17.0、2028-2 = 7.5，最大 30.0，0 unresolved | Issue #57 `0cd91dc` REVIEW_READY 实测（产品侧记录） |
+| **统一的"需要你处理"中心**：页面唯一的待确认中心，去重归一 | `frontend/src/components/PendingAdjustments.vue`；`frontend/src/utils/studentIssues.ts`；演示手册 §4 步骤 8、14 |
+| **多候选课程聚合展示**：换班按课程分组，一门课一张卡片，默认 3 个候选，其余折叠 | `PendingAdjustments.vue`（`查看其余 N 个候选`）；`frontend/src/utils/repairView.ts`；演示手册 §4 步骤 8 |
+| 待确认事项按中文展示，原始机器码折叠在"查看技术详情" | 演示手册 §4 步骤 14 |
 
-## 6. 技术性质
+## 5. 教师信息口径（措辞已统一）
 
 | 主张 | 证据 |
 |---|---|
-| 当前是**固定工具编排** | `README.md` §4（编排层只编排，不调用模型）；`docs/ARCHITECTURE.md` §3 |
-| 规则驱动 + 结构化数据 + 确定性规划 | `README.md` §3、§5；`docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §4.2 |
-| 偏好来自**结构化表单**，不是自然语言 | `README.md` §3、§10.6；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` B2 |
-| 不保证所有偏好都被执行，未执行部分如实列出 | `README.md` §3；`docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md` §5.4 |
-| 前置条件不满足时明确拒绝，不回退演示数据 | `README.md` §5.4（fail-closed）；`docs/e2e/CASE_A_PLANNING_DEMO_RUNBOOK.md` §2 |
-| 跨模块只通过公共契约交互 | `docs/ARCHITECTURE.md` §4；`schemas/*.schema.json` |
-| 当前评估结果**不是**由上传的课程记录自动抵认出来的 | `docs/curriculum/PDF_TRANSCRIPT_INPUT.md`（成绩单不提供官方课程号，不做等价判定）；`docs/status/curriculum.md`（12 项 satisfied 来自已确认的课程号身份匹配） |
+| **当前 accepted Course Data 快照未保留教师字段，因此教师信息暂未同步** | `docs/status/integration.md` §教师信息：两文件合计 4069 rows 中携带 `teachingName` 的行 = 0；`teachingTimePlaceStr` 解析出 12011 个 segment 中教师段为 REDACTED 的 = 0 |
+| 页面用中性文案「教师信息暂未同步」，**不伪造、不推断**教师 | `frontend/src/components/WeeklyScheduleView.vue`、`CurrentScheduleEditor.vue`、`PendingAdjustments.vue` |
+| 「待核验」保留给真正影响决策的状态（例如排课信息缺失），不与教师信息混用 | `docs/status/integration.md` §教师信息结论 |
+| 采集器的字段最小化白名单不含 `teachingName`，教师段在保存前就已剥离 | 同上（是"直接不存在"，不是脱敏标记） |
+
+> ⛔ **不允许**写成"原始教务接口没有教师信息"。原始接口**存在** `teachingName`，
+> 是**本次 accepted 快照的字段白名单没有保留它**。两句话含义完全不同。
+
+## 6. 安全与确认机制
+
+| 主张 | 证据 |
+|---|---|
+| 手工录入的当前课表默认不被采信，用户勾选确认后才进入规划 | `docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md` §5.2；验收清单 A5 |
+| 确认之后课表又被改动，确认自动作废 | 同上；验收清单 A6 |
+| 生成建议**不会**改动课表 | 验收清单 C1；评审已核（proposal 生成是纯函数） |
+| 换班后只改被确认的那一门，其余课程不变 | 验收清单 C3、C4 |
+| "暂不调整"只在本页收起，不改后端状态 | 验收清单 C5；演示手册 §4 附注 |
+| 非同一课程 / 非同一学期的候选会被拒绝且课表不变 | 验收清单 C6；评审已核 |
+| 应用换班后重新校验整份课表，残留冲突如实列出 | `docs/status/integration.md` §关键设计 |
+| 前置条件不满足时明确拒绝，不回退演示数据 | 演示手册 §2；`503 real_pipeline_not_configured` |
+| 不自动执行选课与注册，输出是建议方案 | `docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §3；验收清单 C1 |
+| 不自动认定课程等价 | `docs/interfaces/curriculum.md`；`docs/curriculum/PDF_TRANSCRIPT_INPUT.md`（同名课停在待确认，不自动抵认） |
+| 跨模块只通过公共契约交互，冻结契约未被改动 | 评审已核：`schemas/`、`docs/interfaces/`、Provider Protocol、`RestrictedPlanner`、`backend/app/planner/**` 均未改 |
+
+## 7. 技术性质
+
+| 主张 | 证据 |
+|---|---|
+| 当前是**固定工具编排** | Issue #57 评审：无 LLM / GraphRAG / CP-SAT 生产主张，编排不调用模型 |
+| 规则驱动 + 结构化数据 + 确定性规划 | `docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §4.2（确定性启发式，非全局最优） |
+| 偏好来自**结构化表单**，不是自然语言 | 验收清单 B2 |
+| 不保证所有偏好都被执行，未执行部分如实列出 | 验收清单 D6；`docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md` §5.4 |
 
 ---
 
 # 二、CONDITIONAL
 
-> 这一档的每一条，**在写进对外材料之前必须先确认状态**。
-> 目前它们都对应尚未合并的分支 `fix/manual-acceptance-productization`（HEAD `40803a2`）。
+> 这一档只剩**真正尚未确认**的事项。凡在本轮已由产品基线直接支持的能力，都已升为 VERIFIED。
 
-| 主张 | 现状 | 证据 | 怎么用 |
+| 主张 | 现状 | 证据 / 说明 | 怎么用 |
 |---|---|---|---|
-| **上传成绩单 PDF 并识别已修课程** | 前端与后端均已实现，但**只在收尾分支上** | 前端 `frontend/src/components/CaseADemoView.vue`（上传区、成绩单识别结果区块）；后端 `backend/app/curriculum/pdf_reader.py`、`POST /api/v1/completed-courses/import-pdf`（`docs/curriculum/PDF_TRANSCRIPT_INPUT.md`） | 演示时可以说"上传成绩单"，但要知道**这段代码还没进事实基线分支**；材料定稿前必须确认合并状态 |
-| **换班建议的生成与应用** | 生成建议与应用接口**只在收尾分支上**；事实基线分支只有规划器内部的候选评估 | `backend/app/path_planner/repair_proposals.py`、`POST /api/v1/case-a-demo/repair/apply`（`docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §3） | 可以说"用户确认后才换班"（机制已验证），但完整交互以收尾分支为准 |
-| **未来学期路径页面** | 后端路线图与前端 `FutureRoadmapView.vue` **只在收尾分支上** | `backend/app/path_planner/future_roadmap.py`、`backend/tests/test_case_a_roadmap.py` | 可以说"未来学期课程级规划"，但界面呈现待定稿 |
-| **选修学分进度区块** | 计算逻辑已实现（含账目恒等式），页面**只在收尾分支上** | `docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §4.0.2、§4.1；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` D4 | 可以说"把选修学分的账算清楚"；数字口径以实际页面为准 |
-| **本轮评估结果与上传成绩单的关系** | 收尾分支的界面**明确声明**：上传的成绩单**没有参与**"已修完 / 已满足"的判定 | `frontend/src/components/CaseADemoView.vue`（提示始终展示，无分支可抑制）；`backend/app/services/case_a_demo.py::_completed_binding` | ⛔ 不要说"上传成绩单之后系统就算出了这 12 项已满足"；正确说法是"这 12 项依据已确认的培养方案事实" |
-| **教师信息补齐状态** | **待确认**。真实数据里教师字段普遍缺失，缺失时显示"待核验" | `docs/e2e/CASE_A_PLANNING_DEMO_RUNBOOK.md` §6、§7；`docs/status/course_data.md`（教师字段的来源与二义性仍在处理） | 在确认之前，一律说"教师缺失时显示待核验，系统不编造"，**不说**"教师数据已完整" |
-| **最终候选版本号（RC SHA）** | 尚未确定 | 收尾分支 HEAD 为 `40803a2`，未打标签 | 材料里的版本号写成 `[待 RC SHA]` |
-| **最终界面文案与区块名称** | 仍在最后产品化 | 收尾分支改动集中在界面 | 材料里的按钮名、区块名写成 `[待 UI 定稿]` |
+| **未来学期学分硬上限 = 35** | ❌ **产品基线尚未包含**。基线常量为 `CASE_A_FUTURE_HARD_MAX_CREDIT = 30.0` | `backend/app/services/case_a_roadmap.py` 第 90 行 `CASE_A_FUTURE_HARD_MAX_CREDIT = 30.0`；演示手册步骤 12 写"≤ 30 学分" | **写成 `CONDITIONAL — awaiting final product HEAD`**。在最终 HEAD 落地 35 之前，⛔ 材料里不要写 35 |
+| **产品 HEAD `0cd91dc` 的独立评审** | 已 REVIEW_READY，**尚未有针对性评审结论**（上一轮 PASS 针对 `40803a2`） | Issue #57 评论链：`40803a2` = PASS；`0cd91dc` = REVIEW_READY（待评审） | 可以说"已通过 RC 阶段独立评审，最终产品化 HEAD 待评审" |
+| **最终 RC SHA** | 尚未冻结。`release/case-a-path-planning-rc` 仍指向 `40803a2`，产品化 HEAD 为其后的 `0cd91dc` | `git rev-parse origin/release/case-a-path-planning-rc` = `40803a2` | 版本号写成 `[待 RC SHA]` |
+| **最终界面文案与区块名称** | 产品基线界面已稳定可用，但仍在最后调整 | `CaseADemoView.vue`、`PendingAdjustments.vue`、`CurrentElectiveSection.vue` | 按钮名、区块名以定稿界面为准，占位 `[待 UI 定稿]` |
+| **最终截图** | 未拍摄 | `SCREENSHOT_PLAN.md` 为规划稿 | 占位 `[待最终截图]` |
+| **教师信息补齐** | `BLOCKED_BY_MISSING_LOCAL_RAW_SOURCE`。本机原始数据里没有教师姓名，不重新采集就无法恢复 | `docs/status/integration.md` | 统一说"教师信息暂未同步"；⛔ 不说"已完整覆盖" |
+| **团队名称与联系方式** | 仓库内无已确认信息 | — | 占位 `[待负责人确认]` |
 
 ---
 
@@ -124,48 +163,51 @@
 
 | ⛔ 不得主张 | 原因 / 对照证据 |
 |---|---|
-| 已实现大模型推理 / LLM 已接入 | `README.md` §10.6「未集成 LLM / RAG / GraphRAG：当前无模型调用」；`docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md`（编排不调用模型） |
-| 已实现检索增强 | 同上，无检索管线 |
-| 已实现知识图谱推理 | 同上 |
-| 已实现自然语言偏好解析 | `README.md` §10.6；偏好来自结构化表单 |
-| 已使用全局优化求解 | `docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §4.2「这里不是 CP-SAT / ILP 全局最优求解」 |
-| 已求出最优方案 | 同上；输出是受限候选与未决事项 |
-| 自动教务选课 / 自动注册 | `README.md` §2「不代替学生执行选课 / 注册」；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` C1 |
-| 自动认定课程等价 | `README.md` §3 人工确认模型；`docs/interfaces/curriculum.md` |
-| 自动替换课程 / 自动换班 | `docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §3「生成 ≠ 应用」 |
-| 上报的具体数字就是现场算出来的 | 事实基线分支页面基础区仍有演示数据；现场以实际页面为准 |
+| 生产级大模型推理 / LLM 已接入 | Issue #57 评审：无 LLM 生产主张；编排不调用模型 |
+| 检索增强（RAG）已实现 | 同上 |
+| GraphRAG 推理已实现 | 同上（仓库内 GraphRAG 命中全部是否定式） |
+| 自然语言偏好解析 | 偏好来自结构化表单（验收清单 B2） |
+| 全局优化 / CP-SAT / ILP 求解 | `MULTI_SEMESTER_PATH_PLANNER.md` §4.2「不是 CP-SAT / ILP 全局最优求解」 |
+| "最优方案" / "全局最优" | 输出是受限候选与未决事项 |
+| 自动教务选课 / 自动注册 | `MULTI_SEMESTER_PATH_PLANNER.md` §3；验收清单 C1 |
+| 自动认定课程等价 | `docs/interfaces/curriculum.md`；`PDF_TRANSCRIPT_INPUT.md` |
+| 自动替换课程 / 自动换班 | 生成 ≠ 应用；必须用户点击"采用调整" |
+| 系统按偏好或连堂密度自动调班 | 建议只来自结构化候选，无评分权重 |
+| 系统替学生决定补修认定 | 认定类事项无"确认已满足"按钮，系统不代做业务确认 |
 
 ## 3.2 数据范围类
 
 | ⛔ 不得主张 | 原因 / 对照证据 |
 |---|---|
-| 全校完整课程数据 | `docs/data/CASE_A_SCOPE_AND_CURRENT_SCHEDULE.md`：`is_whole_school: false` |
-| 完整学期数据 | 同上：`is_full_semester: false` |
-| 五校区完整供给 | 同上，仅南校园 + 深圳校区 |
-| 已连接学校教务系统 / 实时对接 | `README.md` §5.4、§9；`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md` E3 |
-| 未来学期生成详细教学班课表 | `docs/architecture/MULTI_SEMESTER_PATH_PLANNER.md` §4.1（字段集在结构上就不含教学班信息） |
-| 预测未来教师 / 上课时间 / 教室 / 容量 | 同上 §1 |
-| 已验证全部教师覆盖 | `docs/e2e/CASE_A_PLANNING_DEMO_RUNBOOK.md` §6「教师数据已完整覆盖」列为口径红线 |
-| 数据都是真的 | `README.md` §5（实际执行代码与经证明的输入来源是两条独立轴） |
+| 全校完整课程数据 | `is_whole_school = false` |
+| 完整学期数据 | `is_full_semester = false` |
+| 五校区完整供给 | 仅南校园 + 深圳校区（4069 条） |
+| 已连接学校教务系统 / 实时对接 | 不联网抓取，使用本地已验收 artifact（验收清单 E3） |
+| 未来学期生成详细教学班课表 | 未来字段集在结构上不含教学班信息 |
+| 预测未来教师 / 上课时间 / 教室 / 容量 | `MULTI_SEMESTER_PATH_PLANNER.md` §1 |
+| 已验证全部教师覆盖 | 快照 0/4069 行保留教师字段 |
+| **原始教务接口没有教师信息** | ⛔ 错误。原始接口**存在** `teachingName`，是本次快照白名单未保留 |
+| 数据都是真的 | 教学班为真实 scoped 数据，但成绩单行不参与满足判定，须分别表述 |
 
 ## 3.3 数字与效果类
 
 | ⛔ 不得主张 | 原因 |
 |---|---|
-| 准确率 / 成功率 / 提升倍数 | 仓库内没有任何此类实测数据 |
-| 用户数量 / 合作学校数量 / 意向院校 | 仓库内没有记录 |
-| 用户访谈结果 / 需求调研结论 | 仓库内没有已确认的访谈记录 |
+| 准确率 / 成功率 / 提升倍数 | 仓库内无此类实测数据 |
+| 用户数量 / 合作学校数量 / 意向院校 | 仓库内无记录 |
+| 用户访谈结果 / 需求调研结论 | 仓库内无已确认访谈记录 |
 | 比赛反馈 / 往届成绩 | 不允许虚构 |
 | 市场规模 / 预计收益 | 不允许虚构 |
-| "23 门课需要补修" | 正确口径是 **23 项历史培养要求评估，12 项已确认满足，11 项待人工确认** |
+| "23 门课需要补修" | 正确口径：**23 项历史培养要求评估，12 项已确认满足，11 项待人工确认** |
+| 把选修组 23 学分说成 23 门课 | 一个是学分，一个是课程条数 |
 
 ## 3.4 关系与排名类
 
 | ⛔ 不得主张 | 原因 |
 |---|---|
-| 国内首个 / 领先 / 唯一 | 没有依据，且不需要这样讲 |
+| 国内首个 / 领先 / 唯一 | 无依据 |
 | 其他工具或方案都做不到 | 不贬低、不虚构其他方案 |
-| 开箱即用适配任何学校 | `README.md` §10；只有 Case A 一个专业方向的部署证据 |
+| 开箱即用适配任何学校 | 只有 Case A 一个专业方向的部署证据 |
 
 ---
 
@@ -174,13 +216,13 @@
 | # | ⛔ 错误说法 | ✅ 正确说法 |
 |---|---|---|
 | 1 | 需要补修 23 门课 | 23 项历史培养要求评估，12 项已确认满足，11 项待人工确认 |
-| 2 | 系统自动选课 / 自动换班 | 生成建议不改课表，用户明确确认后才应用 |
-| 3 | 覆盖全校本学期所有课程 | 真实教学班数据，范围是南校园 + 深圳校区 |
-| 4 | 未来学期给你排好课表和老师 | 未来学期只做课程级规划，不出现教师 / 时间 / 教室 |
-| 5 | 用 AI 推理出缺哪些课 | 规则驱动 + 结构化数据 + 确定性规划，AI 增强待接入 |
-| 6 | 用了 GraphRAG / 知识图谱推理 | 当前未接入 |
-| 7 | 用 CP-SAT 求出了最优解 | 受限的确定性检查与候选评估，不是全局最优 |
-| 8 | 教师数据已经完整覆盖 | 教师缺失时显示"待核验"，系统不编造 |
+| 2 | 专业选修要修 23 门课 | 专业选修最低要求是 23 **学分** |
+| 3 | 系统自动选课 / 自动换班 | 生成建议不改课表，用户明确确认后才应用 |
+| 4 | 全校完整本学期课程数据 | 真实教学班数据，范围是南校园 + 深圳校区，共 4069 条 |
+| 5 | 未来学期给你排好课表和老师 | 未来学期只做课程级规划，只有课程名 / 课程号 / 学分 / 必修选修 |
+| 6 | 未来学期可以塞 35 学分 | 当前产品硬上限是 30 学分；35 学分尚未落地 |
+| 7 | 用 AI 推理出缺哪些课 | 规则驱动 + 结构化数据 + 确定性规划，AI 增强待接入 |
+| 8 | 原始教务接口没有教师信息 | 当前 accepted 快照未保留教师字段，因此教师信息暂未同步 |
 | 9 | 这个班没有冲突 | 在已知信息范围内未发现冲突；排课信息缺失时整体仍是未知 |
 | 10 | 已经连上学校教务系统 | 不联网抓取，使用本地已验收数据 |
 
@@ -191,8 +233,9 @@
 1. **用肯定句讲已实现的，用限定句讲未实现的。** ⛔ 不用"基本上""差不多""即将上线"。
 2. **每个对外数字都要能指回上表的某一行。** 指不回去的数字，删掉。
 3. **"待确认"不是丢人的词。** 它是本产品的设计选择，主动讲出来是加分项。
-4. **同一份材料里前后口径必须一致。** 定稿前用本表全文检索一次关键数字：`23`、`12`、`11`、`南校园`、`深圳`、`教学班`。
-5. **发现本表与仓库实现不一致时，以仓库实现为准，并更新本表。**
+4. **同一份材料里前后口径必须一致。** 定稿前全文检索：`23`、`12`、`11`、`4069`、`南校园`、`深圳`、`30`、`26`、`35`、`教师`。
+5. **产品 HEAD 变化时必须更新本表。** 尤其"未来学期硬上限 35"落地之后。
+6. **发现本表与代码不一致时，以代码为准，并更新本表。**
 
 ---
 
@@ -200,8 +243,9 @@
 
 | 等待项 | 影响哪些文件 | 占位写法 |
 |---|---|---|
-| 最终产品化界面（UI 定稿） | 演示脚本、截图计划、宣传页 | `[待 UI 定稿]` |
+| 未来学期硬上限 35 落地 | 本表、`FINAL_FACT_SHEET.md`、宣传页、PPT | `CONDITIONAL — awaiting final product HEAD` |
+| 最终 RC SHA | 本表、`FINAL_FACT_SHEET.md` | `[待 RC SHA]` |
+| 最终界面文案（UI 定稿） | 演示脚本、截图计划、宣传页 | `[待 UI 定稿]` |
 | 最终截图 | 演示脚本、PPT 大纲、截图计划 | `[待最终截图]` |
-| 教师信息补齐状态 | 事实核对表、宣传页、PPT 大纲 | `[待 teacher enrichment 确认]` |
-| 最终候选版本号 | 本表核对基线 | `[待 RC SHA]` |
+| 教师信息补齐状态 | 本表、宣传页、PPT 大纲 | `[待 teacher enrichment 确认]`（本轮为 `BLOCKED_BY_MISSING_LOCAL_RAW_SOURCE`） |
 | 团队名称与联系方式 | 宣传页 | `[待负责人确认]` |
