@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { loadCaseAOfferings, runCaseADemo, type CaseADemoResponse } from '../api/caseADemo'
+import { loadCaseAOfferings, applyCaseARepair, runCaseADemo, type CaseADemoResponse } from '../api/caseADemo'
 import {
   addManualScheduleEntry,
   addPreferredCourse,
@@ -42,6 +42,56 @@ const result = ref<CaseADemoResponse | null>(null)
 const loading = ref(false)
 const error = ref('')
 const manualOpen = ref(false)
+
+/* ---- 显式换班确认（⛔ 只有用户点击「采用调整」才会走这里） ---- */
+const applying = ref(false)
+const applyError = ref('')
+const applyNotice = ref('')
+
+/**
+ * 应用一条换班建议：**唯一**可信来源是后端。
+ *
+ * 边界：
+ * - 请求带**完整身份**（semester / course_id / from_class_id / to_class_id）；
+ * - 课表只采用**后端返回的 schedule**，⛔ 前端不自行拼一张"看起来对"的课表；
+ * - 后端拒绝时如实显示原因，⛔ 不假装替换成功、⛔ 不自动重试别的候选。
+ */
+async function applyRepair(payload: {
+  semester: string
+  courseId: string
+  fromClassId: string
+  toClassId: string
+}): Promise<void> {
+  if (applying.value) return
+  applying.value = true
+  applyError.value = ''
+  applyNotice.value = ''
+  try {
+    const applied = await applyCaseARepair({
+      semester: payload.semester,
+      courseId: payload.courseId,
+      fromClassId: payload.fromClassId,
+      toClassId: payload.toClassId,
+      currentSchedule: form.value.currentSchedule,
+      manualScheduleAttested: form.value.manualAttestation.attested,
+    })
+    // 课表只采用后端返回结果（⛔ 不本地推断）。
+    form.value = invalidateManualAttestation(form.value, applied.schedule).form
+    if (result.value) {
+      result.value = { ...result.value, repair_proposals: applied.repair_proposals }
+    }
+    applyNotice.value = applied.applied
+      ? `已按你的确认把 ${payload.courseId} 从 ${payload.fromClassId} 调整为 ${payload.toClassId}。`
+      : `该调整未生效：${applied.reason}`
+    if (!applied.applied) applyError.value = applied.reason
+    // 换班后重新规划，刷新本学期周课表与后续建议（仍是后端计算）。
+    if (applied.applied && transcript.value) await submit({ silent: true })
+  } catch (cause) {
+    applyError.value = cause instanceof Error ? cause.message : '换班请求失败。'
+  } finally {
+    applying.value = false
+  }
+}
 
 const manualCount = computed(() => manualScheduleOfferingCount(form.value))
 
@@ -124,7 +174,7 @@ function removePreferred(courseId: string): void {
   }
 }
 
-async function submit(): Promise<void> {
+async function submit(options: { silent?: boolean } = {}): Promise<void> {
   if (!transcript.value) {
     error.value = '请先上传成绩单 PDF。'
     return
@@ -135,7 +185,7 @@ async function submit(): Promise<void> {
   }
   loading.value = true
   error.value = ''
-  result.value = null
+  if (!options.silent) result.value = null
   try {
     const request = buildRealPlanRequest(form.value)
     result.value = await runCaseADemo({
@@ -150,6 +200,11 @@ async function submit(): Promise<void> {
   } finally {
     loading.value = false
   }
+}
+
+/** 模板点击入口：⛔ 不把 PointerEvent 当作 submit 的选项对象。 */
+function submitFromClick(): void {
+  void submit()
 }
 
 onMounted(loadOfferings)
@@ -263,7 +318,7 @@ onMounted(loadOfferings)
       </div>
 
       <div class="case-a-submit-wrap">
-        <button class="button case-a-submit" type="button" :disabled="loading" data-testid="case-a-submit" @click="submit">
+        <button class="button case-a-submit" type="button" :disabled="loading" data-testid="case-a-submit" @click="submitFromClick">
           {{ loading ? '正在规划你的学业路径…' : '生成并优化我的转专业学业方案' }}
         </button>
         <p>系统仅提供规划建议，不执行实际选课操作。</p>
@@ -293,18 +348,40 @@ onMounted(loadOfferings)
           />
         </SectionCard>
 
-        <SectionCard :mock="false" title="待你确认的调整" subtitle="系统只提出建议；确认后才会生效。">
-          <PendingAdjustments :plan-result="result.plan_result" :course-name-by-id="resultCourseNames" />
+        <SectionCard :mock="false" title="待你确认的调整" subtitle="系统只提出建议；你确认后才会生效。">
+          <p v-if="applyNotice" class="case-a-apply-notice" data-testid="case-a-repair-notice">
+            {{ applyNotice }}
+          </p>
+          <p v-if="applyError" class="case-a-error" data-testid="case-a-repair-error">
+            {{ applyError }}
+          </p>
+          <PendingAdjustments
+            :plan-result="result.plan_result"
+            :repair-proposals="result.repair_proposals"
+            :course-name-by-id="resultCourseNames"
+            :offerings="result.course_offerings"
+            :applying="applying"
+            @apply="applyRepair"
+          />
         </SectionCard>
 
-        <!-- 未来学期：只有后端真的返回 roadmap 时才渲染（⛔ 不补假数据） -->
         <SectionCard
-          v-if="result.roadmap && result.roadmap.semesters.length > 0"
+          v-if="result.roadmap && result.roadmap.future_semesters.length > 0"
           :mock="false"
           title="未来学期修读路径"
           subtitle="课程级规划，不含具体教学班。"
         >
           <FutureRoadmapView :roadmap="result.roadmap" />
+        </SectionCard>
+
+        <!-- 后端明确说明无法构建路线图时如实展示（⛔ 不补假数据） -->
+        <SectionCard
+          v-else-if="result.roadmap_note"
+          :mock="false"
+          title="未来学期修读路径"
+          subtitle="当前无法生成。"
+        >
+          <p class="case-a-secondary" data-testid="case-a-roadmap-note">{{ result.roadmap_note }}</p>
         </SectionCard>
 
         <SectionCard :mock="false" title="本次规划数据">

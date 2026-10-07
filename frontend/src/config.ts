@@ -28,6 +28,13 @@ export const PLAN_ENDPOINT = `${API_BASE_URL}/api/v1/plan`
 export const CASE_A_DEMO_ENABLED: boolean = import.meta.env.VITE_CASE_A_DEMO_ENABLED === 'true'
 export const CASE_A_DEMO_OFFERINGS_ENDPOINT = `${API_BASE_URL}/api/v1/case-a-demo/offerings`
 export const CASE_A_DEMO_PLAN_ENDPOINT = `${API_BASE_URL}/api/v1/case-a-demo/plan`
+/**
+ * **显式换班确认**入口（Case A 加法式接口）。
+ *
+ * ⚠️ 只有用户**主动点击**"采用调整"才会调用；
+ * ⛔ 生成换班建议时绝不自动调用，⛔ 也不会自动挑选候选。
+ */
+export const CASE_A_DEMO_REPAIR_APPLY_ENDPOINT = `${API_BASE_URL}/api/v1/case-a-demo/repair/apply`
 
 /**
  * Real Planning 通道开关。

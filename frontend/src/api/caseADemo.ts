@@ -1,6 +1,10 @@
-import { CASE_A_DEMO_OFFERINGS_ENDPOINT, CASE_A_DEMO_PLAN_ENDPOINT } from '../config'
-// ⚠️ roadmap 是**前端集成类型**（见 caseAPlanning.ts），⛔ 不是公共契约。
-import type { FutureRoadmap } from '../types/caseAPlanning'
+import {
+  CASE_A_DEMO_OFFERINGS_ENDPOINT,
+  CASE_A_DEMO_PLAN_ENDPOINT,
+  CASE_A_DEMO_REPAIR_APPLY_ENDPOINT,
+} from '../config'
+// ⚠️ roadmap / repair 是**前端集成类型**（见 caseAPlanning.ts），⛔ 不是公共契约。
+import type { AcademicRoadmap, RepairProposalSet } from '../types/caseAPlanning'
 import type { CourseOffering, MakeupTask, PlanResult, Preference } from '../types/contracts'
 
 export interface CaseADemoResponse {
@@ -25,12 +29,28 @@ export interface CaseADemoResponse {
     is_full_semester: boolean
   }
   /**
-   * 未来学期修读路径（**可选**）。
+   * 当前学期**结构化**换班建议（⛔ 生成 ≠ 应用）。
    *
-   * ⚠️ 后端当前**不返回**该字段。前端只在它真的存在且含学期数据时渲染，
-   * ⛔ 缺省时整块不渲染、⛔ 不补任何假数据。
+   * ⛔ 前端不从 `reason` / `unresolved[].message` 里解析任何业务字段：
+   * 身份一律取自结构化字段。
    */
-  roadmap?: FutureRoadmap | null
+  repair_proposals: RepairProposalSet
+  /** 未来学期课程级路线图；`null` 表示后端无法构建（⛔ 不补假数据）。 */
+  roadmap: AcademicRoadmap | null
+  /** `roadmap === null` 时的结构性说明。 */
+  roadmap_note: string | null
+}
+
+/** 显式换班的响应：应用后的课表 + 重新计算的建议。 */
+export interface CaseADemoRepairApplyResponse {
+  status: string
+  applied: boolean
+  schedule: CourseOffering[]
+  changes: { course_id: string; from_class?: string | null; to_class?: string | null; reason: string }[]
+  reason: string
+  revalidated: boolean
+  remaining_conflicts: string[]
+  repair_proposals: RepairProposalSet
 }
 
 async function checkedJson<T>(response: Response): Promise<T> {
@@ -73,6 +93,37 @@ export async function runCaseADemo(input: {
         current_schedule: input.currentSchedule,
         manual_schedule_attested: input.manualScheduleAttested,
         preference: input.preference,
+      }),
+    }),
+  )
+}
+
+/**
+ * **显式确认**一条换班建议后才调用（⛔ 绝不在生成建议时自动调用）。
+ *
+ * 必须给出完整身份：`semester` / `course_id` / `from_class_id` / `to_class_id`。
+ * 服务端会重新校验（同课程、同学期、`from` 在课表内、`to` 在已接受教学班内、
+ * 候选重新确认 CLEAR），任一不成立即拒绝，⛔ 前端不做任何替代判定。
+ */
+export async function applyCaseARepair(input: {
+  semester: string
+  courseId: string
+  fromClassId: string
+  toClassId: string
+  currentSchedule: CourseOffering[]
+  manualScheduleAttested: boolean
+}): Promise<CaseADemoRepairApplyResponse> {
+  return checkedJson<CaseADemoRepairApplyResponse>(
+    await fetch(CASE_A_DEMO_REPAIR_APPLY_ENDPOINT, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        semester: input.semester,
+        course_id: input.courseId,
+        from_class_id: input.fromClassId,
+        to_class_id: input.toClassId,
+        current_schedule: input.currentSchedule,
+        manual_schedule_attested: input.manualScheduleAttested,
       }),
     }),
   )

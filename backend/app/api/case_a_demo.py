@@ -10,13 +10,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.course_data import CaseAScopeError
-from app.models.contracts import CourseOffering, MakeupTask, PlanResult, Preference
+from app.models.contracts import Change, CourseOffering, MakeupTask, PlanResult, Preference
+from app.path_planner import apply_repair_proposal, generate_repair_proposals
 from app.services.case_a_demo import (
     CASE_A_DEMO_SCOPE_LABEL,
+    CASE_A_ELECTIVE_GROUP_ID,
     CaseADemoInputError,
     CaseADemoRuntime,
     get_case_a_demo_runtime,
 )
+from app.services.case_a_roadmap import requirement_kind_label
 from app.services.completed_courses_ingest import CompletedCoursesImportRejected, MAX_UPLOAD_BYTES
 
 router = APIRouter(prefix="/case-a-demo", tags=["case-a-demo"])
@@ -51,6 +54,81 @@ class CaseADemoProvenance(BaseModel):
     is_full_semester: bool
 
 
+# ---------------------------------------------------------------------------
+# 加法式（Case A 专用）响应模型
+#
+# ⛔ 这些**不是** `/schemas/` 公共契约，也**不**改动冻结的 `PlanResult`：
+#    它们只承载 Case A demo 的编排结果。
+# ---------------------------------------------------------------------------
+
+
+class RepairProposalItem(BaseModel):
+    """一条**待用户确认**的同课程换班建议（⛔ 尚未生效、不复制 CourseOffering 取值）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    proposal_id: str
+    semester: str
+    course_id: str
+    current_class_id: str
+    candidate_class_id: str
+    original_state: str
+    candidate_state: str
+    reason: str
+
+
+class RepairProposalSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    semester: str
+    proposals: list[RepairProposalItem]
+    unresolved: list[str]
+
+
+class RoadmapCourseItem(BaseModel):
+    """未来学期的一门课（**课程级**：⛔ 无 class_id / teacher / 时间 / 校区 / 容量）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    course_id: str
+    course_name: str
+    credit: float
+    requirement_kind: str
+    requirement_label: str
+    placement: str
+    reason: str
+
+
+class RoadmapSemesterItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    semester_label: str
+    curriculum_semester: int
+    semester_index: int
+    courses: list[RoadmapCourseItem]
+    required_credit: float
+    elective_credit: float
+    total_credit: float
+    warnings: list[str]
+
+
+class ElectiveAccounting(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requirement_credit: float | None
+    completed_credit: float | None
+    current_semester_credit: float
+    planned_credit: float
+    remaining_credit: float | None
+    gap_credit: float | None
+    group_id: str | None
+
+
+class AcademicRoadmapPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    current_semester: str | None
+    current_semester_planned_course_ids: list[str]
+    future_semesters: list[RoadmapSemesterItem]
+    elective: ElectiveAccounting
+    unresolved: list[str]
+    warnings: list[str]
+
+
 class CaseADemoPlanResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
     transcript: TranscriptSummary
@@ -59,6 +137,37 @@ class CaseADemoPlanResponse(BaseModel):
     preference: Preference
     plan_result: PlanResult
     provenance: CaseADemoProvenance
+    #: 结构化换班建议（⛔ 生成 ≠ 应用）。
+    repair_proposals: RepairProposalSummary
+    #: 未来学期课程级路线图；不可构建时为 `null`（⛔ 不返回假数据）。
+    roadmap: AcademicRoadmapPayload | None
+    #: `roadmap is None` 时的结构性说明。
+    roadmap_note: str | None
+
+
+class CaseADemoRepairApplyRequest(BaseModel):
+    """显式换班确认：必须给出**完整身份**，⛔ 不接受"采用第一条建议"这类含糊输入。"""
+
+    model_config = ConfigDict(extra="forbid")
+    semester: str = Field(min_length=1)
+    course_id: str = Field(min_length=1)
+    from_class_id: str = Field(min_length=1)
+    to_class_id: str = Field(min_length=1)
+    current_schedule: list[CourseOffering]
+    manual_schedule_attested: bool = False
+
+
+class CaseADemoRepairApplyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: str
+    applied: bool
+    schedule: list[CourseOffering]
+    changes: list[Change]
+    reason: str
+    revalidated: bool
+    remaining_conflicts: list[str]
+    #: 应用后的当前课表重算的建议（⛔ 仍只是建议）。
+    repair_proposals: RepairProposalSummary
 
 
 def _runtime_or_503(runtime: CaseADemoRuntime | None) -> CaseADemoRuntime:
@@ -142,4 +251,142 @@ def create_case_a_plan(
             planner="actual RestrictedPlanner execution",
             is_full_semester=False,
         ),
+        repair_proposals=_proposal_summary(run.repair_proposals),
+        roadmap=_roadmap_payload(run.roadmap),
+        roadmap_note=run.roadmap_note,
+    )
+
+
+def _proposal_summary(proposals: object) -> RepairProposalSummary:
+    """把内部 `RepairProposalSet` 映射成加法式响应（⛔ 不复制 CourseOffering 取值）。"""
+
+    return RepairProposalSummary(
+        semester=proposals.semester,  # type: ignore[attr-defined]
+        proposals=[
+            RepairProposalItem(
+                proposal_id=item.proposal_id,
+                semester=item.semester,
+                course_id=item.target_course_id,
+                current_class_id=item.current_class_id,
+                candidate_class_id=item.candidate_class_id,
+                original_state=item.original_state.value,
+                candidate_state=item.candidate_state.value,
+                reason=item.reason,
+            )
+            for item in proposals.proposals  # type: ignore[attr-defined]
+        ],
+        unresolved=list(proposals.unresolved),  # type: ignore[attr-defined]
+    )
+
+
+def _roadmap_payload(roadmap: object | None) -> AcademicRoadmapPayload | None:
+    """把内部 `AcademicRoadmap` 映射成加法式响应。
+
+    ⛔ 未来学期**只**输出课程级字段；本映射里不存在任何教学班级字段。
+    """
+
+    if roadmap is None:
+        return None
+    requirement = roadmap.elective_requirement_credit  # type: ignore[attr-defined]
+    completed = roadmap.elective_completed_credit  # type: ignore[attr-defined]
+    current = roadmap.elective_current_semester_credit  # type: ignore[attr-defined]
+    gap = (
+        None
+        if requirement is None or completed is None
+        else round(requirement - completed - current, 6)
+    )
+    return AcademicRoadmapPayload(
+        current_semester=roadmap.current_semester,  # type: ignore[attr-defined]
+        current_semester_planned_course_ids=list(
+            roadmap.current_semester_planned_course_ids  # type: ignore[attr-defined]
+        ),
+        future_semesters=[
+            RoadmapSemesterItem(
+                semester_label=semester.semester_label,
+                curriculum_semester=semester.curriculum_semester,
+                semester_index=semester.semester_index,
+                courses=[
+                    RoadmapCourseItem(
+                        course_id=item.course_id,
+                        course_name=item.course_name,
+                        credit=item.credit,
+                        requirement_kind=item.requirement_kind.value,
+                        requirement_label=requirement_kind_label(item.requirement_kind),
+                        placement=item.placement.value,
+                        reason=item.reason,
+                    )
+                    for item in semester.courses
+                ],
+                required_credit=semester.required_credit,
+                elective_credit=semester.elective_credit,
+                total_credit=semester.total_credit,
+                warnings=list(semester.warnings),
+            )
+            for semester in roadmap.future_semesters  # type: ignore[attr-defined]
+        ],
+        elective=ElectiveAccounting(
+            requirement_credit=requirement,
+            completed_credit=completed,
+            current_semester_credit=current,
+            planned_credit=roadmap.elective_planned_credit,  # type: ignore[attr-defined]
+            remaining_credit=roadmap.elective_remaining_credit,  # type: ignore[attr-defined]
+            gap_credit=gap,
+            group_id=CASE_A_ELECTIVE_GROUP_ID,
+        ),
+        unresolved=list(roadmap.unresolved),  # type: ignore[attr-defined]
+        warnings=list(roadmap.warnings),  # type: ignore[attr-defined]
+    )
+
+
+@router.post("/repair/apply", response_model=CaseADemoRepairApplyResponse)
+def apply_case_a_repair(
+    request: CaseADemoRepairApplyRequest,
+    runtime: Annotated[CaseADemoRuntime | None, Depends(get_case_a_demo_runtime)],
+) -> CaseADemoRepairApplyResponse:
+    """**显式确认**一条换班建议后才应用（⛔ 绝不在生成建议时自动应用）。
+
+    校验与"只能换同课程同学期、候选必须重新确认 CLEAR"都由
+    `apply_repair_proposal()` fail closed 完成；本层只做输入边界与响应映射。
+    """
+
+    configured = _runtime_or_503(runtime)
+    if request.semester != configured.course_data.scope.semester:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "case_a_demo_semester_not_in_scope",
+                "message": "semester is not covered by the configured Case A scope",
+            },
+        )
+    try:
+        configured._validate_schedule(  # noqa: SLF001 - 与 /plan 完全同一套边界
+            request.current_schedule,
+            manual_schedule_attested=request.manual_schedule_attested,
+        )
+    except CaseADemoInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from None
+
+    offerings = configured.course_data.get_course_offerings(request.semester)
+    applied = apply_repair_proposal(
+        semester=request.semester,
+        course_id=request.course_id,
+        from_class_id=request.from_class_id,
+        to_class_id=request.to_class_id,
+        current_schedule=request.current_schedule,
+        offerings=offerings,
+    )
+    refreshed = generate_repair_proposals(
+        semester=request.semester,
+        current_schedule=applied.schedule,
+        offerings=offerings,
+    )
+    return CaseADemoRepairApplyResponse(
+        status=applied.status.value,
+        applied=applied.status.value == "applied",
+        schedule=list(applied.schedule),
+        changes=list(applied.changes),
+        reason=applied.reason,
+        revalidated=applied.revalidated,
+        remaining_conflicts=list(applied.remaining_conflicts),
+        repair_proposals=_proposal_summary(refreshed),
     )

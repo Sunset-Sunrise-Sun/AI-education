@@ -26,15 +26,57 @@ import FutureRoadmapView from '@/components/FutureRoadmapView.vue'
 import IntentCourseSearch from '@/components/IntentCourseSearch.vue'
 import PendingAdjustments from '@/components/PendingAdjustments.vue'
 import WeeklyScheduleView from '@/components/WeeklyScheduleView.vue'
+import type { AcademicRoadmap } from '@/types/caseAPlanning'
 import type { CourseOffering, MakeupTask, PlanResult } from '@/types/contracts'
 
 const loadCaseAOfferings = vi.fn()
 const runCaseADemo = vi.fn()
+const applyCaseARepair = vi.fn()
 
 vi.mock('@/api/caseADemo', () => ({
   loadCaseAOfferings: (...args: unknown[]) => loadCaseAOfferings(...args),
   runCaseADemo: (...args: unknown[]) => runCaseADemo(...args),
+  applyCaseARepair: (...args: unknown[]) => applyCaseARepair(...args),
 }))
+
+/** 真实 `AcademicRoadmap` 形状的固定样例（字段与后端加法式响应一一对应）。 */
+const ROADMAP: AcademicRoadmap = {
+  current_semester: '2026-1',
+  current_semester_planned_course_ids: [],
+  future_semesters: [
+    {
+      semester_label: '2026-2',
+      curriculum_semester: 4,
+      semester_index: 1,
+      courses: [
+        {
+          course_id: 'CSE310',
+          course_name: '操作系统',
+          credit: 3,
+          requirement_kind: 'required',
+          requirement_label: '必修',
+          placement: 'required_by_recommended_term',
+          reason: '课程 CSE310（操作系统）为培养方案要求课程，按其建议学期安排。',
+        },
+      ],
+      required_credit: 3,
+      elective_credit: 0,
+      total_credit: 3,
+      warnings: [],
+    },
+  ],
+  elective: {
+    requirement_credit: 23,
+    completed_credit: 8,
+    current_semester_credit: 6,
+    planned_credit: 9,
+    remaining_credit: 0,
+    gap_credit: 9,
+    group_id: 'CSE-ELECTIVE-POOL',
+  },
+  unresolved: ['选修组 CSE-ELECTIVE-POOL 的本学期选修学分证据不足；⛔ 不计入。'],
+  warnings: ['未提供每学期学分预算：本次不设学期学分上限。'],
+}
 
 function offering(
   overrides: Partial<CourseOffering> & { course_id: string; class_id: string },
@@ -468,47 +510,207 @@ describe('待确认的调整', () => {
   })
 })
 
-describe('未来学期修读路径（可接入壳）', () => {
-  it('没有 roadmap 数据时整块不渲染，不造假数据', () => {
+describe('结构化换班建议（explicit confirm only）', () => {
+  const CURRENT = offering({ course_id: 'CSE201', class_id: '01', course_name: 'Python 程序设计' })
+  const CANDIDATE = offering({ course_id: 'CSE201', class_id: '02', course_name: 'Python 程序设计' })
+
+  const PLAN: PlanResult = {
+    status: 'partially_feasible',
+    selected_classes: [{ course_id: 'CSE201', class_id: '01' }],
+    changes: [],
+    risks: [],
+    unresolved: [],
+  }
+
+  function mountAdjustments(proposals: unknown) {
+    return mount(PendingAdjustments, {
+      props: {
+        planResult: PLAN,
+        repairProposals: proposals as never,
+        courseNameById: { CSE201: 'Python 程序设计' },
+        offerings: [CURRENT, CANDIDATE],
+      },
+    })
+  }
+
+  it('renders the real structured proposal by identity join', () => {
+    const wrapper = mountAdjustments({
+      semester: '2026-1',
+      proposals: [
+        {
+          proposal_id: 'p1',
+          semester: '2026-1',
+          course_id: 'CSE201',
+          current_class_id: '01',
+          candidate_class_id: '02',
+          original_state: 'CONFLICT',
+          candidate_state: 'CLEAR',
+          reason: '候选教学班与当前课表不冲突。',
+        },
+      ],
+      unresolved: [],
+    })
+    const item = wrapper.get('[data-testid="case-a-repair-proposal"]')
+    expect(item.text()).toContain('Python 程序设计')
+    expect(wrapper.get('[data-testid="case-a-repair-flow"]').text()).toContain('01 → 02')
+    // 候选的时间 / 地点来自 identity join 到的 CourseOffering
+    expect(item.text()).toContain('周一')
+    expect(item.text()).toContain('南校园')
+    expect(item.text()).toContain('任课教师：待核验')
+  })
+
+  it('never applies a proposal on render — only an explicit click emits apply', async () => {
+    const wrapper = mountAdjustments({
+      semester: '2026-1',
+      proposals: [
+        {
+          proposal_id: 'p1',
+          semester: '2026-1',
+          course_id: 'CSE201',
+          current_class_id: '01',
+          candidate_class_id: '02',
+          original_state: 'CONFLICT',
+          candidate_state: 'CLEAR',
+          reason: '候选教学班与当前课表不冲突。',
+        },
+      ],
+      unresolved: [],
+    })
+    // 渲染本身绝不产生任何 apply 事件
+    expect(wrapper.emitted('apply')).toBeUndefined()
+    await wrapper.get('[data-testid="case-a-repair-apply-CSE201-02"]').trigger('click')
+    expect(wrapper.emitted('apply')).toHaveLength(1)
+    expect(wrapper.emitted('apply')?.[0]?.[0]).toEqual({
+      semester: '2026-1',
+      courseId: 'CSE201',
+      fromClassId: '01',
+      toClassId: '02',
+    })
+  })
+
+  it('offers no 采用调整 button when the backend returns no structured candidate', () => {
+    const wrapper = mount(PendingAdjustments, {
+      props: {
+        planResult: {
+          status: 'partially_feasible',
+          selected_classes: [{ course_id: 'CSE201', class_id: '01' }],
+          changes: [],
+          risks: [],
+          unresolved: [{ type: 'selection_required', message: '需要人工选择教学班' }],
+        },
+        repairProposals: { semester: '2026-1', proposals: [], unresolved: [] },
+        courseNameById: {},
+        offerings: [],
+      },
+    })
+    expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(false)
+    // ⛔ 没有任何「采用调整」按钮（策略说明文字里提到这个词是允许的）
+    expect(wrapper.findAll('button').filter((b) => b.text().includes('采用调整'))).toHaveLength(0)
+    // 仍然如实提示"需要明确选择"，但⛔ 不假装系统已经能自动替换
+    expect(wrapper.get('[data-testid="case-a-selection-required"]').text()).toContain(
+      '需要明确选择',
+    )
+  })
+
+  it('暂不调整 only hides the row locally and never emits apply', async () => {
+    const wrapper = mountAdjustments({
+      semester: '2026-1',
+      proposals: [
+        {
+          proposal_id: 'p1',
+          semester: '2026-1',
+          course_id: 'CSE201',
+          current_class_id: '01',
+          candidate_class_id: '02',
+          original_state: 'CONFLICT',
+          candidate_state: 'CLEAR',
+          reason: '候选教学班与当前课表不冲突。',
+        },
+      ],
+      unresolved: [],
+    })
+    await wrapper.get('[data-testid="case-a-repair-dismiss-CSE201-02"]').trigger('click')
+    expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(false)
+    expect(wrapper.emitted('apply')).toBeUndefined()
+  })
+
+  it('shows structured unresolved reasons without parsing any message string', () => {
+    const wrapper = mountAdjustments({
+      semester: '2026-1',
+      proposals: [],
+      unresolved: ['课程 MAR108 在当前数据范围内没有其他可确认无冲突的教学班。'],
+    })
+    expect(wrapper.get('[data-testid="case-a-repair-unresolved"]').text()).toContain(
+      '没有其他可确认无冲突的教学班',
+    )
+    expect(wrapper.find('[data-testid="case-a-repair-proposal"]').exists()).toBe(false)
+  })
+})
+
+describe('未来学期修读路径（真实 AcademicRoadmap）', () => {  it('没有 roadmap 数据时整块不渲染，不造假数据', () => {
     const empty = mount(FutureRoadmapView, { props: { roadmap: null } })
     expect(empty.find('[data-testid="case-a-future-roadmap"]').exists()).toBe(false)
     expect(empty.text()).toBe('')
 
-    const noSemesters = mount(FutureRoadmapView, { props: { roadmap: { semesters: [] } } })
+    const noSemesters = mount(FutureRoadmapView, {
+      props: { roadmap: { ...ROADMAP, future_semesters: [] } },
+    })
     expect(noSemesters.find('[data-testid="case-a-future-roadmap"]').exists()).toBe(false)
   })
 
-  it('有 roadmap 时渲染课程级路径，且不出现任何教学班信息', () => {
-    const wrapper = mount(FutureRoadmapView, {
+  it('renders the course-level path with real semester facts', () => {
+    const wrapper = mount(FutureRoadmapView, { props: { roadmap: ROADMAP } })
+    expect(wrapper.get('[data-testid="case-a-roadmap-disclaimer"]').text()).toContain(
+      '课程级',
+    )
+    expect(wrapper.text()).toContain('操作系统')
+    expect(wrapper.text()).toContain('CSE310')
+    expect(wrapper.text()).toContain('必修')
+    // 培养方案学期号必须如实展示（⛔ 不说成"列表第 N 项"）
+    expect(wrapper.get('[data-testid="case-a-roadmap-term"]').text()).toContain(
+      '培养方案第 4 学期',
+    )
+  })
+
+  it('shows elective credit progress and never guesses missing evidence', () => {
+    const wrapper = mount(FutureRoadmapView, { props: { roadmap: ROADMAP } })
+    const progress = wrapper.get('[data-testid="case-a-elective-progress"]').text()
+    expect(progress).toContain('23')
+    expect(progress).toContain('规划前缺口')
+    expect(progress).toContain('CSE-ELECTIVE-POOL')
+
+    const unknown = mount(FutureRoadmapView, {
       props: {
         roadmap: {
-          semesters: [
-            {
-              semester: '2026-2',
-              required: [
-                { course_id: 'CSE310', course_name: '操作系统', credit: 3 },
-                { course_id: 'CSE320', course_name: '计算机网络', credit: 3 },
-              ],
-              makeup: [{ course_id: 'MAR108', course_name: '人工智能导论', credit: 2 }],
-              elective: [{ course_id: 'CSE401', course_name: '专业选修', credit: 3 }],
-            },
-          ],
+          ...ROADMAP,
+          elective: { ...ROADMAP.elective, completed_credit: null, gap_credit: null },
         },
       },
     })
-    expect(wrapper.get('[data-testid="case-a-roadmap-disclaimer"]').text()).toContain(
-      '未来学期为基于培养方案的课程级规划',
-    )
-    expect(wrapper.text()).toContain('操作系统 3 学分')
-    expect(wrapper.text()).toContain('预计学分：11')
-    // ⛔ 未来学期**课程条目**里不得出现任何教学班 / 排课信息
-    // （disclaimer 里那句“具体教学班需以届时教务系统实际开课为准”是允许且要求的）
+    expect(unknown.find('[data-testid="case-a-elective-insufficient"]').exists()).toBe(true)
+  })
+
+  it('never leaks any teaching-class field into the future semesters', () => {
+    const wrapper = mount(FutureRoadmapView, { props: { roadmap: ROADMAP } })
     const terms = wrapper.findAll('[data-testid="case-a-roadmap-term"]')
     expect(terms).toHaveLength(1)
     const termText = terms[0].text()
-    for (const forbidden of ['教学班', '星期', '教室', '容量', '任课教师']) {
+    for (const forbidden of ['教学班', '星期', '教室', '容量', '任课教师', '节']) {
       expect(termText).not.toContain(forbidden)
     }
+    // 课程条目本身也只能带课程级字段
+    for (const item of wrapper.findAll('[data-testid="case-a-roadmap-course"]')) {
+      for (const forbidden of ['class_id', 'teacher', 'campus', 'classroom', 'meetings']) {
+        expect(item.text()).not.toContain(forbidden)
+      }
+    }
+  })
+
+  it('surfaces roadmap unresolved and warnings instead of hiding them', () => {
+    const wrapper = mount(FutureRoadmapView, { props: { roadmap: ROADMAP } })
+    expect(wrapper.find('[data-testid="case-a-roadmap-unresolved"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="case-a-roadmap-warnings"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('本学期选修学分证据不足')
   })
 })
 

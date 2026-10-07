@@ -73,6 +73,65 @@
 - **当前状态：`LEVEL 0`** —— 真实链路尚未用真实 artifact 跑通（North suspended + 需真实登录），
   因此真实入口在没有受控输入时仍返回 503 `real_pipeline_not_configured`。
 
+## Case A 学业路径规划集成（✅ 已实现，待 Architecture Review）
+
+**把 A（前端 Case A 规划 UX）与 B（Path Planner Core）真正接起来**，
+形成一个**完整的课程级 + 教学班级闭环**。⛔ 未改任何 frozen 公共契约。
+
+### 新增能力
+
+| 能力 | 落点 |
+|---|---|
+| 未来学期**课程级**路线图 | `backend/app/services/case_a_roadmap.py`（接线层）+ `app/path_planner/future_roadmap.py` |
+| 结构化**换班建议**（只生成） | `app/path_planner/repair_proposals.py`，由 `case_a_demo` 编排进响应 |
+| **显式**换班确认接口 | `POST /api/v1/case-a-demo/repair/apply` |
+| 加法式响应（⛔ 不动 `PlanResult`） | `app/api/case_a_demo.py` 新增 `repair_proposals` / `roadmap` / `roadmap_note` |
+| 前端接线 | `PendingAdjustments.vue`（真实候选 + 采用/暂不调整）、`FutureRoadmapView.vue`（真实路线图 + 选修进度） |
+
+### 关键设计（可与真实 artifact 对照）
+
+- **培养方案学期号来源**：真实 Case A 培养方案**只有** `recommended_term_text`
+  （如 `2027-1`），**没有** `recommended_semester` / `deadline_semester` 整数字段。
+  因此学期号链由**培养方案自身出现过的学期标签**推导，
+  以**当前学期**为参照（Case A：`2026-1` = 第 3 学期 ⇒ 未来 `2026-2`=4 … `2028-2`=8）。
+  ⛔ **不存在"未来学期从 1 重新编号"**；纯标签序列**不给映射**时 fail closed。
+- **已满足事实**：只采纳 `MakeupTask.status == satisfied`；
+  `manual_confirmation` / `possibly_equivalent` **绝不提升**（并写入 `warnings`）；
+  真实成绩单 PDF **没有官方课程号**，因此已满足事实**不依赖** `CompletedCourse.course_id`。
+- **选修学分账**：最低学分读自 `CurriculumGroup.minimum_credit`（⛔ 无硬编码）；
+  缺口 = `requirement − completed(已确认) − current(已确认)`；
+  组外 satisfied 课程**不算**选修学分；已记账课程**不会**被再规划一次；
+  ⛔ **不超额规划**。
+- **换班**：`apply_repair_proposal()` 要求完整身份（semester / course_id / from / to），
+  校验同一课程 + 同一学期 + `from` 在课表内 + `to` 在已接受教学班内 + 候选**重新**确认 CLEAR，
+  应用后**重校验整份课表**；⛔ 生成建议时**绝不**自动应用，⛔ 不自动挑候选。
+
+### 边界（⛔ 未越过）
+
+- 未来学期**结构上不可能**出现 `class_id` / `teacher` / 时间 / 校区 / 教室 / 容量 / `meetings`
+  （字段集由 `SemesterCoursePlan` 锁定 + API 层逐条断言 + 前端测试断言）；
+- `app.path_planner` **不 import** `app.course_data`（AST 检查锁定）；
+- ⛔ 未修改 `/schemas/`、`/docs/interfaces/`、frozen Provider Protocol、
+  `RestrictedPlanner` 语义、`PlanningOrchestrator`；
+- 路由白名单测试**逐条登记**了新增的 `repair/apply`（⛔ 不是"顺手多挂"）。
+
+### 验证
+
+```text
+backend 定向回归：639 passed / 2 skipped
+  （path planner / case-a roadmap / case-a demo e2e / case-a scoped scope /
+    planner conflicts·provider·section_repair / planning runtime /
+    integration orchestrator / contracts / real plan API）
+backend 全量：与基线相同的 15 项 Windows 历史失败，无新增失败
+frontend：233 passed / typecheck exit 0 / vite build 成功
+真实 artifact smoke（私有、不入库）：4069 条真实教学班、23 条补修任务、
+  选修账 23/0/0 ⇒ 缺口 23；未来学期 #4..#8；未来字段泄漏 = NONE
+真实换班 smoke：跨课程替换被拒且课表不变；合法替换 applied=True 且 remaining_conflicts=[]
+```
+
+新增文档：`docs/e2e/CASE_A_PLANNING_DEMO_RUNBOOK.md`、
+`docs/e2e/CASE_A_HUMAN_ACCEPTANCE_CHECKLIST.md`。
+
 ## 当前边界
 
 ### Case A scoped closed-loop demo（独立于 production runtime）

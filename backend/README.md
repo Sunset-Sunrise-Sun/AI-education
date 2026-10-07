@@ -1,10 +1,19 @@
 # 后端集成底座（组长模块 · Agent / Integration）— Phase 1
 
-> **当前状态：全部数据均为 Mock 演示数据，尚未接入真实教务数据。**
+> **当前状态（不得夸大）**：
 >
-> 本阶段的目标不是"做出产品"，而是先立好一块地基：一个能启动的 FastAPI 服务、
+> - `/api/v1/mock/*` 是**永久 Mock 通道**，只有该路径携带 `X-Data-Source: mock`；
+> - `/api/v1/plan` 是**真实入口**，由 `app/services/planning_runtime.py` 环境驱动装配；
+>   **未装配时明确返回 `503 real_pipeline_not_configured`**，
+>   ⛔ **绝不回退到 Mock**（有测试锁定 Integration 层不引用 `mock_service`）；
+> - **Case A 私有演示通道**：`/api/v1/case-a-demo/*`
+>   （`offerings` / `plan` / `repair/apply`），来源标记
+>   `case-scoped:south+shenzhen`、`is_full_semester=false`；
+>   它消费**真实的**南校园 + 深圳校区 scoped Course Data 与用户上传的成绩单，
+>   ⛔ 不使用 Mock、⛔ 不接入 North 校区、⛔ 不抓取新数据。
+>
+> 本阶段的目标是先立好一块地基：一个能启动的 FastAPI 服务、
 > 一套与 `/schemas/` 公共契约一致的校验层、一套可演示的 Mock 接口、一组自动测试。
-> 这样即使 Curriculum / Course Data / Planner 还没写完，整条数据链路也能先跑起来。
 
 ---
 
@@ -24,11 +33,14 @@
 - 课程等价判定、课程正式认定；
 - MakeupTask 的业务生成算法；
 - 课程依赖、补修优先级；
-- 时间冲突核心算法、OR-Tools CP-SAT 求解、Path Repair；
+- 时间冲突核心算法、CP-SAT / ILP 求解、Path Repair；
 - 真实教务数据抓取。
 
 > 换句话说：**别人算出来的结果，本层只负责"读、校验、转出去"。**
 > 上面这些算法一旦出现在 `backend/` 里，就属于越界实现，应当被 Review 打回。
+>
+> ⚠️ **实际实现口径**：Planner 目前是**确定性启发式**（先修拓扑序 + 截止学期硬约束 +
+> 建议学期偏好 + 每学期学分预算），⛔ **不是** CP-SAT / ILP 全局最优求解。
 
 ---
 

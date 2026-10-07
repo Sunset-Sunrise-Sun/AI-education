@@ -26,7 +26,10 @@ from app.curriculum.case_a_decisions import (
 )
 from app.integration import PlanningOrchestrator
 from app.models.contracts import CourseOffering, DataSource, MakeupTask, PlanResult, Preference
+from app.path_planner import RepairProposalSet, generate_repair_proposals
 from app.planner import RestrictedPlannerProvider
+from app.path_planner import AcademicRoadmap
+from app.services.case_a_roadmap import CaseARoadmapError, build_case_a_roadmap
 from app.services.completed_courses_pdf_ingest import (
     PDF_MEDIA_TYPE,
     CompletedCoursesPdfImport,
@@ -36,12 +39,16 @@ from app.services.completed_courses_pdf_ingest import (
 CASE_A_DEMO_SCOPE_LABEL = "case-scoped:south+shenzhen"
 MANUAL_SCHEDULE_SOURCE = "manual-entry://current-schedule"
 
+#: Case A 目标培养方案里的专业选修组（最低学分**读自** CurriculumGroup，⛔ 不硬编码）。
+CASE_A_ELECTIVE_GROUP_ID = "CSE-ELECTIVE-POOL"
+
 _ENABLED = "APP_CASE_A_DEMO_ENABLED"
 _CASE_PATH = "APP_CASE_A_DEMO_CURRICULUM_CASE_PATH"
 _STORE_PATH = "APP_CASE_A_DEMO_COURSE_DATA_SQLITE_PATH"
 _SEMESTER = "APP_CASE_A_DEMO_SEMESTER"
 _SOUTH_SHA = "APP_CASE_A_DEMO_SOUTH_ACCEPTANCE_SHA256"
 _SHENZHEN_SHA = "APP_CASE_A_DEMO_SHENZHEN_ACCEPTANCE_SHA256"
+_ROADMAP_HORIZON = "APP_CASE_A_DEMO_ROADMAP_LAST_SEMESTER"
 _SHA256 = re.compile(r"[0-9a-fA-F]{64}")
 
 
@@ -56,6 +63,12 @@ class CaseADemoRun:
     offerings: list[CourseOffering]
     preference: Preference
     plan_result: PlanResult
+    #: 当前学期**结构化**换班建议（⛔ 只生成，不应用；应用需调用方显式确认）。
+    repair_proposals: RepairProposalSet
+    #: 未来学期**课程级**路线图；不可构建时为 `None`（⛔ 不返回假数据）。
+    roadmap: AcademicRoadmap | None
+    #: 路线图不可构建的原因（`roadmap is None` 时给出；⛔ 只含结构性说明）。
+    roadmap_note: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,6 +76,8 @@ class CaseADemoRuntime:
     base_case: CurriculumCase
     course_data: CaseAScopedCourseDataProvider
     planner: RestrictedPlannerProvider
+    #: 未来路线图的上界学期（可选）；缺省取培养方案链尾。
+    roadmap_last_semester: str | None = None
 
     def _curriculum(self, imported: CompletedCoursesPdfImport) -> CurriculumCaseProvider:
         dynamic = replace(
@@ -138,7 +153,36 @@ class CaseADemoRuntime:
             current_schedule=current_schedule,
             preference=preference,
         )
-        return CaseADemoRun(imported, tasks, offerings, preference, result)
+        # 当前学期结构化换班建议：**只生成**，⛔ 不应用、⛔ 不改 current_schedule。
+        repair_proposals = generate_repair_proposals(
+            semester=semester,
+            current_schedule=current_schedule,
+            offerings=offerings,
+        )
+        # 未来学期课程级路线图：只吃 Curriculum 事实（⛔ 不需要任何 Course Data）。
+        roadmap: AcademicRoadmap | None = None
+        roadmap_note: str | None = None
+        try:
+            roadmap = build_case_a_roadmap(
+                self.base_case,
+                makeup_tasks=tasks,
+                current_semester_label=semester,
+                last_curriculum_semester=self.roadmap_last_semester,
+                elective_group_id=CASE_A_ELECTIVE_GROUP_ID,
+            )
+        except CaseARoadmapError as exc:
+            # ⛔ 不编造路线图：如实说明为什么无法构建（只含结构性说明）。
+            roadmap_note = f"未来学期路线图无法构建：{exc}"
+        return CaseADemoRun(
+            imported,
+            tasks,
+            offerings,
+            preference,
+            result,
+            repair_proposals,
+            roadmap,
+            roadmap_note,
+        )
 
 
 def _with_approved_scope_decisions(base_case: CurriculumCase) -> CurriculumCase:
@@ -210,6 +254,7 @@ def build_case_a_demo_runtime(environment: Mapping[str, str]) -> CaseADemoRuntim
         base_case=base_case,
         course_data=CaseAScopedCourseDataProvider(dataset),
         planner=RestrictedPlannerProvider(),
+        roadmap_last_semester=(environment.get(_ROADMAP_HORIZON) or "").strip() or None,
     )
 
 

@@ -1,5 +1,42 @@
 # Integration 工作日志
 
+### Case A 学业路径规划集成（A + B 合并 → 完整闭环）
+
+- **基线**：以 `44c00b8`（`feature/case-a-nightly-integration`）为共同基线，
+  `--no-ff` 合并 A（`feature/current-schedule-bulk-input` @ `814f630`）与
+  B（`feature/path-planner-core` @ `0bba1b9`），双方历史完整保留；
+- **学期号映射**：真实培养方案只有 `recommended_term_text`，故新增
+  `app/services/case_a_roadmap.py` 由培养方案自身学期标签推导学期号链
+  （参照学期 = 当前学期），并显式声明未来学期 → 学期号映射；
+  为 `build_academic_roadmap` 增加 `recommended_semester_by_course`，
+  使"课程级建议学期"可由课程事实注入而不改 `CurriculumCourse`；
+  两条来源冲突时 fail closed；
+- **已满足事实**：只采纳 `MakeupTask.status == satisfied`；
+  组外 satisfied 课程不计入选修学分；
+- **选修学分账**：新增 `elective_current_semester_credit` 与
+  `elective_completed_course_ids` 的接线；修正"已记账课程仍被再规划"的缺陷；
+  增加"不超额规划"（只选装得进缺口的课程）；
+- **API（加法式）**：`CaseADemoPlanResponse` 新增 `repair_proposals` / `roadmap` /
+  `roadmap_note`；新增 `POST /api/v1/case-a-demo/repair/apply`；
+  ⛔ 未改 `PlanResult` / `CourseOffering` / `Meeting` / `Preference` 公共契约；
+- **前端**：`PendingAdjustments.vue` 接真实结构化候选（identity join 出时间/地点/教师，
+  教师缺失显示"待核验"），新增「采用调整 / 暂不调整」，
+  只有真实候选存在时才出现「采用调整」，点击后才调用后端；
+  `FutureRoadmapView.vue` 接真实 `AcademicRoadmap`（真实学期标签 +
+  培养方案第 N 学期 + 选修学分进度 + warnings/unresolved）；
+- **测试**：`test_path_planner_core.py` 33 → 51 项；新增
+  `test_case_a_roadmap.py` 18 项；扩展 `test_case_a_demo_e2e.py`；
+  前端 `case-a-planning-ux.spec.ts` 覆盖真实路线图与显式确认；
+  路由白名单测试登记新增路由；
+- **真实 artifact smoke（私有，不入库）**：4069 条真实教学班、23 条补修任务
+  （全部 `manual_confirmation`，⛔ 未被提升为已满足）、
+  选修账 23/0/0 ⇒ 缺口 23、未来学期 #4..#8、未来字段泄漏 NONE、
+  响应中无 `mock`；
+- **真实换班 smoke**：跨课程替换 ⇒ `applied=False` 且课表逐字不变；
+  完整身份 + 合法候选 ⇒ `applied=True`、`revalidated=True`、`remaining_conflicts=[]`
+  且返回后端计算的课表；
+- ⛔ 未 merge `main`；⛔ 未改 `/schemas/`、`/docs/interfaces/`、frozen Provider Protocol。
+
 ### 2026-10-05 - Real Integration API 骨架
 
 - 从 `main@0eaa6c0b6348e43533255484b496a7bcbcd67d79` 创建 `feature/real-plan-api`；

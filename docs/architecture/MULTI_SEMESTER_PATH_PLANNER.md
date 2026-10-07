@@ -228,11 +228,30 @@ Preference                  ←→  未新增任何字段
 
 ## 6. 测试锚点
 
-`backend/tests/test_path_planner_core.py`（33 项）覆盖：
+`backend/tests/test_path_planner_core.py`（**51 项**）覆盖：
 
 - 换班：单/多候选、生成不改课表、非法选择拒绝、显式选择才应用、
   换课程/跨学期拒绝、应用后重新校验、同班选择为 no-op、重复 identity 拒绝；
 - 路线图：必修落位、先修顺序、截止学期、建议学期作为偏好、学分预算、
   选修最低学分（读自 group，非硬编码）、选修池非全必修、证据不足 unresolved、
   group 未知、未来输出无 section/teacher/时间地点字段、不 import Course Data、
-  当前学期仅作摘要、deadline 越界不猜、先修环、缺失先修不编造、确定性。
+  当前学期仅作摘要、deadline 越界不猜、先修环、缺失先修不编造、确定性；
+- **培养方案学期号映射**：显式映射三形态、`recommended` 按学期号命中、
+  乱序标签不影响先修先后、缺映射 fail closed、双编号来源冲突拒绝、重复学期号拒绝；
+- **已确认满足事实**：`confirmed_satisfied_course_ids`、
+  `MakeupTask.status == satisfied` 才算满足、`manual_confirmation` /
+  `possibly_equivalent` 绝不提升、`course_id=None` 的 pending 记录不算满足、
+  已满足课程绝不再规划；
+- **选修学分账**：本学期已确认选修学分计入、证据不足计 0 并报 unresolved、
+  组外课程不计入、**不超额规划**、账目恒等式
+  `requirement − completed − current == planned + remaining`。
+
+`backend/tests/test_case_a_roadmap.py`（18 项）覆盖 Case A 的接线层：
+学期号链推导、未来学期起点/上界、单学期与区间文本解析、
+区间无裁决时不猜方向、historical 区间既不规划也不误报、
+选修最低学分随培养方案变化（⛔ 无硬编码）、组外 satisfied 不计入选修学分、
+未知选修组 fail closed。
+
+`backend/tests/test_case_a_demo_e2e.py` 覆盖 API 层：
+路线图字段恒存在（不可构建时 `roadmap=null` + 结构性说明）、
+未来学期无任何教学班字段、修复接口需要完整身份、跨课程替换被拒且不改课表。

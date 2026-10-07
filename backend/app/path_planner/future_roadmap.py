@@ -380,6 +380,7 @@ def build_academic_roadmap(
     elective_completed_course_ids: Sequence[str] | None = None,
     elective_current_semester_course_ids: Sequence[str] | None = None,
     per_semester_credit_budget: Mapping[str, float] | None = None,
+    recommended_semester_by_course: Mapping[str, int] | None = None,
 ) -> AcademicRoadmap:
     """生成**课程级**未来学期路线图（只依赖培养方案事实）。
 
@@ -415,6 +416,37 @@ def build_academic_roadmap(
 
     if not isinstance(version, CurriculumVersion):
         raise RoadmapInputError("version 必须是 CurriculumVersion。")
+
+    # ---- 课程级建议学期（来源可为课程事实或调用方显式映射） ----------------------
+    # ⚠️ 真实培养方案可能**只有**学期标签文本、没有 `recommended_semester` 整数字段。
+    #    调用方已把标签解析成学期号后，通过本映射传入；两条来源不一致时 fail closed。
+    recommended_by_course: dict[str, int] = {}
+    if recommended_semester_by_course is not None:
+        if not isinstance(recommended_semester_by_course, Mapping):
+            raise RoadmapInputError(
+                "recommended_semester_by_course 必须是 课程号 -> 培养方案学期号 的映射。"
+            )
+        for course_id, number in recommended_semester_by_course.items():
+            if not isinstance(course_id, str) or not course_id.strip():
+                raise RoadmapInputError("recommended_semester_by_course 的键必须是非空课程号。")
+            if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+                raise RoadmapInputError(
+                    "recommended_semester_by_course 的值必须是 ≥1 的整数培养方案学期号。"
+                )
+            recommended_by_course[course_id.strip()] = number
+    for course in version.courses:
+        declared_number = recommended_by_course.get(course.course_id)
+        if (
+            declared_number is not None
+            and course.recommended_semester is not None
+            and declared_number != course.recommended_semester
+        ):
+            raise RoadmapInputError(
+                f"课程 {course.course_id} 的建议学期有两个互相矛盾的来源；"
+                f"⛔ 不猜测哪一个正确。"
+            )
+        if declared_number is None and course.recommended_semester is not None:
+            recommended_by_course[course.course_id] = course.recommended_semester
 
     # ---- 未来学期：显式 (标签, 培养方案学期号) 映射（⛔ 不从 1 隐式编号） ----------
     if isinstance(semesters, Mapping):
@@ -676,7 +708,7 @@ def build_academic_roadmap(
         prerequisite_edges,
         key=lambda item: (
             item.deadline_semester if item.deadline_semester is not None else 10**6,
-            item.recommended_semester if item.recommended_semester is not None else 10**6,
+            recommended_by_course.get(item.course_id, 10**6),
             item.course_id,
         ),
     )
@@ -706,6 +738,7 @@ def build_academic_roadmap(
     for course in required_queue:
         placement = _place_required(
             course,
+            recommended=recommended_by_course,
             curriculum_semesters=tuple(
                 item.curriculum_semester for item in declared
             ),
@@ -739,6 +772,7 @@ def build_academic_roadmap(
                 continue
             placement = _place_elective(
                 course,
+                recommended=recommended_by_course,
                 curriculum_semesters=tuple(item.curriculum_semester for item in declared),
                 position_by_curriculum_semester=position_by_curriculum_semester,
                 curriculum_semester_of=curriculum_semester_of,
@@ -906,6 +940,7 @@ def _normalize_floor(
 def _candidate_labels(
     course: CurriculumCourse,
     *,
+    recommended: Mapping[str, int],
     declared: Sequence[FutureSemester],
     floor: int | None,
     deadline: int | None,
@@ -935,7 +970,7 @@ def _candidate_labels(
     if not eligible:
         return []
 
-    preference = course.recommended_semester
+    preference = recommended.get(course.course_id)
     preferred = [
         item
         for item in eligible
@@ -971,6 +1006,7 @@ def _fits_budget(
 def _place_required(
     course: CurriculumCourse,
     *,
+    recommended: Mapping[str, int],
     curriculum_semesters: Sequence[int],
     position_by_curriculum_semester: Mapping[int, int],
     curriculum_semester_of: Mapping[str, int],
@@ -1012,15 +1048,20 @@ def _place_required(
         )
         return None
 
-    recommended = course.recommended_semester
-    if recommended is not None and recommended not in position_by_curriculum_semester:
+    recommended_number = recommended.get(course.course_id)
+    if recommended_number is not None and recommended_number not in position_by_curriculum_semester:
         unresolved.append(
-            f"课程 {course.course_id} 的 recommended_semester={recommended}（培养方案学期号）"
+            f"课程 {course.course_id} 的建议学期={recommended_number}（培养方案学期号）"
             f"不在本次提供的学期映射中；仅按截止学期与先修顺序安排。"
         )
 
     for label in _candidate_labels(
-        course, declared=declared, floor=floor, deadline=deadline, prefer_latest=True
+        course,
+        recommended=recommended,
+        declared=declared,
+        floor=floor,
+        deadline=deadline,
+        prefer_latest=True,
     ):
         if not _fits_budget(
             float(course.credit), label, budget=budget, used_credit=used_credit
@@ -1032,6 +1073,7 @@ def _place_required(
             *_required_reason(
                 course,
                 curriculum_semester_of[label],
+                recommended=recommended,
                 floor=floor,
                 deadline=deadline,
             ),
@@ -1071,6 +1113,7 @@ def _required_reason(
     course: CurriculumCourse,
     curriculum_semester: int,
     *,
+    recommended: Mapping[str, int],
     floor: int | None,
     deadline: int | None,
 ) -> tuple[PlacementReason, str]:
@@ -1080,7 +1123,7 @@ def _required_reason(
     `deadline_semester` 同一口径（⛔ 不是未来学期列表位置）。
     """
 
-    if course.recommended_semester == curriculum_semester:
+    if recommended.get(course.course_id) == curriculum_semester:
         return (
             PlacementReason.REQUIRED_BY_RECOMMENDED_TERM,
             f"课程 {course.course_id}（{course.course_name}）为培养方案要求课程，"
@@ -1114,6 +1157,7 @@ def _required_reason(
 def _place_elective(
     course: CurriculumCourse,
     *,
+    recommended: Mapping[str, int],
     curriculum_semesters: Sequence[int],
     position_by_curriculum_semester: Mapping[int, int],
     curriculum_semester_of: Mapping[str, int],
@@ -1157,7 +1201,12 @@ def _place_elective(
         return None
 
     for label in _candidate_labels(
-        course, declared=declared, floor=floor, deadline=deadline, prefer_latest=False
+        course,
+        recommended=recommended,
+        declared=declared,
+        floor=floor,
+        deadline=deadline,
+        prefer_latest=False,
     ):
         if not _fits_budget(
             float(course.credit), label, budget=budget, used_credit=used_credit
