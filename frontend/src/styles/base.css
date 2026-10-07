@@ -1660,6 +1660,14 @@ code.mono {
   flex: 1 1 auto;
 }
 
+/* 学分输入的“学分”单位后缀（面向学生的文案，不改变字段语义）。 */
+.uig-unit {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
 .uig-textarea {
   resize: vertical;
   font-family: inherit;

@@ -519,4 +519,7 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         # Distinct Case A demo path; it never changes production /api/v1/plan.
         "/api/v1/case-a-demo/offerings",
         "/api/v1/case-a-demo/plan",
+        # Case A **显式换班确认**（加法式）：只有用户主动点击才会调用，
+        # ⛔ 不自动改变课表、⛔ 不改 /api/v1/plan 契约、⛔ 不接入 Mock 通道。
+        "/api/v1/case-a-demo/repair/apply",
     }

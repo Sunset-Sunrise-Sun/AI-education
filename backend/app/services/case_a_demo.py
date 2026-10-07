@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from typing import Literal
 
 from app.course_data import (
     CaseAScopeError,
@@ -24,17 +25,48 @@ from app.curriculum.case_a_decisions import (
     confirmed_scope_decisions,
     is_supported_scope_decision_set,
 )
+from app.curriculum.plan_profiles import ELECTIVE_POOL_GROUP_ID
 from app.integration import PlanningOrchestrator
-from app.models.contracts import CourseOffering, DataSource, MakeupTask, PlanResult, Preference
+from app.models.contracts import (
+    CourseOffering,
+    DataSource,
+    MakeupStatus,
+    MakeupTask,
+    PlanResult,
+    Preference,
+)
+from app.path_planner import RepairProposalSet, generate_repair_proposals
 from app.planner import RestrictedPlannerProvider
+from app.path_planner import AcademicRoadmap
+from app.services.case_a_roadmap import (
+    CaseARoadmapError,
+    bind_current_semester_courses,
+    build_case_a_roadmap,
+)
 from app.services.completed_courses_pdf_ingest import (
     PDF_MEDIA_TYPE,
     CompletedCoursesPdfImport,
     import_completed_courses_pdf_bytes,
 )
 
+#: 上传成绩单与已确认已修事实之间的**唯一**受支持关系。
+#:
+#: ⛔ 这里**故意只有一个取值**：不存在 `bound`。
+#: 原因见 `CaseADemoRuntime._completed_binding` 的文档 —— 让上传行改写已确认的
+#: 满足事实需要伪造 provenance，因此那条路径被**按设计**删除，
+#: 而不是"保留一个永远不可达的取值"。
+CompletedBinding = Literal["not_bound"]
+
 CASE_A_DEMO_SCOPE_LABEL = "case-scoped:south+shenzhen"
 MANUAL_SCHEDULE_SOURCE = "manual-entry://current-schedule"
+
+#: Case A 目标培养方案里的专业选修组。
+#:
+#: ⚠️ 这是**Curriculum 模块的权威常量**（`app.curriculum.plan_profiles`），
+#: ⛔ 本模块不自行定义一个新的组名；可用环境变量覆盖，
+#: 但覆盖值若不在培养方案里，路线图会 **fail closed**（报告 unresolved），
+#: ⛔ 绝不会静默伪造一个组或一个最低学分。
+CASE_A_ELECTIVE_GROUP_ID = ELECTIVE_POOL_GROUP_ID
 
 _ENABLED = "APP_CASE_A_DEMO_ENABLED"
 _CASE_PATH = "APP_CASE_A_DEMO_CURRICULUM_CASE_PATH"
@@ -42,6 +74,8 @@ _STORE_PATH = "APP_CASE_A_DEMO_COURSE_DATA_SQLITE_PATH"
 _SEMESTER = "APP_CASE_A_DEMO_SEMESTER"
 _SOUTH_SHA = "APP_CASE_A_DEMO_SOUTH_ACCEPTANCE_SHA256"
 _SHENZHEN_SHA = "APP_CASE_A_DEMO_SHENZHEN_ACCEPTANCE_SHA256"
+_ROADMAP_HORIZON = "APP_CASE_A_DEMO_ROADMAP_LAST_SEMESTER"
+_ELECTIVE_GROUP = "APP_CASE_A_DEMO_ELECTIVE_GROUP_ID"
 _SHA256 = re.compile(r"[0-9a-fA-F]{64}")
 
 
@@ -56,6 +90,18 @@ class CaseADemoRun:
     offerings: list[CourseOffering]
     preference: Preference
     plan_result: PlanResult
+    #: 当前学期**结构化**换班建议（⛔ 只生成，不应用；应用需调用方显式确认）。
+    repair_proposals: RepairProposalSet
+    #: 未来学期**课程级**路线图；不可构建时为 `None`（⛔ 不返回假数据）。
+    roadmap: AcademicRoadmap | None
+    #: 路线图不可构建的原因（`roadmap is None` 时给出；⛔ 只含结构性说明）。
+    roadmap_note: str | None
+    #: 本次实际使用的选修组 id（供响应如实回显，⛔ 不由 API 层另行猜测）。
+    elective_group_id: str = CASE_A_ELECTIVE_GROUP_ID
+    #: 上传成绩单的绑定结果。**唯一**受支持的取值是 `not_bound`：
+    #: 本次**未采用**上传行做满足判定，培养方案已确认事实原样保留。
+    #: ⛔ 不存在 `bound`（见 `_completed_binding` 文档：那条路径需要伪造 provenance）。
+    completed_binding: CompletedBinding = "not_bound"
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,23 +109,63 @@ class CaseADemoRuntime:
     base_case: CurriculumCase
     course_data: CaseAScopedCourseDataProvider
     planner: RestrictedPlannerProvider
+    #: 未来路线图的上界学期（可选）；缺省取培养方案链尾。
+    roadmap_last_semester: str | None = None
+    #: 需要满足最低学分的选修组（缺省用 Curriculum 的权威常量）。
+    elective_group_id: str = CASE_A_ELECTIVE_GROUP_ID
 
-    def _curriculum(self, imported: CompletedCoursesPdfImport) -> CurriculumCaseProvider:
-        dynamic = replace(
-            self.base_case,
-            completed=imported.courses,
-            completed_source_id=imported.source_id,
-            completed_complete=True,
-            completed_completeness_evidence=(
-                f"user-uploaded-sysu-transcript-pdf:sha256:{imported.artifact_sha256}"
-            ),
-            # Rules/decisions carrying the old completed_source_id or source_record
-            # are deliberately not retargeted. No implicit pdf:N mapping is permitted.
-            rules=None,
-            recognitions=(),
-            missing_requirements=(),
-        )
-        return CurriculumCaseProvider(dynamic)
+    def _completed_binding(
+        self, imported: CompletedCoursesPdfImport
+    ) -> CurriculumCase:
+        """决定上传的成绩单能否**安全绑定**到已确认的已修事实。
+
+        背景（⛔ 不得回退）：基础 case 的已确认满足事实来自
+        `rules`（绑定 `case-owner-confirmed://case-a/d4`）**与基础 case 自己的
+        `completed` 行**。上传的 PDF 若替换 `completed` 并清空 `rules`，
+        会**静默抹掉**这些已确认事实（真实基线 = 12 satisfied + 11 manual_confirmation），
+        从而使已满足的要求被重新规划。
+
+        ## 为什么**不存在** `bound` 结果（⛔ 不得重新引入）
+
+        `CurriculumCase` 把 `completed` 行**硬绑定**在它们自己的 `source_id` 上：
+
+        ```text
+        行的 source_id != case.completed_source_id
+            ⇒ CurriculumNormalizationError("completed records do not belong to the supplied source")
+        ```
+
+        因此"用上传行替换已确认行"**在模型层面**不可能成立：
+        上传件的 `source_id` 是 `upload:pdf:sha256:...`，而已确认行属于
+        `case-owner-confirmed://case-a/d4`。要让它成立只能：
+        ① 把已确认行**伪造成**来自上传件（伪造 provenance，⛔ 禁止）；或
+        ② 把上传行**伪造成**属于已确认来源（同样是伪造，⛔ 禁止）。
+
+        两种做法都会让"这条满足事实来自哪里"变得不可核验，因此本实现
+        **按设计 fail closed**：
+
+        ```text
+        上传行为空或全部没有课程号   ⇒ 保留基础 case 的已确认事实与 rules，
+        （真实成绩单就是这种：PDF     本次**未采用上传行**做满足判定，
+          不提供官方课程号）          并明确标记 `not_bound`（⛔ 不静默）
+        任何一行带有课程号           ⇒ fail closed：
+        （无论是否与已确认课程号一致） ⛔ 上传件与已确认来源是**两个不同的来源**，
+                                      无法在不伪造 provenance 的前提下改写满足事实
+        ```
+
+        ⛔ 任何情况下都不把 `manual_confirmation` / `possibly_equivalent` 提升为满足。
+        """
+
+        rows = tuple(imported.courses)
+        identified = [row for row in rows if row.course_id is not None]
+        if identified:
+            # ⛔ 这里**故意**不区分"课程号是否一致"：上传件与已确认来源是两个来源，
+            #    改写满足事实需要伪造 provenance（见上方说明）。
+            raise CaseADemoInputError(
+                "上传的成绩单包含官方课程号，但本系统无法在**不伪造来源**的前提下"
+                "用上传行改写培养方案已确认的满足事实；⛔ 拒绝继续"
+                "（请改用不含官方课程号的成绩单导出，或以人工认定处理）。"
+            )
+        return self.base_case
 
     def _validate_schedule(
         self,
@@ -125,7 +211,9 @@ class CaseADemoRuntime:
             declared_length=len(pdf_bytes),
             media_type=PDF_MEDIA_TYPE,
         )
-        curriculum = self._curriculum(imported)
+        binding = "not_bound"
+        effective_case = self._completed_binding(imported)
+        curriculum = CurriculumCaseProvider(effective_case)
         tasks = curriculum.get_makeup_tasks()
         offerings = self.course_data.get_course_offerings(semester)
         orchestrator = PlanningOrchestrator(
@@ -138,7 +226,64 @@ class CaseADemoRuntime:
             current_schedule=current_schedule,
             preference=preference,
         )
-        return CaseADemoRun(imported, tasks, offerings, preference, result)
+        # 当前学期结构化换班建议：**只生成**，⛔ 不应用、⛔ 不改 current_schedule。
+        repair_proposals = generate_repair_proposals(
+            semester=semester,
+            current_schedule=current_schedule,
+            offerings=offerings,
+        )
+        # 未来学期课程级路线图：只吃 Curriculum 事实（⛔ 不需要任何 Course Data）。
+        #
+        # ⚠️ 本学期真实教学班按**精确课程身份**绑定到培养方案课程后再传入，
+        #    否则 `elective_current_semester_credit` 永远是 0，
+        #    使 `requirement - completed - current = planned + remaining` 在真实接口上不成立。
+        #
+        # ⛔ `completed_course_ids` 必须传入：已确认满足的课**不能**同时作为"本学期在修"
+        #    再计一次学分（否则同一 curriculum course identity 会被双计）。
+        completed_course_ids = {
+            task.course_id for task in tasks if task.status is MakeupStatus.SATISFIED
+        }
+        current_courses, elective_current_ids, binding_unresolved = bind_current_semester_courses(
+            effective_case,
+            current_schedule,
+            elective_group_id=self.elective_group_id,
+            completed_course_ids=completed_course_ids,
+        )
+        roadmap: AcademicRoadmap | None = None
+        roadmap_note: str | None = None
+        try:
+            roadmap = build_case_a_roadmap(
+                effective_case,
+                makeup_tasks=tasks,
+                current_semester_label=semester,
+                last_curriculum_semester=self.roadmap_last_semester,
+                elective_group_id=self.elective_group_id,
+                current_semester_courses=current_courses,
+                elective_current_semester_course_ids=elective_current_ids,
+            )
+            if binding_unresolved:
+                roadmap = _with_extra_notes(roadmap, binding_unresolved)
+        except CaseARoadmapError as exc:
+            # ⛔ 不编造路线图：如实说明为什么无法构建（只含结构性说明）。
+            roadmap_note = f"未来学期路线图无法构建：{exc}"
+        return CaseADemoRun(
+            imported,
+            tasks,
+            offerings,
+            preference,
+            result,
+            repair_proposals,
+            roadmap,
+            roadmap_note,
+            self.elective_group_id,
+            binding,
+        )
+
+
+def _with_extra_notes(roadmap: AcademicRoadmap, extra: Sequence[str]) -> AcademicRoadmap:
+    """把绑定阶段的 unresolved 如实并入路线图（⛔ 不吞掉、不改其它字段）。"""
+
+    return replace(roadmap, unresolved=(*roadmap.unresolved, *extra))
 
 
 def _with_approved_scope_decisions(base_case: CurriculumCase) -> CurriculumCase:
@@ -210,6 +355,9 @@ def build_case_a_demo_runtime(environment: Mapping[str, str]) -> CaseADemoRuntim
         base_case=base_case,
         course_data=CaseAScopedCourseDataProvider(dataset),
         planner=RestrictedPlannerProvider(),
+        roadmap_last_semester=(environment.get(_ROADMAP_HORIZON) or "").strip() or None,
+        elective_group_id=(environment.get(_ELECTIVE_GROUP) or "").strip()
+        or CASE_A_ELECTIVE_GROUP_ID,
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from app.models.contracts import CourseOffering, DataSource, Preference
 from app.planner import RestrictedPlannerProvider
 from app.services.case_a_demo import (
     CASE_A_DEMO_SCOPE_LABEL,
+    CASE_A_ELECTIVE_GROUP_ID,
     MANUAL_SCHEDULE_SOURCE,
     CaseADemoInputError,
     CaseADemoRuntime,
@@ -135,6 +137,158 @@ def test_pdf_to_curriculum_case_scope_planner_and_api_closed_loop(
         ("MANUAL-1", "01")
     }
     assert body["plan_result"]["risks"] == []
+    # ---- 加法式编排结果（⛔ 不改 frozen PlanResult） ----
+    assert "repair_proposals" in body
+    assert body["repair_proposals"]["semester"] == SEMESTER
+    assert isinstance(body["repair_proposals"]["proposals"], list)
+    # 未显式申请换班时⛔ 不得有任何候选被自动应用
+    assert body["plan_result"]["changes"] == []
+    # 路线图字段总是存在：可构建时是对象，不可构建时是 None + 结构性说明
+    assert "roadmap" in body
+    assert "roadmap_note" in body
+    if body["roadmap"] is None:
+        assert body["roadmap_note"]
+    else:
+        # ⛔ 未来学期不得出现任何教学班 / 排课字段
+        forbidden = {
+            "class_id",
+            "teacher",
+            "weekday",
+            "start_section",
+            "end_section",
+            "weeks",
+            "campus",
+            "classroom",
+            "capacity",
+            "remaining_capacity",
+            "meetings",
+        }
+        for semester in body["roadmap"]["future_semesters"]:
+            for course in semester["courses"]:
+                assert not (set(course) & forbidden), set(course) & forbidden
+
+
+def test_plan_response_roadmap_fails_closed_without_term_facts(
+    runtime_and_pdf: tuple[CaseADemoRuntime, bytes],
+) -> None:
+    """合成的培养方案没有学期事实 ⇒ 路线图**不猜**：`roadmap=null` + 结构性说明。
+
+    ⛔ 这不是失败路径的"兜底"，而是 fail closed 的正确行为：
+    没有学期事实时绝不允许编造未来学期。
+    """
+
+    runtime, pdf = runtime_and_pdf
+    app.dependency_overrides[get_case_a_demo_runtime] = lambda: runtime
+    try:
+        body = (
+            TestClient(app)
+            .post(
+                "/api/v1/case-a-demo/plan",
+                json={
+                    "semester": SEMESTER,
+                    "transcript_pdf_base64": base64.b64encode(pdf).decode("ascii"),
+                    "current_schedule": [],
+                    "manual_schedule_attested": False,
+                    "preference": {
+                        "max_credit": None,
+                        "avoid_cross_campus": False,
+                        "preferred_courses": [],
+                        "avoid_times": [],
+                        "notes": None,
+                    },
+                },
+            )
+            .json()
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert body["roadmap"] is None
+    assert body["roadmap_note"]
+    assert "路线图" in body["roadmap_note"]
+
+
+def test_plan_response_exposes_completed_binding_at_the_api_layer(
+    runtime_and_pdf: tuple[CaseADemoRuntime, bytes],
+) -> None:
+    """API 层必须暴露 `completed_binding` / `completed_binding_note`（⛔ 不只是 runtime 对象）。
+
+    真实成绩单没有官方课程号 ⇒ 必须是 `not_bound` + 明确说明，
+    这样前端才能向用户**可见地**声明"上传的 PDF 没有参与满足判定"。
+    """
+
+    runtime, pdf = runtime_and_pdf
+    app.dependency_overrides[get_case_a_demo_runtime] = lambda: runtime
+    try:
+        response = TestClient(app).post(
+            "/api/v1/case-a-demo/plan",
+            json={
+                "semester": SEMESTER,
+                "transcript_pdf_base64": base64.b64encode(pdf).decode("ascii"),
+                "current_schedule": [],
+                "manual_schedule_attested": False,
+                "preference": {
+                    "max_credit": None,
+                    "avoid_cross_campus": False,
+                    "preferred_courses": [],
+                    "avoid_times": [],
+                    "notes": None,
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["completed_binding"] == "not_bound"
+    note = body["completed_binding_note"]
+    assert note, "not_bound must carry a user-facing explanation"
+    # ⛔ 说明里不得泄漏任何个人数据 / 具体分数
+    assert "姓名" not in note
+    assert "学号" not in note
+    assert "GPA" not in note
+    assert not re.search(r"\b\d{2,3}(\.\d+)?\s*分\b", note), "must not quote any score"
+    assert "官方课程号" in note
+
+
+def test_repair_apply_requires_full_identity_and_revalidates(
+    runtime_and_pdf: tuple[CaseADemoRuntime, bytes],
+) -> None:
+    """显式换班：完整身份 + 重新校验；⛔ 不给身份就拒绝、⛔ 跨课程替换被拒。"""
+
+    runtime, pdf = runtime_and_pdf
+    app.dependency_overrides[get_case_a_demo_runtime] = lambda: runtime
+    client = TestClient(app)
+    base = {
+        "semester": SEMESTER,
+        "current_schedule": [_manual().model_dump(mode="json")],
+        "manual_schedule_attested": True,
+    }
+    try:
+        # 缺 to_class_id ⇒ 请求本身不成立（422），⛔ 不接受"采用第一条建议"
+        missing = client.post(
+            "/api/v1/case-a-demo/repair/apply",
+            json={**base, "course_id": "MANUAL-1", "from_class_id": "01"},
+        )
+        assert missing.status_code == 422
+
+        # 身份完整但候选不属于该课程 ⇒ 后端拒绝，且⛔ 不改课表
+        rejected = client.post(
+            "/api/v1/case-a-demo/repair/apply",
+            json={
+                **base,
+                "course_id": "MANUAL-1",
+                "from_class_id": "01",
+                "to_class_id": "TGT-ALG-01",
+            },
+        )
+        assert rejected.status_code == 200, rejected.text
+        payload = rejected.json()
+        assert payload["applied"] is False
+        assert payload["schedule"] == base["current_schedule"]
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_case_scope_offerings_endpoint_uses_same_runtime(

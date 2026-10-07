@@ -20,8 +20,13 @@
 
 ### Planner / Path Repair
 负责时间 / 节次 / 周次冲突检测、当前课表冲突分析、替代教学班搜索、硬约束 / 软约束建模、
-OR-Tools CP-SAT 等确定性约束求解、Path Repair、无解 / 部分可行处理与 PlanResult 生成。
+确定性约束求解、Path Repair、无解 / 部分可行处理与 PlanResult 生成。
 输出“在现实约束下怎么排进去”。
+
+> ⚠️ **当前实际实现（不得夸大）**：Planner 是**受限确定性规划** ——
+> 先修拓扑序 + 截止学期硬约束 + 建议学期偏好 + 每学期学分预算的**启发式**。
+> ⛔ **不是** OR-Tools CP-SAT / ILP 全局最优求解，⛔ 没有评分权重，⛔ 不自动换班，
+> ⛔ 不在生成建议时自动应用（换班必须由用户**显式确认**后才生效）。
 
 Planner 消费 Curriculum 提供的补修任务，**不得为求解方便自行重写课程认定或学业优先级规则**。
 
@@ -69,13 +74,21 @@ Planner 消费 Curriculum 提供的补修任务，**不得为求解方便自行�
 
 ## 5. 当前建议技术
 
-- Python / FastAPI / Pydantic
-- NetworkX
-- Google OR-Tools CP-SAT
-- PostgreSQL
-- JavaScript/TypeScript
-- Chrome Extension Manifest V3
-- Vue 3 + TypeScript + Vite（前端技术栈已由负责人确认）
-- LLM Structured Output / Tool Calling
+> ⚠️ **本节是"建议 / 候选"清单，不是"已上线"清单。**
+> 某一项出现在这里**不表示**它已经在代码里使用；
+> 判断实际实现状态请看 `docs/status/<module>.md`。
+
+- Python / FastAPI / Pydantic（**已使用**）
+- JavaScript/TypeScript（**已使用**）
+- Vue 3 + TypeScript + Vite（**已使用**；前端技术栈已由负责人确认）
+- NetworkX（**候选；当前未使用**）
+- Google OR-Tools CP-SAT（**候选；当前未使用** ——
+  当前 Planner 是**确定性启发式**：先修拓扑序 + 截止学期硬约束 + 建议学期偏好 + 每学期学分预算，
+  ⛔ 不是 CP-SAT / ILP 全局最优求解）
+- PostgreSQL（**候选；当前未使用** —— 本地 Course Data 使用 SQLite）
+- Chrome Extension Manifest V3（**候选；当前未使用** ——
+  当前采集是**浏览器内显式授权调用**，不是扩展）
+- LLM Structured Output / Tool Calling（**候选；当前未接入** ——
+  Case A 的编排是**固定工具编排**，AI 增强待接入）
 
 任何核心技术替换需人工确认并记录。

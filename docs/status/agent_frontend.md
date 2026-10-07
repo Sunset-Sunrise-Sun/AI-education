@@ -1,6 +1,26 @@
 # Agent / Frontend 当前状态
 
-> 最后更新：2026-10-05（**Frontend Real E2E Wiring Preparation 已实现，待 Architecture Review**：
+> 最后更新：Case A 学业路径规划集成（**已实现，待 Architecture Review**）
+> 前端已接上真实后端数据，不再只是展示壳：
+> - `PendingAdjustments.vue` 展示后端返回的**结构化换班建议**
+>   （当前教学班 → 候选教学班；候选时间 / 校区 / 教室 / 教师按 identity join 真实
+>   `CourseOffering` 得到；教师缺失显示「任课教师：待核验」），
+>   新增「采用调整 / 暂不调整」：**只有真实结构化候选存在时**才出现「采用调整」，
+>   且只有用户**主动点击**才会调用 `POST /api/v1/case-a-demo/repair/apply`；
+>   ⛔ 不从 `reason` / `unresolved[].message` 解析任何业务字段，
+>   ⛔ 不自行计算替代教学班，⛔ 不乐观更新（课表只采用后端返回结果）；
+> - `FutureRoadmapView.vue` 接真实 `AcademicRoadmap`：真实学期标签 +
+>   **培养方案第 N 学期** + 课程名 / 课程号 / 学分 / 必修或选修 + 安排原因 +
+>   学期总学分 + **选修学分进度** + warnings / unresolved；
+>   ⛔ 未来学期**绝不**显示教学班号 / 教师 / 星期 / 节次 / 教室 / 校区 / 容量；
+> - 换班成功后**重新生成方案**，从而刷新本学期周课表与后续建议（仍是后端计算）；
+> - 保留 A 已完成的全部能力：批量输入、搜索 ≤ 20 条、当前课表摘要、
+>   学分未知处理、手工确认作废、截图导入壳、教师未知语义、完整教学班身份；
+>   `meetings = []` 仍表示 **UNKNOWN / 排课信息待核验**，⛔ 不表示"没有课"或"无冲突"。
+> 验证：`npx vitest run` → **233 passed**；`npx vue-tsc --noEmit` → exit 0；
+> `npx vite build` → 成功。⛔ 未改 `/schemas/`、`/docs/interfaces/`、公共契约或后端冻结语义。
+
+> 上一轮：Frontend Real E2E Wiring Preparation 已实现，待 Architecture Review：
 > 已把 Real Planning 的失败状态**产品化**（503 `real_pipeline_not_configured` 明确显示为
 > "**真实规划运行时尚未完成装配**"，**不是**笼统的"请求失败"，且**不 fallback 到 Mock**）；
 > 422 / 500 / network 分别有独立文案；`PlanApiError` 携带 `kind` / `status` / `code` / `detail`；

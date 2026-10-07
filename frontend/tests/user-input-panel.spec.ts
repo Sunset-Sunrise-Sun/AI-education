@@ -10,11 +10,30 @@ import { mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, ref } from 'vue'
 import CurrentScheduleInput from '@/components/CurrentScheduleInput.vue'
+import IntentCourseSearch from '@/components/IntentCourseSearch.vue'
 import PreferenceForm from '@/components/PreferenceForm.vue'
 import UserInputPanel from '@/components/UserInputPanel.vue'
 import { createDefaultUserInputForm } from '@/state/userInput'
 import type { UserInputForm } from '@/state/userInput'
 import type { CourseOffering } from '@/types/contracts'
+
+/** 构造一条教学班记录，用于意向课程（课程级）测试。 */
+function intentOffering(
+  courseId: string,
+  courseName: string,
+  credit: number,
+  classId: string,
+): CourseOffering {
+  return {
+    course_id: courseId,
+    course_name: courseName,
+    class_id: classId,
+    semester: '2026-1',
+    credit,
+    meetings: [{ weekday: 1, start_section: 1, end_section: 2, weeks: [1, 2, 3] }],
+    data_source: 'real',
+  }
+}
 
 const OFFERINGS: CourseOffering[] = [
   {
@@ -161,25 +180,31 @@ describe('学期与偏好字段可编辑', () => {
     expect(form.value.preference.avoidTimes).toHaveLength(1)
   })
 
-  it('preferred_courses 可维护（加 / 去重 / 删）', async () => {
-    const { wrapper, form } = mountPanel()
+  it('意向课程改由课程级搜索维护（加 / 去重 / 删），仍写入 preferredCourses', async () => {
+    // Phase 1：Case A 页面不再提供“输入课程号”这种技术交互，
+    // 意向课程改由课程级搜索（IntentCourseSearch）写入同一个 preference.preferredCourses。
+    const offerings: CourseOffering[] = [
+      intentOffering('CSE201', 'Python 程序设计', 3, 'CSE201-01'),
+      intentOffering('CSE201', 'Python 程序设计', 3, 'CSE201-02'),
+      intentOffering('MAR108', '人工智能导论', 2, 'MAR108-01'),
+    ]
+    const wrapper = mount(IntentCourseSearch, {
+      props: { offerings, selectedCourseIds: [] as string[] },
+    })
 
-    await wrapper.find('[data-testid="preferred-course-input"]').setValue('CSE201')
-    await wrapper.find('[data-testid="preferred-course-add"]').trigger('click')
-    expect(form.value.preference.preferredCourses).toEqual(['CSE201'])
+    await wrapper.get('[data-testid="case-a-intent-input"]').setValue('Python')
+    // 课程级去重：同一 course_id 的两个教学班只产生一条结果
+    expect(wrapper.findAll('[data-testid="case-a-intent-result"]')).toHaveLength(1)
+    await wrapper.get('[data-testid="case-a-intent-add"]').trigger('click')
+    expect(wrapper.emitted('add')?.[0]).toEqual(['CSE201'])
 
-    // 重复添加不产生第二条
-    await wrapper.find('[data-testid="preferred-course-input"]').setValue('CSE201')
-    await wrapper.find('[data-testid="preferred-course-add"]').trigger('click')
-    expect(form.value.preference.preferredCourses).toEqual(['CSE201'])
+    // 已加入后按钮禁用，重复加入不会再次触发
+    await wrapper.setProps({ selectedCourseIds: ['CSE201'] })
+    expect(wrapper.get('[data-testid="case-a-intent-add"]').attributes('disabled')).toBeDefined()
 
-    await wrapper.find('[data-testid="preferred-course-input"]').setValue('MAR108')
-    await wrapper.find('[data-testid="preferred-course-add"]').trigger('click')
-    expect(form.value.preference.preferredCourses).toEqual(['CSE201', 'MAR108'])
-    expect(wrapper.findAll('[data-testid="preferred-course-chip"]')).toHaveLength(2)
-
-    await wrapper.findAll('.uig-chip-remove')[0].trigger('click')
-    expect(form.value.preference.preferredCourses).toEqual(['MAR108'])
+    // 移除通过父级回调（组件只发事件，不自行改状态）
+    await wrapper.get('.intent__chip-remove').trigger('click')
+    expect(wrapper.emitted('remove')?.[0]).toEqual(['CSE201'])
   })
 })
 
@@ -210,7 +235,15 @@ describe('current_schedule 输出为 CourseOffering[]', () => {
 
   it('空课表合法，且给出中性空状态', () => {
     const wrapper = mount(CurrentScheduleInput, {
-      props: { offerings: [], selected: [], dataSourceLabel: 'Mock' },
+      props: {
+        offerings: [],
+        selected: [],
+        dataSourceLabel: 'Mock',
+        // ⚠️ 与组件契约一致：这两个 prop 是**必填**的。
+        //    省略它们只会产生 Vue 警告，测试仍可能通过 —— 那种"靠警告换来的绿"没有意义。
+        semester: '2026-1',
+        manualProvenanceLabel: '本人手工录入，未经学校核验',
+      },
     })
     expect(wrapper.find('[data-testid="schedule-empty"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('当前课表可以留空继续')
@@ -218,7 +251,13 @@ describe('current_schedule 输出为 CourseOffering[]', () => {
 
   it('meetings=[] 的教学班沿用 DG-07D 中性文案，不推断无冲突', () => {
     const wrapper = mount(CurrentScheduleInput, {
-      props: { offerings: OFFERINGS, selected: [], dataSourceLabel: 'Mock' },
+      props: {
+        offerings: OFFERINGS,
+        selected: [],
+        dataSourceLabel: 'Mock',
+        semester: '2026-1',
+        manualProvenanceLabel: '本人手工录入，未经学校核验',
+      },
     })
     expect(wrapper.text()).toContain('当前数据中无排课信息')
     for (const forbidden of ['无冲突', '无需上课', '异步课程', '尚未排课']) {
@@ -283,11 +322,12 @@ describe('XLSX 文件选择门', () => {
 })
 
 describe('PreferenceForm 与只读展示分离', () => {
-  it('表单只编辑 5 个公共字段，不新增字段名', () => {
+  it('界面不出现任何内部字段名（Phase 1 学生化文案）', () => {
     const wrapper = mount(PreferenceForm, {
       props: { form: createDefaultUserInputForm() },
     })
     const text = wrapper.text()
+    // ⛔ 用户主界面不得出现公共 Preference 的技术字段名
     for (const field of [
       'max_credit',
       'avoid_cross_campus',
@@ -295,7 +335,12 @@ describe('PreferenceForm 与只读展示分离', () => {
       'avoid_times',
       'notes',
     ]) {
-      expect(text).toContain(field)
+      expect(text).not.toContain(field)
     }
+    // 学生化文案必须存在，且仍然编辑同样的 5 个字段
+    expect(text).toContain('本学期最多希望修多少学分？')
+    expect(text).toContain('尽量避免跨校区上课')
+    expect(text).toContain('我不方便上课的时间')
+    expect(text).toContain('还有什么希望系统考虑？')
   })
 })
