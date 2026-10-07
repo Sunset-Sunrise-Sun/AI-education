@@ -31,6 +31,15 @@ const props = defineProps<{
   currentSchedule: readonly CourseOffering[]
   makeupTasks: readonly MakeupTask[]
   preferredCourses: readonly string[]
+  /**
+   * **确知**属于本专业选修组（`CSE-ELECTIVE-POOL`）的课程号。
+   *
+   * ⚠️ 必须由调用方用**精确课程身份**给出（来自 Curriculum 的选修组成员）。
+   *    ⛔ 本组件不得用"不是必修就当作专业选修"之类的反推来猜类别。
+   */
+  electivePoolCourseIds?: readonly string[]
+  /** 用户已加入本学期方案的选修（精确身份；同样算作专业选修证据）。 */
+  appliedElectiveCourseIds?: readonly string[]
 }>()
 
 const view = computed(() => buildWeeklySchedule(props.planResult, props.offerings, props.semester))
@@ -48,17 +57,49 @@ function tagsFor(block: ScheduleBlock): CourseTag[] {
 }
 
 /**
- * 课程类别标签（来自**真实数据**，⛔ 不按课程名/编号猜测）。
+ * 课程类别标签 —— **只在有明确证据时**才给出。
  *
- * - `makeupTasks[].status === 'required'` ⇒ 必修（培养方案明确要求补修）
- * - 其余出现在课表里的课程 ⇒ 专业选修
- *   （本 Case 的课表由培养方案课程与选修池候选构成，因此这个二分是如实的）
+ * ```text
+ * 必修     <= makeupTasks 里该课程存在 status === 'required' 的显式要求
+ * 专业选修 <= 该精确 course_id 确知属于 CSE-ELECTIVE-POOL，
+ *             或它是用户已加入方案的选修（精确身份）
+ * 其他     <= ⛔ 不显示任何业务类别标签
+ * ```
+ *
+ * ⛔ **禁止**用 `status !== 'required' ⇒ 专业选修` 这种反推：
+ *    它会把 `manual_confirmation`、`possibly_equivalent`、`satisfied`
+ *    以及根本不在这两个集合里的课程统统误标为"专业选修"。
+ *
+ * ⛔ 也不猜"公选 / 跨专业 / 实验"：当前数据没有支持它们的证据。
  */
-function categoryOf(block: ScheduleBlock): { key: string; label: string } {
+function categoryOf(block: ScheduleBlock): { key: string; label: string } | null {
   const task = props.makeupTasks.find((item) => item.course_id === block.courseId)
   if (task?.status === 'required') return { key: 'required', label: '必修' }
-  return { key: 'elective', label: '专业选修' }
+
+  const inPool = (props.electivePoolCourseIds ?? []).includes(block.courseId)
+  const applied = (props.appliedElectiveCourseIds ?? []).includes(block.courseId)
+  if (inPool || applied) return { key: 'elective', label: '专业选修' }
+
+  // 证据不足 ⇒ 不给业务类别（⛔ 不猜）
+  return null
 }
+
+/** 模板用：某个格子的课程类别（无块/无证据时返回 null）。 */
+function categoryAt(weekday: number, section: number): { key: string; label: string } | null {
+  const block = blockAt(weekday, section)
+  return block ? categoryOf(block) : null
+}
+
+/** 当前课表里**实际出现**的类别（图例只列这些）。 */
+const presentCategories = computed(() => {
+  const seen = new Set<string>()
+  for (const slot of view.value.slots) {
+    if (!slot.block) continue
+    const category = categoryOf(slot.block)
+    if (category) seen.add(category.key)
+  }
+  return seen
+})
 
 function teacherText(teacher: string | null): string {
   const value = teacher?.trim()
@@ -89,23 +130,19 @@ function blockAt(weekday: number, section: number): ScheduleBlock | null {
       ⛔ 不代表已经完成选课或注册。
     </p>
 
-    <!-- 图例：让用户一眼看懂标签含义 -->
-    <ul class="weekly__legend" data-testid="case-a-weekly-legend">
-      <li>
+    <!-- 图例：⛔ 只列**当前课表里实际出现**的类别，不预告不存在的类别 -->
+    <ul
+      v-if="presentCategories.size > 0"
+      class="weekly__legend"
+      data-testid="case-a-weekly-legend"
+    >
+      <li v-if="presentCategories.has('required')">
         <span class="weekly__category weekly__category--required">必修</span>
-        培养方案明确要求
+        培养方案明确要求（makeupTasks 里状态为 required）
       </li>
-      <li>
+      <li v-if="presentCategories.has('elective')">
         <span class="weekly__category weekly__category--elective">专业选修</span>
-        专业选修组课程或你已加入方案的选修
-      </li>
-      <li>
-        <span class="weekly__tag weekly__tag--current">当前</span>
-        你本人当前课表里已有
-      </li>
-      <li>
-        <span class="weekly__tag weekly__tag--makeup">补修</span>
-        需要补修的课程
+        确知属于专业选修组，或你已加入本学期方案的选修
       </li>
     </ul>
 
@@ -140,11 +177,12 @@ function blockAt(weekday: number, section: number): ScheduleBlock | null {
                 <div class="weekly__block-head">
                   <strong>{{ blockAt(day.weekday, section)!.courseName }}</strong>
                   <span
+                    v-if="categoryAt(day.weekday, section)"
                     class="weekly__category"
-                    :class="`weekly__category--${categoryOf(blockAt(day.weekday, section)!).key}`"
+                    :class="`weekly__category--${categoryAt(day.weekday, section)!.key}`"
                     data-testid="case-a-weekly-category"
                   >
-                    {{ categoryOf(blockAt(day.weekday, section)!).label }}
+                    {{ categoryAt(day.weekday, section)!.label }}
                   </span>
                   <span
                     v-for="tag in tagsFor(blockAt(day.weekday, section)!)"

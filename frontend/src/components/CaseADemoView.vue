@@ -322,6 +322,21 @@ function reconcilePlanningIntent(): void {
   selectedElectives.value = kept
 }
 
+/**
+ * 课表类别标签的**证据来源**（⛔ 只用精确课程身份，不做反推）。
+ *
+ * - 专业选修组成员：`current_elective_recommendations` 就是
+ *   选修组成员 ∩ 本学期已接受教学班的精确交集（服务端按 `course_id` 精确匹配），
+ *   因此它的 `course_id` 集合**确知**属于 `CSE-ELECTIVE-POOL`；
+ * - 已加入方案的选修：用户显式选择过的精确身份，同样计入专业选修证据。
+ */
+const electivePoolCourseIds = computed(() =>
+  (result.value?.current_elective_recommendations ?? []).map((item) => item.course_id),
+)
+const appliedElectiveCourseIds = computed(() =>
+  (result.value?.applied_elective_sections ?? []).map((item) => item.course_id),
+)
+
 /* 课表来源区分（⛔ 建议/草稿不得说成已选课） */
 const appliedElectiveCount = computed(
   () => result.value?.applied_elective_sections.length ?? 0,
@@ -808,6 +823,8 @@ onMounted(loadOfferings)
             :current-schedule="effectiveSchedule"
             :makeup-tasks="result.makeup_tasks"
             :preferred-courses="preferredCourses"
+            :elective-pool-course-ids="electivePoolCourseIds"
+            :applied-elective-course-ids="appliedElectiveCourseIds"
           />
           <!-- 合法的换班动作留在**课程上下文**里（⛔ 只有 CLEAR 才可点） -->
           <PendingAdjustments

@@ -393,64 +393,164 @@ describe('4. 局部更新体验', () => {
   })
 })
 
-describe('6. 课表类别标签与图例', () => {
-  it('课表有图例，且课块带类别标签', () => {
-    const wrapper = mount(WeeklyScheduleView, {
-      props: {
-        planResult: planResponse().plan_result as never,
-        offerings: OFFERINGS as never,
+describe('6. 课表类别标签：只在有明确证据时标注（render regression）', () => {
+  /** 造一个只含指定课程的课表。 */
+  function mountSchedule(options: {
+    courseId: string
+    courseName: string
+    meetings?: { weekday: number; start_section: number; end_section: number; weeks: number[] }[]
+    makeupTasks?: unknown[]
+    electivePoolCourseIds?: string[]
+    appliedElectiveCourseIds?: string[]
+  }) {
+    const offerings = [
+      {
+        course_id: options.courseId,
+        course_name: options.courseName,
+        class_id: '01',
         semester: '2026-1',
-        currentSchedule: [] as never,
-        makeupTasks: planResponse().makeup_tasks as never,
-        preferredCourses: [] as never,
+        credit: 3,
+        meetings:
+          options.meetings ?? [
+            { weekday: 1, start_section: 1, end_section: 2, weeks: [1] },
+          ],
+        data_source: 'real',
       },
-    })
-    const legend = wrapper.get('[data-testid="case-a-weekly-legend"]').text()
-    expect(legend).toContain('必修')
-    expect(legend).toContain('专业选修')
-
-    const categories = wrapper.findAll('[data-testid="case-a-weekly-category"]')
-    expect(categories.length).toBeGreaterThan(0)
-    expect(categories.map((c) => c.text())).toContain('专业选修')
-  })
-
-  it('必修课程显示为「必修」类别（来自 makeupTasks.status === required）', () => {
-    const wrapper = mount(WeeklyScheduleView, {
+    ]
+    return mount(WeeklyScheduleView, {
       props: {
         planResult: {
           status: 'feasible',
-          selected_classes: [{ course_id: 'CSE204', class_id: '01' }],
+          selected_classes: [{ course_id: options.courseId, class_id: '01' }],
           changes: [],
           risks: [],
           unresolved: [],
           objective_summary: null,
         } as never,
-        offerings: [
-          {
-            course_id: 'CSE204',
-            course_name: '数据结构',
-            class_id: '01',
-            semester: '2026-1',
-            credit: 3,
-            meetings: [{ weekday: 4, start_section: 1, end_section: 2, weeks: [1] }],
-            data_source: 'real',
-          },
-        ] as never,
+        offerings: offerings as never,
         semester: '2026-1',
         currentSchedule: [] as never,
-        makeupTasks: [
-          {
-            course_id: 'CSE204',
-            course_name: '数据结构',
-            credit: 3,
-            status: 'required',
-            prerequisites: [],
-          },
-        ] as never,
+        makeupTasks: (options.makeupTasks ?? []) as never,
         preferredCourses: [] as never,
+        electivePoolCourseIds: options.electivePoolCourseIds ?? [],
+        appliedElectiveCourseIds: options.appliedElectiveCourseIds ?? [],
       },
     })
-    const categories = wrapper.findAll('[data-testid="case-a-weekly-category"]')
-    expect(categories.map((c) => c.text())).toContain('必修')
+  }
+
+  function categoryLabels(wrapper: ReturnType<typeof mount>): string[] {
+    return wrapper.findAll('[data-testid="case-a-weekly-category"]').map((n) => n.text())
+  }
+
+  it('1) 显式 required ⇒ 必修', () => {
+    const wrapper = mountSchedule({
+      courseId: 'CSE204',
+      courseName: '数据结构',
+      makeupTasks: [
+        { course_id: 'CSE204', course_name: '数据结构', credit: 3, status: 'required', prerequisites: [] },
+      ],
+    })
+    expect(categoryLabels(wrapper)).toEqual(['必修'])
+  })
+
+  it('2) 确知属于专业选修组 ⇒ 专业选修', () => {
+    const wrapper = mountSchedule({
+      courseId: 'CSE335',
+      courseName: '数据库系统原理',
+      electivePoolCourseIds: ['CSE335'],
+    })
+    expect(categoryLabels(wrapper)).toEqual(['专业选修'])
+  })
+
+  it('2b) 用户已加入方案的选修（精确身份）⇒ 专业选修', () => {
+    const wrapper = mountSchedule({
+      courseId: 'CSE337',
+      courseName: '数据库系统实验',
+      appliedElectiveCourseIds: ['CSE337'],
+    })
+    expect(categoryLabels(wrapper)).toEqual(['专业选修'])
+  })
+
+  it('3) ⛔ manual_confirmation 的课程不得被标成专业选修', () => {
+    // 这正是 Codex 指出的 blocker：status !== required 曾被反推成"专业选修"
+    const wrapper = mountSchedule({
+      courseId: 'CSE201',
+      courseName: '程序设计II',
+      makeupTasks: [
+        {
+          course_id: 'CSE201',
+          course_name: '程序设计II',
+          credit: 3,
+          status: 'manual_confirmation',
+          prerequisites: [],
+        },
+      ],
+    })
+    expect(categoryLabels(wrapper)).toEqual([])
+    expect(wrapper.text()).not.toContain('专业选修')
+  })
+
+  it('3b) ⛔ possibly_equivalent / satisfied 同样不得被标成专业选修', () => {
+    for (const status of ['possibly_equivalent', 'satisfied']) {
+      const wrapper = mountSchedule({
+        courseId: 'CSE202',
+        courseName: '示例课程',
+        makeupTasks: [
+          { course_id: 'CSE202', course_name: '示例课程', credit: 3, status, prerequisites: [] },
+        ],
+      })
+      expect(categoryLabels(wrapper), status).toEqual([])
+    }
+  })
+
+  it('4) 未分类课程 ⇒ 不显示任何业务类别标签', () => {
+    const wrapper = mountSchedule({
+      courseId: 'UNCLASSIFIED-1',
+      courseName: '未分类课程',
+    })
+    expect(categoryLabels(wrapper)).toEqual([])
+  })
+
+  it('5) 图例只列**实际出现**的类别（无必修时不提必修）', () => {
+    const electiveOnly = mountSchedule({
+      courseId: 'CSE335',
+      courseName: '数据库系统原理',
+      electivePoolCourseIds: ['CSE335'],
+    })
+    const legend = electiveOnly.get('[data-testid="case-a-weekly-legend"]').text()
+    expect(legend).toContain('专业选修')
+    expect(legend).not.toContain('必修')
+
+    const requiredOnly = mountSchedule({
+      courseId: 'CSE204',
+      courseName: '数据结构',
+      makeupTasks: [
+        { course_id: 'CSE204', course_name: '数据结构', credit: 3, status: 'required', prerequisites: [] },
+      ],
+    })
+    const legend2 = requiredOnly.get('[data-testid="case-a-weekly-legend"]').text()
+    expect(legend2).toContain('必修')
+    expect(legend2).not.toContain('专业选修')
+  })
+
+  it('5b) 没有任何类别的证据 ⇒ 完全不渲染图例', () => {
+    const wrapper = mountSchedule({ courseId: 'UNCLASSIFIED-1', courseName: '未分类课程' })
+    expect(wrapper.find('[data-testid="case-a-weekly-legend"]').exists()).toBe(false)
+  })
+
+  it('⛔ 不猜公选 / 跨专业 / 实验', () => {
+    const wrapper = mountSchedule({
+      courseId: 'CSE103',
+      courseName: '程序设计I实验',
+      makeupTasks: [
+        { course_id: 'CSE103', course_name: '程序设计I实验', credit: 1, status: 'manual_confirmation', prerequisites: [] },
+      ],
+    })
+    const text = wrapper.text()
+    for (const guessed of ['公选', '公共选修', '跨专业']) {
+      expect(text, guessed).not.toContain(guessed)
+    }
+    // 课程名里含"实验"，但⛔ 不因此产出"实验"类别标签
+    expect(categoryLabels(wrapper)).toEqual([])
   })
 })
