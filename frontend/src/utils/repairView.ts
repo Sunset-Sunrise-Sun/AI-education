@@ -87,8 +87,13 @@ const BLOCKER_LABEL: Record<CourseRepairBlocker['reasonKind'], string> = {
   other: '其它原因',
 }
 
+/**
+ * 从文本里提取课程号（仅用于分组，⛔ 不构造业务事实）。
+ *
+ * ⚠️ 必须**大写字母开头**：`schedule_unknown` 这类小写机器码不得被当成课程号。
+ */
 function courseIdFrom(text: string): string | null {
-  const match = /([A-Z]{2,}[A-Z0-9]*\d{2,}[A-Z]?)/.exec(text)
+  const match = /\b([A-Z]{2,}[0-9]{2,}[A-Z]?)\b/.exec(text)
   return match ? match[1] : null
 }
 

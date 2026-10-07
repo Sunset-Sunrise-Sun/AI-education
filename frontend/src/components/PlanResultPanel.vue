@@ -5,17 +5,16 @@ import {
   PLAN_STATUS_LABEL,
   RISK_LEVEL_LABEL,
   displayOrDash,
-  unresolvedTypeLabel,
-  unresolvedTypeTagClass,
 } from '../utils/labels'
 
 /**
  * 展示 Planner 模块输出的最终方案 PlanResult。
  *
  * 核心设计边界：
- * - status / selected_classes / changes / risks / unresolved / objective_summary 全部原样展示；
- * - 满足 unresolved 规范：支持 manual_confirmation、missing_data、schedule_unknown 等多种类型，
- *   并提供通用 fallback，严禁所有 unresolved 一律归为“人工确认”；
+ * - status / selected_classes / changes / risks / objective_summary 原样展示；
+ * - ⛔ `unresolved` **不再**在本组件渲染明细：待确认事项统一由「需要你处理」
+ *   （`PendingIssuesCenter`）以归一化中文展示，避免重复与机器码外泄；
+ *   本组件只给出「还有 N 项，见需要你处理」的指引；
  * - 强化 changes 调班前后对比与原因阐释；
  * - 明确划分风险等级（高/中/低）。
  */
@@ -186,42 +185,24 @@ function courseLabel(courseId: string): string {
       <p v-else class="empty-state">本次 PlanResult 未返回风险项。</p>
     </section>
 
-    <!-- 4. 未解决事项 unresolved（重点展示） -->
-    <section class="plan-section plan-section--unresolved">
+    <!-- 4. 未解决事项：⛔ 本组件不再直接渲染 plan_result.unresolved。
+         待确认事项统一由「需要你处理」（PendingIssuesCenter）以归一化中文展示，
+         本组件只保留方案摘要，避免同一事项在两处重复且泄露机器码。 -->
+    <section v-if="planResult.unresolved.length > 0" class="plan-section plan-section--unresolved">
       <div class="plan-section__header">
         <h3 class="plan-section__title text-warning">
           <span class="section-icon">⚠️</span>
-          待解决与待确认事项 (unresolved)
+          待确认事项
         </h3>
         <span class="plan-section__badge badge-warning">
-          {{ planResult.unresolved.length }} 项需关注
+          {{ planResult.unresolved.length }} 项
         </span>
       </div>
 
-      <div class="unresolved-alert-box">
-        <strong>重要提示：</strong>
-        以下事项系统<strong>不会自行做假定或强行下结论</strong>。具体含义以每条 unresolved 的 type 与 message 为准；未知类型也会原样保留并使用通用展示。
-      </div>
-
-      <div v-if="planResult.unresolved.length > 0" class="unresolved-list">
-        <article
-          v-for="(item, index) in planResult.unresolved"
-          :key="`${item.type}-${index}`"
-          class="unresolved-card"
-        >
-          <div class="unresolved-card__meta">
-            <span class="tag" :class="unresolvedTypeTagClass(item.type)">
-              {{ unresolvedTypeLabel(item.type) }}
-            </span>
-            <span class="mono tag tag--type-raw" title="后端原始类型字段">
-              type: {{ item.type }}
-            </span>
-          </div>
-          <p class="unresolved-card__message">{{ item.message }}</p>
-        </article>
-      </div>
-      <p v-else class="empty-state">
-        本次返回的未决事项为空（仅表示<strong>没有未决条目</strong>，不构成可执行性或排课结论）。
+      <p class="empty-state" data-testid="plan-result-unresolved-delegated">
+        本方案仍有 {{ planResult.unresolved.length }} 项需要你确认。为便于阅读，
+        这些事项已统一放在页面「<strong>需要你处理</strong>」区域，并已翻译为中文说明；
+        ⛔ 这里不再重复列出，避免同一事项出现两次。
       </p>
     </section>
   </div>

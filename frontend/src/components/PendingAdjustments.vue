@@ -49,12 +49,10 @@ const emit = defineEmits<{
   ): void
 }>()
 
-/** 用户本地「暂不调整」的课程号（纯视图状态）。 */
+/** 已接受「保留当前班」的课程号（纯视图状态）。 */
 const dismissedCourses = ref<Set<string>>(new Set())
 /** 已展开全部候选的课程号。 */
 const expandedCourses = ref<Set<string>>(new Set())
-/** 「无法生成建议」详情是否展开。 */
-const blockersOpen = ref(false)
 
 function toggleExpand(courseId: string): void {
   const next = new Set(expandedCourses.value)
@@ -78,16 +76,24 @@ const repairView = computed(() =>
   ),
 )
 
-const visibleGroups = computed(() =>
-  repairView.value.groups.filter((group) => !dismissedCourses.value.has(group.courseId)),
+/**
+ * 本组件只负责**真正可执行**的换班：至少有一个已确认无冲突（CLEAR）候选。
+ *
+ * ⚠️ 只有 UNKNOWN/CONFLICT 候选的课程不是"可执行动作"（用户点下去也没有可靠结果），
+ * 它们会由页面「需要你处理」里的归一化条目以中文说明，⛔ 不在这里重复。
+ */
+const actionableGroups = computed(() =>
+  repairView.value.groups.filter(
+    (group) => group.hasConfirmableCandidate && !dismissedCourses.value.has(group.courseId),
+  ),
 )
 
-const blockerCount = computed(() => repairView.value.blockers.length)
-
-/** 只有真实结构化候选才允许出现「采用调整」。 */
-const hasAnything = computed(
-  () => visibleGroups.value.length > 0 || blockerCount.value > 0,
-)
+/**
+ * ⛔ 非可执行的候选组与「无法生成建议」清单**不在这里**渲染：
+ * 它们已由 `normalizedIssues` 归一化为中文条目，统一在「需要你处理」展示。
+ * 本组件只保留可点击的换班卡片，避免同一门课在两处出现。
+ */
+const hasAnything = computed(() => actionableGroups.value.length > 0)
 
 const offeringByKey = computed(() => {
   const map = new Map<string, CourseOffering>()
@@ -164,12 +170,12 @@ function onApply(courseId: string, fromClassId: string, toClassId: string): void
         系统<strong>不会自行改变</strong>你的课表；只有你点击「采用调整」之后才会生效。
       </p>
 
-      <!-- ① 可操作的换班：一门课一张卡片 -->
-      <section v-if="visibleGroups.length > 0" class="adjust__group">
-        <h3 class="adjust__title">可以换班（{{ visibleGroups.length }} 门课程）</h3>
+      <!-- ① 可执行的换班：一门课一张卡片（⛔ 只有已确认无冲突的候选才在这里） -->
+      <section v-if="actionableGroups.length > 0" class="adjust__group">
+        <h3 class="adjust__title">可以换班（{{ actionableGroups.length }} 门课程）</h3>
         <ul class="adjust__list">
           <li
-            v-for="group in visibleGroups"
+            v-for="group in actionableGroups"
             :key="group.courseId"
             class="adjust__item"
             data-testid="case-a-repair-course"
@@ -240,51 +246,8 @@ function onApply(courseId: string, fromClassId: string, toClassId: string): void
         </ul>
       </section>
 
-      <!-- ② 无法生成建议：只显示一条摘要，详情默认折叠 -->
-      <section v-if="blockerCount > 0" class="adjust__group">
-        <h3 class="adjust__title" data-testid="case-a-repair-blockers-summary">
-          有 {{ blockerCount }} 门课程暂时无法生成可靠的换班建议
-        </h3>
-        <ul class="adjust__summary">
-          <li
-            v-for="row in repairView.blockerSummary"
-            :key="row.kind"
-            data-testid="case-a-repair-blocker-row"
-          >
-            {{ row.count }} 门：{{ row.label }}
-          </li>
-        </ul>
-        <button
-          class="button button--small button--ghost"
-          type="button"
-          data-testid="case-a-repair-blockers-toggle"
-          @click="blockersOpen = !blockersOpen"
-        >
-          {{ blockersOpen ? '收起详情' : '查看详情' }}
-        </button>
-
-        <ul v-if="blockersOpen" class="adjust__list">
-          <li
-            v-for="blocker in repairView.blockers"
-            :key="`${blocker.courseId}-${blocker.reasonKind}`"
-            class="adjust__item adjust__item--pending"
-            data-testid="case-a-repair-blocker"
-          >
-            <div class="adjust__item-head">
-              <strong>{{ blocker.courseName }}</strong>
-              <span v-if="blocker.courseId" class="mono adjust__code">{{ blocker.courseId }}</span>
-            </div>
-            <p class="adjust__reason">{{ blocker.reasonLabel }}</p>
-            <p v-if="blocker.currentClassId" class="adjust__meta">
-              当前教学班：<span class="mono">{{ blocker.currentClassId }}</span>
-            </p>
-            <details class="adjust__tech">
-              <summary>查看技术详情</summary>
-              <p class="adjust__raw">{{ blocker.rawMessage }}</p>
-            </details>
-          </li>
-        </ul>
-      </section>
+      <!-- ⛔ 非可执行的候选与「无法生成建议」清单不在这里渲染：
+           它们已由 `normalizedIssues` 归一化为中文，统一在「需要你处理」展示。 -->
     </template>
   </div>
 </template>

@@ -45,10 +45,19 @@ export const RISK_LEVEL_LABEL: Record<RiskLevel, string> = {
  * `unresolved[].type` 的展示翻译映射表。
  *
  * 公共 Schema 中 `unresolved[].type` 是开放字符串（没有 enum 约束），
- * 上游随时可能产生新的类型。因此：
- * - 登记已知取值与 DG-07C 预留的 schedule_unknown 类型；
- * - 未知类型由 `unresolvedTypeLabel` 安全 fallback，原样显示并保留原始类型标识；
- * - 严禁把所有类型统一硬编码为单一的“待人工确认”。
+ * 上游随时可能产生新的类型。
+ *
+ * ⚠️ **自 2026 产品化修整起，主界面不再直接渲染 `unresolved` 明细**：
+ * 待确认事项统一由 `utils/studentIssues.ts` 归一化（中文文案 + 折叠技术详情），
+ * 因此本表与 `unresolvedTypeLabel` / `unresolvedTypeTagClass` 目前**没有生产调用方**。
+ *
+ * 它们被保留是有意的：
+ * - ⛔ 旧实现对**未知**类型会回显 raw code（`未分类事项 (some_new_internal_state)`），
+ *   这正是人工验收要求修掉的行为，因此**不要**再把它们接回主界面；
+ * - 若将来需要按类型展示，请使用 `studentIssues.ts` 的中性 fallback
+ *   （`该事项需要进一步确认`），而不是原样回显机器码。
+ *
+ * @deprecated 主界面请改用 `utils/studentIssues.ts` 的归一化结果。
  */
 export const UNRESOLVED_TYPE_LABEL: Record<string, string> = {
   manual_confirmation: '待人工确认',

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { AcademicRoadmap, RoadmapSemester } from '../types/caseAPlanning'
 import { loadLabel, type LoadTone } from '../utils/creditPolicy'
+import { normalizeRawText } from '../utils/studentIssues'
 
 /**
  * 未来学期修读路径（真实 `AcademicRoadmap`）。
@@ -144,22 +145,36 @@ const warnings = computed(() => props.roadmap?.warnings ?? [])
       </p>
 
       <ul v-if="semester.warnings.length > 0" class="roadmap__notes">
-        <li v-for="(item, index) in semester.warnings" :key="`w-${index}`">{{ item }}</li>
+        <li v-for="(item, index) in semester.warnings" :key="`w-${index}`">
+          {{ normalizeRawText(item) }}
+        </li>
       </ul>
     </article>
 
-    <!-- 未决事项与如实说明（⛔ 不隐藏） -->
-    <section v-if="unresolved.length > 0" class="roadmap__block" data-testid="case-a-roadmap-unresolved">
+    <!-- 未决事项与如实说明（⛔ 不隐藏，但主文案必须是中文；raw 只在折叠区） -->
+    <section
+      v-if="unresolved.length > 0"
+      class="roadmap__block"
+      data-testid="case-a-roadmap-unresolved"
+    >
       <h3 class="roadmap__block-title">路线图中需要人工确认的事项（{{ unresolved.length }} 项）</h3>
       <ul class="roadmap__notes">
-        <li v-for="(item, index) in unresolved" :key="`u-${index}`">{{ item }}</li>
+        <li v-for="(item, index) in unresolved" :key="`u-${index}`" data-testid="case-a-roadmap-unresolved-item">
+          {{ normalizeRawText(item) }}
+        </li>
       </ul>
+      <details class="roadmap__tech">
+        <summary data-testid="case-a-roadmap-tech-toggle">查看技术详情</summary>
+        <ul class="roadmap__notes roadmap__notes--raw" data-testid="case-a-roadmap-tech">
+          <li v-for="(item, index) in unresolved" :key="`ur-${index}`">{{ item }}</li>
+        </ul>
+      </details>
     </section>
 
     <section v-if="warnings.length > 0" class="roadmap__block" data-testid="case-a-roadmap-warnings">
       <h3 class="roadmap__block-title">规划说明（{{ warnings.length }} 项）</h3>
       <ul class="roadmap__notes">
-        <li v-for="(item, index) in warnings" :key="`g-${index}`">{{ item }}</li>
+        <li v-for="(item, index) in warnings" :key="`g-${index}`">{{ normalizeRawText(item) }}</li>
       </ul>
     </section>
   </div>
@@ -333,5 +348,18 @@ const warnings = computed(() => props.roadmap?.warnings ?? [])
   color: #475569;
   font-size: 12px;
   line-height: 1.8;
+}
+
+/* 技术详情：raw 取值只在这里出现，默认折叠。 */
+.roadmap__tech {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.roadmap__notes--raw {
+  margin-top: 4px;
+  color: #64748b;
+  overflow-wrap: anywhere;
 }
 </style>

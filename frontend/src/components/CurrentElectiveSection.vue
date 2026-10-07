@@ -14,10 +14,17 @@ import type { CurrentElectiveItem, CurrentSemesterLoad } from '../api/caseADemo'
  * - ⛔ 不自动加入方案、⛔ 不自动选教学班；用户点「加入备选」后才 emit；
  * - 上限超限时如实提示，⛔ 不静默忽略。
  */
-const props = defineProps<{
-  recommendations: CurrentElectiveItem[]
-  load: CurrentSemesterLoad | null
-}>()
+/**
+ * ⚠️ 两个 prop 都带默认值：早期 fixture / 旧响应可能没有这两个新增字段，
+ * 缺字段时应退化为「暂无推荐」而不是让 Vue 抛 prop 类型警告。
+ */
+const props = withDefaults(
+  defineProps<{
+    recommendations?: CurrentElectiveItem[] | null
+    load?: CurrentSemesterLoad | null
+  }>(),
+  { recommendations: null, load: null },
+)
 
 const emit = defineEmits<{
   (event: 'add', payload: { courseId: string }): void

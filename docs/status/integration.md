@@ -56,6 +56,25 @@ teachingTimePlaceStr 解析出 12011 个 segment：教师段为 REDACTED 的 = 0
 - 修改前真实数据曾产出 **53.5 / 103 学分**学期（因为 `per_semester_credit_budget=None`），
   对学生没有可执行意义。
 
+## Case A 前端「需要你处理」单一入口（产品化收口）
+
+独立 Review 发现：`frontend/src/utils/studentIssues.ts` 写好了归一化 / 去重 / 中文化，
+但**没有任何生产 importer**，因此页面仍在直接显示后端机器码
+（`type: schedule_unknown`、`no_alternatives`、`recommended_semester=4`），
+且待确认事项分散在 4 处重复呈现。现已收口为：
+
+| 关注点 | 现状 |
+|---|---|
+| 唯一 view model | `CaseADemoView.vue` 里一个 `normalizedIssueList`（统合 `plan_result.unresolved` + `roadmap.unresolved` + `roadmap.warnings` + `repair_proposals.unresolved`） |
+| 唯一主入口 | 「需要你处理」→ `PendingIssuesCenter.vue`（分「需要你决定 / 需要进一步确认 / 数据暂不完整」） |
+| 去重键 | `kind + course_id + class_id`（**不含文案**）⇒ 跨来源同事项合并；同课程不同教学班保留两条 |
+| 机器码 | 主界面一律中文；`type:` / raw type / backend 原文只出现在**默认折叠**的「查看技术详情」 |
+| 未知取值 | 中性兜底 `该事项需要进一步确认`，⛔ 不回显 raw code |
+| 渐进披露 | 每个分组默认最多 3 条；换班候选每门课默认 3 个 |
+| 旧路径 | `PlanResultPanel` 不再渲染 unresolved 明细（只提示还有 N 项）；`FutureRoadmapView` 的 raw 文本经 `normalizeRawText` 中文化；`PendingAdjustments` 只负责**可执行**换班（有 CLEAR 候选） |
+
+⛔ 未改动 credit policy / planner / roadmap 算法 / 公共契约（本轮为纯前端接线）。
+
 ## Case A production runtime wiring（Gate C，✅ 已实现）
 
 - `backend/app/services/planning_runtime.py` 现在是**环境驱动、fail closed** 的装配边界：

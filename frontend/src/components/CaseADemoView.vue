@@ -24,7 +24,9 @@ import PlanResultPanel from './PlanResultPanel.vue'
 import PreferenceForm from './PreferenceForm.vue'
 import PreferencePanel from './PreferencePanel.vue'
 import CurrentElectiveSection from './CurrentElectiveSection.vue'
+import PendingIssuesCenter from './PendingIssuesCenter.vue'
 import SectionCard from './SectionCard.vue'
+import { normalizedIssues, type NormalizedIssue } from '../utils/studentIssues'
 import WeeklyScheduleView from './WeeklyScheduleView.vue'
 
 /** 说明卡的固定内容：⛔ 不承诺"系统会自动替换课程"，真实语义是"找候选 → 提建议 → 用户确认"。 */
@@ -149,6 +151,27 @@ const bindingNotice = computed(() => {
   )
 })
 
+/* ---- 统一的待确认事项 view model（页面**唯一**来源） ----
+ *
+ * 统合三处后端来源，做归一化 / 去重 / 中文化：
+ *   plan_result.unresolved  +  roadmap.unresolved  +  roadmap.warnings
+ *   +  repair_proposals.unresolved
+ *
+ * ⛔ 任何子组件都不得再自行解析 raw unresolved：
+ *    唯一的消费方是「需要你处理」里的 `PendingIssuesCenter`。
+ */
+const normalizedIssueList = computed<NormalizedIssue[]>(() => {
+  const current = result.value
+  if (!current) return []
+  return normalizedIssues({
+    planUnresolved: current.plan_result.unresolved as never,
+    roadmapUnresolved: current.roadmap?.unresolved ?? [],
+    roadmapWarnings: current.roadmap?.warnings ?? [],
+    repairUnresolved: current.repair_proposals?.unresolved ?? [],
+    courseNameById: resultCourseNames.value,
+  })
+})
+
 /* ---- 学业方案总览（用户第一眼看到的东西） ---- */
 const overviewCredit = computed(() => {
   const load = result.value?.current_load
@@ -168,10 +191,9 @@ const overviewElective = computed(() => {
   return load ? `${load.suggested_elective_credit} 学分` : '—'
 })
 const overviewActionCount = computed(() => {
-  const proposals = result.value?.repair_proposals
-  if (!proposals) return '0 项'
-  const courses = new Set(proposals.proposals.map((item) => item.course_id))
-  return `${courses.size + proposals.unresolved.length} 项`
+  // ⚠️ 用**去重后**的统一 view model 计数，与「需要你处理」里看到的条数一致；
+  //    ⛔ 不再各自累加 repair courses + repair unresolved + plan unresolved（那是重复计数）。
+  return `${normalizedIssueList.value.length} 项`
 })
 const overviewTermCount = computed(() => {
   const terms = result.value?.roadmap?.future_semesters ?? []
@@ -205,7 +227,6 @@ const overviewHints = computed(() => {
   }
   return hints.slice(0, 2)
 })
-
 async function loadOfferings(): Promise<void> {
   error.value = ''
   try {
@@ -525,15 +546,24 @@ onMounted(loadOfferings)
           />
         </SectionCard>
 
-        <SectionCard :mock="false" title="待你确认的调整" subtitle="系统只提出建议；你确认后才会生效。">
+        <SectionCard
+          :mock="false"
+          title="需要你处理"
+          subtitle="系统只给出建议；你确认后才会生效。⛔ 不会自动改变你的课表。"
+        >
+          <!-- ① 可执行的换班（只有已确认无冲突的候选才可点） -->
           <PendingAdjustments
             :plan-result="result.plan_result"
             :repair-proposals="result.repair_proposals"
             :course-name-by-id="resultCourseNames"
             :offerings="result.course_offerings"
             :applying="applying"
+            :show-issues="false"
             @apply="applyRepair"
           />
+
+          <!-- ② 其余待确认事项：**唯一**来源 `normalizedIssues`，主文案已是中文 -->
+          <PendingIssuesCenter :issues="normalizedIssueList" />
         </SectionCard>
 
         <SectionCard

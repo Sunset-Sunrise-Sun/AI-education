@@ -23,7 +23,7 @@ describe('issue humanization — ⛔ 机器码不得作为主文案', () => {
   it('translates known internal codes into Chinese', () => {
     expect(humanizeIssueCode('schedule_unknown')).toContain('排课信息')
     expect(humanizeIssueCode('UNKNOWN')).toContain('排课信息')
-    expect(humanizeIssueCode('no_alternatives')).toContain('没有')
+    expect(humanizeIssueCode('no_alternatives')).toBe('暂未找到可替代的同课程教学班')
     expect(humanizeIssueCode('all_conflict')).toContain('冲突')
     expect(humanizeIssueCode('manual_confirmation')).toContain('人工确认')
     expect(humanizeIssueCode('possibly_equivalent')).toContain('人工确认')
@@ -32,7 +32,7 @@ describe('issue humanization — ⛔ 机器码不得作为主文案', () => {
   it('never echoes an unknown machine code back to the user', () => {
     const output = humanizeIssueCode('some_new_internal_code')
     expect(output).not.toContain('some_new_internal_code')
-    expect(output).toBe('需要确认')
+    expect(output).toBe('该事项需要进一步确认')
   })
 
   it('keeps the raw code out of the displayed message', () => {
@@ -253,6 +253,6 @@ describe('issue dedup — ⛔ 不得合并不同的教学班问题', () => {
     })
     expect(issues).toHaveLength(1)
     expect(issues[0].message).not.toContain('brand_new_internal_state')
-    expect(issues[0].message).toBe('需要确认')
+    expect(issues[0].message).toBe('该事项需要进一步确认')
   })
 })

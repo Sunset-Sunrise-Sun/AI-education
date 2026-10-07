@@ -25,9 +25,11 @@ import CaseADemoView from '@/components/CaseADemoView.vue'
 import FutureRoadmapView from '@/components/FutureRoadmapView.vue'
 import IntentCourseSearch from '@/components/IntentCourseSearch.vue'
 import PendingAdjustments from '@/components/PendingAdjustments.vue'
+import PendingIssuesCenter from '@/components/PendingIssuesCenter.vue'
 import WeeklyScheduleView from '@/components/WeeklyScheduleView.vue'
 import type { AcademicRoadmap } from '@/types/caseAPlanning'
 import type { CourseOffering, MakeupTask, PlanResult } from '@/types/contracts'
+import { normalizedIssues } from '@/utils/studentIssues'
 
 const loadCaseAOfferings = vi.fn()
 const runCaseADemo = vi.fn()
@@ -617,11 +619,8 @@ describe('结构化换班建议（explicit confirm only）', () => {
     expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(false)
     // ⛔ 没有任何「采用调整」按钮（策略说明文字里提到这个词是允许的）
     expect(wrapper.findAll('button').filter((b) => b.text().includes('采用调整'))).toHaveLength(0)
-    // 只显示一条摘要 + 中文原因；⛔ 机器码不作为主文案
-    const summary = wrapper.get('[data-testid="case-a-repair-blockers-summary"]').text()
-    expect(summary).toContain('1 门课程暂时无法生成可靠的换班建议')
-    expect(wrapper.get('[data-testid="case-a-repair-blocker-row"]').text()).toContain('没有同课程替代班')
-    expect(summary).not.toContain('no_alternatives')
+    // ⛔ 「无法生成建议」清单已移交「需要你处理」的统一 view model，本组件不再重复渲染
+    expect(wrapper.find('[data-testid="case-a-repair-blockers-summary"]').exists()).toBe(false)
   })
 
   it('暂不调整 only hides the row locally and never emits apply', async () => {
@@ -646,24 +645,40 @@ describe('结构化换班建议（explicit confirm only）', () => {
     expect(wrapper.emitted('apply')).toBeUndefined()
   })
 
-  it('shows blocker reasons in Chinese, details collapsed by default', async () => {
+  it('delegates blocker reasons to the unified pending center (no duplicate wall)', () => {
     const wrapper = mountAdjustments({
       semester: '2026-1',
       proposals: [],
       unresolved: ['课程 MAR108 在当前数据范围内没有其他可确认无冲突的教学班。'],
     })
-    // 默认只显示摘要：⛔ 不默认铺开逐条卡片
+    // ⛔ 本组件不再渲染「无法生成建议」的摘要/清单：
+    //    这些已由 `normalizedIssues` 归一化成中文条目，在「需要你处理」统一展示一次。
+    expect(wrapper.find('[data-testid="case-a-repair-blockers-summary"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="case-a-repair-blocker"]').exists()).toBe(false)
-    expect(wrapper.get('[data-testid="case-a-repair-blockers-summary"]').text()).toContain(
-      '暂时无法生成可靠的换班建议',
-    )
-    // 展开后才出现逐条详情，且机器码只在技术详情里
-    await wrapper.get('[data-testid="case-a-repair-blockers-toggle"]').trigger('click')
-    const detail = wrapper.get('[data-testid="case-a-repair-blocker"]')
-    expect(detail.text()).toContain('MAR108')
-    expect(detail.text()).toContain('没有同课程替代班')
-    expect(detail.get('details').text()).toContain('查看技术详情')
     expect(wrapper.find('[data-testid="case-a-repair-course"]').exists()).toBe(false)
+    // ⛔ 且不得把后端原文直接铺在主界面
+    expect(wrapper.text()).not.toContain('no_alternatives')
+  })
+
+  it('renders the blockers through the unified center exactly once', () => {
+    // 同一批后端 blocker 交给归一化中心后，只出现一条中文说明
+    const wrapper = mount(PendingIssuesCenter, {
+      props: {
+        issues: normalizedIssues({
+          repairUnresolved: [
+            '课程 MAR108 在当前数据范围内没有其他可确认无冲突的教学班（no_alternatives）。',
+          ],
+          courseNameById: { MAR108: '马克思主义基本原理' },
+        }),
+      },
+    })
+    const cards = wrapper.findAll('[data-testid="case-a-issue"]')
+    expect(cards).toHaveLength(1)
+    expect(cards[0].text()).toContain('马克思主义基本原理')
+    expect(cards[0].text()).toContain('教学班')
+    // 主文案是中文；raw 只在折叠的技术详情里
+    expect(wrapper.get('[data-testid="case-a-issue-message"]').text()).not.toContain('no_alternatives')
+    expect(wrapper.get('[data-testid="case-a-issue-tech"]').text()).toContain('no_alternatives')
   })
 })
 

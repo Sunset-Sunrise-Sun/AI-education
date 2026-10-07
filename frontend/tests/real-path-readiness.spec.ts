@@ -160,10 +160,15 @@ describe('Gate E：Real 成功路径（success + provenance + 中性文案）', 
     await flushPromises()
 
     const text = wrapper.text()
-    expect(text).toContain('排课信息未知') // schedule_unknown 的中性中文标签
-    expect(text).toContain('待人工确认')
-    expect(text).toContain('缺少数据')
-    expect(text).toContain('SNR'.replace('SNR', 'schedule_unknown')) // 原始 type 字段保留
+    // ⚠️ 本轮产品化修整：待确认事项统一由「需要你处理」以**归一化中文**展示，
+    //    ⛔ 主界面不再直接输出 `type: schedule_unknown` 这类机器码。
+    //    旧断言要求原样显示 raw type，与人工验收要求相反，故在此改为：
+    //    中文文案必须出现，且机器码不得出现在主界面。
+    expect(text).toContain('排课信息')
+    expect(text).toContain('人工确认')
+    expect(text).not.toContain('schedule_unknown')
+    expect(text).not.toContain('missing_data')
+    expect(text).not.toContain('type:')
   })
 
   it('⛔ 渲染结果里不出现"已选课" / "可直接执行" / 无冲突类推断词', async () => {
@@ -338,7 +343,7 @@ describe('Gate E：纯展示细节（meetings=[] / remaining_capacity=None）', 
     expect(capacity).not.toContain('0 /')
   })
 
-  it('PlanResultPanel：未决事项为空时不宣称可执行性', () => {
+  it('PlanResultPanel：不再渲染 unresolved 明细，也不宣称可执行性', () => {
     const wrapper = mount(PlanResultPanel, {
       props: {
         planResult: {
@@ -354,7 +359,9 @@ describe('Gate E：纯展示细节（meetings=[] / remaining_capacity=None）', 
     })
 
     const text = wrapper.text()
-    expect(text).toContain('未决事项为空')
+    // ⚠️ 本轮：`unresolved` 明细统一由「需要你处理」渲染，本组件不再输出该区块
+    expect(text).not.toContain('type:')
+    expect(text).not.toContain('unresolved')
     expect(text).not.toContain('可直接执行')
   })
 })
@@ -524,7 +531,10 @@ describe('Gate E：地点 / 空数组语义 / 偏好措辞 / 容量阈值', () =
     const text = wrapper.text()
     expect(text).toContain('未返回方案变更记录')
     expect(text).toContain('未返回风险项')
-    expect(text).toContain('未决事项为空')
+    // ⚠️ 本轮：unresolved 明细已移出本组件（统一在「需要你处理」），
+    //    因此这里不再断言"未决事项为空"文案，改为断言不出现 raw 机器码。
+    expect(text).not.toContain('type:')
+    expect(text).not.toContain('unresolved')
 
     const forbiddenClaims = [
       '无风险',
