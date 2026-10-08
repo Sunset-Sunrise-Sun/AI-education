@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import CourseOfferingList from './components/CourseOfferingList.vue'
 import E2EDebugPanel from './components/E2EDebugPanel.vue'
 import type { E2EDebugInfo } from './components/E2EDebugPanel.vue'
+import ExplanationPanel from './components/ExplanationPanel.vue'
 import MakeupTaskList from './components/MakeupTaskList.vue'
 import PlanResultPanel from './components/PlanResultPanel.vue'
 import PreferencePanel from './components/PreferencePanel.vue'
@@ -10,7 +11,13 @@ import SectionCard from './components/SectionCard.vue'
 import TopStatusBar from './components/TopStatusBar.vue'
 import UserInputPanel from './components/UserInputPanel.vue'
 import { useDemoData } from './composables/useDemoData'
-import { DEMO_ENDPOINT, PLAN_API_ENABLED, PLAN_ENDPOINT, initialDataMode } from './config'
+import {
+  DEMO_ENDPOINT,
+  EXPLANATION_API_ENABLED,
+  PLAN_API_ENABLED,
+  PLAN_ENDPOINT,
+  initialDataMode,
+} from './config'
 import {
   buildRealPlanRequest,
   createDefaultUserInputForm,
@@ -112,6 +119,31 @@ const planResultCourseNameById = computed<Record<string, string>>(() =>
   planResultMode.value === 'real' ? {} : courseNameById.value,
 )
 
+/**
+ * 解释面板（Final Upgrade · Agent B）。
+ *
+ * ⚠️ 解释是**只读**能力：
+ * - 它消费的是**当前真正展示的那份方案**（Real 成功 ⇒ Real 方案；否则 Mock 演示方案）；
+ * - 打开 / 关闭解释**不会**改变 `PlanResult`、输入区或任何判定；
+ * - 未启用时不发任何请求，并明确显示"解释功能未启用"。
+ */
+const explanationOpen = ref(false)
+const explanationFocusCourseId = ref<string | null>(null)
+const explanationRequestSeq = ref(0)
+
+function openExplanation(courseId: string | null): void {
+  explanationFocusCourseId.value = courseId
+  explanationOpen.value = true
+  explanationRequestSeq.value += 1
+}
+
+function closeExplanation(): void {
+  explanationOpen.value = false
+}
+
+/** 解释入口是否可见（关闭时仍显示入口与说明，但不会发请求）。 */
+const explanationEntryVisible = computed(() => displayedPlanResult.value !== null)
+
 async function submitRealPlan(): Promise<void> {
   if (planSubmitting.value) {
     return
@@ -185,7 +217,6 @@ const e2eDebugInfo = computed<E2EDebugInfo>(() => ({
   lastErrorKind: planErrorKind.value,
   planResultSource: planResultMode.value,
 }))
-
 /**
  * 课程号 -> 课程名映射表（原定义已上移，见 `planResultCourseNameById` 附近的说明）。
  */
@@ -337,7 +368,11 @@ onMounted(() => {
           subtitle="Curriculum 模块依据目标培养方案要求与学生已修记录逐条评估后的结果，含“已满足 / 待课程认定 / 已确认需补修”等不同状态。逐条状态以每行的判定列与认定说明为准，前端不作汇总改写。"
           :badge-count="data.makeup_tasks.length"
         >
-          <MakeupTaskList :tasks="data.makeup_tasks" />
+          <MakeupTaskList
+            :tasks="data.makeup_tasks"
+            :evidence-enabled="EXPLANATION_API_ENABLED"
+            @explain-course="openExplanation"
+          />
         </SectionCard>
 
         <!-- 2. 开课教学班 -->
@@ -403,6 +438,67 @@ onMounted(() => {
             v-if="displayedPlanResult"
             :plan-result="displayedPlanResult"
             :course-name-by-id="planResultCourseNameById"
+            :evidence-enabled="EXPLANATION_API_ENABLED"
+            @explain-result="openExplanation"
+          />
+        </SectionCard>
+
+        <!--
+          5. 解释与依据（Final Upgrade · Agent B）
+
+          ⚠️ 默认**不请求**：只有用户点击「查看依据 / 为什么这样安排」后才会调用
+          `POST /api/v1/explanation/plan`。解释是只读的，不会改变上面的规划结果。
+
+          ⚠️ provenance 精确到「被解释的方案」：Real 成功时解释的是 Real 方案，
+          否则解释的是 Mock 演示方案；解释通道本身不会把 Mock 说成 Real。
+        -->
+        <SectionCard
+          v-if="explanationEntryVisible"
+          section-id="section-explanation"
+          title="5. 解释与依据（为什么这样判定 / 这样安排）"
+          subtitle="只读解释：逐条说明补修判定、教学班安排、调班原因、风险与未决事项的依据来源，并列出仍需人工确认的事项。前端不生成解释、不重算方案。"
+        >
+          <div class="uig-provenance" data-testid="explanation-provenance">
+            <span class="uig-provenance__item">
+              解释对象：<strong
+                :class="planResultMode === 'real' ? 'uig-provenance__real' : 'uig-provenance__mock'"
+                data-testid="explanation-target-provenance"
+              >{{ planResultMode === 'real' ? 'Real 规划结果' : 'Mock 演示结果' }}</strong>
+            </span>
+            <span class="uig-provenance__sep" aria-hidden="true">·</span>
+            <span class="uig-provenance__item">
+              解释通道：<strong
+                :class="EXPLANATION_API_ENABLED ? 'uig-provenance__real' : 'uig-provenance__mock'"
+                data-testid="explanation-channel-state"
+              >{{ EXPLANATION_API_ENABLED ? '已启用' : '未启用' }}</strong>
+            </span>
+            <span class="uig-provenance__note">
+              解释请求只发送 <code class="mono">PlanResult</code> 与被解释条目所需的
+              <code class="mono">MakeupTask</code> / <code class="mono">CourseOffering</code> 上下文；
+              ⛔ 不发送成绩单、姓名、学号或个人身份信息。
+            </span>
+          </div>
+
+          <button
+            v-if="!explanationOpen"
+            type="button"
+            class="button"
+            data-testid="explanation-open"
+            @click="openExplanation(null)"
+          >
+            🔍 查看依据 / 为什么这样安排
+          </button>
+
+          <ExplanationPanel
+            v-else
+            :key="`explanation-${explanationRequestSeq}-${explanationFocusCourseId ?? 'all'}`"
+            :plan-result="displayedPlanResult!"
+            :makeup-tasks="data.makeup_tasks"
+            :course-offerings="data.course_offerings"
+            :enabled="EXPLANATION_API_ENABLED"
+            :focus-course-id="explanationFocusCourseId"
+            :plan-result-source="planResultMode"
+            @close="closeExplanation"
           />
         </SectionCard>
       </template>
