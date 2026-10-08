@@ -2,6 +2,10 @@
 
 - **Agent**：Final Upgrade · Agent A（DeepSeek Planning Controller，无人值守）
 - **分支**：`feature/deepseek-planning-controller`（起点 = `feature/final-upgrade-integration-qa`）
+- **实现提交 SHA**：`293a78e563680fedd9257cbf58402920451775fa`
+  （`feat(ai-planning): add DeepSeek intent controller with confirmation-gated solving`）
+- **本报告提交 SHA**：见本文件所在提交（`docs(ai-planning): add controller report and API handoff`）
+- **基线**：`37f62f2aaa5ab3d54ecabf9844c284b068369a29`
 - **是否改动受保护分支**：**否**（未动 `main`、`feature/final-upgrade`、PR #62/#63/#64、B 的分支）
 - **是否自动合并**：**否**（只允许创建 Draft PR；本报告不请求合并）
 - **使用数据**：**Mock**（全部人工构造的合成教学班与补修任务）
