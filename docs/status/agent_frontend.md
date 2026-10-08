@@ -1,5 +1,20 @@
 # Agent / Frontend 当前状态
 
+> 最后更新：2026-10-08（**Final Upgrade · Agent B：有依据的规则解释 + 最小 UI 已实现，待负责人验收**：
+> 新增**只读解释服务** `backend/app/explanation/` 与**新增私有接口**
+> `POST /api/v1/explanation/plan`：逐条解释已有 `PlanResult`（补修判定 / 教学班安排 / 调班原因 /
+> 风险 / 未决事项 / 整体状态），每条都绑定**真实来源字段**并区分
+> 「确证规则 / 学生输入或假设 / 系统建议 / 未知 / 上下文不存在」，同时列出**待人工确认**事项；
+> 未配置模型时为**确定性规则模板**并明确标注 `rule_based_template`（⛔ 不声称是 AI 生成）；
+> 可选模型适配层需**显式注入**，输出必须通过事实绑定校验（含数字与课程号），
+> 否则降级为模板并如实记录原因（`model_unavailable_fell_back_to_template`）。
+> 前端新增「查看依据 / 为什么这样安排」入口与解释面板：**只展示、不重算**，
+> 未启用 / 请求失败 / 无条目 / 上下文缺失都有清楚反馈；
+> ⛔ 未改 Planner / Curriculum / 计算逻辑、⛔ 未改 `/schemas/`、⛔ 未改 `docs/interfaces/`、
+> ⛔ 未改任何既有 API 路径与 Provider 签名、⛔ 不引用 Mock 回放通道（有测试锁定）。
+> 数据状态：解释只消费**已有**的 Mock 演示数据；**仍未有真实数据链路端到端跑通**。
+> 详见 `docs/worklogs/agent_frontend.md` 与 `AGENT_B_REPORT.md`）
+>
 > 最后更新：2026-10-05（**Frontend Real E2E Wiring Preparation 已实现，待 Architecture Review**：
 > 已把 Real Planning 的失败状态**产品化**（503 `real_pipeline_not_configured` 明确显示为
 > "**真实规划运行时尚未完成装配**"，**不是**笼统的"请求失败"，且**不 fallback 到 Mock**）；

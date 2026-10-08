@@ -22,6 +22,16 @@ import {
 const props = defineProps<{
   planResult: PlanResult
   courseNameById: Record<string, string>
+  /**
+   * 是否显示「为什么这样安排」入口。
+   *
+   * ⚠️ 入口只发出事件，解释文本一律来自后端；本组件不生成解释、不改写方案。
+   */
+  evidenceEnabled?: boolean
+}>()
+
+const emit = defineEmits<{
+  (event: 'explain-result', courseId: string | null): void
 }>()
 
 function courseLabel(courseId: string): string {
@@ -71,6 +81,20 @@ function courseLabel(courseId: string): string {
         <span class="summary-label">求解目标与策略说明：</span>
         <span class="summary-text">{{ planResult.objective_summary }}</span>
       </div>
+
+      <div v-if="evidenceEnabled" class="plan-hero__evidence">
+        <button
+          type="button"
+          class="button button--ghost button--small"
+          data-testid="plan-explain-overall"
+          @click="emit('explain-result', null)"
+        >
+          🔍 为什么这样安排（查看整体依据）
+        </button>
+        <span class="plan-hero__evidence-hint">
+          只读解释：不改变本方案，也不代替学校正式规则。
+        </span>
+      </div>
     </div>
 
     <!-- 1. 已选教学班 selected_classes -->
@@ -93,7 +117,18 @@ function courseLabel(courseId: string): string {
             <span class="selected-card__course">{{ courseLabel(item.course_id) }}</span>
             <span class="mono selected-card__class">班号：{{ item.class_id }}</span>
           </div>
-          <span class="tag tag--selected">建议纳入</span>
+          <div class="selected-card__actions">
+            <span class="tag tag--selected">建议纳入</span>
+            <button
+              v-if="evidenceEnabled"
+              type="button"
+              class="button button--ghost button--small"
+              :data-testid="`plan-explain-selected-${item.course_id}-${item.class_id}`"
+              @click="emit('explain-result', item.course_id)"
+            >
+              🔍 查看依据
+            </button>
+          </div>
         </div>
       </div>
       <p v-else class="empty-state">当前建议课表中暂无教学班。</p>
@@ -146,6 +181,16 @@ function courseLabel(courseId: string): string {
             <span class="reason-badge">调整原因</span>
             <span class="reason-text">{{ change.reason }}</span>
           </div>
+
+          <button
+            v-if="evidenceEnabled"
+            type="button"
+            class="button button--ghost button--small"
+            :data-testid="`plan-explain-change-${change.course_id}`"
+            @click="emit('explain-result', change.course_id)"
+          >
+            🔍 这条调班的依据
+          </button>
         </article>
       </div>
       <p v-else class="empty-state">本次 PlanResult 未返回方案变更记录。</p>

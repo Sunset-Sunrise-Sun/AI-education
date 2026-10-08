@@ -1925,3 +1925,72 @@
   （属接口面变更，本 Gate 未擅自扩 API）。
 - 下一步：Gate F（XLSX backend pipeline）。
 
+
+### 2026-10-08 - Final Upgrade · Agent B：有依据的规则解释与最小 UI
+- 本次目标：在**现有稳定 Case A 规划结果**上演示「解释与证据追溯」，不改计算。
+  学生可以追问某条补修判定 / 某个选中教学班 / 某条调班 / 某条风险 / 某条未决事项
+  「为什么是这样」，系统给出**可追溯来源**的解释，并明确区分已确证事实、系统建议与待人工确认。
+- 已完成：
+  - **后端新增只读解释服务** `backend/app/explanation/`：
+    `models.py`（解释线格式：证据引用 / 待确认事项 / 生成方式 / 来源概况）、
+    `templates.py`（确定性模板，只复述字段原文）、
+    `adapter.py`（**可选**模型适配层 + 事实绑定校验）、
+    `service.py`（事实平面 + 摘要 + 逐条生成 + 只读自检）。
+  - **新增私有接口** `POST /api/v1/explanation/plan`（`backend/app/api/explanation.py`），
+    在 `backend/app/main.py` 只增加一行 router 注册；既有路径与公共 Schema 未改。
+  - 解释条目覆盖：`plan_status` / `makeup_task`（四种状态各自不同的准确说明）/
+    `selected_class` / `change` / `risk` / `unresolved`；
+    调班原因只复述 `PlanResult.changes[].reason`，**不重新做冲突检测**；
+    `meetings = []` 只说明「当前来源快照没有可用排课信息」，**绝不说成无课 / 无冲突**。
+  - **生成方式如实标注**：`rule_based_template` 明确"未调用任何 AI 模型"；
+    配置模型后仍需通过事实绑定校验（已核实陈述必须原样保留、不得出现事实目录之外的数量或课程标识），
+    否则该条降级为模板并写入 `fallback_reason`。
+  - **只读保证**：响应给出被解释方案的 `plan_result_digest`；服务在输出前重算摘要，
+    不一致即中止；测试用 `deepcopy` 断言输入对象未被修改。
+  - **前端最小接入**：`src/api/explanation.ts`（新接口客户端，失败不 fallback）、
+    `src/components/ExplanationPanel.vue`（解释面板）、
+    `src/utils/explanationLabels.ts`（纯展示文案）、
+    `MakeupTaskList.vue`（每行「查看依据」）、`PlanResultPanel.vue`（整体 / 选中教学班 / 调班入口）、
+    `App.vue`（第 5 区块 + provenance），`src/config.ts` 新增 `EXPLANATION_API_ENABLED`（默认关闭）。
+  - 新增证据脚本 `tools/explanation_evidence.py`（用已有 Mock 数据跑一次解释并打印可复现证据）。
+- 修改文件：
+  - 新增 `backend/app/explanation/{__init__,models,templates,adapter,service}.py`
+  - 新增 `backend/app/api/explanation.py`；修改 `backend/app/main.py`（+1 行注册）
+  - 修改 `backend/tests/test_integration_orchestrator.py`（路由白名单登记新入口，附理由）
+  - 新增 `backend/tests/test_explanation_service.py`（32 用例）
+  - 新增 `frontend/src/api/explanation.ts`、`frontend/src/components/ExplanationPanel.vue`、
+    `frontend/src/utils/explanationLabels.ts`
+  - 修改 `frontend/src/config.ts`、`frontend/src/App.vue`、
+    `frontend/src/components/MakeupTaskList.vue`、`frontend/src/components/PlanResultPanel.vue`、
+    `frontend/.env.example`
+  - 新增 `frontend/tests/explanation-panel.spec.ts`（16 用例）、
+    `frontend/tests/explanation-app-wiring.spec.ts`（4 用例）
+  - 更新 `docs/status/agent_frontend.md`、本文件；新增根目录 `AGENT_B_REPORT.md`
+- 测试：
+  - `cd backend && python -m pytest -q tests/test_explanation_service.py` → **32 passed**
+  - `cd backend && python -m pytest` → **2996 passed / 15 failed / 2 skipped**；
+    15 个失败为**开工前即存在**的环境差异问题（Python 3.14 不再对含 NUL 字节的路径抛
+    `OSError`，导致 curriculum docx / json / file-case 的若干 `DID NOT RAISE` 用例失败），
+    与本轮无关、未被本轮修改或跳过
+  - `cd frontend && npx vitest run` → **154 passed / 154**（11 文件，含本轮 20 用例）
+  - `cd frontend && npx vue-tsc --noEmit` → exit 0
+- 使用数据：Mock（`mock_data/` 演示数据；解释不引入任何新数据源）
+- 公共接口是否变化：否
+  （新增私有解释接口；`/schemas/`、`/docs/interfaces/`、既有 API 路径与 Provider 签名均未改）
+- 已知问题：
+  - 解释只覆盖**已存在**的字段：若上游不提供 `reason` / `source_evidence`，解释只能如实说"无法追溯"；
+  - `PlanResult` 不携带 `MakeupTask`，因此前端需要把上下文一并 POST 给解释接口（A 的新输入接口未来可减少重复传输）；
+  - 模型适配层**未接入任何真实模型服务**（选型属受控事项），因此当前全部为规则模板；
+  - 解释质量取决于上游字段质量（例如 Mock 文案本身就是演示数据）。
+- 需要人工确认：
+  - 是否允许在解释中使用更贴近学校规则的措辞（本轮严格沿用源字段原义，不新增学校规则解释）；
+  - 未来接入真实 LLM 服务的选型 / 密钥 / 成本（本轮**未引入**）。
+- 对其他模块影响：
+  - ⛔ 未修改 Planner / Curriculum / Course Data 任何计算代码；
+  - `backend/tests/test_integration_orchestrator.py` 的路由白名单新增一条登记（该文件本身要求
+    "任何新增路由都必须逐条登记"），已附理由；
+  - 与 Agent A 的边界：解释只消费**当前已存在**的 `PlanResult` / `MakeupTask` / `CourseOffering`；
+    不假设 A 的新 API 存在，也不修改其负责的个人输入 / 课程库 / 规划组合器代码。
+- 下一步：
+  - 与 Agent A 的个人输入管线联调（解释改为直接消费其已证实结果，避免上下文重复传输）；
+  - 课表图片识别 / 聊天框 / 自然语言调课仍为**明确延后项**，本轮未做任何假 OCR 或假模型调用。
