@@ -17,7 +17,16 @@ import {
  */
 const props = defineProps<{
   tasks: MakeupTask[]
+  /**
+   * 是否显示「查看依据」入口。
+   *
+   * ⚠️ 该入口只发出一个事件，由父组件决定是否请求解释；
+   * 本组件**不会**自行生成解释文本，也不改变任何判定。
+   */
+  evidenceEnabled?: boolean
 }>()
+
+const emit = defineEmits<{ (event: 'explain-course', courseId: string): void }>()
 
 const activeFilter = ref<'all' | MakeupStatus>('all')
 
@@ -105,6 +114,7 @@ const filteredTasks = computed(() => {
             <th scope="col" style="width: 130px;">学期建议</th>
             <th scope="col" style="width: 130px;">先修依赖</th>
             <th scope="col">认定说明与证据</th>
+            <th v-if="evidenceEnabled" scope="col" style="width: 110px;">解释</th>
           </tr>
         </thead>
         <tbody>
@@ -157,9 +167,19 @@ const filteredTasks = computed(() => {
                 {{ task.source_evidence }}
               </p>
             </td>
+            <td v-if="evidenceEnabled" class="cell-explain">
+              <button
+                type="button"
+                class="button button--ghost button--small"
+                :data-testid="`makeup-explain-${task.course_id}`"
+                @click="emit('explain-course', task.course_id)"
+              >
+                🔍 查看依据
+              </button>
+            </td>
           </tr>
           <tr v-if="filteredTasks.length === 0">
-            <td colspan="6" class="empty-state">
+            <td :colspan="evidenceEnabled ? 7 : 6" class="empty-state">
               <p>暂无符合当前筛选条件的补修任务。</p>
             </td>
           </tr>
