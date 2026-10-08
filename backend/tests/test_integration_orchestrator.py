@@ -500,6 +500,7 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
     ⛔ 不读取已冻结 Case A runtime 的任何配置，也⛔ 不在未装配时回退到 Mock。
     """
 
+    # 合并验收：个人规划 2 条 API + 只读解释 1 条 API 均显式登记。
     paths = set(client.get("/openapi.json").json()["paths"])
 
     for forbidden in ("/plan", "/integration", "/api/v1/integration"):
@@ -519,4 +520,6 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         # Final Upgrade · Agent A：个人规划入口（独立模块 + 最小注册改动）。
         "/api/v1/personal-planning/curriculum-versions",
         "/api/v1/personal-planning/plan",
+        # Final Upgrade · Agent B：只读解释入口。
+        "/api/v1/explanation/plan",
     }
