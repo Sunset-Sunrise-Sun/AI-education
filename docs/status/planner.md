@@ -1,6 +1,13 @@
 # Planner 当前状态
 
-更新日期：2026-10-05。阶段：**DG-07C Planner Unknown-Schedule Safety 已 IMPLEMENTED / REVIEWED 并 merge 到 main**。成员4内部独立技术复核的 PASS WITH NOTES 仅作为 Builder 自检证据；项目 Architecture Reviewer 已完成正式审查并批准 DG-07C。
+更新日期：2026-10-08（Final Upgrade · Agent A 补充）。阶段：**DG-07C Planner Unknown-Schedule Safety 已 IMPLEMENTED / REVIEWED 并 merge 到 main**。成员4内部独立技术复核的 PASS WITH NOTES 仅作为 Builder 自检证据；项目 Architecture Reviewer 已完成正式审查并批准 DG-07C。
+
+> ⚠️ **2026-10-08（Agent A，分支 `feature/personal-planning-pipeline`）**：
+> 本轮把学生**本人显式声明**的 `Preference.max_credit`（学分上限）从"语义未确认"升级为
+> 一次**确定性接纳判断**（见下方"学分上限接纳校验"一节）。
+> 这是**行为变更**，会改变 `RestrictedPlannerProvider.plan()` 在声明了上限时的输出；
+> 它⛔ 不新增参数、⛔ 不改四参数签名、⛔ 不改 `PlanResult` / `unresolved[].type` 枚举、
+> ⛔ 不新增公共 Schema 字段。**需要项目 Architecture Reviewer 确认该口径。**
 
 - DG-07C 实现分支：`feature/planner-dg07c-unknown-schedule`；批准前最终 HEAD：`774ea5138eac7b7e884369eb4d43a29baffd04ca`。
 - PR #26 已 merge；其后 DG-07D Frontend 也已 merge。当前 DG-07A / B / C / D 均已 IMPLEMENTED / REVIEWED，Data Gate 已恢复 PASSED / CLOSED。
@@ -16,6 +23,43 @@
 - UNKNOWN按证明关联范围保留：能留下可能解的相关UNKNOWN阻止无解认证；不能解开独立已知冲突的无关UNKNOWN不抹除证明，无全局uncertain_current否决。
 - 缺失推荐/截止学期明确表示学期要求未知；有相对学期编号时也缺少映射。本接口目前没有新增任务本学期必达证据，新增建议及其联合冲突均不能据此证明整体无解。唯一CLEAR仍可建议加入，但学期要求待确认使结果为partial。
 - 空候选进入missing_data，不假定学校未开课或供给完整；无解证明仅针对本次输入和保留当前课程目标，不宣称学校全部供给无解。
+
+## 学分上限接纳校验（2026-10-08，Agent A，**行为变更，待 Reviewer 确认**）
+
+**问题**：新增彼此不冲突 ≠ 本次建议仍符合学生**自己声明**的学分上限。
+旧行为把 `max_credit` 只列进"Preference 语义未确认"，因此
+"原课表 + 累计新增"的总学分可以**在没有任何提示的情况下超过学生声明的上限**。
+
+**实现**：新增 `backend/app/planner/credit_limit.py`（纯函数，无状态），
+并由 `RestrictedPlannerProvider._apply_credit_limit(...)` 在
+"冲突组合已排除、`current_schedule` 本身无已知冲突"之后调用。
+
+| 情况 | 结果 |
+| --- | --- |
+| 未声明 `max_credit` | `not_declared`，⛔ 不发明上限、行为不变 |
+| 全部班都有学分声明且合计 **>** 上限 | `over_limit` → **本次不加入任何新增**（⛔ 不排序、⛔ 不牺牲某一门），`manual_confirmation` 说明原因 |
+| 存在**没有**学分声明的班 | `unverifiable` → 明确"无法证明"，仍列出唯一 CLEAR 新增但⛔ **不认证其学分合规性** |
+| 原课表本身已超限 | 只提示，⛔ **不篡改学生已选事实**、⛔ 不影响无解证明 |
+| 合计 **≤** 上限 | `within_limit`，并按语义逐字回报本次真正使用的上限取值 |
+
+**学分取值顺序（不猜）**：`CourseOffering.credit` → 同课程 `MakeupTask.credit`；
+两者都没有 = **学分未知**，⛔ 不按 0 计、⛔ 不按同类课程推测。
+
+**边界（硬）**：
+- ⛔ 不新增 / 不改 `PlannerProvider.plan()` 四参数签名；
+- ⛔ 不改 `PlanResult`、`unresolved[].type` 既有取值、公共 Schema；
+- ⛔ 不排序、不评分、不挑选牺牲哪一门新增；⛔ 不定义学业优先级；
+- ⛔ 不修改学校规则、不修改必修/选修认定、不修改 Path Repair 目标；
+- ⛔ 不联网、不读 `mock_data`、不依赖任何演示数据。
+
+**已知影响（需 Reviewer 知悉）**：
+- 既有测试 `test_unconfirmed_preferences_do_not_filter_score_or_make_infeasible`
+  中 `max_credit=0` / `max_credit=18` 两个参数化用例已按新口径**改写**
+  （新增声明了学分上限的用例与不可验证用例），
+  `test_synthetic_production_e2e.py::test_preference_fields_are_passed_through_and_reported`
+  的 `max_credit` 断言改为断言"学分上限"这一语义；
+- `backend/app/planner/credit_limit.py` 的**信用额度模型**（哪些课计入本学期学分、
+  是否计入重修学分）仍属**非时间正式执行规则**，需要负责人确认后才能进入真实链路。
 
 ## 本次批准输出规则
 - feasible：完整建议形成，阶段要求认证且语义明确的硬条件通过，无影响可执行性的unresolved。

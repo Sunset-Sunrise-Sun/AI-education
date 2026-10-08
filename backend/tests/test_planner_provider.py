@@ -280,7 +280,7 @@ def test_prerequisite_not_assumed_passed_even_when_satisfied_task_exists():
 
 
 @pytest.mark.parametrize("preference", [
-    Preference(max_credit=0), Preference(max_credit=18), Preference(avoid_cross_campus=True),
+    Preference(), Preference(avoid_cross_campus=True),
     Preference(preferred_courses=["A"]), Preference(notes="周五必须空出来"),
     Preference(avoid_times=[dict(weekday=1, start_section=1, end_section=2)]),
 ])
@@ -289,6 +289,30 @@ def test_unconfirmed_preferences_do_not_filter_score_or_make_infeasible(preferen
     assert result.status.value == "partially_feasible"
     assert ids(result) == [("A", "a")]
     assert types(result) == {"manual_confirmation"}
+
+
+def test_declared_credit_upper_bound_rejects_an_over_limit_addition():
+    # 学生**本人显式**声明上限 0 学分；新增教学班声明 3 学分 → 可证明超限。
+    # 这不是"未确认偏好"：超限的新增不得被接纳，也不得靠排序牺牲某门来凑。
+    result = run([task()], [section(credit=3)], preference=Preference(max_credit=0))
+    assert ids(result) == [] and result.changes == []
+    assert result.status.value == "partially_feasible"
+    assert any("超过学生声明的学分上限" in item.message for item in result.unresolved)
+
+
+def test_credit_upper_bound_not_verifiable_without_declared_credits():
+    # 课表里的教学班没有 credit 声明 → "合计 ≤ 上限"无法证明；
+    # 必须明确报告待人工核验，而不是静默算作已通过学分校验。
+    result = run(current=[section("B", "b", 2)], preference=Preference(max_credit=18))
+    assert ids(result) == [("B", "b")]
+    assert any("无法证明" in item.message for item in result.unresolved)
+
+
+def test_existing_over_limit_current_schedule_is_reported_not_rewritten():
+    current = [section("B", "b", 2, credit=10)]
+    result = run(current=current, preference=Preference(max_credit=4))
+    assert ids(result) == [("B", "b")]
+    assert any("已超过" in item.message for item in result.unresolved)
 
 
 @pytest.mark.parametrize("capacity", [0, 1, 100])

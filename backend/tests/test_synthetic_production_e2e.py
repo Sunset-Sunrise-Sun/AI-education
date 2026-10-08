@@ -545,11 +545,17 @@ def test_preference_fields_are_passed_through_and_reported(
 
     # 每个已启用的 preference 字段都必须出现在 Planner 的"待确认"说明里
     # （说明 Planner 收到的是调用方真实输入，而不是被悄悄丢弃 / 改写）。
+    # ⚠️ `max_credit` 例外：它已不再是"语义未确认"，而是由
+    # `app/planner/credit_limit.py` 做的一次**显式确定性接纳判断**，
+    # 因此它按"学分上限"这一语义出现在说明里（见下一条断言）。
     manual = [item for item in payload["unresolved"] if item["type"] == "manual_confirmation"]
     assert manual
     combined = json.dumps(manual, ensure_ascii=False)
     for field in PREFERENCE_FIELDS:
+        if field == "max_credit":
+            continue
         assert field in combined
+    assert "学分上限" in combined
 
 
 def test_current_schedule_is_preserved_and_never_silently_replaced(
