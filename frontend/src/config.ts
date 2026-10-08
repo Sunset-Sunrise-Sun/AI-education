@@ -53,6 +53,51 @@ export const EXPLANATION_ENDPOINT = `${API_BASE_URL}/api/v1/explanation/plan`
 export const EXPLANATION_API_ENABLED: boolean =
   import.meta.env.VITE_EXPLANATION_API_ENABLED === 'true'
 
+/**
+ * AI 规划适配层（`POST /api/v1/ai-planning/{interpret,solve,adopt}`）。
+ *
+ * ⚠️ 后端（Agent A）**尚未实现**这三个路径。前端因此把它当成一个
+ * **明确可能不可用**的能力：
+ * - 默认**关闭** ⇒ 面板显示「AI 调整尚未配置」，**一个请求也不发**；
+ * - 打开后真实调用；失败如实报错，⛔ **绝不**回退到前端预览 fixture；
+ * - 字段假设逐条记录在 `docs/final_upgrade/FRONTEND_AI_API_EXPECTATIONS.md`。
+ */
+export const AI_PLANNING_ENDPOINTS = {
+  interpret: `${API_BASE_URL}/api/v1/ai-planning/interpret`,
+  solve: `${API_BASE_URL}/api/v1/ai-planning/solve`,
+  adopt: `${API_BASE_URL}/api/v1/ai-planning/adopt`,
+} as const
+
+/** 真实 AI 规划通道开关；默认关闭。 */
+export const AI_PLANNING_API_ENABLED: boolean =
+  import.meta.env.VITE_AI_PLANNING_API_ENABLED === 'true'
+
+/**
+ * **前端预览模式**开关（离线演示 / 界面评审）。
+ *
+ * 打开后只使用 `src/api/aiPlanningFixtures.ts`，界面必须显示
+ * 「仅前端预览 / 非真实模型 / 未调用 Planner」。⛔ 与本开关无关的真实请求失败
+ * 不会回退到 fixture。
+ */
+export const AI_PLANNING_PREVIEW: boolean =
+  import.meta.env.VITE_AI_PLANNING_PREVIEW === 'true'
+
+/**
+ * 个人规划接口（**已存在**，Agent A 实现）。
+ *
+ * ⚠️ 未配置已核验目录时后端返回 503 `personal_catalog_not_configured`；
+ * 前端按真实 readiness 展示"没有已核验版本目录"，
+ * ⛔ **不退回固定 Case A 冒充个人结果**。
+ */
+export const PERSONAL_PLANNING_ENDPOINTS = {
+  versions: `${API_BASE_URL}/api/v1/personal-planning/curriculum-versions`,
+  plan: `${API_BASE_URL}/api/v1/personal-planning/plan`,
+} as const
+
+/** 个人规划通道开关；默认关闭（未配置目录时后端 503，不必默认打扰用户）。 */
+export const PERSONAL_PLANNING_API_ENABLED: boolean =
+  import.meta.env.VITE_PERSONAL_PLANNING_API_ENABLED === 'true'
+
 export const APP_TITLE = '学航·转衔'
 export const APP_SUBTITLE = '面向转专业学生的 AI 学业路径重构 Agent'
 

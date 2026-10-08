@@ -1,19 +1,19 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import CourseOfferingList from './components/CourseOfferingList.vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import E2EDebugPanel from './components/E2EDebugPanel.vue'
 import type { E2EDebugInfo } from './components/E2EDebugPanel.vue'
-import ExplanationPanel from './components/ExplanationPanel.vue'
-import MakeupTaskList from './components/MakeupTaskList.vue'
-import PlanResultPanel from './components/PlanResultPanel.vue'
-import PreferencePanel from './components/PreferencePanel.vue'
-import SectionCard from './components/SectionCard.vue'
 import TopStatusBar from './components/TopStatusBar.vue'
-import UserInputPanel from './components/UserInputPanel.vue'
+import AiAdjustDrawer from './components/ai/AiAdjustDrawer.vue'
+import AiAdjustView from './components/views/AiAdjustView.vue'
+import MakeupPathView from './components/views/MakeupPathView.vue'
+import TransferAnalysisView from './components/views/TransferAnalysisView.vue'
 import { useDemoData } from './composables/useDemoData'
+import { usePersonalPlanning } from './composables/usePersonalPlanning'
 import {
-  DEMO_ENDPOINT,
+  AI_PLANNING_API_ENABLED,
+  AI_PLANNING_PREVIEW,
   EXPLANATION_API_ENABLED,
+  PERSONAL_PLANNING_API_ENABLED,
   PLAN_API_ENABLED,
   PLAN_ENDPOINT,
   initialDataMode,
@@ -28,80 +28,107 @@ import {
 } from './state/userInput'
 import type { UserInputForm } from './state/userInput'
 import { PlanApiError, fetchRealPlan } from './api/plan'
-import type { PlanResult } from './types/contracts'
-import { PLAN_STATUS_LABEL } from './utils/labels'
+import type { MakeupTask, PlanResult } from './types/contracts'
+import { computePlanDigest } from './utils/planDigest'
+
+/**
+ * 页面外壳：三个导航入口 + AI 调整抽屉。
+ *
+ * 信息架构（任务书）：
+ * 1. `转专业分析`：原 / 目标培养版本、认定状态与缺口（真实 readiness，⛔ 不冒充）；
+ * 2. `补修路径`：当前学期精确课表 + 后续学期课程级条件路径 + 风险 / 人工确认；
+ * 3. `AI 调整`：围绕**当前选中补修方案**的对话式调整（两次确认）。
+ *
+ * 本轮把旧的"0–5 区块"整体搬进 `补修路径` 视图，保留原有 data-testid 与行为，
+ * 因此旧 Case A 演示与既有测试继续可用。
+ */
+type ViewKey = 'transfer-analysis' | 'makeup-path' | 'ai-adjust'
+
+const VIEWS: { key: ViewKey; label: string; hint: string }[] = [
+  { key: 'transfer-analysis', label: '转专业分析', hint: '培养方案版本与缺口认定' },
+  { key: 'makeup-path', label: '补修路径', hint: '当前学期课表与后续学期路径' },
+  { key: 'ai-adjust', label: 'AI 调整', hint: '对话式调整当前方案（两次确认）' },
+]
+
+const activeView = ref<ViewKey>('makeup-path')
 
 const { state, data, dataSource, errorMessage, load } = useDemoData()
 
-/**
- * 是否处于开发环境。
- *
- * 用于**仅开发环境**的联调调试信息；生产构建下调试面板不会渲染。
- */
 const isDev = import.meta.env.DEV
 
-/**
- * 用户输入（Frontend User Input Gate, Phase 1）。
- *
- * 这里保存的唯一真源只是**用户录入的输入**，与 Mock Demo 数据无关：
- * 即使 Mock 通道加载失败，输入区仍然可用。
- */
+/* ------------------------------------------------------------------ *
+ * 用户输入（Frontend User Input Gate, Phase 1）
+ * ------------------------------------------------------------------ */
+
 const userInput = ref<UserInputForm>(createDefaultUserInputForm())
 const dataMode = ref(initialDataMode())
 
-/**
- * Real Planning 结果。
- *
- * 只有**成功调用** `POST /api/v1/plan` 后才会被赋值；
- * 失败时保持 `null` 并如实显示错误 —— 既不复用 Mock 数据，也不生成任何替代结果。
- */
+/* ------------------------------------------------------------------ *
+ * Real Planning（POST /api/v1/plan）与 Mock 演示结果
+ * ------------------------------------------------------------------ */
+
 const realPlanResult = ref<PlanResult | null>(null)
 const planErrorMessage = ref('')
 const planErrorKind = ref<string | null>(null)
 const planErrorStatus = ref<number | null>(null)
 const planErrorCode = ref<string | null>(null)
-/** 后端返回的原始 detail 文本（供 UI 展示具体原因）。 */
 const planErrorDetail = ref<string | null>(null)
 const planSubmitting = ref(false)
-
-/** 最近一次 Real 请求的 HTTP 状态码（含成功），供联调调试面板显示。 */
 const lastHttpStatus = ref<number | null>(null)
 
-/**
- * Real 提交是否被 **provenance 门禁**阻止（fail closed）。
- *
- * 门禁只放行两种情况：**空课表**，或**每一项都明确为 real**。
- * 含 Mock、real 与 mock 混合、或来源未经确认的教学班，一律阻止。
- */
+/** 后端个人规划结果被"用作当前方案"时置位（用于 provenance）。 */
+const personalPlanApplied = ref(false)
+const personalPlanNotice = ref<string | null>(null)
+
+/** AI 调整（第二次确认成功）采用的方案；只有后端确认才可能被赋值。 */
+const aiAdoptedPlan = ref<PlanResult | null>(null)
+const aiAdoptedDigest = ref<string | null>(null)
+
 const planScheduleBlocked = computed(() => scheduleProvenanceBlockReason(userInput.value) !== null)
 
 /**
- * **规划结果**的来源 —— 只看规划结果本身，不冒充整页数据来源。
+ * 方案来源的**局部** provenance。
  *
- * ⚠️ `/api/v1/plan` 当前只返回 `PlanResult`：
- * MakeupTask / CourseOffering / Preference 仍全部来自 Mock Demo，
- * 因此这里只是**局部 provenance**，绝不把整个页面统一标成 Real。
+ * - `real`：`POST /api/v1/plan` 成功返回；
+ * - `ai_candidate`：AI 调整第二次确认被后端接受；
+ * - `mock`：都还没有成功，展示的是 Mock 演示方案。
  */
-const planResultMode = computed<'mock' | 'real'>(() =>
-  realPlanResult.value ? 'real' : 'mock',
+const planResultMode = computed<'mock' | 'real' | 'ai_candidate'>(() => {
+  if (aiAdoptedPlan.value !== null) {
+    return 'ai_candidate'
+  }
+  if (realPlanResult.value !== null) {
+    return 'real'
+  }
+  return 'mock'
+})
+
+/** 解释入口用的二分模式（解释面板目前只区分 Mock / Real）。 */
+const explanationPlanMode = computed<'mock' | 'real'>(() =>
+  planResultMode.value === 'mock' ? 'mock' : 'real',
 )
 
-/** 当前实际渲染的规划结果：Real 成功后展示 Real，否则展示 Mock Demo 的结果。 */
 const displayedPlanResult = computed<PlanResult | null>(
-  () => realPlanResult.value ?? data.value?.plan_result ?? null,
+  () =>
+    aiAdoptedPlan.value ??
+    realPlanResult.value ??
+    data.value?.plan_result ??
+    null,
 )
 
-/**
- * 课程号 -> 课程名映射表。
- *
- * ⚠️ **只用于 Mock 结果的展示**：
- * 该映射表本身来自 Mock 教学班 / 补修任务，因此当**规划结果来自 Real** 时
- * 必须传空表（`{}`），否则会把 Mock 课程名泄漏进 Real 结果区，
- * 造成"Real 结果 + Mock 课程名"的 provenance 污染。
- */
+const planResultLabel = computed(() => {
+  switch (planResultMode.value) {
+    case 'ai_candidate':
+      return 'AI 候选方案（后端确认采用）'
+    case 'real':
+      return 'Real Planning 结果'
+    default:
+      return 'Mock 演示方案'
+  }
+})
+
 const courseNameById = computed<Record<string, string>>(() => {
   const map: Record<string, string> = {}
-
   for (const task of data.value?.makeup_tasks ?? []) {
     map[task.course_id] = task.course_name
   }
@@ -110,23 +137,17 @@ const courseNameById = computed<Record<string, string>>(() => {
       map[offering.course_id] = offering.course_name
     }
   }
-
   return map
 })
 
-/** 实际传给规划结果面板的课程名映射：Real 结果下一律为空。 */
 const planResultCourseNameById = computed<Record<string, string>>(() =>
-  planResultMode.value === 'real' ? {} : courseNameById.value,
+  planResultMode.value === 'mock' ? courseNameById.value : {},
 )
 
-/**
- * 解释面板（Final Upgrade · Agent B）。
- *
- * ⚠️ 解释是**只读**能力：
- * - 它消费的是**当前真正展示的那份方案**（Real 成功 ⇒ Real 方案；否则 Mock 演示方案）；
- * - 打开 / 关闭解释**不会**改变 `PlanResult`、输入区或任何判定；
- * - 未启用时不发任何请求，并明确显示"解释功能未启用"。
- */
+/* ------------------------------------------------------------------ *
+ * 解释（只读）
+ * ------------------------------------------------------------------ */
+
 const explanationOpen = ref(false)
 const explanationFocusCourseId = ref<string | null>(null)
 const explanationRequestSeq = ref(0)
@@ -141,17 +162,74 @@ function closeExplanation(): void {
   explanationOpen.value = false
 }
 
-/** 解释入口是否可见（关闭时仍显示入口与说明，但不会发请求）。 */
-const explanationEntryVisible = computed(() => displayedPlanResult.value !== null)
+/* ------------------------------------------------------------------ *
+ * 方案指纹（AI 调整的 plan_digest）
+ * ------------------------------------------------------------------ */
+
+const planDigest = ref<string>('sha256:未计算')
+const digestError = ref<string | null>(null)
+
+async function refreshPlanDigest(): Promise<void> {
+  if (aiAdoptedDigest.value !== null) {
+    planDigest.value = aiAdoptedDigest.value
+    return
+  }
+  const plan = displayedPlanResult.value
+  if (plan === null) {
+    planDigest.value = 'sha256:无方案'
+    return
+  }
+  try {
+    planDigest.value = await computePlanDigest(plan)
+    digestError.value = null
+  } catch {
+    planDigest.value = 'sha256:计算失败'
+    digestError.value = '无法计算方案指纹；AI 调整会把它当作"原方案可能已变化"处理。'
+  }
+}
+
+watch(displayedPlanResult, () => {
+  void refreshPlanDigest()
+})
+
+/* ------------------------------------------------------------------ *
+ * AI 调整抽屉
+ * ------------------------------------------------------------------ */
+
+const aiDrawerOpen = ref(false)
+const aiFocusCourseId = ref<string | null>(null)
+
+function openAiDrawer(focusCourseId: string | null): void {
+  aiFocusCourseId.value = focusCourseId
+  aiDrawerOpen.value = true
+}
+
+function closeAiDrawer(): void {
+  aiDrawerOpen.value = false
+}
+
+/**
+ * 第二次确认成功后的**唯一**刷新入口。
+ *
+ * ⛔ 只有抽屉在收到后端 `adopted` 时才调用它；失败 / 拒绝 / 过期都不会走到这里。
+ */
+function onAiAdopted(plan: PlanResult): void {
+  aiAdoptedPlan.value = plan
+  aiAdoptedDigest.value = null
+  personalPlanApplied.value = false
+  personalPlanNotice.value = '当前方案已由 AI 调整的后端确认结果刷新。'
+  void refreshPlanDigest()
+}
+
+/* ------------------------------------------------------------------ *
+ * Real Planning 提交
+ * ------------------------------------------------------------------ */
 
 async function submitRealPlan(): Promise<void> {
   if (planSubmitting.value) {
     return
   }
 
-  // 提交前的最后一道守卫（纯函数，见 `evaluatePlanSubmission`）：
-  // 任一条件不满足时**一个请求也不发**。
-  // 按钮的 disabled 只是界面提示，不能作为唯一防线（程序化调用 / 事件顺序异常都可能绕过它）。
   const gate = evaluatePlanSubmission(userInput.value)
   if (!gate.allowed) {
     planErrorMessage.value = gate.reason
@@ -171,10 +249,11 @@ async function submitRealPlan(): Promise<void> {
 
   try {
     realPlanResult.value = await fetchRealPlan(buildRealPlanRequest(userInput.value))
+    aiAdoptedPlan.value = null
     dataMode.value = 'real'
     lastHttpStatus.value = 200
+    void refreshPlanDigest()
   } catch (error) {
-    // 失败时**保持 Mock 结果**，但绝不把 Mock 冒充成 Real，也不回退到 Mock 通道。
     realPlanResult.value = null
     dataMode.value = 'mock'
 
@@ -186,7 +265,6 @@ async function submitRealPlan(): Promise<void> {
       planErrorMessage.value = error.message
       lastHttpStatus.value = error.status
     } else {
-      // 非 PlanApiError（如主动 abort）：如实记录，不假装是后端错误。
       planErrorKind.value = 'unexpected'
       planErrorStatus.value = null
       planErrorCode.value = null
@@ -200,12 +278,61 @@ async function submitRealPlan(): Promise<void> {
   }
 }
 
+/* ------------------------------------------------------------------ *
+ * 个人规划（转专业分析）
+ * ------------------------------------------------------------------ */
+
+const personal = usePersonalPlanning({
+  enabled: PERSONAL_PLANNING_API_ENABLED,
+  preview: !PERSONAL_PLANNING_API_ENABLED && import.meta.env.VITE_PERSONAL_PLANNING_PREVIEW === 'true',
+})
+
+const personalMakeupTasks = ref<MakeupTask[] | null>(null)
+
+function onPersonalSubmit(payload: { oldVersionId: string; targetVersionId: string }): void {
+  void personal.submit({
+    old_version_id: payload.oldVersionId,
+    target_version_id: payload.targetVersionId,
+    semester: userInput.value.semester,
+    student: {
+      completed: { records: [] },
+      preference: {
+        max_credit: null,
+        avoid_cross_campus: false,
+        preferred_courses: [],
+        avoid_times: [],
+      },
+    },
+    current_schedule: userInput.value.currentSchedule,
+  })
+}
+
 /**
- * 联调调试信息（**仅开发环境渲染**）。
+ * 把后端个人规划结果"用作当前方案"。
  *
- * ⛔ 只包含计数 / 枚举 / 状态：不含成绩、姓名、学号、GPA，
- * 不 dump 请求或响应，也不包含任何凭据。
+ * ⚠️ 只有当后端真的给出 `planning`（排课结果）时才允许覆盖当前方案的规划结果；
+ * `planning = null` 时**只**接管补修任务上下文，并明确提示"没有排课结果"。
  */
+function onPersonalUseResults(makeupTasks: MakeupTask[], planning: PlanResult | null): void {
+  personalMakeupTasks.value = makeupTasks
+  if (planning === null) {
+    personalPlanApplied.value = false
+    personalPlanNotice.value =
+      '后端个人规划结果没有排课内容（planning = null）：补修任务已载入，但当前展示的规划结果仍来自其它来源，不代表个人排课已完成。'
+  } else {
+    realPlanResult.value = planning
+    aiAdoptedPlan.value = null
+    personalPlanApplied.value = true
+    personalPlanNotice.value = '当前规划结果已切换为后端个人规划结果（Real）。'
+    void refreshPlanDigest()
+  }
+  activeView.value = 'makeup-path'
+}
+
+/* ------------------------------------------------------------------ *
+ * 联调调试信息（仅开发环境）
+ * ------------------------------------------------------------------ */
+
 const e2eDebugInfo = computed<E2EDebugInfo>(() => ({
   planEndpoint: PLAN_ENDPOINT,
   semester: userInput.value.semester,
@@ -217,292 +344,147 @@ const e2eDebugInfo = computed<E2EDebugInfo>(() => ({
   lastErrorKind: planErrorKind.value,
   planResultSource: planResultMode.value,
 }))
-/**
- * 课程号 -> 课程名映射表（原定义已上移，见 `planResultCourseNameById` 附近的说明）。
- */
+
+/** 供 `转专业分析` 使用的课表计数（只传计数，不传明细）。 */
+const currentScheduleCount = computed(() => userInput.value.currentSchedule.length)
 
 onMounted(() => {
   void load()
+  void refreshPlanDigest()
+  void personal.loadCatalog()
 })
 </script>
 
 <template>
-  <div class="page">
+  <div class="page page--ai-planning">
     <TopStatusBar :data-source="dataSource" />
 
-    <!-- 业务数据流转全景步骤示意（极佳的参赛 Demo 讲解引导条） -->
-    <div class="pipeline-guide">
-      <div class="pipeline-step">
-        <div class="pipeline-step__num">1</div>
-        <div class="pipeline-step__content">
-          <strong>培养方案对比</strong>
-          <span>Curriculum 缺什么课</span>
-        </div>
-      </div>
-      <div class="pipeline-arrow">➔</div>
-      <div class="pipeline-step">
-        <div class="pipeline-step__num">2</div>
-        <div class="pipeline-step__content">
-          <strong>教学班供给获取</strong>
-          <span>Course Data 开了哪些班</span>
-        </div>
-      </div>
-      <div class="pipeline-arrow">➔</div>
-      <div class="pipeline-step">
-        <div class="pipeline-step__num">3</div>
-        <div class="pipeline-step__content">
-          <strong>偏好约束注入</strong>
-          <span>Agent 用户意图解析</span>
-        </div>
-      </div>
-      <div class="pipeline-arrow">➔</div>
-      <div class="pipeline-step pipeline-step--accent">
-        <div class="pipeline-step__num">4</div>
-        <div class="pipeline-step__content">
-          <strong>课表求解与调班</strong>
-          <span>Planner Path Repair</span>
-        </div>
-      </div>
-    </div>
+    <nav class="app-nav" aria-label="主导航" data-testid="app-nav">
+      <button
+        v-for="view in VIEWS"
+        :key="view.key"
+        type="button"
+        class="app-nav__tab"
+        :class="{ 'app-nav__tab--active': activeView === view.key }"
+        :data-testid="`nav-${view.key}`"
+        :aria-current="activeView === view.key ? 'page' : undefined"
+        @click="activeView = view.key"
+      >
+        <strong>{{ view.label }}</strong>
+        <span class="app-nav__hint">{{ view.hint }}</span>
+      </button>
+
+      <button
+        type="button"
+        class="app-nav__ai-button"
+        data-testid="nav-open-ai-drawer"
+        :disabled="displayedPlanResult === null"
+        @click="openAiDrawer(null)"
+      >
+        💬 AI 调整
+      </button>
+    </nav>
 
     <main class="page__main">
-      <!--
-        阶段 0：用户输入区（Frontend User Input Gate, Phase 1）
+      <TransferAnalysisView
+        v-if="activeView === 'transfer-analysis'"
+        :phase="personal.phase.value"
+        :selectable-versions="personal.selectableVersions.value"
+        :rejected-versions="personal.rejectedVersions.value"
+        :catalog-reason="personal.catalog.value?.catalog_reason ?? ''"
+        :result="personal.result.value"
+        :error-message="personal.errorMessage.value"
+        :error-kind="personal.errorKind.value"
+        :error-code="personal.errorCode.value"
+        :preview-notice="personal.previewNotice.value"
+        :api-enabled="PERSONAL_PLANNING_API_ENABLED"
+        :current-semester="userInput.semester"
+        :current-schedule-count="currentScheduleCount"
+        @submit="onPersonalSubmit"
+        @reload="personal.loadCatalog"
+        @use-results="onPersonalUseResults"
+      />
 
-        ⚠️ 与 Mock Demo 数据完全解耦：即使 Mock 通道加载失败，用户输入区仍然可用。
-        输入区自身**不产生任何业务结论**，也不调用 Mock 接口。
-      -->
-      <SectionCard
-        section-id="section-user-input"
-        title="0. 用户输入（目标学期、转专业上下文、当前课表与偏好）"
-        subtitle="收集生成规划所需的用户输入：目标学期、学生转专业上下文、当前课表与个性化偏好，以及成绩单文件选择。本区块只组织输入，不做冲突检测、不生成补修任务。"
-      >
-        <UserInputPanel
-          :form="userInput"
-          :offerings="data?.course_offerings ?? []"
-          :plan-api-enabled="PLAN_API_ENABLED"
-          :submitting="planSubmitting"
-          :mode="dataMode"
-          :data-source-label="dataSource"
-          :plan-error-message="planErrorMessage"
-          :plan-error-kind="planErrorKind"
-          :plan-error-status="planErrorStatus"
-          :plan-error-code="planErrorCode"
-          :plan-error-detail="planErrorDetail"
-          :debug-info="e2eDebugInfo"
-          :dev="isDev"
-          :schedule-block-reason="scheduleProvenanceBlockReason(userInput)"
-          @update:form="userInput = $event"
-          @submit-real="submitRealPlan"
-        />
-      </SectionCard>
+      <MakeupPathView
+        v-else-if="activeView === 'makeup-path'"
+        :state="state"
+        :data="data"
+        :data-source="dataSource"
+        :demo-error-message="errorMessage"
+        :user-input="userInput"
+        :data-mode="dataMode"
+        :plan-api-enabled="PLAN_API_ENABLED"
+        :plan-submitting="planSubmitting"
+        :plan-error-message="planErrorMessage"
+        :plan-error-kind="planErrorKind"
+        :plan-error-status="planErrorStatus"
+        :plan-error-code="planErrorCode"
+        :plan-error-detail="planErrorDetail"
+        :debug-info="e2eDebugInfo"
+        :dev="isDev"
+        :schedule-block-reason="scheduleProvenanceBlockReason(userInput)"
+        :explanation-api-enabled="EXPLANATION_API_ENABLED"
+        :explanation-open="explanationOpen"
+        :explanation-focus-course-id="explanationFocusCourseId"
+        :explanation-request-seq="explanationRequestSeq"
+        :displayed-plan-result="displayedPlanResult"
+        :plan-result-mode="explanationPlanMode"
+        :plan-result-course-name-by-id="planResultCourseNameById"
+        :course-name-by-id="courseNameById"
+        :personal-plan-applied="personalPlanApplied"
+        :personal-plan-notice="personalPlanNotice"
+        @update:form="userInput = $event"
+        @submit-real-plan="submitRealPlan"
+        @reload-demo="load"
+        @open-explanation="openExplanation"
+        @close-explanation="closeExplanation"
+        @open-ai-drawer="openAiDrawer"
+      />
 
-      <!-- 状态一：加载中 -->
-      <SectionCard
-        v-if="state === 'loading'"
-        title="正在加载演示数据"
-        subtitle="页面仅调用后端 Mock 聚合接口，不包含任何客户端预设或合成数据。"
-      >
-        <div class="loading-wrap">
-          <div class="spinner"></div>
-          <p class="state state--loading">
-            正在向 <code class="mono">{{ DEMO_ENDPOINT }}</code> 发送数据请求...
-          </p>
-        </div>
-      </SectionCard>
-
-      <!-- 状态二：请求失败。诚实报错，严禁在前端自己合成数据顶替 -->
-      <SectionCard
-        v-else-if="state === 'error'"
-        title="Demo 数据加载失败"
-        subtitle="页面不会自动生成替代数据，也严禁展示未经后端正式响应的内容。"
-        tone="attention"
-      >
-        <div class="error-box">
-          <p class="state state--error">后端接口连接异常</p>
-          <p class="state__detail">{{ errorMessage }}</p>
-          <p class="state__hint">
-            请检查本地 FastAPI 后端服务是否已在 8000 端口启动：<br />
-            <code class="mono">cd backend &amp;&amp; python -m uvicorn app.main:app --reload</code>
-          </p>
-          <button class="button" type="button" @click="load">
-            🔄 重新尝试连接
-          </button>
-        </div>
-      </SectionCard>
-
-      <!-- 状态三：加载成功 -->
-      <template v-else-if="data">
-        <!-- 概览状态卡片 -->
-        <div class="overview-bar">
-          <div class="overview-metric">
-            <span class="overview-metric__label">历史培养要求评估项</span>
-            <span class="overview-metric__val num">{{ data.makeup_tasks.length }} <small>条</small></span>
-          </div>
-          <div class="overview-metric">
-            <span class="overview-metric__label">教学班记录</span>
-            <span class="overview-metric__val num">{{ data.course_offerings.length }} <small>个</small></span>
-          </div>
-          <div class="overview-metric">
-            <span class="overview-metric__label">单学期学分上限</span>
-            <span class="overview-metric__val num">{{ data.preference.max_credit ?? '—' }} <small>学分</small></span>
-          </div>
-          <div class="overview-metric">
-            <span class="overview-metric__label">规划结果状态</span>
-            <span
-              v-if="displayedPlanResult"
-              class="tag tag--plan"
-              :class="`tag--plan-${displayedPlanResult.status}`"
-            >
-              {{ PLAN_STATUS_LABEL[displayedPlanResult.status] }}
-            </span>
-            <span v-else class="text-muted">—</span>
-          </div>
-        </div>
-
-        <!-- 1. 历史培养要求评估（MakeupTask 的中性表述） -->
-        <SectionCard
-          mock
-          section-id="section-makeup"
-          title="1. 历史培养要求评估（MakeupTask）"
-          subtitle="Curriculum 模块依据目标培养方案要求与学生已修记录逐条评估后的结果，含“已满足 / 待课程认定 / 已确认需补修”等不同状态。逐条状态以每行的判定列与认定说明为准，前端不作汇总改写。"
-          :badge-count="data.makeup_tasks.length"
-        >
-          <MakeupTaskList
-            :tasks="data.makeup_tasks"
-            :evidence-enabled="EXPLANATION_API_ENABLED"
-            @explain-course="openExplanation"
-          />
-        </SectionCard>
-
-        <!-- 2. 开课教学班 -->
-        <SectionCard
-          mock
-          section-id="section-offerings"
-          title="2. 开课教学班供给 (CourseOffering)"
-          subtitle="Course Data 模块从教务系统中抓取并标准化的目标学期开课清单：支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
-          :badge-count="data.course_offerings.length"
-        >
-          <CourseOfferingList :offerings="data.course_offerings" />
-        </SectionCard>
-
-        <!-- 3. 用户偏好 -->
-        <SectionCard
-          mock
-          section-id="section-preference"
-          title="3. 学生个性化偏好 (Preference)"
-          subtitle="Agent 模块解析学生自然语言输入所形成的约束条件：包含学分上限控制、避免跨校区、回避特定时段及意向课程。"
-        >
-          <PreferencePanel
-            :preference="data.preference"
-            :course-name-by-id="courseNameById"
-          />
-        </SectionCard>
-
-        <!--
-          4. 规划结果与建议课表
-
-          ⚠️ provenance 必须精确：
-          `POST /api/v1/plan` **只返回 PlanResult**，MakeupTask / CourseOffering / Preference
-          仍全部来自 Mock Demo。因此这里只把**规划结果**标成 Real，绝不把整页标成 Real。
-        -->
-        <SectionCard
-          section-id="section-plan"
-          tone="primary"
-          title="4. 规划结果与建议课表 (PlanResult)"
-          subtitle="展示 Planner 输出的 PlanResult：包含建议课表、方案变更、风险项与未决事项；前端不补充业务判断。"
-        >
-          <div class="uig-provenance" data-testid="plan-provenance">
-            <span class="uig-provenance__item">
-              基础演示数据：<strong class="uig-provenance__mock">Mock</strong>
-            </span>
-            <span class="uig-provenance__sep" aria-hidden="true">·</span>
-            <span class="uig-provenance__item">
-              规划结果：<strong
-                :class="planResultMode === 'real' ? 'uig-provenance__real' : 'uig-provenance__mock'"
-                data-testid="plan-result-provenance"
-              >{{ planResultMode === 'real' ? 'Real' : 'Mock' }}</strong>
-            </span>
-            <span class="uig-provenance__note">
-              <template v-if="planResultMode === 'real'">
-                本区块方案来自 <code class="mono">POST /api/v1/plan</code>；
-                其余区块（MakeupTask / 教学班 / Preference）仍为 Mock 演示数据。
-              </template>
-              <template v-else>
-                本区块方案来自 <code class="mono">GET /api/v1/mock/demo</code>；尚未提交 Real Planning。
-              </template>
-            </span>
-          </div>
-
-          <PlanResultPanel
-            v-if="displayedPlanResult"
-            :plan-result="displayedPlanResult"
-            :course-name-by-id="planResultCourseNameById"
-            :evidence-enabled="EXPLANATION_API_ENABLED"
-            @explain-result="openExplanation"
-          />
-        </SectionCard>
-
-        <!--
-          5. 解释与依据（Final Upgrade · Agent B）
-
-          ⚠️ 默认**不请求**：只有用户点击「查看依据 / 为什么这样安排」后才会调用
-          `POST /api/v1/explanation/plan`。解释是只读的，不会改变上面的规划结果。
-
-          ⚠️ provenance 精确到「被解释的方案」：Real 成功时解释的是 Real 方案，
-          否则解释的是 Mock 演示方案；解释通道本身不会把 Mock 说成 Real。
-        -->
-        <SectionCard
-          v-if="explanationEntryVisible"
-          section-id="section-explanation"
-          title="5. 解释与依据（为什么这样判定 / 这样安排）"
-          subtitle="只读解释：逐条说明补修判定、教学班安排、调班原因、风险与未决事项的依据来源，并列出仍需人工确认的事项。前端不生成解释、不重算方案。"
-        >
-          <div class="uig-provenance" data-testid="explanation-provenance">
-            <span class="uig-provenance__item">
-              解释对象：<strong
-                :class="planResultMode === 'real' ? 'uig-provenance__real' : 'uig-provenance__mock'"
-                data-testid="explanation-target-provenance"
-              >{{ planResultMode === 'real' ? 'Real 规划结果' : 'Mock 演示结果' }}</strong>
-            </span>
-            <span class="uig-provenance__sep" aria-hidden="true">·</span>
-            <span class="uig-provenance__item">
-              解释通道：<strong
-                :class="EXPLANATION_API_ENABLED ? 'uig-provenance__real' : 'uig-provenance__mock'"
-                data-testid="explanation-channel-state"
-              >{{ EXPLANATION_API_ENABLED ? '已启用' : '未启用' }}</strong>
-            </span>
-            <span class="uig-provenance__note">
-              解释请求只发送 <code class="mono">PlanResult</code> 与被解释条目所需的
-              <code class="mono">MakeupTask</code> / <code class="mono">CourseOffering</code> 上下文；
-              ⛔ 不发送成绩单、姓名、学号或个人身份信息。
-            </span>
-          </div>
-
-          <button
-            v-if="!explanationOpen"
-            type="button"
-            class="button"
-            data-testid="explanation-open"
-            @click="openExplanation(null)"
-          >
-            🔍 查看依据 / 为什么这样安排
-          </button>
-
-          <ExplanationPanel
-            v-else
-            :key="`explanation-${explanationRequestSeq}-${explanationFocusCourseId ?? 'all'}`"
-            :plan-result="displayedPlanResult!"
-            :makeup-tasks="data.makeup_tasks"
-            :course-offerings="data.course_offerings"
-            :enabled="EXPLANATION_API_ENABLED"
-            :focus-course-id="explanationFocusCourseId"
-            :plan-result-source="planResultMode"
-            @close="closeExplanation"
-          />
-        </SectionCard>
-      </template>
+      <AiAdjustView
+        v-else
+        :current-plan="displayedPlanResult"
+        :current-plan-label="planResultLabel"
+        :plan-digest="planDigest"
+        :makeup-tasks="data?.makeup_tasks ?? []"
+        :ready="displayedPlanResult !== null"
+        :not-ready-reason="
+          state === 'loading'
+            ? '演示数据仍在加载中。'
+            : state === 'error'
+              ? '演示数据加载失败，因此没有可调整的方案。'
+              : '当前还没有规划结果可供调整。'
+        "
+        @open-drawer="openAiDrawer(null)"
+      />
     </main>
+
+    <!-- AI 调整抽屉：桌面右侧 / 移动端全屏 -->
+    <button
+      v-if="aiDrawerOpen"
+      type="button"
+      class="ai-drawer__scrim"
+      data-testid="ai-drawer-scrim"
+      aria-label="关闭 AI 调整面板"
+      @click="closeAiDrawer"
+    ></button>
+
+    <AiAdjustDrawer
+      :open="aiDrawerOpen"
+      :plan-digest="planDigest"
+      :semester="userInput.semester"
+      :current-schedule-count="currentScheduleCount"
+      :focus-course-id="aiFocusCourseId"
+      :current-plan="displayedPlanResult"
+      :current-plan-label="planResultLabel"
+      :makeup-tasks="data?.makeup_tasks ?? []"
+      :api-enabled="AI_PLANNING_API_ENABLED"
+      :preview-enabled="AI_PLANNING_PREVIEW"
+      @close="closeAiDrawer"
+      @adopted="onAiAdopted"
+    />
+
+    <E2EDebugPanel v-if="isDev" :dev="isDev" :info="e2eDebugInfo" />
 
     <footer class="page__footer">
       <div class="footer-content">
@@ -510,18 +492,24 @@ onMounted(() => {
           <strong>学航·转衔</strong> —— 面向高校转专业学生的 AI 学业路径重构 Agent 系统
         </p>
         <p class="footer-compliance">
-          数据声明：<strong>页面基础展示数据</strong>（历史培养要求评估、开课教学班、学生偏好）
-          由后端 <code class="mono">GET /api/v1/mock/demo</code> 通道提供，属<strong>演示数据</strong>。
+          数据声明：<strong>页面基础展示数据</strong>由后端
+          <code class="mono">GET /api/v1/mock/demo</code> 通道提供，属<strong>演示数据</strong>。
           <br />
-          <template v-if="planResultMode === 'real'">
-            <strong>规划结果</strong>由 <code class="mono">POST /api/v1/plan</code> 返回（Real），
-            与上述基础展示数据的来源相互独立。
+          <template v-if="planResultMode === 'ai_candidate'">
+            <strong>当前方案</strong>来自 AI 调整的<strong>后端确认采用</strong>结果；
+          </template>
+          <template v-else-if="planResultMode === 'real'">
+            <strong>规划结果</strong>由 <code class="mono">POST /api/v1/plan</code> 返回（Real）；
           </template>
           <template v-else>
             <strong>规划结果</strong>当前同样来自上述 Mock 演示通道；尚未提交 Real Planning。
           </template>
+          AI 调整接口（<code class="mono">/api/v1/ai-planning/*</code>）尚未由后端实现，
+          未配置时页面明确显示"尚未配置"，<strong>不会</strong>伪造候选方案。
+          <br />
           两类内容均<strong>不代表真实教务系统正式指令</strong>。
         </p>
+        <p v-if="digestError" class="footer-compliance" data-testid="digest-error">{{ digestError }}</p>
       </div>
     </footer>
   </div>

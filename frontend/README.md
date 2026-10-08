@@ -214,13 +214,71 @@ VITE_EXPLANATION_API_ENABLED=true
 
 ---
 
+## 9.6 三入口信息架构与 AI 调整（Final Upgrade · AI Planning Frontend）
+
+页面顶部有三个导航入口（不再是一条长页面）：
+
+| 入口 | 内容 |
+| --- | --- |
+| **转专业分析** | 原 / 目标培养方案版本选择、认定状态分布、培养要求缺口（逐条 MakeupTask） |
+| **补修路径**（默认） | 当前学期精确课表、后续学期课程级条件路径、优先级线索 / 风险 / 人工确认，以及旧的 0–5 区块 |
+| **AI 调整** | 围绕**当前选中补修方案**的对话式调整（两次确认） |
+
+### AI 调整怎么用
+
+1. 打开 AI 调整（导航右侧按钮、补修路径的 AI 条，或某个教学班行的「就这门课调整」）；
+2. 输入一句自然语言，例如 **“尽量在大三前补完，这学期尽量轻松，但数据结构必须保留”**；
+3. **第一次确认**：查看 AI 解析出的硬约束 / 软偏好 / 学分上限（**不猜**，未说明即“未指定”）/
+   锁定课程 / 范围 / 未知项，可编辑后确认；
+4. 求解 → **候选方案 vs 原方案**对比（新增 / 移除 / 调班 / 学分 / 硬约束核对 / 风险 / 未决）；
+5. **第二次确认**：`采用候选方案` 或 `保留原方案`。只有后端确认采用成功才刷新当前方案；
+   拒绝 / 过期 / 不可用时**原方案一个字都不改**。
+
+### 三种数据模式（务必分清）
+
+| 模式 | 开关 | 行为 |
+| --- | --- | --- |
+| 未配置（默认） | 都不开 | 显示「AI 调整尚未配置」；**不发请求、不生成候选、不显示成功** |
+| 真实接口 | `VITE_AI_PLANNING_API_ENABLED=true` | 调用 `/api/v1/ai-planning/*`；失败如实报错，⛔ 不回退到预览 |
+| 前端预览 | `VITE_AI_PLANNING_PREVIEW=true` | 只读前端 fixture；界面醒目标注**「仅前端预览 / 非真实模型 / 未调用 Planner」** |
+
+> ⚠️ 后端（Agent A）**尚未实现** `/api/v1/ai-planning/*`。字段假设与错误语义逐条记录在
+> `docs/final_upgrade/FRONTEND_AI_API_EXPECTATIONS.md`；真实接口不一致时**只报告差异**，
+> 不在前端“自动适配”虚构字段。
+
+### 个人规划（已实现的后端接口）
+
+`转专业分析` 使用**已经存在**的 `GET /api/v1/personal-planning/curriculum-versions` 与
+`POST /api/v1/personal-planning/plan`：
+
+- 打开 `VITE_PERSONAL_PLANNING_API_ENABLED=true` 后按真实 readiness 接入；
+- 未配置已核验目录 ⇒ 后端 503 `personal_catalog_not_configured` ⇒ 页面显示
+  **“没有已核验的培养方案版本目录”**，⛔ **不会**退回固定 Case A 冒充个人结果；
+- `planning = null` ⇒ 明确显示“本次没有生成排课结果”及原因码
+  （`no_course_data` / `no_semester` / `semester_not_bound`），⛔ **不显示“已排好课”**。
+
+### 手动验收步骤
+
+1. `cd backend && python -m uvicorn app.main:app --reload`；`cd frontend && npm run dev`；
+2. 顶部确认三个入口都存在，默认落在「补修路径」，旧的四区块与「查看依据」仍在；
+3. 切到「转专业分析」：开 `VITE_PERSONAL_PLANNING_API_ENABLED=true` 时若目录未配置，
+   应看到“没有已核验的培养方案版本目录”（不是假版本列表）；
+4. 回到「补修路径」，点某教学班行的「就这门课调整」→ 抽屉打开并显示聚焦课程；
+5. 开 `VITE_AI_PLANNING_PREVIEW=true` 重启后：输入一句话 → 第一次确认 →
+   求解 → 候选对比 → 第二次确认（采用 / 保留原方案）；
+6. 关掉两个开关重启：AI 面板显示「尚未配置」，且**没有任何请求**发出。
+
+---
+
 ## 10. 已知限制（有意保留）
 
-- 只有一个页面，没有路由；没有单元测试（本阶段不强制）。
+- 三个入口通过内部状态切换，**未引入 vue-router**（避免为演示增加新依赖）；
 - 前端类型是与 `/schemas/*.schema.json` **手工对齐**的，不是代码生成；
-  若契约变更，需要同步 `src/types/contracts.ts`，但它**不是**契约真源。
+  若契约变更，需要同步 `src/types/contracts.ts`，但它**不是**契约真源；
+- `/api/v1/ai-planning/*` 与个人规划的 `planning` 结果**尚未完成真实联调**，
+  当前只有在显式打开开关 / 预览时才有内容；
 - `changes` / `selected_classes` 里只有课程号，页面为了可读性做了一个
   「课程号 → 课程名」的显示查找（见 `App.vue` 的 `courseNameById`）。
-  这**只是显示辅助**，不参与任何判定。
+  这**只是显示辅助**，不参与任何判定；
 - 生产构建产物是纯静态文件，部署时必须由能转发 `/api` 的服务器提供，
   或给后端配上 CORS 并设置 `VITE_API_BASE_URL`。
