@@ -1,11 +1,14 @@
 # AI Planning 前后端联合验收报告（PR #67）
 
 - **分支**：`feature/ai-planning-joint-e2e`（起点 `c60bf209b3b46ab9540e70515b6a98185f52f06c`）
+- **本次验收提交 SHA**：`816287452b20d109b6a4bfe17b1864555d71f808`
+  （`test(ai-planning): add real-HTTP joint E2E and fix two frontend contract shape mismatches`）
 - **集成内容**：后端 PR #66（DeepSeek Planning Controller）+ 前端 PR #65（AI 调整三入口与抽屉）
 - **执行环境**：Windows + PowerShell；Python 3.14.7（`PYTHONUTF8=1`）；Node v24.19.0 / npm 11.17.0；Vitest 3.2.7 / vue-tsc 3.3.11 / Vite 8.3.1
-- **DeepSeek 密钥**：**未注入** ⇒ 真实在线调用仍为 **NOT VERIFIED**（见 §6）
+- **DeepSeek 密钥**：**未注入** ⇒ 真实在线调用仍为 **NOT VERIFIED**（见 §5.2）
 - **使用数据**：**Mock**（人工构造的合成教学班与补修任务）；⛔ 未使用任何真实学生隐私数据
 - **公共契约**：**未修改** `/schemas/**` 与 `/docs/interfaces/**`（已用 `git status` 核对为空）
+- **后端生产代码**：**未修改**（`backend/app/**` 无改动）
 
 ---
 
