@@ -1,6 +1,10 @@
 # 联合浏览器验收报告：PR #68（UX 优化）× PR #69（浏览器 E2E）
 
 - **联合 QA 分支**：`qa/final-upgrade-ux-browser-e2e`
+- **分支提交链**：
+  `36ce35a`（基线 `feature/final-upgrade`）→ `d7e5f7e`（快进合入 PR #69）
+  → `5d27cbc`（合并 PR #68，第一个父 = `d7e5f7e`，第二个父 = `a38c9cd`）
+  → `05ca4fc`（本报告 + 联合验收新增用例）
 - **基线**：`feature/final-upgrade` = `36ce35a`
 - **合并内容**（两个原始分支**均未修改**）
   - PR #68 `feature/final-upgrade-ux-polish` = `a38c9cd`（前端 UX + 测试 + 文档，11 文件）
@@ -57,7 +61,6 @@ node tools/browser-e2e/run_browser_e2e.mjs --filter=R-375
 ## 3. 测试矩阵与结果（23 项）
 
 ### 3.1 PR #69 原有 18 项（对照复跑）
-
 | # | 用例 | 结果 |
 | --- | --- | --- |
 | 1 | `L01-home-three-entries` | ✅ |
@@ -272,7 +275,6 @@ Windows ZIP 成员名反斜杠语义），在历史各分支上同样失败，�
 ## 9. 本轮改动文件
 
 **仅测试基础设施**（⛔ 无生产代码改动、⛔ 未改两个原始分支）：
-
 | 文件 | 变更 |
 | --- | --- |
 | `tools/browser-e2e/cases.mjs` | 新增 `explanationCases()`（X01/X02）、`uxStructureCases()`（U01–U03）；响应式用例追加 UX 结构与头部信息密度断言；新增 `textLineCount()` / `measureDrawerHeader()` |
