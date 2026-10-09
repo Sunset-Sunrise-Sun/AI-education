@@ -3,6 +3,33 @@
 **状态：仅为 QA 候选，不代表通过回归或同意合并。** 
 候选分支：`feature/final-upgrade-integration-qa`，从 Agent A 分支 `feature/personal-planning-pipeline` 派生，叠加 Agent B 分支 `feature/explanation-agent` 的 25 项变更（含两个共同修改文件的手工合成）。
 
+---
+
+## 🆕 2026-10-09 更新（Architecture Review 反馈处理）
+
+Reviewer 在 PR #64 提出：GitHub 当时报告 `mergeable=false`，要求在**独立分支**刷新并对齐目标分支、
+再跑联合回归后重新取得 mergeable 状态。
+
+**处理结果**：
+
+| 项 | 结果 |
+| --- | --- |
+| 冲突根因 | `feature/final-upgrade` 在候选派生后前进了 **2 个提交**（`d3ad53a`、`31c8473`），**都只新增 2 个文档文件**（`docs/final_upgrade/AI_PLANNING_NEXT_PHASE.md`、`docs/final_upgrade/DEEPSEEK_PLANNING_AGENT_V1.md`），与候选的 49 个变更文件**零重叠** |
+| 独立分支 | `fix/final-upgrade-integration-qa-mergeable`（⛔ 未改动候选分支本身） |
+| 合并结果 | `git merge --no-commit --no-ff origin/feature/final-upgrade` → **`Automatic merge went well`，0 冲突**；合并提交 `c774368` |
+| 覆盖性证明 | 合并后 `origin/feature/final-upgrade`（`31c8473`）**是**合并提交的祖先 → 对目标分支**无剩余差异**，因此后续不可能再产生冲突 |
+| 当前 GitHub 状态 | PR #64 现报 `mergeable=true`、`mergeable_state=clean` |
+| 合并后回归 | 后端 **3078 passed / 2 failed / 2 skipped**（2 项为既有 Windows 路径语义差异）；前端 Vitest **154 passed**、`vue-tsc --noEmit` exit 0、`npm run build` exit 0 |
+
+⚠️ 该合并**未**引入 PR #66（DeepSeek Controller）与 PR #65（AI Planning Frontend）的代码：
+它们是 PR #67 的内容，⛔ 不属于 PR #64 的范围。本候选的测试计数因此是 3078，
+与 PR #67 分支的 3188 不可直接比较。
+
+详细证据、npm audit 分析与逐项 Review 条件处理见
+`docs/final_upgrade/reports/MERGE_GATE_FIX_REPORT.md`。
+
+---
+
 ## 合并处理
 - Agent A 个人规划、学分安全检查与全部相应测试保留；
 - Agent B 的解释服务、解释面板和相关测试全部保留；

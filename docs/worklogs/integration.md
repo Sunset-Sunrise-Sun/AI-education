@@ -100,3 +100,35 @@
   `6 failed / 76 passed`；修复后同文件 **82 passed**；
 - **边界**：⛔ 未 merge main、⛔ 未改 Provider store 语义（PROVIDER GATE: PASS）、
   ⛔ 未处理真实 artifact；Gate E / F / G 继续 parked。
+
+### 2026-10-09 - Final Upgrade 合并前收尾：PR #64 可合并性刷新 + 前端依赖安全评估（分支 `fix/final-upgrade-integration-qa-mergeable`）
+- 本次目标：处理 PR #64 的 `mergeable=false` 与 PR #67 的两条 Review 条件，并在合并后重新回归。
+- 已完成：
+  - **mergeable=false 根因**：候选 `1c7d101` 派生后，目标 `feature/final-upgrade` 前进了
+    `d3ad53a` / `31c8473` 两个提交，**只新增 2 个文档文件**，与候选 49 个变更文件**零重叠**；
+    GitHub 现报 `mergeable=true` / `mergeable_state=clean`。
+  - **独立分支解决**：在 `fix/final-upgrade-integration-qa-mergeable` 上
+    `git merge --no-commit --no-ff origin/feature/final-upgrade` → `Automatic merge went well`（0 冲突），
+    合并提交 `c774368`；`git merge-base --is-ancestor origin/feature/final-upgrade HEAD` 为真
+    ⇒ 对目标分支**无剩余差异**，后续不再产生冲突。
+  - 合并**只新增 2 个文档文件**，候选的 personal-planning / explanation / frontend 代码全部原样保留。
+  - **合并后回归**：后端 `python -m pytest -q` → **3078 passed / 2 failed / 2 skipped**；
+    前端 `npx vitest run` → **154 passed**（11 文件）；`npx vue-tsc --noEmit` → exit 0；
+    `npm run build` → exit 0。**无新增回归**。
+  - **npm audit（前端）**：4 项 = 1 moderate（`@vitest/mocker`）+ 1 high（`source-map-js`）+
+    2 critical（`tinypool`、`vitest` 聚合）。全部位于**开发/测试或构建期**链路，
+    `dist/assets/index-*.js`（单文件 144.11 kB）中检索 `postcss` / `source-map-js` / `tinypool` / `vitest`
+    **0 命中** ⇒ ⛔ 均不进入交付产物，当前**没有可利用的生产运行时路径**。
+    给出 P1–P5 分级修复建议；⛔ 未执行 `npm audit fix --force`、⛔ 未升级 vitest、⛔ 未改依赖清单。
+  - **2 项后端失败基线分类**：Python 3.14 `Path("bad\x00path")` 语义变化 +
+    Windows ZIP 成员名反斜杠语义差异；在 `d387b9a` / `37f62f2` / `c60bf20` / `1c7d101` / `c774368`
+    上均同样复现 ⇒ 既有环境差异，与本轮无关。
+- 修改文件：`docs/final_upgrade/INTEGRATION_QA_STATUS.md`（新增 Review 反馈处理一节）、
+  新增 `docs/final_upgrade/reports/MERGE_GATE_FIX_REPORT.md`、本 WORKLOG。
+- 测试：见上；命令与原始计数见报告 §1.3 / §3。
+- 使用数据：**Mock**；⛔ 未使用真实学生隐私数据。
+- 已知问题：⛔ 未改候选分支本身（无授权）；npm 4 项漏洞的 vitest 修复属跨主版本，需独立评审。
+- 需要人工确认：是否把该合并提交引入 `feature/final-upgrade-integration-qa`；
+  是否在独立任务中升级 vitest；是否把 `npm audit` 纳入 CI 门禁。
+- 对其他模块影响：无。⛔ 未改任何后端/前端生产代码，⛔ 未改 `/schemas` 与 `/docs/interfaces`。
+- 下一步：Reviewer 复核合并提交与安全评估；负责人裁决 vitest 升级与 CI 门禁。
