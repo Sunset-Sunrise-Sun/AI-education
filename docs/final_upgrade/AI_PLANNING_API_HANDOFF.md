@@ -321,6 +321,12 @@ unknown  本次没有任何教学班输入
 
 ---
 
+### 联合验收后澄清（非公共契约变更）
+
+- `diff.replaced[]` 非空行采用 `{course_id, from_class, to_class}`；`added[]`、`removed[]`、`kept[]` 则采用 `{course_id, class_id}`。同一次换班可能同时在教学班键集合差异中出现新增与移除，界面不应重复理解为多门课程。
+- `status=no_feasible_candidate` 时 `candidate_id` 可能非空，但仅是记录标识，不能据此提供采用功能；只有 `candidate_ready` 且候选及差异有效时才能采用。
+- `locked_courses[].reason` 可缺省或为 null，不得虚构说明。
+
 ## 5. `POST /api/v1/ai-planning/adopt`
 
 ### 请求
