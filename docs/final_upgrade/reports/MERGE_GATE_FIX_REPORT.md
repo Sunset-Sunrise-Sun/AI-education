@@ -3,6 +3,7 @@
 - **日期**：2026-10-09
 - **处理分支**：`fix/final-upgrade-integration-qa-mergeable`（从 PR #64 候选 `1c7d101` 派生）
 - **合并提交**：`c774368e4943cc598174f85d17409ba4932ba252`
+- **分支 head（含本报告）**：`f9d62b997a1820ffaae34134d466edca8611f219`
 - **执行环境**：Windows + PowerShell；Python 3.14.7（`PYTHONUTF8=1`）；Node v24.19.0 / npm 11.17.0；Vitest 3.2.7 / vue-tsc 3.3.11 / Vite 8.3.1
 - **公共契约**：**未修改** `/schemas/**` 与 `/docs/interfaces/**`
 - **受保护分支**：`main`（`c75b6da`）与 `feature/final-upgrade-integration-qa`（`1c7d101`）**均未改动**，⛔ 未合并任何 PR
