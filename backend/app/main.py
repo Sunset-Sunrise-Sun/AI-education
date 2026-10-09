@@ -15,7 +15,15 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api import completed_courses, explanation, health, mock, personal_plan, plan
+from app.api import (
+    ai_planning,
+    completed_courses,
+    explanation,
+    health,
+    mock,
+    personal_plan,
+    plan,
+)
 from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
 from app.course_data import CourseDataAcceptanceError
 from app.services.mock_service import MockDataError
@@ -123,3 +131,8 @@ app.include_router(personal_plan.router, prefix=API_V1_PREFIX)
 
 # Final Upgrade · Agent B：只读解释 API，不改课程认定或 Planner。
 app.include_router(explanation.router, prefix=API_V1_PREFIX)
+
+# DeepSeek AI Planning Controller（**新增私有前缀**，⛔ 不覆盖任何旧路由）：
+# 意图草稿 → 用户确认 → 受控 Planner 候选 → 二次确认采用；
+# 默认关闭（AI_PLANNING_ENABLED=false），无密钥时明确不可用且不回退。
+app.include_router(ai_planning.router, prefix=API_V1_PREFIX)
