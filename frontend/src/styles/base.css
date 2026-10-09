@@ -2582,6 +2582,11 @@ code.mono {
   gap: 12px;
 }
 
+.ai-drawer__head .button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .ai-drawer__head h3 {
   margin: 0 0 6px;
   font-size: 16px;
