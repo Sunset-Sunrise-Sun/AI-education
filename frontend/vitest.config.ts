@@ -18,6 +18,16 @@ export default defineConfig({
      * 默认关闭（接口未合并前 Real 按钮保持 disabled）。
      */
     'import.meta.env.VITE_PLAN_API_ENABLED': JSON.stringify('true'),
+    /**
+     * AI 调整：测试环境打开**前端预览 fixture**，以便对
+     * "草稿 → 第一次确认 → 求解 → 候选 → 第二次确认（采用 / 保留）"整条链路做组件级测试。
+     *
+     * ⚠️ 打开的只是**预览**，不是真实接口：`VITE_AI_PLANNING_API_ENABLED` 保持关闭，
+     * 因此"预览模式不发任何真实请求"的断言仍然成立；
+     * ⚠️ 仅影响 `vitest`；生产构建仍由 `.env` / `VITE_AI_PLANNING_*` 决定（默认关闭）。
+     */
+    'import.meta.env.VITE_AI_PLANNING_PREVIEW': JSON.stringify('true'),
+    'import.meta.env.VITE_PERSONAL_PLANNING_PREVIEW': JSON.stringify('true'),
   },
   resolve: {
     alias: {
