@@ -88,6 +88,10 @@ jobs:
         run: npm audit --audit-level=high
 ```
 
+> 上面是**要点摘录**；真正生效的是 `.github/workflows/ci.yml`（含 `name:` 步骤标签）。
+> 后端安装命令与实际文件一致，都是 `python -m pip install -r requirements.txt`
+> —— 也正是那条曾经缺 `python-docx` 的命令（见 §4.1）。
+
 ---
 
 ## 3. 为什么"依赖审计"这一步不会自动改依赖
@@ -102,17 +106,66 @@ jobs:
 
 ---
 
-## 4. 未验证事项（如实声明）
+## 4. 实际运行情况（已修正：本节原为"尚未运行"）
+
+### 4.1 第 1 次运行 —— 后端 Job 失败（已修复）
+
+| 项 | 值 |
+| --- | --- |
+| Run | [#37948975531](https://github.com/Sunset-Sunrise-Sun/AI-education/actions/runs/37948975531) |
+| 触发提交 | `af6a5cb` |
+| Frontend tests / typecheck / build | ✅ **SUCCESS** |
+| Dependency audit（只报告） | ✅ **SUCCESS** |
+| Backend pytest | ❌ **FAILURE** |
+
+**根因**（从该 Run 的后端 Job 日志逐行确认）：
+
+```text
+ERROR collecting tests/test_curriculum_elective_group.py
+    from docx import Document
+E   ModuleNotFoundError: No module named 'docx'
+ERROR collecting tests/test_curriculum_positional_docx.py
+    from docx import Document
+E   ModuleNotFoundError: No module named 'docx'
+!!! Interrupted: 2 errors during collection !!!
+Process completed with exit code 2.
+```
+
+**性质**：这是**依赖声明缺失**，不是测试本身的问题。
+`python-docx` 只装在我的开发机上（未进 `requirements.txt`），
+所以 Windows 本地一直绿、干净的 Linux Runner 一装就缺。
+
+**判定与修复**：`python-docx` 属**测试依赖**（判定依据见 `backend/requirements.txt`
+中新增的注释：`app/curriculum/docx_reader.py` 用标准库 `zipfile` + `ElementTree`
+直接读 OOXML，**不 import docx**；只有 2 个测试文件用它来**构造** .docx）。
+按本文件顶部"一条 `pip install -r requirements.txt` 就能跑测试"的既有约定，
+把声明加进同一文件的**测试依赖段**，而**不是**新建 `requirements-dev.txt`
+（那会同时失效 README / RUNBOOK / CI 三处既有安装命令）。
+
+**⛔ 未做的事**：没有跳过这两个测试文件，没有给后端 Job 加 `continue-on-error`，
+没有 `xfail` 标记。
+
+### 4.2 修复后的本地等价验证（在 CI 之前先自证）
+
+新建**空白虚拟环境**，只安装 `requirements.txt`，再跑全量 pytest：
+
+```text
+venv create exit=0
+pip install -r requirements.txt exit=0
+python-docx 1.2.0（已随 requirements.txt 装上）
+pytest totals: 3188 passed / 2 failed / 2 skipped  ← 与开发机基线完全一致
+```
+
+⇒ 说明"只装 `requirements.txt`"已经足够收集并运行**全部**测试，
+两个 `test_curriculum_*` 文件不再缺失依赖。
+
+### 4.3 仍未验证（如实声明）
 
 | 项 | 状态 |
 | --- | --- |
-| 该工作流是否能在 GitHub 侧成功运行 | **NOT VERIFIED**（本地无 GitHub Runner，仓库此前无 CI 历史） |
-| `backend/requirements.txt` 在 Linux + Python 3.12 下是否可安装 | **NOT VERIFIED**（本项目一直在 Windows + Python 3.14 上开发） |
-| 后端 2 项已知 Windows 平台差异失败在 Linux 上是否消失 | **UNVERIFIED**（预期消失，因为二者都是 Windows/Python 3.14 语义差异） |
-| `npm ci` 在 Linux 上的 `esbuild` postinstall | **UNVERIFIED**（本机 npm 已提示 esbuild 有 install script） |
-
-**建议**：合并该工作流后，先只让 `frontend` 与 `dependencies` 两个 job 生效
-（后端 job 用 `continue-on-error: false` 但先观察一次），确认稳定后再作为合并门槛。
+| 修复后的 CI 运行结果 | 见 §4.4（首次运行结论如上；修复提交后的新一轮以实际 Run 为准） |
+| 后端 2 项 Windows 平台差异失败在 Linux 上是否消失 | **UNVERIFIED**（预期消失，因为二者都是 Windows/Python 3.14 语义差异；以实际 Run 为准） |
+| Windows 上是否会出现 Linux 没有的失败 | 已实测：Windows 本地 3188 / 2 / 2，与基线一致 |
 
 ---
 

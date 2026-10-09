@@ -1193,7 +1193,13 @@ frontend: npm test（9 文件 134 用例）· npm run typecheck（vue-tsc --noEm
   升级前已核验 Vite 8.3.1 / Node 24 满足前提，且本项目**零 `vi.spyOn`**，避开 v4 的 mock 语义变更）。
   升级后前端 313 passed、类型检查与构建通过、浏览器 24/24。
 - **P1 CI**：新增 `.github/workflows/ci.yml`（`contents: read`、零 secret、⛔ 无 audit fix、⛔ 无 auto-merge）
-  与 `docs/final_upgrade/CI_PLAN.md`。⚠️ **未在 GitHub Actions 上真实运行过**（NOT VERIFIED）。
+  与 `docs/final_upgrade/CI_PLAN.md`。**已在 GitHub Actions 真实运行**（Run #37948975531，提交 `af6a5cb`）：
+  前端 Job 与依赖审计 Job **SUCCESS**；后端 Job **FAILURE** —— 原因是**缺少测试依赖 `python-docx`**
+  （只存在于开发机、未写进 `requirements.txt`），Linux+Py3.12 收集阶段 `ModuleNotFoundError: No module named 'docx'`。
+  已判定它为**测试依赖**（`docx_reader.py` 用标准库 zipfile+ElementTree 读 OOXML，不 import docx；
+  只有 2 个测试文件用它构造 .docx），补进 `backend/requirements.txt` 测试依赖段，
+  并在**空白虚拟环境**中自证：`pip install -r requirements.txt` 后全量 pytest **3188/2/2**，与基线一致。
+  ⛔ 未跳过测试、⛔ 未加 continue-on-error。
 - **P1 真实 DeepSeek 在线验证：BLOCKED — NEW DEEPSEEK_API_KEY NOT AVAILABLE**
   （实测四个环境变量全部 unset，未打印任何值、未使用历史旧密钥）。
   已交付可直接执行的说明 `docs/final_upgrade/DEEPSEEK_LIVE_VERIFICATION.md`（8 条验收标准 + 8 步流程 + 失败处理表）。

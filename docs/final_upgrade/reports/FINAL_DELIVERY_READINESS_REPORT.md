@@ -259,7 +259,7 @@ expect(wrapper.find('[data-testid="ai-drawer-status"]').text()).toContain('enabl
 本轮新增（**可审查的最小方案**）：
 
 - `.github/workflows/ci.yml`：三个 Job（后端 pytest / 前端测试+类型+构建 / 依赖审计）；
-- `docs/final_upgrade/CI_PLAN.md`：设计说明与未验证事项。
+- `docs/final_upgrade/CI_PLAN.md`：设计说明与运行记录。
 
 安全边界（逐条对应任务书要求）：
 
@@ -270,10 +270,59 @@ expect(wrapper.find('[data-testid="ai-drawer-status"]').text()).toContain('enabl
 | 不允许扫描器自动改依赖 | 只跑 `npm audit --audit-level=high`；⛔ 工作流里**没有** `audit fix` |
 | 不未经审批启用高权限自动合并 | ⛔ 无 auto-merge、无 `gh pr merge`、无部署步骤 |
 
-⚠️ **未验证**：该工作流**尚未在 GitHub Actions 上真实运行过**
-（本地没有 Runner；且 `backend/requirements.txt` 在 Linux + Python 3.12 上的可安装性、
-以及两项 Windows 平台差异失败在 Linux 上是否消失，都**未核验**）。
-建议先让前端与审计两个 Job 作为观测项跑一次，再决定是否设为合并门槛。
+#### 3.5.1 第 1 次真实运行：后端 Job 失败（已修复）
+
+| 项 | 值 |
+| --- | --- |
+| Run | [#37948975531](https://github.com/Sunset-Sunrise-Sun/AI-education/actions/runs/37948975531)（提交 `af6a5cb`） |
+| Frontend tests / typecheck / build | ✅ SUCCESS |
+| Dependency audit（只报告） | ✅ SUCCESS |
+| Backend pytest | ❌ FAILURE |
+
+失败原因（Job 日志逐行确认）是**依赖声明缺失**，不是测试问题：
+
+```text
+ERROR collecting tests/test_curriculum_elective_group.py
+    from docx import Document
+E   ModuleNotFoundError: No module named 'docx'
+ERROR collecting tests/test_curriculum_positional_docx.py
+E   ModuleNotFoundError: No module named 'docx'
+!!! Interrupted: 2 errors during collection !!!
+```
+
+`python-docx` 只存在于我的开发机上、**从未写进 `requirements.txt`**，
+所以 Windows 本地一直绿、干净的 Linux Runner 一装就缺。
+
+**判定为测试依赖**（逐处核对后的依据）：
+
+- `app/curriculum/docx_reader.py` **不 import `docx`**：它把 .docx 当 OOXML 包，
+  用标准库 `zipfile` + `xml.etree.ElementTree` 直接读 `word/document.xml`
+  （这也是它能实现"有界读取 / 拒绝重复成员 / 拒绝路径穿越"的原因）；
+  生产代码里其余 `docx` 出现都只是**字段名/变量名**（如 `record["docx"]`）。
+- 只有 2 个测试文件 `from docx import Document`，用途是**构造**测试用 .docx：
+  `tests/test_curriculum_elective_group.py`、`tests/test_curriculum_positional_docx.py`。
+
+**修复方式**：把 `python-docx>=1.1` 加进 `backend/requirements.txt` 的**测试依赖段**
+（并写明上述判定理由），**而不是**新建 `requirements-dev.txt` ——
+因为 README / RUNBOOK / CI 三处既有安装命令都是
+`python -m pip install -r requirements.txt`，拆文件会让这三处约定同时失效。
+⛔ 未跳过这两个测试文件，⛔ 未加 `continue-on-error`，⛔ 未加 `xfail`。
+
+**修复前先在本地自证**：新建**空白虚拟环境**，只装 `requirements.txt`，再跑全量 pytest：
+
+```text
+pip install -r requirements.txt → exit 0；python-docx 1.2.0 已随之上装
+pytest totals: 3188 passed / 2 failed / 2 skipped  ← 与开发机基线完全一致
+```
+
+⇒ 说明"只装 `requirements.txt`"已足够收集并运行**全部**测试。
+
+#### 3.5.2 仍未验证（如实声明）
+
+| 项 | 状态 |
+| --- | --- |
+| 修复提交后的新一轮 CI 结论 | 以实际 Run 为准（见 `CI_PLAN.md` §4） |
+| 两项 Windows 平台差异失败在 Linux 上是否消失 | **UNVERIFIED**（预期消失；以实际 Run 为准） |
 
 ---
 
@@ -471,10 +520,11 @@ node tools/browser-e2e/run_browser_e2e.mjs --filter=DMO01
 
 ### 8.2 NOT VERIFIED（已实现但未获外部确认）
 
-- GitHub Actions 工作流从未真实运行（无 Runner；Linux 环境兼容性未核验）；
+- **CI 第 1 次运行**：前端 Job 与依赖审计 Job **已成功**；后端 Job **失败**并已修复
+  （缺测试依赖 `python-docx`，见 §3.5.1）；修复提交后的新一轮结论以实际 Run 为准；
+- 两项 Windows 平台差异失败在 Linux 上是否消失（预期消失；以实际 Run 为准）；
 - 五个已批准校区 `openingSchoolNumber` 是否与学校当前系统一致（仅测试锁定其不被改动）；
-- `planning_skipped_code="semester_not_bound"` 是否真的可达（前端有文案，未找到后端产出路径）；
-- `backend/requirements.txt` 在 Linux + Python 3.12 下是否可安装。
+- `planning_skipped_code="semester_not_bound"` 是否真的可达（前端有文案，未找到后端产出路径）。
 
 ### 8.3 需要人工确认
 
@@ -503,7 +553,7 @@ node tools/browser-e2e/run_browser_e2e.mjs --filter=DMO01
 | P0 合并后完整冒烟与回归（后端 / 前端 / 浏览器 / 无遗留进程） | ✅ **完成**（3188+2+2；313；24/24；残留 0） |
 | P1 修复移动端头部信息密度 | ✅ **完成**（五档区分 + 可展开技术详情 + 穷举测试 + 三档复测） |
 | P1 处理 npm 依赖安全问题 | ✅ **完成**（audit 归零；vitest 3.2.7 → 4.1.11，有官方依据与全量回归） |
-| P1 CI 安全 | ✅ **已提供可审查方案**（⚠️ 未在云端运行过） |
+| P1 CI 安全 | ✅ **已在 GitHub Actions 真实运行**：前端与依赖审计 **SUCCESS**；后端第 1 次因缺测试依赖失败、**已修复并本地自证**（见 §3.5） |
 | P1 真实 DeepSeek 在线验证 | 🔴 **BLOCKED**（无新密钥）——已交付可直接执行的验证说明 + 默认模型名已在线核验 |
 | P1 真实培养方案与教学班数据接入准备 | ✅ **完成准备**（缺口/字段/校验/指南/合成夹具/一键验收脚本，脚本已实测） |
 | P2 最终演示剧本与产品验收 | ✅ **完成彩排**（11 步全通，已自动化回归） |

@@ -6,7 +6,8 @@
 #
 # jsonschema 属于**运行期**依赖：mock_service 必须先用 /schemas/*.schema.json 校验原始 JSON，
 # 再交给 Pydantic，否则 Pydantic 的类型转换（"1" -> 1、true -> 1）会放行违反公共契约的数据。
-# pytest / httpx 仅测试需要；暂时放在同一个文件里，是为了让其他成员一条命令就能跑起测试，
+# pytest / httpx / python-docx 仅测试需要；暂时放在同一个文件里，
+# 是为了让其他成员（以及 CI）一条命令就能跑起测试，
 # 如果后续依赖变复杂，再拆分 requirements.txt 与 requirements-dev.txt。
 
 fastapi>=0.115
@@ -16,3 +17,21 @@ jsonschema>=4.20
 # --- 以下仅测试需要 ---
 pytest>=8.0
 httpx>=0.27
+
+# python-docx **只是测试依赖**，⛔ 不是运行期依赖。
+#
+# 判定依据（已逐处核对）：
+# - `app/curriculum/docx_reader.py` **不 import docx**：它把 .docx 当作 OOXML 包，
+#   用标准库 `zipfile` + `xml.etree.ElementTree` 直接读 `word/document.xml` 等部件
+#   （这也是它能做「有界读取 / 拒绝重复成员 / 拒绝路径穿越」的原因）。
+#   生产代码里对 `docx` 的其它出现都只是**变量名/字段名**（如 `record["docx"]`），不是模块导入。
+# - 只有两个测试文件 `from docx import Document`，用途是**构造**测试用的 .docx：
+#   `tests/test_curriculum_elective_group.py`、`tests/test_curriculum_positional_docx.py`。
+#
+# 为什么仍然写进这个文件：README 与本文件顶部约定的安装命令只有
+# `python -m pip install -r requirements.txt` 一条（CI 也用同一条）；
+# 为了不让"运行一条命令就能跑测试"的承诺失效，测试依赖与运行期依赖暂时共处一文件。
+#
+# ⚠️ 这条依赖曾经缺失（只在开发机上有、未声明），导致 CI 首次运行在
+# Linux + Python 3.12 上收集阶段 `ModuleNotFoundError: No module named 'docx'` 而失败。
+python-docx>=1.1
