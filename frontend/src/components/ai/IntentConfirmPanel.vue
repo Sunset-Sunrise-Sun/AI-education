@@ -147,8 +147,12 @@ function isAvoiding(weekday: number): boolean {
     </div>
 
     <div class="ai-confirm__grid">
-      <div class="ai-block" data-testid="ai-hard-constraints">
-        <h5>硬约束（不可协商）</h5>
+      <!-- 硬约束：视觉上单独一块，明确"不可协商" -->
+      <div class="ai-block ai-block--hard" data-testid="ai-hard-constraints">
+        <h5>硬约束 · 不可协商</h5>
+        <p class="ai-block__hint">
+          这些条件在求解时<strong>必须满足</strong>；候选如果违反，后端会直接拒绝该候选。
+        </p>
         <ul v-if="otherHardConstraints.length > 0">
           <li v-for="item in otherHardConstraints" :key="`${item.kind}-${String(item.value)}`">
             <span class="tag tag--ai-hard">{{ item.kind }}</span>
@@ -157,19 +161,24 @@ function isAvoiding(weekday: number): boolean {
           </li>
         </ul>
         <p v-else class="empty-state" data-testid="ai-no-hard-constraints">
-          这次解析没有识别出其它硬约束。
+          这次解析没有识别出其它硬约束。你可以在下面"锁定课程"里自己加一条。
         </p>
       </div>
 
-      <div class="ai-block" data-testid="ai-soft-preferences">
-        <h5>软偏好（可协商）</h5>
-        <ul>
+      <!-- 软偏好：明确"可协商" -->
+      <div class="ai-block ai-block--soft" data-testid="ai-soft-preferences">
+        <h5>软偏好 · 可协商</h5>
+        <p class="ai-block__hint">
+          这些只是<strong>倾向</strong>：求解会尽量照顾，但为了让硬约束成立，可能无法全部满足。
+        </p>
+        <ul v-if="executableSoftPreferences.length > 0">
           <li v-for="item in executableSoftPreferences" :key="`${item.kind}-${String(item.value)}`">
             <span class="tag tag--ai-soft">{{ item.kind }}</span>
             {{ item.value ?? '—' }}
             <span v-if="item.note" class="ai-block__hint">{{ item.note }}</span>
           </li>
         </ul>
+        <p v-else class="empty-state">没有其它软偏好。</p>
         <div class="ai-weekday-grid" data-testid="ai-avoid-weekdays">
           <span class="ai-block__hint">尽量避开（软偏好）：</span>
           <button
@@ -187,8 +196,8 @@ function isAvoiding(weekday: number): boolean {
         </div>
       </div>
 
-      <div class="ai-block" data-testid="ai-credit-limit">
-        <h5>本学期学分上限</h5>
+      <div class="ai-block ai-block--hard" data-testid="ai-credit-limit">
+        <h5>本学期学分上限 · 硬约束</h5>
         <p v-if="creditLimit === null" class="ai-block__unknown" data-testid="ai-credit-unspecified">
           <strong>未指定</strong>：AI 没有给出可验证的学分上限，
           <strong>页面不会替你猜一个默认值</strong>。请填写数字，或保持"未指定"。
@@ -215,8 +224,11 @@ function isAvoiding(weekday: number): boolean {
         </label>
       </div>
 
-      <div class="ai-block" data-testid="ai-locked-courses">
-        <h5>锁定课程（必须保留）</h5>
+      <div class="ai-block ai-block--hard" data-testid="ai-locked-courses">
+        <h5>锁定课程 · 必须保留</h5>
+        <p class="ai-block__hint">
+          只能锁定<strong>当前方案里已经选中</strong>的教学班；后端会核对，锁不住的会被拒绝。
+        </p>
         <ul v-if="lockedCourses.length > 0">
           <li
             v-for="course in lockedCourses"

@@ -2582,6 +2582,11 @@ code.mono {
   gap: 12px;
 }
 
+.ai-drawer__head .button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
 .ai-drawer__head h3 {
   margin: 0 0 6px;
   font-size: 16px;
@@ -2851,5 +2856,447 @@ code.mono {
   .ai-drawer--fullscreen {
     width: 100vw;
     border-left: none;
+  }
+}
+/* ---------- UX Polish（三入口体验 / AI 调整五阶段 / 响应式） ---------- */
+/* 只负责布局、层级与状态表达；不承载任何业务判断。 */
+
+.path-order {
+  list-style: none;
+  counter-reset: none;
+  margin: 0;
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-subtle);
+  font-size: 13px;
+}
+
+.path-order li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.path-order li span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.path-support {
+  margin-top: 6px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--border);
+  background: var(--panel-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.path-support__title {
+  margin: 0 0 4px;
+  font-size: 15px;
+}
+
+.path-support__note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  max-width: 88ch;
+}
+
+/* ---------- 转专业分析：缺口摘要 ---------- */
+
+.gap-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px 18px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel-subtle);
+}
+
+.gap-hero__main {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gap-hero__label {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.gap-hero__value {
+  font-size: 40px;
+  line-height: 1;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.gap-hero__unit {
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.gap-hero__facts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px 16px;
+  font-size: 13px;
+}
+
+.gap-hero__facts li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+}
+
+.gap-hero__facts strong {
+  font-size: 18px;
+}
+
+.gap-hero__fact-label {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.gap-hero__note {
+  margin: 0;
+  font-size: 13px;
+  color: #b45309;
+}
+
+/* ---------- AI 调整：入口与目标 ---------- */
+
+.ai-cta {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  border: 2px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel-subtle);
+}
+
+.ai-cta__lead h3 {
+  margin: 0 0 4px;
+  font-size: 18px;
+}
+
+.ai-cta__sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  max-width: 80ch;
+}
+
+.ai-cta__examples {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-cta__examples-label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.ai-cta__chip {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.ai-cta__chip:hover {
+  border-style: solid;
+  border-color: var(--accent);
+}
+
+.ai-cta__chip--small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.ai-cta__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ai-cta__button {
+  padding: 12px 24px;
+  font-size: 15px;
+}
+
+.ai-cta__note {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.ai-target {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.ai-target__main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ai-target__label {
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.ai-target__value {
+  font-size: 16px;
+}
+
+.ai-target__facts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ---------- AI 抽屉：阶段 / 进行中 / 示例 ---------- */
+
+.ai-stage {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-subtle);
+  font-size: 12px;
+}
+
+.ai-stage__item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.ai-stage__dot {
+  flex: 0 0 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 11px;
+}
+
+.ai-stage__item--active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.ai-stage__item--active .ai-stage__dot {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.ai-stage__item--done {
+  color: #15803d;
+}
+
+.ai-stage__item--done .ai-stage__dot {
+  border-color: #15803d;
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.ai-progress {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-subtle);
+}
+
+.ai-progress p {
+  margin: 4px 0 0;
+}
+
+.ai-drawer__examples {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.ai-drawer__examples-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+/* ---------- 确认面板：硬约束 / 软偏好视觉区分 ---------- */
+
+.ai-block--hard {
+  border-style: solid;
+  border-color: #f0a5a5;
+  background: #fff7f7;
+}
+
+.ai-block--soft {
+  border-style: dashed;
+  border-color: #a5b4fc;
+  background: #f7f8ff;
+}
+
+/* ---------- 候选对比：变化摘要 ---------- */
+
+.change-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel-subtle);
+}
+
+.change-hero__items {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 8px;
+}
+
+.change-hero__item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  font-size: 12px;
+}
+
+.change-hero__label {
+  color: var(--text-muted);
+}
+
+.change-hero__value {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.change-hero__item--add .change-hero__value {
+  color: #15803d;
+}
+
+.change-hero__item--remove .change-hero__value {
+  color: #b91c1c;
+}
+
+.change-hero__item--replace .change-hero__value {
+  color: #b45309;
+}
+
+.change-hero__note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ai-candidate__scope {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #f0c36d;
+  border-radius: var(--radius-sm);
+  background: #fff8e6;
+  font-size: 13px;
+  flex: 1 1 100%;
+}
+
+.ai-candidate__buttons {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: 1 1 100%;
+}
+
+/* ---------- 响应式（桌面 / 平板 / 手机） ---------- */
+
+@media (max-width: 1024px) {
+  .ai-cta {
+    padding: 14px 16px;
+  }
+
+  .gap-hero__value {
+    font-size: 34px;
+  }
+}
+
+@media (max-width: 720px) {
+  .path-order,
+  .ai-stage {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .ai-cta__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ai-cta__button {
+    width: 100%;
+  }
+
+  .gap-hero__facts {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .change-hero__items {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .ai-candidate__buttons {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .ai-candidate__buttons .button {
+    width: 100%;
   }
 }

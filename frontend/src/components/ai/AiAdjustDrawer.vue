@@ -32,6 +32,8 @@ const props = defineProps<{
   courseOfferings: CourseOffering[]
   preference: Preference | null
   focusCourseId: string | null
+  /** 打开面板时预填的示例语句（入口给的输入提示；⛔ 不等于已解析）。 */
+  seedMessage?: string | null
   /** 真实通道是否启用（关闭时不发请求）。 */
   apiEnabled: boolean
   /** 预览模式（只读 fixture）。 */
@@ -45,6 +47,28 @@ const emit = defineEmits<{
 
 const ai = useAiPlanning()
 const messageDraft = ref('')
+const seedApplied = ref(false)
+
+/**
+ * 面板打开且带示例语句时预填输入框。
+ *
+ * ⚠️ 只是**输入提示**：不自动解析、不自动求解；用户可改写或清空。
+ */
+watch(
+  () => [props.open, props.seedMessage] as const,
+  ([open, seed]) => {
+    if (open && seed && !seedApplied.value) {
+      messageDraft.value = seed
+      seedApplied.value = true
+    }
+    if (!open) {
+      // 关闭时清空预填：下次打开不会残留上一次的示例或半截输入。
+      seedApplied.value = false
+      messageDraft.value = ''
+    }
+  },
+  { immediate: true },
+)
 
 const contextInput = computed<AiPlanningContextInput>(() => ({
   semester: props.semester,
@@ -122,6 +146,67 @@ const adopting = computed(() => ai.phase === 'adopting')
 const reviewSolve = computed<AiSolveResponse | null>(() =>
   ai.phase === 'review' ? ai.solveResult : null,
 )
+
+/** 四个阶段（与后端的 interpret → solve → adopt 一一对应）。 */
+const STAGES = [
+  { key: 'input', index: 1, label: '说出需求' },
+  { key: 'intent', index: 2, label: '确认意图' },
+  { key: 'candidate', index: 3, label: '查看候选' },
+  { key: 'adopt', index: 4, label: '确认采用' },
+] as const
+
+/**
+ * 抽屉内的快捷示例（点击只填入输入框，⛔ 不自动解析、不自动提交）。
+ *
+ * ⚠️ 与 `AI 调整` 视图的示例保持同一风格：只描述学生自己的偏好/硬约束，
+ * ⛔ 不出现"帮我选最轻松的课"这类需要系统替学生做价值判断的说法。
+ */
+const QUICK_EXAMPLES = [
+  '这学期太累，尽量别在周五上课',
+  '数据结构必须保留，其它可以调整',
+] as const
+
+type StageKey = (typeof STAGES)[number]['key']
+
+/** 阶段状态：`active` / `done` / `todo`（只用于展示，不影响任何请求）。 */
+function stageState(key: StageKey): 'active' | 'done' | 'todo' {
+  const phase = ai.phase
+  const order: StageKey[] = ['input', 'intent', 'candidate', 'adopt']
+  const reachedIndex = (() => {
+    switch (phase) {
+      case 'idle':
+        return 0
+      case 'interpreting':
+      case 'draft':
+        return 1
+      case 'solving':
+      case 'unsolved':
+        return 2
+      case 'review':
+      case 'adopting':
+        return 3
+      case 'applied':
+      case 'kept':
+        return 4
+      default:
+        return 0
+    }
+  })()
+
+  // 终态：全部标记完成（`applied` 表示已采用，`kept` 表示已决定保留）。
+  if (phase === 'applied' || phase === 'kept') {
+    return 'done'
+  }
+
+  const index = order.indexOf(key)
+  if (index < reachedIndex) {
+    return 'done'
+  }
+  if (index === reachedIndex) {
+    return 'active'
+  }
+  return 'todo'
+}
 
 onMounted(() => {
   if (!channelDisabled.value) {
@@ -206,6 +291,24 @@ function startUndo(): void {
       （只作为界面上下文，⛔ 不会自动改这门课）
     </div>
 
+    <!-- 阶段指示：让用户随时知道"现在走到哪一步、下一步是什么" -->
+    <ol v-if="!channelDisabled" class="ai-stage" data-testid="ai-stage">
+      <li
+        v-for="stage in STAGES"
+        :key="stage.key"
+        class="ai-stage__item"
+        :class="{
+          'ai-stage__item--done': stageState(stage.key) === 'done',
+          'ai-stage__item--active': stageState(stage.key) === 'active',
+        }"
+        :data-testid="`ai-stage-${stage.key}`"
+        :data-stage-state="stageState(stage.key)"
+      >
+        <span class="ai-stage__dot">{{ stageState(stage.key) === 'done' ? '✓' : stage.index }}</span>
+        <span class="ai-stage__text">{{ stage.label }}</span>
+      </li>
+    </ol>
+
     <div v-if="channelDisabled" class="ai-drawer__disabled" data-testid="ai-not-configured">
       <p class="state state--error">AI 调整不可用</p>
       <p class="state__detail">
@@ -256,7 +359,7 @@ function startUndo(): void {
         <section class="ai-drawer__input">
           <label class="ai-field">
             <span>
-              用一句自然语言说明你想怎么调整（例如：这学期太累，数据结构必须保留，尽量别在周五上课）
+              用一句自然语言说明你想怎么调整（不需要专业术语，说清"哪里不舒服 / 什么必须保留"就够）
             </span>
             <textarea
               v-model="messageDraft"
@@ -266,6 +369,23 @@ function startUndo(): void {
               placeholder="这学期太累，数据结构必须保留，尽量别在周五上课"
             ></textarea>
           </label>
+
+          <!-- 示例提示：点击即填入输入框（⛔ 不等于已解析，也不会自动提交） -->
+          <div class="ai-drawer__examples" data-testid="ai-drawer-examples">
+            <span class="ai-drawer__examples-label">示例（点一下填入，可再改）：</span>
+            <button
+              v-for="example in QUICK_EXAMPLES"
+              :key="example"
+              type="button"
+              class="ai-cta__chip ai-cta__chip--small"
+              :data-testid="`ai-quick-example-${example}`"
+              :disabled="ai.busy"
+              @click="messageDraft = example"
+            >
+              {{ example }}
+            </button>
+          </div>
+
           <div class="ai-drawer__input-actions">
             <button
               type="button"
@@ -282,6 +402,41 @@ function startUndo(): void {
             </span>
           </div>
         </section>
+
+        <!-- 正在解析：只说明真实状态，⛔ 不显示假的进度条或假课程 -->
+        <div
+          v-if="ai.phase === 'interpreting'"
+          class="ai-progress"
+          data-testid="ai-interpreting"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="spinner" aria-hidden="true"></span>
+          <div>
+            <strong>正在把你的话解析成"待确认的约束"…</strong>
+            <p class="ai-drawer__hint">
+              这一步<strong>不会</strong>生成任何课程或候选方案；解析完成后还需要你确认一次。
+            </p>
+          </div>
+        </div>
+
+        <!-- 正在求解：说明"正在进行确定性求解"，并明确没有假进度 -->
+        <div
+          v-if="ai.phase === 'solving'"
+          class="ai-progress"
+          data-testid="ai-solving"
+          role="status"
+          aria-live="polite"
+        >
+          <span class="spinner" aria-hidden="true"></span>
+          <div>
+            <strong>正在用你确认过的约束求解候选方案…</strong>
+            <p class="ai-drawer__hint">
+              求解由后端执行（当前学期 + 已装配的教学班供给）。
+              <strong>没有进度百分比</strong>：完成前不会显示任何课程，也不会先给一个占位方案。
+            </p>
+          </div>
+        </div>
 
         <p v-if="ai.errorMessage" class="error-box" data-testid="ai-error">
           <strong data-testid="ai-error-kind">{{ ai.errorKind ?? 'error' }}</strong>

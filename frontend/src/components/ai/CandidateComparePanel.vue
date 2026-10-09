@@ -55,6 +55,20 @@ const creditDeltaLabel = computed(() => {
 
 const creditUnknown = computed(() => (diff.value?.credit_unknown_course_ids.length ?? 0) > 0)
 
+/** 是否真的与原方案有差异（⛔ 只用后端给出的计数，不自己比较）。 */
+const hasAnyChange = computed(() => {
+  const current = diff.value
+  if (current === null) {
+    return false
+  }
+  return (
+    current.added.length > 0 ||
+    current.removed.length > 0 ||
+    current.replaced.length > 0 ||
+    (current.credit_delta !== null && current.credit_delta !== 0)
+  )
+})
+
 function formatEntry(entry: { course_id: string; class_id?: string }): string {
   return `${entry.course_id}（班号 ${entry.class_id ?? '未知'}）`
 }
@@ -100,6 +114,44 @@ function replacedKey(entry: { course_id: string; from_class?: string; to_class?:
     <p v-if="previewNotice" class="ai-preview" data-testid="ai-preview-notice">
       ⚠️ {{ previewNotice }}
     </p>
+
+    <!--
+      变化摘要（第一眼看到的内容）：
+      ⚠️ 只是对后端 `diff` 计数的**展示汇总**，⛔ 前端不重新比较、不判断哪份更好。
+    -->
+    <div v-if="diff" class="change-hero" data-testid="change-summary">
+      <div class="change-hero__items">
+        <div class="change-hero__item change-hero__item--add" data-testid="change-added">
+          <span class="change-hero__label">新增</span>
+          <span class="change-hero__value num">{{ diff.added.length }}</span>
+        </div>
+        <div class="change-hero__item change-hero__item--remove" data-testid="change-removed">
+          <span class="change-hero__label">移除</span>
+          <span class="change-hero__value num">{{ diff.removed.length }}</span>
+        </div>
+        <div class="change-hero__item change-hero__item--replace" data-testid="change-replaced">
+          <span class="change-hero__label">换班</span>
+          <span class="change-hero__value num">{{ diff.replaced.length }}</span>
+        </div>
+        <div class="change-hero__item change-hero__item--kept" data-testid="change-kept">
+          <span class="change-hero__label">保持</span>
+          <span class="change-hero__value num">{{ diff.kept.length }}</span>
+        </div>
+        <div class="change-hero__item change-hero__item--credit" data-testid="change-credit">
+          <span class="change-hero__label">学分</span>
+          <span class="change-hero__value">{{ creditDeltaLabel }}</span>
+        </div>
+      </div>
+      <p class="change-hero__note">
+        <template v-if="hasAnyChange">
+          这些是候选相对原方案的<strong>实际差异</strong>（后端确定性计算）。
+          采用之前请逐项确认：换班是否符合你的时间偏好、学分是否在你声明的上限内。
+        </template>
+        <template v-else>
+          候选与原方案<strong>没有差异</strong>；采用不会改变任何课程安排。
+        </template>
+      </p>
+    </div>
 
     <div class="ai-candidate__columns">
       <div class="ai-plan-card" data-testid="ai-original-plan">
@@ -221,42 +273,54 @@ function replacedKey(entry: { course_id: string; from_class?: string; to_class?:
     </div>
 
     <div class="ai-candidate__actions">
-      <button
-        type="button"
-        class="button"
-        data-testid="ai-adopt-candidate"
-        :disabled="disabled || busy"
-        @click="emit('adopt')"
-      >
-        {{ busy ? '正在提交…' : '✅ 采用候选方案' }}
-      </button>
-      <button
-        type="button"
-        class="button button--ghost"
-        data-testid="ai-keep-original"
-        :disabled="disabled || busy"
-        @click="emit('keep')"
-      >
-        🛡️ 保留原方案
-      </button>
-      <button
-        type="button"
-        class="button button--ghost"
-        data-testid="ai-resolve-again"
-        :disabled="disabled || busy"
-        @click="emit('resolve-again')"
-      >
-        🔄 重新求解
-      </button>
-      <button
-        type="button"
-        class="button button--ghost"
-        data-testid="ai-back-to-draft"
-        :disabled="disabled || busy"
-        @click="emit('back-to-draft')"
-      >
-        ✏️ 回到意图草稿
-      </button>
+      <!-- 采用前的明确提示：这是临时采用，不是教务选课成功 -->
+      <p class="ai-candidate__scope" data-testid="ai-adopt-scope-notice">
+        <strong>点"采用"意味着什么：</strong>
+        只是让<strong>本次运行期间</strong>的页面方案换成候选（进程内临时状态）。
+        它<strong>不会</strong>保存到账号、<strong>不会</strong>跨设备同步，
+        更<strong>不代表</strong>教务系统已经完成选课或课程认定。
+        点"保留原方案"则完全不变。
+      </p>
+
+      <div class="ai-candidate__buttons">
+        <button
+          type="button"
+          class="button"
+          data-testid="ai-adopt-candidate"
+          :disabled="disabled || busy"
+          @click="emit('adopt')"
+        >
+          {{ busy ? '正在提交…' : '✅ 采用候选方案（临时）' }}
+        </button>
+        <button
+          type="button"
+          class="button button--ghost"
+          data-testid="ai-keep-original"
+          :disabled="disabled || busy"
+          @click="emit('keep')"
+        >
+          🛡️ 保留原方案
+        </button>
+        <button
+          type="button"
+          class="button button--ghost"
+          data-testid="ai-resolve-again"
+          :disabled="disabled || busy"
+          @click="emit('resolve-again')"
+        >
+          🔄 重新求解
+        </button>
+        <button
+          type="button"
+          class="button button--ghost"
+          data-testid="ai-back-to-draft"
+          :disabled="disabled || busy"
+          @click="emit('back-to-draft')"
+        >
+          ✏️ 回到意图草稿
+        </button>
+      </div>
+
       <span class="ai-candidate__hint">
         只有后端确认<strong>采用成功</strong>才会刷新当前方案；拒绝、过期或失败时
         <strong>原方案一个字都不改</strong>。

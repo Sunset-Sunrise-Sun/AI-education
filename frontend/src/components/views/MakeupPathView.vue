@@ -149,6 +149,15 @@ const explanationEntryVisible = computed(() => props.displayedPlanResult !== nul
       </p>
     </header>
 
+    <!-- 阅读顺序提示：让用户知道先看什么 -->
+    <ol class="path-order" data-testid="path-reading-order">
+      <li><strong>① 当前学期课表</strong><span>现在实际排了哪些班</span></li>
+      <li><strong>② 后续学期路径</strong><span>后面几学期还要补什么</span></li>
+      <li><strong>③ 优先级 / 风险 / 待确认</strong><span>哪里可能出问题</span></li>
+      <li><strong>④ 规划结果明细</strong><span>后端给出的完整方案</span></li>
+      <li><strong>⑤ 解释与依据</strong><span>每条判定的来源</span></li>
+    </ol>
+
     <p v-if="personalPlanNotice" class="ai-preview" data-testid="path-personal-notice">
       ⚠️ {{ personalPlanNotice }}
     </p>
@@ -323,95 +332,6 @@ const explanationEntryVisible = computed(() => props.displayedPlanResult !== nul
         </div>
       </SectionCard>
 
-      <!-- 用户输入区（保留旧 Case A 输入体验） -->
-      <SectionCard
-        section-id="section-user-input"
-        title="0. 用户输入（目标学期、转专业上下文、当前课表与偏好）"
-        subtitle="收集生成规划所需的用户输入：目标学期、学生转专业上下文、当前课表与个性化偏好，以及成绩单文件选择。本区块只组织输入，不做冲突检测、不生成补修任务。"
-      >
-        <UserInputPanel
-          :form="userInput"
-          :offerings="data?.course_offerings ?? []"
-          :plan-api-enabled="planApiEnabled"
-          :submitting="planSubmitting"
-          :mode="dataMode"
-          :data-source-label="dataSource"
-          :plan-error-message="planErrorMessage"
-          :plan-error-kind="planErrorKind"
-          :plan-error-status="planErrorStatus"
-          :plan-error-code="planErrorCode"
-          :plan-error-detail="planErrorDetail"
-          :debug-info="debugInfo"
-          :dev="dev"
-          :schedule-block-reason="scheduleBlockReason"
-          @update:form="emit('update:form', $event)"
-          @submit-real="emit('submit-real-plan')"
-        />
-      </SectionCard>
-
-      <!-- 概览 -->
-      <div class="overview-bar">
-        <div class="overview-metric">
-          <span class="overview-metric__label">历史培养要求评估项</span>
-          <span class="overview-metric__val num">{{ data.makeup_tasks.length }} <small>条</small></span>
-        </div>
-        <div class="overview-metric">
-          <span class="overview-metric__label">教学班记录</span>
-          <span class="overview-metric__val num">{{ data.course_offerings.length }} <small>个</small></span>
-        </div>
-        <div class="overview-metric">
-          <span class="overview-metric__label">单学期学分上限</span>
-          <span class="overview-metric__val num">{{ data.preference.max_credit ?? '—' }} <small>学分</small></span>
-        </div>
-        <div class="overview-metric">
-          <span class="overview-metric__label">规划结果状态</span>
-          <span
-            v-if="displayedPlanResult"
-            class="tag tag--plan"
-            :class="`tag--plan-${displayedPlanResult.status}`"
-          >
-            {{ PLAN_STATUS_LABEL[displayedPlanResult.status] }}
-          </span>
-          <span v-else class="text-muted">—</span>
-        </div>
-      </div>
-
-      <!-- 1. 历史培养要求评估 -->
-      <SectionCard
-        mock
-        section-id="section-makeup"
-        title="1. 历史培养要求评估（MakeupTask）"
-        subtitle="Curriculum 模块依据目标培养方案要求与学生已修记录逐条评估后的结果，含“已满足 / 待课程认定 / 已确认需补修”等不同状态。逐条状态以每行的判定列与认定说明为准，前端不作汇总改写。"
-        :badge-count="data.makeup_tasks.length"
-      >
-        <MakeupTaskList
-          :tasks="data.makeup_tasks"
-          :evidence-enabled="explanationApiEnabled"
-          @explain-course="emit('open-explanation', $event)"
-        />
-      </SectionCard>
-
-      <!-- 2. 开课教学班 -->
-      <SectionCard
-        mock
-        section-id="section-offerings"
-        title="2. 开课教学班供给 (CourseOffering)"
-        subtitle="Course Data 模块从教务系统中抓取并标准化的目标学期开课清单：支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
-        :badge-count="data.course_offerings.length"
-      >
-        <CourseOfferingList :offerings="data.course_offerings" />
-      </SectionCard>
-
-      <!-- 3. 用户偏好 -->
-      <SectionCard
-        mock
-        section-id="section-preference"
-        title="3. 学生个性化偏好 (Preference)"
-        subtitle="Agent 模块解析学生自然语言输入所形成的约束条件：包含学分上限控制、避免跨校区、回避特定时段及意向课程。"
-      >
-        <PreferencePanel :preference="data.preference" :course-name-by-id="courseNameById" />
-      </SectionCard>
-
       <!-- 4. 规划结果 -->
       <SectionCard
         section-id="section-plan"
@@ -503,6 +423,105 @@ const explanationEntryVisible = computed(() => props.displayedPlanResult !== nul
           @close="emit('close-explanation')"
         />
       </SectionCard>
+
+      <!-- 支撑数据：输入与后端明细（次要阅读区） -->
+      <div class="path-support" data-testid="path-supporting-data">
+        <h3 class="path-support__title">支撑数据与后端明细</h3>
+        <p class="path-support__note">
+          下面几块是上面结论的原始依据（用户输入、缺口逐条判定、教学班供给、偏好）。
+          它们本身<strong>不产生</strong>新的结论，也不改上面的方案。
+        </p>
+      </div>
+
+      <!-- 用户输入区（保留旧 Case A 输入体验） -->
+      <SectionCard
+        section-id="section-user-input"
+        title="0. 用户输入（目标学期、转专业上下文、当前课表与偏好）"
+        subtitle="收集生成规划所需的用户输入：目标学期、学生转专业上下文、当前课表与个性化偏好，以及成绩单文件选择。本区块只组织输入，不做冲突检测、不生成补修任务。"
+      >
+        <UserInputPanel
+          :form="userInput"
+          :offerings="data?.course_offerings ?? []"
+          :plan-api-enabled="planApiEnabled"
+          :submitting="planSubmitting"
+          :mode="dataMode"
+          :data-source-label="dataSource"
+          :plan-error-message="planErrorMessage"
+          :plan-error-kind="planErrorKind"
+          :plan-error-status="planErrorStatus"
+          :plan-error-code="planErrorCode"
+          :plan-error-detail="planErrorDetail"
+          :debug-info="debugInfo"
+          :dev="dev"
+          :schedule-block-reason="scheduleBlockReason"
+          @update:form="emit('update:form', $event)"
+          @submit-real="emit('submit-real-plan')"
+        />
+      </SectionCard>
+
+      <!-- 概览 -->
+      <div class="overview-bar">
+        <div class="overview-metric">
+          <span class="overview-metric__label">历史培养要求评估项</span>
+          <span class="overview-metric__val num">{{ data.makeup_tasks.length }} <small>条</small></span>
+        </div>
+        <div class="overview-metric">
+          <span class="overview-metric__label">教学班记录</span>
+          <span class="overview-metric__val num">{{ data.course_offerings.length }} <small>个</small></span>
+        </div>
+        <div class="overview-metric">
+          <span class="overview-metric__label">单学期学分上限</span>
+          <span class="overview-metric__val num">{{ data.preference.max_credit ?? '—' }} <small>学分</small></span>
+        </div>
+        <div class="overview-metric">
+          <span class="overview-metric__label">规划结果状态</span>
+          <span
+            v-if="displayedPlanResult"
+            class="tag tag--plan"
+            :class="`tag--plan-${displayedPlanResult.status}`"
+          >
+            {{ PLAN_STATUS_LABEL[displayedPlanResult.status] }}
+          </span>
+          <span v-else class="text-muted">—</span>
+        </div>
+      </div>
+
+      <!-- 1. 历史培养要求评估 -->
+      <SectionCard
+        mock
+        section-id="section-makeup"
+        title="1. 历史培养要求评估（MakeupTask）"
+        subtitle="Curriculum 模块依据目标培养方案要求与学生已修记录逐条评估后的结果，含“已满足 / 待课程认定 / 已确认需补修”等不同状态。逐条状态以每行的判定列与认定说明为准，前端不作汇总改写。"
+        :badge-count="data.makeup_tasks.length"
+      >
+        <MakeupTaskList
+          :tasks="data.makeup_tasks"
+          :evidence-enabled="explanationApiEnabled"
+          @explain-course="emit('open-explanation', $event)"
+        />
+      </SectionCard>
+
+      <!-- 2. 开课教学班 -->
+      <SectionCard
+        mock
+        section-id="section-offerings"
+        title="2. 开课教学班供给 (CourseOffering)"
+        subtitle="Course Data 模块从教务系统中抓取并标准化的目标学期开课清单：支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
+        :badge-count="data.course_offerings.length"
+      >
+        <CourseOfferingList :offerings="data.course_offerings" />
+      </SectionCard>
+
+      <!-- 3. 用户偏好 -->
+      <SectionCard
+        mock
+        section-id="section-preference"
+        title="3. 学生个性化偏好 (Preference)"
+        subtitle="Agent 模块解析学生自然语言输入所形成的约束条件：包含学分上限控制、避免跨校区、回避特定时段及意向课程。"
+      >
+        <PreferencePanel :preference="data.preference" :course-name-by-id="courseNameById" />
+      </SectionCard>
+
     </template>
   </section>
 </template>

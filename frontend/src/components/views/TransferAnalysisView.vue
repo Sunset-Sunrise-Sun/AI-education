@@ -50,6 +50,27 @@ const canSubmit = computed(
 
 const statusCounts = computed<Record<string, number>>(() => props.result?.status_counts ?? {})
 
+/**
+ * 缺口摘要（P0）：让用户一眼看到"还缺多少 / 已满足多少 / 有多少要人工确认"。
+ *
+ * ⚠️ 只是对后端 `status_counts` 的**展示汇总**：⛔ 不重新判定任何课程状态，
+ * ⛔ 不把"可能等价"算成"已满足"，也不把"待人工确认"算成"需要补修"。
+ */
+const gapSummary = computed(() => {
+  const counts = statusCounts.value
+  return {
+    required: counts['required'] ?? 0,
+    possiblyEquivalent: counts['possibly_equivalent'] ?? 0,
+    manual: counts['manual_confirmation'] ?? 0,
+    satisfied: counts['satisfied'] ?? 0,
+  }
+})
+
+/** 需要人工介入（待确认 + 待人工确认）——这两个状态**不能**当已解决。 */
+const needsHumanAttention = computed(
+  () => gapSummary.value.possiblyEquivalent + gapSummary.value.manual,
+)
+
 const skippedCodeLabels: Record<string, string> = {
   no_course_data: '当前没有已装配的真实教学班供给，因此没有调用 Planner',
   no_semester: '本次没有指定要排进哪个学期，因此没有调用 Planner',
@@ -94,6 +115,43 @@ function versionLabel(version: CurriculumVersionMetadata): string {
     <p v-if="previewNotice" class="ai-preview" data-testid="personal-preview-notice">
       ⚠️ {{ previewNotice }}
     </p>
+
+    <!--
+      P0：缺口摘要（只在拿到后端结果后显示）。
+      ⚠️ 数字全部来自后端 status_counts；⛔ 前端不做任何重新判定。
+    -->
+    <section v-if="result" class="gap-hero" data-testid="gap-summary">
+      <div class="gap-hero__main">
+        <span class="gap-hero__label">还需要补修</span>
+        <span class="gap-hero__value num" data-testid="gap-required-count">
+          {{ gapSummary.required }}
+        </span>
+        <span class="gap-hero__unit">门课程</span>
+      </div>
+      <ul class="gap-hero__facts">
+        <li data-testid="gap-satisfied">
+          <span class="gap-hero__fact-label">已满足要求</span>
+          <strong class="num">{{ gapSummary.satisfied }}</strong>
+        </li>
+        <li data-testid="gap-possibly-equivalent">
+          <span class="gap-hero__fact-label">可能等价（待确认）</span>
+          <strong class="num">{{ gapSummary.possiblyEquivalent }}</strong>
+        </li>
+        <li data-testid="gap-manual">
+          <span class="gap-hero__fact-label">待人工确认</span>
+          <strong class="num">{{ gapSummary.manual }}</strong>
+        </li>
+      </ul>
+      <p class="gap-hero__note" data-testid="gap-note">
+        <template v-if="needsHumanAttention > 0">
+          其中 <strong>{{ needsHumanAttention }}</strong> 项需要人工确认后才会改变结论：
+          「可能等价」和「待人工确认」<strong>不是</strong>已认定通过，也<strong>不能</strong>当作已满足。
+        </template>
+        <template v-else>
+          这次没有需要人工确认的条目；结论仍以后端逐条判定为准。
+        </template>
+      </p>
+    </section>
 
     <!-- 目录状态：未配置 / 加载中 / 空 / 错误 -->
     <div v-if="phase === 'not_configured'" class="error-box" data-testid="personal-not-configured">
