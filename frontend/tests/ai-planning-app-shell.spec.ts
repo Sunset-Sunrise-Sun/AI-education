@@ -184,9 +184,7 @@ describe('AI 调整：两次确认端到端（预览 fixture）', () => {
     await flushPromises()
   }
 
-  it('未配置且非预览时明确"尚未配置"，不显示任何成功状态', async () => {
-    // 测试环境已开启预览，因此这里直接用预览路径验证"标注"；
-    // 未配置分支由 AiAdjustDrawer 单测覆盖（不重复）。
+  it('预览模式醒目标注，且不显示任何成功状态', async () => {
     const wrapper = await mountApp()
     await openDrawerAndParse(wrapper)
 
@@ -217,7 +215,8 @@ describe('AI 调整：两次确认端到端（预览 fixture）', () => {
     await flushPromises()
 
     // 抽屉给出后端确认结论
-    expect(wrapper.find('[data-testid="ai-adopted"]').text()).toContain('已采用候选方案')
+    expect(wrapper.find('[data-testid="ai-adopted"]').text()).toContain('后端已确认采用')
+    expect(wrapper.find('[data-testid="ai-adopted-scope"]').text()).toContain('process_local_session')
 
     // 关闭抽屉后回到补修路径视图
     await wrapper.find('[data-testid="ai-drawer-close"]').trigger('click')
@@ -242,15 +241,15 @@ describe('AI 调整：两次确认端到端（预览 fixture）', () => {
     await wrapper.find('[data-testid="ai-keep-original"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="ai-adopted"]').text()).toContain('保留原方案')
-    expect(wrapper.find('[data-testid="ai-adopted"]').text()).not.toContain('已采用候选方案')
+    expect(wrapper.find('[data-testid="ai-kept"]').text()).toContain('已确认保留原方案')
+    expect(wrapper.find('[data-testid="ai-adopted"]').exists()).toBe(false)
 
     await wrapper.find('[data-testid="ai-drawer-close"]').trigger('click')
     await flushPromises()
     expect(wrapper.find('#section-plan').text()).toBe(before)
   })
 
-  it('候选过期时不刷新方案，并提示可重新求解', async () => {
+  it('采用被后端拒绝时不刷新方案，并保留候选以便重试', async () => {
     const wrapper = await mountApp()
     const before = wrapper.find('#section-plan').text()
 
@@ -258,11 +257,11 @@ describe('AI 调整：两次确认端到端（预览 fixture）', () => {
     await wrapper.find('[data-testid="ai-confirm-intent"]').trigger('click')
     await flushPromises()
 
-    setAiPreviewScenario('stale')
+    setAiPreviewScenario('rejected')
     await wrapper.find('[data-testid="ai-adopt-candidate"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="ai-error-message"]').text()).toContain('过期')
+    expect(wrapper.find('[data-testid="ai-candidate-compare"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="ai-adopted"]').exists()).toBe(false)
 
     await wrapper.find('[data-testid="ai-drawer-close"]').trigger('click')

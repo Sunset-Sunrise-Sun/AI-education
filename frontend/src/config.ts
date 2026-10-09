@@ -54,15 +54,18 @@ export const EXPLANATION_API_ENABLED: boolean =
   import.meta.env.VITE_EXPLANATION_API_ENABLED === 'true'
 
 /**
- * AI 规划适配层（`POST /api/v1/ai-planning/{interpret,solve,adopt}`）。
+ * AI 规划适配层（`GET /status` + `POST /{interpret,solve,adopt}`）。
  *
- * ⚠️ 后端（Agent A）**尚未实现**这三个路径。前端因此把它当成一个
- * **明确可能不可用**的能力：
- * - 默认**关闭** ⇒ 面板显示「AI 调整尚未配置」，**一个请求也不发**；
+ * ⚠️ 后端已在分支 `feature/deepseek-planning-controller` 实现这四个路径，
+ * 契约见该分支的 `docs/final_upgrade/AI_PLANNING_API_HANDOFF.md`
+ * （与 `backend/app/api/ai_planning.py` 同一提交）。
+ * 但**本分支部署的后端未必包含它**，因此前端把它当成**明确可能不可用**的能力：
+ * - 默认**关闭** ⇒ 面板显示「AI 调整不可用」，**一个请求也不发**；
  * - 打开后真实调用；失败如实报错，⛔ **绝不**回退到前端预览 fixture；
- * - 字段假设逐条记录在 `docs/final_upgrade/FRONTEND_AI_API_EXPECTATIONS.md`。
+ * - 可用性以 `GET /status` 为准（`enabled` / `api_key_configured`）。
  */
 export const AI_PLANNING_ENDPOINTS = {
+  status: `${API_BASE_URL}/api/v1/ai-planning/status`,
   interpret: `${API_BASE_URL}/api/v1/ai-planning/interpret`,
   solve: `${API_BASE_URL}/api/v1/ai-planning/solve`,
   adopt: `${API_BASE_URL}/api/v1/ai-planning/adopt`,

@@ -1,261 +1,308 @@
-# 前端 AI 规划接口预期（Field-Level Contract & Assumptions）
+# 前端 AI 规划接口契约（**以后端实现为准**）
 
 > 归属：**Frontend / Agent B（`feature/ai-planning-frontend`）**。
-> 状态：**仅前端预期**。后端（Agent A）尚未实现 `POST /api/v1/ai-planning/*`，
-> 本文记录前端 typed adapter 的所有**字段假设**、错误语义与 Mock fixtures。
+> 状态：**契约已对齐后端实现**（PR #65 Architecture Review 修复轮）。
+>
+> **单一契约来源**：后端分支 `feature/deepseek-planning-controller` 的
+> `docs/final_upgrade/AI_PLANNING_API_HANDOFF.md`
+> （与 `backend/app/api/ai_planning.py` 同一提交）。
 >
 > ⛔ 本文不是公共契约：`/schemas/` 与 `/docs/interfaces/` **未被修改**。
-> 真实 A 接口若与本文不一致，前端**只报告差异**，⛔ 不在前端"自动适配"或编造字段。
+> 本文只记录**前端如何消费**该私有接口，以及前端侧的校验与降级规则。
 
-## 0. 为什么需要这份文档
+## 0. Review 修复说明（本轮）
 
-任务书要求前端使用**可替换的 typed adapter** 开发，且**不能假定 A 的接口已存在**。
-因此前端把「AI 规划」当作一个**明确可能不可用**的能力：
+PR #65 Architecture Review 指出四处不一致，本轮全部按后端实现修正：
 
-- 真实接口未就绪 ⇒ 页面显示「AI 调整尚未配置」，**不伪造规划成功**；
-- 离线演示 ⇒ 只能使用**醒目标注**的前端预览 fixture（`source = preview_fixture`），
-  ⛔ 生产失败时**不 fallback** 到 fixture。
+| # | 问题 | 修复 |
+| --- | --- | --- |
+| ① | 前端 `interpret` 校验/发送 `plan_digest` | 请求改为 `{context, user_message}`；`plan_digest` 由**后端**计算，前端只保存并原样回传 |
+| ② | 前端只识别 `status='candidate'` | 改为 **`candidate_ready` / `no_feasible_candidate` / `blocked`** 三值 |
+| ③ | 前端要求 `status/adopted_plan` | 改为 **`accepted / state / adopted_version / adopted_version_scope / original_plan_unchanged`**；**不伪造 `adopted_plan`** |
+| ④ | 404/501 一律当成"接口未配置" | 改为按**后端固定错误码表**分类（404=会话不存在、410=过期、501=不支持、502=候选非法、429=额度…） |
+
+同时新增：
+- **两次确认**（执行前确认意图、采用前确认方案）保留并加强；
+- "已采用"明确标注为**进程内会话状态**（`process_local_session`），不是持久保存、也不是教务选课成功；
+- `GET /status` 作为可用性判据（`enabled` / `api_key_configured`）；
+- 契约形状测试 `frontend/tests/ai-planning-contract.spec.ts`（真实后端 JSON 形状）。
 
 ## 1. 适配层位置与开关
 
 | 项 | 值 |
 | --- | --- |
-| 文件 | `frontend/src/api/aiPlanning.ts`（typed adapter，唯一出口） |
-| 契约类型 | `frontend/src/api/aiPlanningTypes.ts` |
+| 契约类型与解析器 | `frontend/src/api/aiPlanningContract.ts` |
+| typed adapter（唯一出口） | `frontend/src/api/aiPlanning.ts` |
 | 预览 fixture | `frontend/src/api/aiPlanningFixtures.ts` |
+| 旧路径兼容转发 | `frontend/src/api/aiPlanningTypes.ts`（只 re-export） |
 | 开关 | `VITE_AI_PLANNING_API_ENABLED`（默认 **关闭**） |
-| 预览开关 | `VITE_AI_PLANNING_PREVIEW`（默认 **关闭**；打开后只用 fixture 渲染） |
+| 预览开关 | `VITE_AI_PLANNING_PREVIEW`（默认 **关闭**） |
 
-开关语义（互斥且穷尽）：
-
-| `VITE_AI_PLANNING_API_ENABLED` | `VITE_AI_PLANNING_PREVIEW` | 行为 |
+| 真实开关 | 预览开关 | 行为 |
 | --- | --- | --- |
-| `false` | `false` | 默认：面板显示「AI 调整尚未配置」，**不发任何请求** |
-| `true` | `false` | 真实模式：请求 `/api/v1/ai-planning/*`；失败如实报错，⛔ 不 fallback |
-| 任意 | `true` | 预览模式：只读 fixture，界面必须显示「前端预览 / 非真实模型 / 未调用 Planner」 |
-| `true` | `true` | **预览优先**（便于离线演示），并显示预览标识 |
+| `false` | `false` | 显示"AI 调整不可用"，**不发任何请求** |
+| `true` | `false` | 调用真实接口；可用性以 `GET /status` 为准 |
+| 任意 | `true` | 只读预览 fixture，并醒目标注「仅前端预览 / 非真实模型 / 未调用 Planner」 |
 
-## 2. `POST /api/v1/ai-planning/interpret`
+⛔ **真实失败不会回退到 fixture**；预览分支与真实分支互斥。
+（测试里用 `setAiPlanningForceReal(true)` 强制走真实路径，生产代码不调用。）
 
-把学生自然语言解析成**待确认意图草稿**。⛔ 该步骤**不得**求解、不得给出候选方案。
+## 2. `GET /api/v1/ai-planning/status`
 
-### 请求
+页面初始化时调用，决定显示哪种未启用态。
+
+```json
+{"enabled": false, "live_model_available": false, "api_key_configured": false,
+ "model": "deepseek-flash", "base_url": "https://api.deepseek.com",
+ "max_calls_per_request": 3, "request_timeout_seconds": 20.0, "adopt_ttl_seconds": 900,
+ "generator_kind_when_live": "deepseek_live", "data_source_note": "…"}
+```
+
+- 解析要求：字段齐全且类型正确，否则 `unexpected`（⛔ 不补默认值）；
+- ⛔ 响应中永远没有密钥，只有布尔 `api_key_configured`；
+- **该私有前缀尚未部署**（404/405 且无结构化错误码）⇒ 分类 `absent`，
+  文案区分"未部署"；这与"已实现但未启用（503 `ai_planning_disabled`）"是两件事。
+
+页面文案：
+
+| 状态 | 文案 |
+| --- | --- |
+| `enabled=false` | AI 调整未启用（服务器未开启 `AI_PLANNING_ENABLED`） |
+| `enabled=true, api_key_configured=false` | 已开启但未注入模型密钥，无法解析意图 |
+| `/status` 404 | 该私有前缀尚未部署到当前后端 |
+| 正常 | 显示输入框（`enabled / api_key_configured / live_model_available / model`） |
+
+## 3. `POST /api/v1/ai-planning/interpret`
+
+### 请求（⛔ **没有** `plan_digest`）
 
 ```jsonc
 {
-  "utterance": "尽量在大三前补完，这学期尽量轻松，但数据结构必须保留",   // 必填，非空
-  "plan_digest": "sha256:…",        // 必填：当前被调整方案的指纹（防串案）
-  "target_semester": "2026-1",      // 必填：本次要调整的学期
-  "focus_course_id": "62001002",    // 可选：抽屉聚焦课程时的上下文
-  "current_schedule_count": 3,      // 可选：仅计数，⛔ 不传课表明细
-  "locale": "zh-CN"                 // 可选
+  "context": {
+    "semester": "2026-1",
+    "base_plan": { /* 公共 PlanResult */ },
+    "makeup_tasks": [ /* 公共 MakeupTask[] */ ],
+    "course_offerings": [ /* 公共 CourseOffering[] */ ],
+    "preference": { /* 公共 Preference */ }
+  },
+  "user_message": "这学期太累，数据结构必须保留，尽量别在周五上课"
 }
 ```
 
-⚠️ 请求体**不含**姓名 / 学号 / 成绩明细 / 头像 / 邮箱；前端适配层结构上无法加入这些字段。
+- 前端只发送**页面已有对象**；`context` 由 `useAiPlanning.buildPlanContext()` 组装；
+- ⛔ 不发送姓名 / 学号 / 成绩单原文 / 凭据；
+- 前端在发送前做与后端 `sanitize_user_message` **同构**的本地前置校验
+  （空 / >1000 字 / 邮箱 / 手机号 / 身份证 / 学号样式 / 凭据样式 / `sk-` 密钥），
+  ⛔ 但这**不是**唯一防线——服务器仍会校验并可能返回 400。
 
-### 响应
+### 响应 200（要点）
 
 ```jsonc
 {
-  "intent_id": "intent-…",              // 必填：后续 confirm / solve 的引用
-  "plan_digest": "sha256:…",            // 必填：必须与请求中的 plan_digest 一致
-  "data_source": "mock",                // 必填：mock | real
-  "generator_kind": "rule_based_template", // 必填：model | rule_based_template | model_unavailable
-  "can_confirm": true,                  // 必填：false 时前端禁止进入第一次确认后的求解
+  "intent_id": "intent_…",              // 不透明；前端只回传
+  "plan_digest": "…64 位十六进制…",     // 后端计算；前端只保存、只回传
   "parsed_intent": {
-    "hard_constraints": [               // 硬约束：不可协商；缺省 = 空数组（⛔ 不猜）
-      { "code": "keep_course", "course_id": "62001002", "course_name": "数据结构与算法",
-        "raw_text": "数据结构必须保留", "evidence": "utterance", "confidence": 0.9 }
-    ],
-    "soft_preferences": [               // 软偏好：可协商
-      { "code": "lighter_semester", "raw_text": "这学期尽量轻松",
-        "evidence": "utterance", "confidence": 0.8 }
-    ],
-    "credit_limit": null,               // number | null；⛔ 未提及必须为 null，前端不得猜默认值
-    "locked_course_ids": ["62001002"],  // 必填：即使为空数组也必须给出
-    "scope": {                          // 必填
-      "semester": "2026-1",
-      "horizon": "before_year_3",       // before_year_3 | within_semester | unknown
-      "raw_text": "大三前补完"
-    },
-    "unknowns": [                       // 必填：解析不出来的部分必须显式列出
-      { "topic": "毕业学期", "detail": "未说明计划毕业时间", "needs_user_input": true }
-    ]
+    "summary": "…", "scope": "current_semester", "target_semester": "2026-1",
+    "hard_constraints": [{"kind": "max_credit_limit", "value": 22, "evidence": "…"}],
+    "soft_preferences": [{"kind": "avoid_weekday", "value": 5, "note": "…"}],
+    "locked_courses": [{"course_id": "DS101", "class_id": "ds-01", "reason": "…"}],
+    "confidence": 0.6, "notes": [],
+    "ambiguities": [{"code": "…", "question": "…", "detail": null}]
   },
-  "ambiguities": [                      // 必填：可能与硬约束冲突 / 需要用户裁决
-    { "code": "conflict_with_hard_constraint", "detail": "「尽量轻松」与「必须保留」可能冲突",
-      "options": ["保留课程并接受更重的学期", "放弃该课程"] }
-  ],
-  "message": "已解析为待确认草稿"
+  "ambiguities": [ /* 同上，顶层也有一份 */ ],
+  "data_source": "mock",                 // real | mock | mixed | unknown
+  "generator_kind": "test_double",       // deepseek_live | test_double | unavailable
+  "generator_note": "注入的测试替身模型（不是线上模型）",
+  "model_id": "test-rule-fake",
+  "can_confirm": true,
+  "state": "intent_draft",
+  "token_usage_estimate": {"prompt": 412, "completion": 96, "total": 508},
+  "message": "已生成意图草稿，请确认后再求解。"
 }
 ```
 
-**语义硬要求**
+前端硬规则：
 
-- `plan_digest` 必须回显请求值：不一致 ⇒ 适配层抛 `stale_plan`（前端提示"原方案已变化，请重新解析"）；
-- `can_confirm = false` ⇒ 前端**禁止**进入求解，并展示原因；
-- `credit_limit = null` ⇒ 前端显示"未指定"并**要求用户确认或填写**，⛔ 不代填。
+- `generator_kind` **只有三个取值**，未知取值 ⇒ `unexpected`（⛔ 不得把未知状态说成"AI 已接入"）；
+- ⛔ **只有 `deepseek_live` 才显示"真实 DeepSeek 在线调用"**；
+  `test_double` 显示「测试替身模型（不是线上模型）」；`unavailable` 显示不可用；
+- `can_confirm=false` ⇒ 第一次确认按钮**禁用**，并渲染 `ambiguities[]` 的问题
+  （固定歧义码白名单见 HANDOFF §3）；
+- `token_usage_estimate` 只作展示（是估算，不是计费口径）。
 
-## 3. `POST /api/v1/ai-planning/solve`
+### 第一次确认面板（保留）
 
-在**已确认**意图上求解候选方案。⛔ 前端不做冲突检测、不填假方案。
+可编辑项：**学分上限**（必须由用户给数字）、**避开星期**（软偏好）、**锁定课程**。
+确认后才允许调用 `/solve`；⛔ 确认前不产生任何有状态求解。
+
+## 4. `POST /api/v1/ai-planning/solve`
 
 ### 请求
 
 ```jsonc
 {
-  "intent_id": "intent-…",
-  "plan_digest": "sha256:…",           // 必须与 interpret 时一致
-  "confirmed_intent": {                // 用户**第一次确认**后的意图（编辑后的最终值）
-    "hard_constraints": [ … ],
-    "soft_preferences": [ … ],
-    "credit_limit": 18,
-    "locked_course_ids": ["…"],
-    "scope": { … }
-  },
-  "semester": "2026-1"
+  "intent_id": "intent_…",
+  "plan_digest": "…",                    // 必须是 interpret 返回的同一个值（否则 410）
+  "confirmed_intent": {
+    "plan_digest": "…", "semester": "2026-1", "scope": "current_semester",
+    "target_semester": "2026-1",
+    "hard_constraints": [{"kind": "max_credit_limit", "value": 22, "evidence": "用户在确认面板填写"}],
+    "soft_preferences": [{"kind": "avoid_weekday", "value": 5, "note": "…"}],
+    "locked_courses": [{"course_id": "DS101", "class_id": "ds-01", "reason": "…"}],
+    "user_note": null
+  }
 }
 ```
 
-### 响应
+- `hard_constraints` 里 `max_credit_limit` **必须带 `evidence`**，否则后端 422；
+  前端只在用户真的填了数字时才追加该项（`evidence` 固定为"用户在确认面板填写"）；
+- `scope` 固定 `current_semester`（跨学期后端返回 `blocked` / 501）。
+
+### 响应 200
 
 ```jsonc
 {
-  "candidate_id": "cand-…",            // status = candidate 时必填
-  "status": "candidate",               // candidate | infeasible | unavailable | rejected
-  "candidate_plan": { /* 公共 PlanResult 形状 */ },  // status=candidate 时必填，否则必须为 null
-  "plan_digest": "sha256:…",           // 候选所基于的原方案指纹
-  "candidate_digest": "sha256:…",      // 候选自身指纹，adopt 时回传
-  "diff": {                            // status=candidate 时必填
-    "added":   [ { "course_id": "…", "course_name": "…", "class_id": "…", "credit": 3 } ],
-    "removed": [ { "course_id": "…", "course_name": "…", "class_id": "…", "credit": 3 } ],
-    "moved":   [ { "course_id": "…", "from_class": "…", "to_class": "…", "reason": "…" } ],
-    "credit_delta": 3,
-    "hard_constraint_checks": [
-      { "code": "keep_course", "course_id": "62001002", "satisfied": true, "detail": "已保留" }
-    ]
+  "candidate_id": "candidate_…",        // 仅 candidate_ready 时非 null
+  "status": "candidate_ready",          // candidate_ready | no_feasible_candidate | blocked
+  "plan_kind": "PlanResult",            // PlanResult | none
+  "candidate_plan": { /* 公共 PlanResult */ },
+  "diff": {
+    "added": [{"course_id": "ALGO201", "class_id": "algo-02"}],
+    "removed": [], "replaced": [],
+    "kept": [{"course_id": "DS101", "class_id": "ds-01"}],
+    "base_credit": 3.0, "candidate_credit": 6.0, "credit_delta": 3.0,
+    "credit_unknown_course_ids": [], "empty": false
   },
-  "risks": [ { "course_id": "…", "level": "medium", "reason": "…" } ],
-  "unresolved": [ { "type": "schedule_unknown", "message": "…" } ],
-  "message": "已生成 1 个候选方案",
-  "expires_at": null                   // ISO8601 | null；非空时过期后 adopt 会返回 stale_candidate
+  "risks": ["…"],                       // ⚠️ 字符串数组
+  "unresolved": ["…"],
+  "message": "…",
+  "blocked_reason": null,               // 固定取值见 HANDOFF §4
+  "data_source": "mock", "generator_kind": "test_double", "plan_digest": "…"
 }
 ```
 
-**状态语义**（前端必须分别显示，⛔ 不得都写成"没生成"）：
+前端硬规则：
 
-| `status` | 含义 | 前端行为 |
-| --- | --- | --- |
-| `candidate` | 成功 | 展示候选 + 对比 + 第二次确认 |
-| `infeasible` | 当前约束下无解 | 显示"未生成候选（当前约束下无解）"，原案不变 |
-| `unavailable` | 缺少课表 / Planner 未装配 / 模型不可用 | 显示"未生成候选（缺少必要条件）"，列出原因 |
-| `rejected` | 输入被拒绝（意图过期 / 违反硬约束） | 显示拒绝原因；可重新解析 |
+- **只有 `status = candidate_ready` 才是有效候选**；
+  `no_feasible_candidate` / `blocked` ⇒ 显示"未生成候选"并**保持原方案不变**；
+- 一致性校验：`candidate_ready` 必须带 `candidate_id` + `candidate_plan` + `diff`；
+  非 `candidate_ready` 却带 `candidate_plan` ⇒ `unexpected`（⛔ 不接受自相矛盾的响应）；
+- `credit_delta = null` 或 `credit_unknown_course_ids` 非空 ⇒ 显示"学分未知"；
+- `blocked_reason` 原样展示并按已知取值给出说明（⛔ 不猜测未知原因）。
 
-## 4. `POST /api/v1/ai-planning/adopt`
-
-**第二次确认**。⛔ 只有后端确认成功才能刷新当前方案。
+## 5. `POST /api/v1/ai-planning/adopt`
 
 ### 请求
 
 ```jsonc
-{
-  "candidate_id": "cand-…",
-  "plan_digest": "sha256:…",        // 当前页面上的原方案指纹
-  "candidate_digest": "sha256:…",   // 候选指纹，防"换了候选再采用"
-  "accept": true                    // true = 采用候选；false = 明确保留原方案
-}
+{"candidate_id": "candidate_…", "plan_digest": "…", "accept": true}
 ```
 
-### 响应
+### 响应 200（⚠️ **不返回方案体**）
 
 ```jsonc
 {
-  "status": "adopted",              // adopted | rejected | stale_candidate | unavailable
-  "adopted_plan": { /* PlanResult */ },  // status=adopted 时必填
-  "adopted_digest": "sha256:…",
-  "result_version": "v2",           // 结果版本，用于展示"已刷新到第 N 版"
-  "message": "已采用候选方案"
+  "candidate_id": "candidate_…",
+  "accepted": true,
+  "state": "adopted",                        // adopted | rejected
+  "adopted_version": 1,                      // 进程内会话版本号（int）
+  "adopted_version_scope": "process_local_session",
+  "original_plan_unchanged": false,
+  "plan_digest": "…",
+  "message": "已采用候选方案（仅在本进程会话内有效，未持久化）。"
 }
 ```
 
-**失败语义**
+前端硬规则：
 
-| `status` | 含义 | 前端行为 |
-| --- | --- | --- |
-| `adopted` | 成功 | 才允许刷新当前方案；显示新结果版本 |
-| `rejected` | 后端拒绝采用 | **原案保持**，显示拒绝原因 |
-| `stale_candidate` | 候选或原案已过期 | **原案保持**，提示"可重新求解" |
-| `unavailable` | 后端不可用 | **原案保持**，显示不可用原因 |
+1. **⛔ 绝不伪造 `adopted_plan`**：采用成功时，刷新用的方案体只能是 `/solve`
+   已经返回、**由后端 Planner 产生**的 `candidate_plan`（保存在内存里）；
+2. **只有 `accepted === true && state === 'adopted'` 才刷新当前方案**；
+   其它情况（拒绝 / 冲突 / 过期 / 不可用）⇒ **原方案一个字都不改**；
+3. `adopted_version_scope` 只接受 `process_local_session`：
+   界面必须写明**进程内会话状态、未持久化、服务重启即失效、不代表教务系统已完成选课**；
+4. 采用成功后提供**撤销入口**：以原方案为 base 重新解析（⛔ 不修改后端状态）；
+5. `accept=false`（保留原案）也必须经过后端确认，并显示 `original_plan_unchanged`。
 
-⛔ 除 `adopted` 之外的任何情况，前端**不得**改变当前方案、也不得显示"已调整成功"。
+### 第二次确认面板（保留）
 
-## 5. 错误与 HTTP 语义（适配层统一分类）
+展示：`diff.added / removed / replaced / kept`、学分变化、`risks[]`、`unresolved[]`、
+`plan_kind`、`generator_kind`、`data_source`、`blocked_reason`（如有）。
+两个按钮：**采用候选** / **保留原案**。
 
-```ts
-type AiPlanningErrorKind =
-  | 'disabled'        // 开关关闭：一个请求都不发
-  | 'not_configured'  // 404 / 501：后端尚未实现该能力
-  | 'input'           // 422：请求体被拒绝
-  | 'conflict'        // 409：意图或候选过期
-  | 'unavailable'     // 503：缺少课表 / 运行时未装配
-  | 'server'          // 其它 5xx
-  | 'network'         // 请求根本没完成
-  | 'unexpected'      // 2xx 但响应形状不符合契约
-```
+## 6. 错误码 → 前端分类（一一对应）
 
-已知错误体形状（尽力解析，⛔ 不假设一定存在）：
+| HTTP | `error` | 前端 `kind` | 界面行为 |
+| --- | --- | --- | --- |
+| 503 | `ai_planning_disabled` | `disabled` | 显示"未启用"，隐藏输入 |
+| 503 | `ai_planning_model_unavailable` | `model_unavailable` | 显示"模型暂不可用"，原方案不变 |
+| 400 | `ai_planning_message_rejected` | `message_rejected` | 提示改写消息（去掉个人信息） |
+| 422 | `ai_planning_model_output_invalid` | `model_output_invalid` | "AI 未能理解，请换个说法" |
+| 422 | `ai_planning_intent_invalid` | `intent_invalid` | 回到确认面板修正 |
+| 422 | `ai_planning_plan_context_invalid` | `plan_context_invalid` | 重新加载当前方案 |
+| 409 | `ai_planning_intent_not_confirmable` | `intent_not_confirmable` | 渲染 `ambiguities[]` |
+| 409 | `ai_planning_adoption_conflict` | `adoption_conflict` | 刷新候选状态 |
+| 404 | `ai_planning_session_not_found` | `session_not_found` | 提示重新解析意图 |
+| 410 | `ai_planning_session_expired` | `session_expired` | 提示重新解析 / 重新求解 |
+| 501 | `ai_planning_solve_unsupported` | `solve_unsupported` | 说明只支持当前学期 |
+| 502 | `ai_planning_candidate_invalid` | `candidate_invalid` | 报告服务端问题，⛔ 不重试 |
+| 429 | `ai_planning_budget_exceeded` | `budget_exceeded` | 稍后再试 |
+| 404/405（`/status`、无 code） | — | `absent` | **该私有前缀尚未部署** |
+| 其它 5xx | — | `server` | 服务端错误，原方案不变 |
+| 网络失败 | — | `network` | 无法连接 |
+| 2xx 但形状不符 | — | `unexpected` | 停止渲染，⛔ 不补默认值 |
 
-```jsonc
-{ "detail": { "error": "ai_planning_not_configured", "message": "…" } }
-```
+**没有**"500 兜底 + 悄悄回退到 Mock"这条路径。
 
-- 任何非 2xx ⇒ 适配层抛 `AiPlanningApiError`，**绝不返回兜底数据**；
-- 2xx 但结构不符合本文契约 ⇒ `unexpected`，并停止渲染（防止把半截数据当成功）。
+## 7. 前端必须避免的写法
 
-## 6. 与 A 的集成差异记录（待 A 实现后核对）
-
-| 待核对项 | 前端假设 | 若不一致 |
-| --- | --- | --- |
-| 三个路径名 | `/api/v1/ai-planning/{interpret,solve,adopt}` | 只报告差异，不在前端做路径猜测 |
-| `plan_digest` 算法 | 服务端定义；前端只做**透传与一致性比较** | 前端不自行计算摘要 |
-| `candidate_plan` 形状 | 公共 `PlanResult` | 若为私有形状，需要新增映射并更新本文 |
-| 错误体形状 | `{detail:{error,message}}` | 适配层按状态码分类，不依赖 code 文案 |
-| 开关与 readiness | 后端未实现 ⇒ 404/501 | 前端显示「尚未配置」 |
-
-## 7. 明确不在本轮范围
-
-- 真实课表图片 OCR（P2 延后，⛔ 不做假 OCR）；
-- 通用聊天机器人（AI 面板必须绑定**当前选中补修方案**）；
-- 多学期未验证的自动重排；
-- 用文本直接覆盖当前课表（⛔ 只能通过 `adopt` 且后端确认成功）。
+| ⛔ 不要做 | 原因 |
+| --- | --- |
+| 把 `test_double` 显示成"DeepSeek 已接入" | 虚构能力 |
+| 在 `can_confirm=false` 时仍调 `/solve` | 必然 409；且绕过歧义确认 |
+| 自己算 / 改写 `plan_digest` | 后端按上下文计算；不一致必然 410 |
+| 在 `/interpret` 响应里找候选方案 | 该接口**只**给草稿 |
+| `/adopt` 之后凭空造一份 `adopted_plan` | 后端不返回方案体；伪造等于假成功 |
+| 把"已采用"说成"已保存 / 已选课成功" | 只是**进程内会话状态** |
+| 失败时用 Mock / fixture 填充候选面板 | 违反 fail-closed 与 provenance |
+| 把 `data_source=unknown/mock` 渲染成"真实开课" | Mock/Real 混淆 |
+| 在前端保存任何 DeepSeek 密钥 | 密钥只存在于服务器环境 |
 
 ## 8. 预览 fixture 清单
 
-| fixture | 覆盖场景 | 标识 |
-| --- | --- | --- |
-| `PREVIEW_INTERPRET_OK` | 正常解析（硬约束 + 软偏好 + 锁定课程 + 未知项） | `source: preview_fixture` |
-| `PREVIEW_INTERPRET_LOW_CONFIDENCE` | `can_confirm=false`（解析不足，禁止求解） | 同上 |
-| `PREVIEW_SOLVE_CANDIDATE` | 成功候选（含新增 / 移班 / 学分变化 / 风险） | 同上 |
-| `PREVIEW_SOLVE_INFEASIBLE` | 无解 | 同上 |
-| `PREVIEW_SOLVE_UNAVAILABLE` | 缺少课表 / Planner 未装配 | 同上 |
-| `PREVIEW_ADOPT_ADOPTED` | 采用成功 | 同上 |
-| `PREVIEW_ADOPT_STALE` | 候选过期 | 同上 |
-| `PREVIEW_ADOPT_REJECTED` | 后端拒绝采用 | 同上 |
-| `PREVIEW_ERROR_NOT_CONFIGURED` | 后端尚未实现 | 同上 |
+| fixture | 覆盖场景 |
+| --- | --- |
+| `PREVIEW_INTERPRET_OK` | 正常解析（软偏好 + 锁定课程；`can_confirm=true`） |
+| `PREVIEW_INTERPRET_WITH_AMBIGUITIES` | `can_confirm=false` + `credit_limit_missing_evidence` |
+| `PREVIEW_SOLVE_CANDIDATE` | `candidate_ready`（含 added/removed/kept、学分 +2、风险、未决） |
+| `PREVIEW_SOLVE_NO_FEASIBLE` | `no_feasible_candidate`（无候选） |
+| `PREVIEW_SOLVE_BLOCKED` | `blocked` + `locked_course_would_change` |
+| `PREVIEW_ADOPT_ACCEPTED` | `accepted=true` / `adopted` / `adopted_version=1` |
+| `PREVIEW_ADOPT_KEPT` | `accept=false` 保留原案 |
+| `PREVIEW_ADOPT_REJECTED` | 冲突（已被处理） |
+| `PREVIEW_STATUS_TEST_DOUBLE` / `_LIVE` / `_DISABLED` | 三种可用状态 |
 
-每个 fixture 都带 `preview: true` 与固定文案：
+全部带 `（前端预览）` 文案，并在界面显示 `AI_PREVIEW_NOTICE`：
 **「仅前端预览 / 非真实模型 / 未调用 Planner」**。
 
-## 9. 个人规划接口（已存在，接口面事实）
+## 9. 个人规划接口（已实现，接口面事实）
 
-`POST /api/v1/personal-planning/plan` 已由 Agent A 实现，前端按**真实 readiness** 接入：
+`GET /api/v1/personal-planning/curriculum-versions` 与
+`POST /api/v1/personal-planning/plan` 由 Agent A 实现，前端按**真实 readiness** 接入：
 
-- 目录未配置 ⇒ `503 personal_catalog_not_configured` ⇒ 页面显示"没有已核验版本目录"，
-  ⛔ **不退回固定 Case A 冒充个人结果**；
+- 目录未配置 ⇒ 503 `personal_catalog_not_configured` ⇒ 显示"没有已核验的培养方案版本目录"，
+  ⛔ **不退回固定 Case A**；
 - `planning = null` ⇒ 显示 `planning_skipped_code` / `planning_skipped_reason`
-  （`no_course_data` / `no_semester` / `semester_not_bound`），
-  ⛔ 不显示"已排好课"；
-- 前端请求体只发送：`old_version_id` / `target_version_id` / `semester` /
-  `student`（`completed.records[]` 的**脱敏**字段）/ `preference` / `current_schedule`；
-  ⛔ 不发送姓名、学号、成绩单原文、真实 Key。
+  （`no_course_data` / `no_semester` / `semester_not_bound`），⛔ 不显示"已排好课"；
+- 请求体只发送版本 id、`semester`、脱敏已修记录、`preference`、`current_schedule`；
+  ⛔ 不发送姓名、学号、成绩单原文或任何凭据。
+
+## 10. 仍然没有验证的部分（不得声称已完成）
+
+| 项 | 状态 |
+| --- | --- |
+| 真实 DeepSeek 在线调用（`generator_kind=deepseek_live`） | **未验证**（运行环境未注入密钥） |
+| 前端 ↔ 真实后端端到端联调 | **未执行**（本轮为契约对齐 + mocked fetch 契约测试） |
+| 已核验培养方案目录 / 真实教学班快照 | **BLOCKED**（未装配） |
+| 跨学期自动重排 | **不支持**（后端 501 / `blocked`） |
+| 会话持久化 / 多实例共享 | **不支持**（进程内） |

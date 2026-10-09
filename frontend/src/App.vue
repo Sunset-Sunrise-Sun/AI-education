@@ -29,7 +29,6 @@ import {
 import type { UserInputForm } from './state/userInput'
 import { PlanApiError, fetchRealPlan } from './api/plan'
 import type { MakeupTask, PlanResult } from './types/contracts'
-import { computePlanDigest } from './utils/planDigest'
 
 /**
  * 页面外壳：三个导航入口 + AI 调整抽屉。
@@ -82,7 +81,6 @@ const personalPlanNotice = ref<string | null>(null)
 
 /** AI 调整（第二次确认成功）采用的方案；只有后端确认才可能被赋值。 */
 const aiAdoptedPlan = ref<PlanResult | null>(null)
-const aiAdoptedDigest = ref<string | null>(null)
 
 const planScheduleBlocked = computed(() => scheduleProvenanceBlockReason(userInput.value) !== null)
 
@@ -163,41 +161,13 @@ function closeExplanation(): void {
 }
 
 /* ------------------------------------------------------------------ *
- * 方案指纹（AI 调整的 plan_digest）
- * ------------------------------------------------------------------ */
-
-const planDigest = ref<string>('sha256:未计算')
-const digestError = ref<string | null>(null)
-
-async function refreshPlanDigest(): Promise<void> {
-  if (aiAdoptedDigest.value !== null) {
-    planDigest.value = aiAdoptedDigest.value
-    return
-  }
-  const plan = displayedPlanResult.value
-  if (plan === null) {
-    planDigest.value = 'sha256:无方案'
-    return
-  }
-  try {
-    planDigest.value = await computePlanDigest(plan)
-    digestError.value = null
-  } catch {
-    planDigest.value = 'sha256:计算失败'
-    digestError.value = '无法计算方案指纹；AI 调整会把它当作"原方案可能已变化"处理。'
-  }
-}
-
-watch(displayedPlanResult, () => {
-  void refreshPlanDigest()
-})
-
-/* ------------------------------------------------------------------ *
  * AI 调整抽屉
  * ------------------------------------------------------------------ */
 
 const aiDrawerOpen = ref(false)
 const aiFocusCourseId = ref<string | null>(null)
+/** 已采用的**进程内会话版本**（由后端 `adopted_version` 返回，⛔ 前端不生成）。 */
+const aiAdoptedVersion = ref<number | null>(null)
 
 function openAiDrawer(focusCourseId: string | null): void {
   aiFocusCourseId.value = focusCourseId
@@ -211,14 +181,17 @@ function closeAiDrawer(): void {
 /**
  * 第二次确认成功后的**唯一**刷新入口。
  *
- * ⛔ 只有抽屉在收到后端 `adopted` 时才调用它；失败 / 拒绝 / 过期都不会走到这里。
+ * ⚠️ 方案体来自抽屉内 `/solve` 已返回的候选（后端产生）；
+ * `/adopt` 只返回 `accepted / state / adopted_version`，⛔ 不返回方案体。
+ *
+ * ⚠️ 这是**进程内会话状态**：≠ 持久保存，≠ 教务系统选课成功。
  */
-function onAiAdopted(plan: PlanResult): void {
+function onAiAdopted(plan: PlanResult, version: number): void {
   aiAdoptedPlan.value = plan
-  aiAdoptedDigest.value = null
+  aiAdoptedVersion.value = version
   personalPlanApplied.value = false
-  personalPlanNotice.value = '当前方案已由 AI 调整的后端确认结果刷新。'
-  void refreshPlanDigest()
+  personalPlanNotice.value =
+    '当前方案已由 AI 调整的后端确认结果刷新（仅进程内会话状态，未持久化，也不代表教务系统已完成选课）。'
 }
 
 /* ------------------------------------------------------------------ *
@@ -250,9 +223,9 @@ async function submitRealPlan(): Promise<void> {
   try {
     realPlanResult.value = await fetchRealPlan(buildRealPlanRequest(userInput.value))
     aiAdoptedPlan.value = null
+    aiAdoptedVersion.value = null
     dataMode.value = 'real'
     lastHttpStatus.value = 200
-    void refreshPlanDigest()
   } catch (error) {
     realPlanResult.value = null
     dataMode.value = 'mock'
@@ -324,7 +297,6 @@ function onPersonalUseResults(makeupTasks: MakeupTask[], planning: PlanResult | 
     aiAdoptedPlan.value = null
     personalPlanApplied.value = true
     personalPlanNotice.value = '当前规划结果已切换为后端个人规划结果（Real）。'
-    void refreshPlanDigest()
   }
   activeView.value = 'makeup-path'
 }
@@ -350,7 +322,6 @@ const currentScheduleCount = computed(() => userInput.value.currentSchedule.leng
 
 onMounted(() => {
   void load()
-  void refreshPlanDigest()
   void personal.loadCatalog()
 })
 </script>
@@ -445,7 +416,7 @@ onMounted(() => {
         v-else
         :current-plan="displayedPlanResult"
         :current-plan-label="planResultLabel"
-        :plan-digest="planDigest"
+        :adopted-version="aiAdoptedVersion"
         :makeup-tasks="data?.makeup_tasks ?? []"
         :ready="displayedPlanResult !== null"
         :not-ready-reason="
@@ -471,17 +442,17 @@ onMounted(() => {
 
     <AiAdjustDrawer
       :open="aiDrawerOpen"
-      :plan-digest="planDigest"
       :semester="userInput.semester"
-      :current-schedule-count="currentScheduleCount"
-      :focus-course-id="aiFocusCourseId"
-      :current-plan="displayedPlanResult"
-      :current-plan-label="planResultLabel"
+      :base-plan="displayedPlanResult"
+      :base-plan-label="planResultLabel"
       :makeup-tasks="data?.makeup_tasks ?? []"
+      :course-offerings="data?.course_offerings ?? []"
+      :preference="data?.preference ?? null"
+      :focus-course-id="aiFocusCourseId"
       :api-enabled="AI_PLANNING_API_ENABLED"
       :preview-enabled="AI_PLANNING_PREVIEW"
       @close="closeAiDrawer"
-      @adopted="onAiAdopted"
+      @applied="onAiAdopted"
     />
 
     <E2EDebugPanel v-if="isDev" :dev="isDev" :info="e2eDebugInfo" />
@@ -509,7 +480,6 @@ onMounted(() => {
           <br />
           两类内容均<strong>不代表真实教务系统正式指令</strong>。
         </p>
-        <p v-if="digestError" class="footer-compliance" data-testid="digest-error">{{ digestError }}</p>
       </div>
     </footer>
   </div>

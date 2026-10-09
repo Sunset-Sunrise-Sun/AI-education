@@ -160,7 +160,17 @@ function messageFor(kind: PersonalPlanningErrorKind, code: string | null): strin
   }
 }
 
-function classify(status: number): PersonalPlanningErrorKind {
+/**
+ * 把 HTTP 状态码 + 后端错误码翻译成前端分类。
+ *
+ * ⚠️ 503 有两种含义，必须区分：
+ * - `personal_catalog_not_configured` ⇒ **目录未配置**（`not_configured`，页面显示"没有已核验版本目录"）；
+ * - 其它（例如 `personal_plan_course_data_unavailable`）⇒ **服务端条件未就绪**（`unavailable`）。
+ */
+function classify(status: number, code: string | null): PersonalPlanningErrorKind {
+  if (code === PERSONAL_CATALOG_NOT_CONFIGURED) {
+    return 'not_configured'
+  }
   if (status === 404 || status === 501) {
     return 'not_configured'
   }
@@ -230,7 +240,7 @@ async function getJson(url: string, signal?: AbortSignal): Promise<unknown> {
   }
   if (!response.ok) {
     const parsed = parseErrorBody(await readBodySafely(response))
-    const kind = classify(response.status)
+    const kind = classify(response.status, parsed.code)
     const finalKind =
       kind === 'input' && parsed.code === 'personal_plan_not_projectable'
         ? 'not_projectable'
@@ -261,7 +271,7 @@ async function postJson(url: string, body: unknown, signal?: AbortSignal): Promi
   }
   if (!response.ok) {
     const parsed = parseErrorBody(await readBodySafely(response))
-    const kind = classify(response.status)
+    const kind = classify(response.status, parsed.code)
     const finalKind =
       kind === 'input' && parsed.code === 'personal_plan_not_projectable'
         ? 'not_projectable'
@@ -273,6 +283,44 @@ async function postJson(url: string, body: unknown, signal?: AbortSignal): Promi
     })
   }
   return response.json()
+}
+
+/**
+ * 解析个人规划响应：**只做形状校验**（⛔ 不补默认值、不推断结果）。
+ *
+ * ⚠️ 关键点：`planning` 允许为 `null`（表示"本次没有排课能力"），
+ * 但该字段**必须存在**——缺失即视为契约不符。
+ */
+export function parsePersonalPlanResult(payload: unknown): PersonalPlanResult {
+  const record = asRecord(payload, '个人规划响应')
+  if (!('planning' in record)) {
+    throw new PersonalPlanningApiError(
+      'unexpected',
+      '个人规划响应缺少 planning 字段（该字段允许为 null，但必须存在）；已停止渲染。',
+    )
+  }
+  if (!Array.isArray(record['makeup_tasks'])) {
+    throw new PersonalPlanningApiError('unexpected', '个人规划响应缺少 makeup_tasks 数组。')
+  }
+  return payload as PersonalPlanResult
+}
+
+function asRecord(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new PersonalPlanningApiError('unexpected', `${label}不是对象；已停止渲染。`)
+  }
+  return value as Record<string, unknown>
+}
+
+/**
+ * 是否允许把该结果**用作当前方案**。
+ *
+ * ⛔ 只有后端真的给出 `planning`（排课结果）时才允许；
+ * `planning = null` 只表示"补修任务可用、但没有排课能力"，
+ * 页面**不得**据此显示"已排好课"。
+ */
+export function shouldApplyPersonalPlan(result: PersonalPlanResult): boolean {
+  return result.planning !== null && result.planning !== undefined
 }
 
 /** 列出可选版本；目录未配置时抛 `not_configured`（⛔ 不返回假版本列表）。 */
@@ -299,11 +347,7 @@ export async function submitPersonalPlan(
   if (options.enabled === false || !PERSONAL_PLANNING_API_ENABLED) {
     throw new PersonalPlanningApiError('disabled', messageFor('disabled', null))
   }
-  const payload = (await postJson(PERSONAL_PLANNING_ENDPOINTS.plan, request, options.signal)) as
-    | PersonalPlanResult
-    | null
-  if (payload === null || typeof payload !== 'object') {
-    throw new PersonalPlanningApiError('unexpected', messageFor('unexpected', null))
-  }
-  return payload
+  return parsePersonalPlanResult(
+    await postJson(PERSONAL_PLANNING_ENDPOINTS.plan, request, options.signal),
+  )
 }

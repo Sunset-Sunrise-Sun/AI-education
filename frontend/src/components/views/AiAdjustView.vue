@@ -13,7 +13,8 @@ import type { PlanResult } from '../../types/contracts'
 const props = defineProps<{
   currentPlan: PlanResult | null
   currentPlanLabel: string
-  planDigest: string
+  /** 已采用的**进程内会话版本**（后端 adopted_version；未采用时为 null）。 */
+  adoptedVersion?: number | null
   makeupTasks: MakeupTask[]
   ready: boolean
   notReadyReason: string | null
@@ -59,8 +60,11 @@ const lockedCandidates = computed(() => props.makeupTasks.slice(0, 5))
         <article class="ai-view__card">
           <h3>当前调整对象</h3>
           <p data-testid="ai-view-plan-label">{{ currentPlanLabel }}</p>
-          <p class="ai-block__hint">
-            方案指纹：<code class="mono" data-testid="ai-view-digest">{{ planDigest }}</code>
+          <p class="ai-block__hint" data-testid="ai-view-digest-note">
+            方案指纹由<strong>后端</strong>在解析意图时计算并返回；前端不自行计算或改写。
+          </p>
+          <p v-if="adoptedVersion !== null && adoptedVersion !== undefined" class="ai-block__unknown" data-testid="ai-view-adopted-version">
+            当前方案来自 AI 采用（进程内会话版本 {{ adoptedVersion }}，未持久化）。
           </p>
           <p v-if="currentPlan">
             Planner 状态：
