@@ -159,13 +159,49 @@ pytest totals: 3188 passed / 2 failed / 2 skipped  ← 与开发机基线完全�
 ⇒ 说明"只装 `requirements.txt`"已经足够收集并运行**全部**测试，
 两个 `test_curriculum_*` 文件不再缺失依赖。
 
-### 4.3 仍未验证（如实声明）
+### 4.3 第 2 次运行（修复后）—— 三个 Job 全部通过
+
+| 项 | 值 |
+| --- | --- |
+| Run | [#38006322656](https://github.com/Sunset-Sunrise-Sun/AI-education/actions/runs/38006322656) |
+| 触发提交 | **`decc84b`**（`fix(backend): declare python-docx as a test dependency …`） |
+| 工作流结论 | ✅ **success** |
+| Backend pytest | ✅ **success**（Job id `114075845916`；步骤级 checkout / setup-python / 安装依赖 / pytest 全部 success） |
+| Frontend tests / typecheck / build | ✅ **success**（Job id `114075845865`） |
+| Dependency audit（只报告） | ✅ **success**（Job id `114075845748`） |
+
+**后端 Job 的关键日志证据**：
+
+```text
+Collecting python-docx>=1.1 (from -r requirements.txt (line 37))      ← 修复生效
+Collecting lxml>=3.1.0 (from python-docx>=1.1->-r requirements.txt (line 37))
+Installing collected packages: … python-docx …
+Successfully installed … python-docx-1.2.0 …
+（pytest 进度输出到 100%）
+=============================== warnings summary ===============================
+（随后直接进入 Post job cleanup —— 没有 failures / short test summary 段）
+```
+
+- 日志里**没有** `ModuleNotFoundError`，也**没有** `FAILED` / `short test summary` 段
+  ⇒ 依赖缺失已解决，且没有任何测试失败；
+- 全程**没有** `SKIPPED` / `xfail` / `continue-on-error` 标记。
+
+**关于测试计数（如实说明）**：GitHub 的 Job 日志接口在本机读取时**按尾部截断**
+（只返回最后一段，32977 字符），`===== N passed in Xs =====` 那一行**不在可见日志里**，
+因此我**没有**取到 Linux 上的准确数字。可确证的是：
+**收集成功、跑到 100%、无失败、Job 通过**。
+作为对照，同一条命令在 Windows + Python 3.14 上实测为
+**3188 passed / 2 failed / 2 skipped**（那 2 项失败是 Windows/Python 3.14 语义差异，
+在 Linux 上不出现，与"日志中无失败"一致）。
+
+### 4.4 仍未验证（如实声明）
 
 | 项 | 状态 |
 | --- | --- |
-| 修复后的 CI 运行结果 | 见 §4.4（首次运行结论如上；修复提交后的新一轮以实际 Run 为准） |
-| 后端 2 项 Windows 平台差异失败在 Linux 上是否消失 | **UNVERIFIED**（预期消失，因为二者都是 Windows/Python 3.14 语义差异；以实际 Run 为准） |
-| Windows 上是否会出现 Linux 没有的失败 | 已实测：Windows 本地 3188 / 2 / 2，与基线一致 |
+| Linux 上的准确测试计数 | **未取到**（日志被截断，见 §4.3） |
+| Windows 上是否会出现 Linux 没有的失败 | 已实测：Windows 3188 / 2 / 2，与基线一致 |
+| `npm ci` 在 Linux 上的 `esbuild` postinstall | ✅ 已被第 2 次运行覆盖（前端 Job success） |
+| 两个 Job 的 Node 20 弃用告警 | 存在但**不影响结论**（Actions 已自动落到 Node 24；Job success） |
 
 ---
 

@@ -1200,6 +1200,11 @@ frontend: npm test（9 文件 134 用例）· npm run typecheck（vue-tsc --noEm
   只有 2 个测试文件用它构造 .docx），补进 `backend/requirements.txt` 测试依赖段，
   并在**空白虚拟环境**中自证：`pip install -r requirements.txt` 后全量 pytest **3188/2/2**，与基线一致。
   ⛔ 未跳过测试、⛔ 未加 continue-on-error。
+  **修复后第 2 次运行（Run #38006322656，提交 `decc84b`）三个 Job 全部 SUCCESS**：
+  Backend pytest / Frontend tests / Dependency audit 均通过；后端日志确认
+  `Collecting python-docx>=1.1 (from -r requirements.txt (line 37))` 且无 `FAILED` 段。
+  ⚠️ 如实说明：该 Job 日志本地读取时被尾部截断，**Linux 上的准确测试计数未取到**
+  （可确证收集成功、跑到 100%、无失败）。
 - **P1 真实 DeepSeek 在线验证：BLOCKED — NEW DEEPSEEK_API_KEY NOT AVAILABLE**
   （实测四个环境变量全部 unset，未打印任何值、未使用历史旧密钥）。
   已交付可直接执行的说明 `docs/final_upgrade/DEEPSEEK_LIVE_VERIFICATION.md`（8 条验收标准 + 8 步流程 + 失败处理表）。

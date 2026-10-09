@@ -317,12 +317,31 @@ pytest totals: 3188 passed / 2 failed / 2 skipped  ← 与开发机基线完全�
 
 ⇒ 说明"只装 `requirements.txt`"已足够收集并运行**全部**测试。
 
-#### 3.5.2 仍未验证（如实声明）
+#### 3.5.2 第 2 次运行（修复后）：三个 Job 全部通过
+
+| 项 | 值 |
+| --- | --- |
+| Run | [#38006322656](https://github.com/Sunset-Sunrise-Sun/AI-education/actions/runs/38006322656) |
+| 提交 | **`decc84b`** |
+| Backend pytest | ✅ success（Job `114075845916`） |
+| Frontend tests / typecheck / build | ✅ success（Job `114075845865`） |
+| Dependency audit（只报告） | ✅ success（Job `114075845748`） |
+
+后端 Job 日志确认 `Collecting python-docx>=1.1 (from -r requirements.txt (line 37))`
+与 `Successfully installed … python-docx-1.2.0`，pytest 跑到 100%，
+日志中**没有** `ModuleNotFoundError`、**没有** `FAILED` / `short test summary` 段，
+也**没有** `SKIPPED` / `xfail` / `continue-on-error`。
+
+**如实说明**：该 Job 日志在本地读取时被**尾部截断**，我**没有取到 Linux 上的准确测试计数**
+（`===== N passed =====` 不在可见片段内）；可确证的是收集成功、跑到 100%、无失败、Job 通过。
+Windows + Python 3.14 上同一条命令实测 **3188 / 2 / 2**。
+
+#### 3.5.3 仍未验证（如实声明）
 
 | 项 | 状态 |
 | --- | --- |
-| 修复提交后的新一轮 CI 结论 | 以实际 Run 为准（见 `CI_PLAN.md` §4） |
-| 两项 Windows 平台差异失败在 Linux 上是否消失 | **UNVERIFIED**（预期消失；以实际 Run 为准） |
+| Linux 上的准确测试计数 | **未取到**（日志被截断） |
+| 两个 Job 的 Node 20 弃用告警 | 存在但**不影响结论**（Actions 已落到 Node 24；Job success） |
 
 ---
 
@@ -553,7 +572,7 @@ node tools/browser-e2e/run_browser_e2e.mjs --filter=DMO01
 | P0 合并后完整冒烟与回归（后端 / 前端 / 浏览器 / 无遗留进程） | ✅ **完成**（3188+2+2；313；24/24；残留 0） |
 | P1 修复移动端头部信息密度 | ✅ **完成**（五档区分 + 可展开技术详情 + 穷举测试 + 三档复测） |
 | P1 处理 npm 依赖安全问题 | ✅ **完成**（audit 归零；vitest 3.2.7 → 4.1.11，有官方依据与全量回归） |
-| P1 CI 安全 | ✅ **已在 GitHub Actions 真实运行**：前端与依赖审计 **SUCCESS**；后端第 1 次因缺测试依赖失败、**已修复并本地自证**（见 §3.5） |
+| P1 CI 安全 | ✅ **已在 GitHub Actions 真实运行且三个 Job 全部通过**（Run #38006322656，提交 `decc84b`）；第 1 次后端因缺测试依赖失败已修复（见 §3.5） |
 | P1 真实 DeepSeek 在线验证 | 🔴 **BLOCKED**（无新密钥）——已交付可直接执行的验证说明 + 默认模型名已在线核验 |
 | P1 真实培养方案与教学班数据接入准备 | ✅ **完成准备**（缺口/字段/校验/指南/合成夹具/一键验收脚本，脚本已实测） |
 | P2 最终演示剧本与产品验收 | ✅ **完成彩排**（11 步全通，已自动化回归） |
