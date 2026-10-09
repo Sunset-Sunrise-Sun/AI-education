@@ -1,7 +1,27 @@
 # AI Planning（DeepSeek Controller）当前状态
 
-更新日期：2026-10-08。分支：`feature/deepseek-planning-controller`（起点 = `feature/final-upgrade-integration-qa`）。
-状态：**已实现，待项目 Architecture Review**；真实在线调用 **NOT VERIFIED**。
+更新日期：2026-10-09（联合验收轮）。分支：`feature/ai-planning-joint-e2e`（= 后端 PR #66 的
+`feature/deepseek-planning-controller` + 前端 PR #65 的 `feature/ai-planning-frontend`）。
+状态：**前后端联合验收已执行（真实 HTTP 闭环通过）**；真实在线调用 **仍为 NOT VERIFIED**。
+
+## 联合验收结果（2026-10-09）
+
+| 项 | 结果 |
+| --- | --- |
+| 后端完整 pytest | **3188 passed / 2 failed / 2 skipped**（2 项为既有 Windows 路径语义差异） |
+| 前端 Vitest | **274 passed / 0 failed**（18 文件） |
+| 前端 `vue-tsc --noEmit` | **exit 0** |
+| 前端 `npm run build` | **exit 0** |
+| 真实 HTTP 闭环（uvicorn + 真实请求） | `status` / `interpret` / `solve` / `adopt` **全部通过** |
+| 两次确认 / 候选 / 拒绝 / 过期 / 模型不可用 / 原方案不变 | **全部通过** |
+| 集成兼容性修复 | **2 处**（`diff.replaced` 键形状、`locked_courses[].reason` 可空）+ 20 项回归测试 |
+
+- 新增 `backend/tests/test_ai_planning_joint_e2e.py`（14 项，**真实监听端口 + 真实 HTTP**）；
+- 新增 `frontend/tests/ai-planning-joint-contract-fix.spec.ts`（6 项，先验证后修复）；
+- 完整逐项报告见 `docs/final_upgrade/reports/AI_PLANNING_JOINT_QA_REPORT.md`；
+- ⛔ 未改 `/schemas/**` 与 `/docs/interfaces/**`；⛔ 未改后端生产代码；
+- ⛔ 本轮仍**没有**密钥 ⇒ 真实 DeepSeek 在线调用 **NOT VERIFIED**，
+  全部用例的 `generator_kind` 是 `test_double` 或 `unavailable`。
 
 ## 是什么
 

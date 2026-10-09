@@ -47,3 +47,38 @@
   `app/personal/**`、`app/explanation/**`、`app/integration/**`。
 - 下一步：Reviewer 评审；运行方用新密钥做在线验证；B 按
   `docs/final_upgrade/AI_PLANNING_API_HANDOFF.md` 实现前端三块 UI。
+
+### 2026-10-09 - 前后端联合验收（分支 `feature/ai-planning-joint-e2e`，PR #67）
+- 本次目标：在可执行环境里运行完整 backend pytest / frontend Vitest / TypeCheck / Build，
+  用**真实 HTTP** 验证 AI 规划四接口闭环，修复集成引入的兼容性问题并补测试。
+- 已完成：
+  - 后端 `python -m pytest -q` → **3188 passed / 2 failed / 2 skipped**
+    （基线同命令同环境 3174 / 2 / 2；2 项失败为既有 Windows 路径语义差异）。
+  - 前端 `npm ci` → `npx vitest run` **274 passed / 0 failed**（18 文件）；
+    `npx vue-tsc --noEmit` → exit 0；`npm run build` → exit 0。
+  - 新增 `backend/tests/test_ai_planning_joint_e2e.py`（14 项）：
+    用 **uvicorn 真实监听端口** + `urllib` 发真实 HTTP 请求，覆盖
+    status / interpret / solve / adopt、两次确认、未确认不求解、拒绝候选、
+    指纹过期、候选 TTL 过期、重复采用 409、模型不可用 503、
+    无教学班（data_source=unknown）、PII 400、幻觉课程号 422、既有路由不受影响。
+  - 新增 `frontend/tests/ai-planning-joint-contract-fix.spec.ts`（6 项）并修复两处真实形状错配：
+    ① `diff.replaced[]` 的键是 `from_class` / `to_class`（⛔ 不是 `class_id`）——
+       前端解析器与对比面板按 `class_id` 解析会在换班时抛 `ContractViolation` / 显示 undefined；
+    ② `parsed_intent.locked_courses[].reason` 后端**可空** —— 前端原来会拒绝整份合法草稿。
+    两者都先在未修复代码上验证失败（6 项里 4 项失败），再修复使 6 项全绿；⛔ 未放宽契约
+    （非法形状仍然抛错，有测试锁定）。
+  - 新增逐项报告 `docs/final_upgrade/reports/AI_PLANNING_JOINT_QA_REPORT.md`。
+- 修改文件：`frontend/src/api/aiPlanningContract.ts`、
+  `frontend/src/components/ai/CandidateComparePanel.vue`、
+  新增 `backend/tests/test_ai_planning_joint_e2e.py`、
+  新增 `frontend/tests/ai-planning-joint-contract-fix.spec.ts`、
+  新增报告 + 更新本 STATUS/WORKLOG。⛔ 未改后端生产代码、⛔ 未改 `/schemas` 与 `/docs/interfaces`。
+- 测试：见上；命令与原始计数见报告 §2 与 §3。
+- 使用数据：**Mock**（合成教学班与补修任务）；⛔ 未使用真实学生隐私数据。
+- 已知问题：真实 DeepSeek 在线调用 **NOT VERIFIED**（环境无密钥）；
+  未做真实浏览器端到端；会话仅进程内；`no_feasible_candidate` 仍返回非空 `candidate_id`
+  （前端不用它，建议后端后续在 HANDOFF 里写明语义）。
+- 需要人工确认：是否引入会话持久化；是否扩展 Planner（exclude / 跨学期 / 可行子集搜索）；
+  是否接受本分支以 Draft PR 呈现后再合并。
+- 对其他模块影响：仅前端 AI 规划契约层与对比面板；后端、Schema、接口、其他模块均未改。
+- 下一步：项目 Reviewer 验收；运行方在受控环境用**新密钥**做真实在线验证。

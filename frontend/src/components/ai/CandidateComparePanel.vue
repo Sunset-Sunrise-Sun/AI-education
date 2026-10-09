@@ -55,8 +55,26 @@ const creditDeltaLabel = computed(() => {
 
 const creditUnknown = computed(() => (diff.value?.credit_unknown_course_ids.length ?? 0) > 0)
 
-function formatEntry(entry: { course_id: string; class_id: string }): string {
-  return `${entry.course_id}（班号 ${entry.class_id}）`
+function formatEntry(entry: { course_id: string; class_id?: string }): string {
+  return `${entry.course_id}（班号 ${entry.class_id ?? '未知'}）`
+}
+
+/**
+ * 换班行：后端 `diff.replaced[]` 的键是 `from_class` / `to_class`（⛔ 不是 `class_id`）。
+ *
+ * ⚠️ 同一次换班在后端的语义里**同时**出现在 `added` / `removed`（按教学班键看），
+ * 因此这里必须优先展示 `replaced`，并在提示里说明它不是"又新增又移除"。
+ */
+function formatReplaced(entry: { course_id: string; from_class?: string; to_class?: string }): string {
+  return `${entry.course_id}（班号 ${entry.from_class ?? '未知'} → ${entry.to_class ?? '未知'}）`
+}
+
+function entryKey(prefix: string, entry: { course_id: string; class_id?: string }): string {
+  return `${prefix}-${entry.course_id}-${entry.class_id ?? 'unknown'}`
+}
+
+function replacedKey(entry: { course_id: string; from_class?: string; to_class?: string }): string {
+  return `rp-${entry.course_id}-${entry.from_class ?? 'unknown'}-${entry.to_class ?? 'unknown'}`
 }
 </script>
 
@@ -127,7 +145,7 @@ function formatEntry(entry: { course_id: string; class_id: string }): string {
       <div class="ai-block">
         <h5>新增（added）</h5>
         <ul v-if="diff.added.length > 0">
-          <li v-for="entry in diff.added" :key="`add-${entry.course_id}-${entry.class_id}`">
+          <li v-for="entry in diff.added" :key="entryKey('add', entry)">
             {{ formatEntry(entry) }}
           </li>
         </ul>
@@ -137,7 +155,7 @@ function formatEntry(entry: { course_id: string; class_id: string }): string {
       <div class="ai-block">
         <h5>移除（removed）</h5>
         <ul v-if="diff.removed.length > 0">
-          <li v-for="entry in diff.removed" :key="`rm-${entry.course_id}-${entry.class_id}`">
+          <li v-for="entry in diff.removed" :key="entryKey('rm', entry)">
             {{ formatEntry(entry) }}
           </li>
         </ul>
@@ -147,17 +165,21 @@ function formatEntry(entry: { course_id: string; class_id: string }): string {
       <div class="ai-block">
         <h5>替换（replaced）</h5>
         <ul v-if="diff.replaced.length > 0">
-          <li v-for="entry in diff.replaced" :key="`rp-${entry.course_id}-${entry.class_id}`">
-            {{ formatEntry(entry) }}
+          <li v-for="entry in diff.replaced" :key="replacedKey(entry)">
+            {{ formatReplaced(entry) }}
           </li>
         </ul>
         <p v-else class="empty-state">没有替换。</p>
+        <p v-if="diff.replaced.length > 0" class="ai-block__hint" data-testid="ai-replaced-note">
+          同一次换班在后端的班次集合语义里也会出现在"新增/移除"，
+          请以本段"替换"为准，⛔ 不要理解成同一门课既新增又移除。
+        </p>
       </div>
 
       <div class="ai-block">
         <h5>保持（kept）</h5>
         <ul v-if="diff.kept.length > 0">
-          <li v-for="entry in diff.kept" :key="`kp-${entry.course_id}-${entry.class_id}`">
+          <li v-for="entry in diff.kept" :key="entryKey('kp', entry)">
             {{ formatEntry(entry) }}
           </li>
         </ul>

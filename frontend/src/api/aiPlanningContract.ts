@@ -128,6 +128,10 @@ export interface AiSoftPreference {
 export interface AiLockedCourse {
   course_id: string
   class_id: string
+  /**
+   * ⚠️ 后端该字段**可空**（`AiLockedCourse.reason` 缺失时规范成空串）。
+   * 展示时请先判断是否为空，⛔ 不要直接当成"有原因"。
+   */
   reason: string
 }
 
@@ -195,7 +199,17 @@ export interface AiSolveRequest {
 /** `diff`：由后端**确定性**计算（⛔ 不来自模型）。 */
 export interface AiPlanDiffEntry {
   course_id: string
-  class_id: string
+  /**
+   * `added` / `removed` / `kept` 的班号。
+   *
+   * ⚠️ `replaced` 行**没有** `class_id`：后端换班行的键是
+   * `from_class` / `to_class`（见 `parsePlanDiff`）。
+   */
+  class_id?: string
+  /** 只有 `replaced` 行有：换班前的班号。 */
+  from_class?: string
+  /** 只有 `replaced` 行有：换班后的班号。 */
+  to_class?: string
 }
 
 export interface AiPlanDiff {
@@ -391,10 +405,16 @@ function parseSoftPreference(row: Record<string, unknown>, index: number): AiSof
 }
 
 function parseLockedCourse(row: Record<string, unknown>, index: number): AiLockedCourse {
+  const reason = row['reason']
+  if (reason !== null && reason !== undefined && typeof reason !== 'string') {
+    throw new ContractViolation(`locked_courses[${index}].reason 类型非法`)
+  }
   return {
     course_id: asString(row['course_id'], `locked_courses[${index}].course_id`),
     class_id: asString(row['class_id'], `locked_courses[${index}].class_id`),
-    reason: asString(row['reason'], `locked_courses[${index}].reason`),
+    // ⚠️ 后端 `reason` 是**可空**字段（模型可以不给出保留原因）：
+    // 缺失 / null 一律规范成空串，⛔ 不因此拒绝整份草稿。
+    reason: typeof reason === 'string' ? reason : '',
   }
 }
 
@@ -452,9 +472,30 @@ export function parseInterpretResponse(payload: unknown): AiInterpretResponse {
 }
 
 function parseDiffEntry(row: Record<string, unknown>, index: number, field: string): AiPlanDiffEntry {
+  const classId = row['class_id']
+  const fromClass = row['from_class']
+  const toClass = row['to_class']
+
+  // `replaced` 行：后端给 `from_class` / `to_class`（换班），⛔ 没有 `class_id`。
+  if (classId === null || classId === undefined) {
+    if (typeof fromClass !== 'string' || typeof toClass !== 'string') {
+      throw new ContractViolation(
+        `${field}[${index}] 必须带 class_id，或带 from_class + to_class（换班行）`,
+      )
+    }
+    return {
+      course_id: asString(row['course_id'], `${field}[${index}].course_id`),
+      from_class: fromClass,
+      to_class: toClass,
+    }
+  }
+
+  if (typeof classId !== 'string') {
+    throw new ContractViolation(`${field}[${index}].class_id 必须是字符串`)
+  }
   return {
     course_id: asString(row['course_id'], `${field}[${index}].course_id`),
-    class_id: asString(row['class_id'], `${field}[${index}].class_id`),
+    class_id: classId,
   }
 }
 
