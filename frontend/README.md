@@ -214,13 +214,99 @@ VITE_EXPLANATION_API_ENABLED=true
 
 ---
 
+## 9.6 三入口信息架构与 AI 调整（Final Upgrade · AI Planning Frontend）
+
+页面顶部有三个导航入口（不再是一条长页面）：
+
+| 入口 | 内容 |
+| --- | --- |
+| **转专业分析** | 原 / 目标培养方案版本选择、认定状态分布、培养要求缺口（逐条 MakeupTask） |
+| **补修路径**（默认） | 当前学期精确课表、后续学期课程级条件路径、优先级线索 / 风险 / 人工确认，以及旧的 0–5 区块 |
+| **AI 调整** | 围绕**当前选中补修方案**的对话式调整（两次确认） |
+
+### AI 调整怎么用
+
+1. 打开 AI 调整（导航右侧按钮、补修路径的 AI 条，或某个教学班行的「就这门课调整」）；
+2. 面板先调用 `GET /api/v1/ai-planning/status`，如实显示可用状态
+   （未部署 / 未启用 / 未注入密钥 / 可用）；
+3. 输入一句自然语言，例如 **“这学期太累，数据结构必须保留，尽量别在周五上课”**；
+4. **第一次确认（执行前）**：查看后端解析出的摘要 / 硬约束 / 软偏好 / **学分上限**
+   （后端不给数字即“未指定”，**页面不替你猜**，需自己填写）/ 锁定课程 / 范围 / 歧义，
+   可编辑后确认；`can_confirm=false` 时**禁止**求解；
+5. 求解 → **候选方案 vs 原方案**对比（added / removed / replaced / kept、学分变化、
+   风险、未决，全部由后端确定性计算）；
+6. **第二次确认（采用前）**：`采用候选方案` 或 `保留原方案`。
+   只有后端返回 `accepted=true && state=adopted` 才刷新当前方案；
+   拒绝 / 冲突 / 过期 / 不可用时**原方案一个字都不改**。
+
+> ⚠️ **“已采用”只是进程内会话状态**（`adopted_version_scope = process_local_session`）：
+> 未持久化、服务重启即失效，**不代表**教务系统已完成选课。界面会写明这一点，
+> 并提供“以原方案为基准重新调整”的撤销入口。
+
+### 三种数据模式（务必分清）
+
+| 模式 | 开关 | 行为 |
+| --- | --- | --- |
+| 不可用（默认） | 都不开 | 显示「AI 调整不可用」；**不发请求、不生成候选、不显示成功** |
+| 真实接口 | `VITE_AI_PLANNING_API_ENABLED=true` | 调用 `/api/v1/ai-planning/{status,interpret,solve,adopt}`；失败如实报错，⛔ 不回退到预览 |
+| 前端预览 | `VITE_AI_PLANNING_PREVIEW=true` | 只读前端 fixture；界面醒目标注**「仅前端预览 / 非真实模型 / 未调用 Planner」** |
+
+> ✅ 后端已在 `feature/deepseek-planning-controller` 实现这四个路径，
+> 契约见该分支的 `docs/final_upgrade/AI_PLANNING_API_HANDOFF.md`；
+> 前端消费方式与错误码映射逐条记录在
+> `docs/final_upgrade/FRONTEND_AI_API_EXPECTATIONS.md`。
+> **部署的后端未必包含该私有前缀**：那时 `/status` 返回 404，页面显示“尚未部署”，
+> ⛔ 不会伪造解析或候选方案。
+
+### 关键语义（容易记错，务必遵守）
+
+| 项 | 正确做法 |
+| --- | --- |
+| `plan_digest` | **后端**按上下文计算；前端只保存、只回传（⛔ 不自己算、不改写） |
+| `interpret` 请求 | 只有 `context` + `user_message`（⛔ 不带 `plan_digest`） |
+| 有效候选 | 只有 `status = candidate_ready`（另有 `no_feasible_candidate` / `blocked`） |
+| `adopt` 响应 | 只有 `accepted / state / adopted_version / adopted_version_scope / original_plan_unchanged`；**不返回方案体** |
+| 采用后的方案体 | 只能来自 `/solve` 已返回、由后端 Planner 产生的 `candidate_plan`（存在内存里） |
+| `generator_kind` | `deepseek_live` 才可显示“真实 DeepSeek 在线调用”；`test_double` 必须显示“测试替身模型（不是线上模型）” |
+| `data_source` | `real / mock / mixed / unknown` 原样展示；`unknown` **不等于** real |
+| 404 | 是 `ai_planning_session_not_found`（会话不存在），**不是**“接口未配置” |
+
+### 个人规划（已实现的后端接口）
+
+`转专业分析` 使用**已经存在**的 `GET /api/v1/personal-planning/curriculum-versions` 与
+`POST /api/v1/personal-planning/plan`：
+
+- 打开 `VITE_PERSONAL_PLANNING_API_ENABLED=true` 后按真实 readiness 接入；
+- 未配置已核验目录 ⇒ 后端 503 `personal_catalog_not_configured` ⇒ 页面显示
+  **“没有已核验的培养方案版本目录”**，⛔ **不会**退回固定 Case A 冒充个人结果；
+- `planning = null` ⇒ 明确显示“本次没有生成排课结果”及原因码
+  （`no_course_data` / `no_semester` / `semester_not_bound`），⛔ **不显示“已排好课”**；
+  只有 `planning != null` 时才提供“用作当前补修方案”。
+
+### 手动验收步骤
+
+1. `cd backend && python -m uvicorn app.main:app --reload`；`cd frontend && npm run dev`；
+2. 顶部确认三个入口都存在，默认落在「补修路径」，旧的四区块与「查看依据」仍在；
+3. 切到「转专业分析」：开 `VITE_PERSONAL_PLANNING_API_ENABLED=true` 时若目录未配置，
+   应看到“没有已核验的培养方案版本目录”（不是假版本列表）；
+4. 回到「补修路径」，点某教学班行的「就这门课调整」→ 抽屉打开并显示聚焦课程；
+5. 开 `VITE_AI_PLANNING_API_ENABLED=true` 重启（后端含该私有前缀时）：
+   面板显示 `enabled / api_key_configured / live_model_available / model`；
+   输入一句话 → 第一次确认 → 求解 → 候选对比 → 第二次确认；
+6. 开 `VITE_AI_PLANNING_PREVIEW=true` 可离线走完整交互（界面显示预览标注）；
+7. 关掉两个开关重启：AI 面板显示「不可用」，且**没有任何请求**发出。
+
+---
+
 ## 10. 已知限制（有意保留）
 
-- 只有一个页面，没有路由；没有单元测试（本阶段不强制）。
+- 三个入口通过内部状态切换，**未引入 vue-router**（避免为演示增加新依赖）；
 - 前端类型是与 `/schemas/*.schema.json` **手工对齐**的，不是代码生成；
-  若契约变更，需要同步 `src/types/contracts.ts`，但它**不是**契约真源。
+  若契约变更，需要同步 `src/types/contracts.ts`，但它**不是**契约真源；
+- `/api/v1/ai-planning/*` 与个人规划的 `planning` 结果**尚未完成真实联调**，
+  当前只有在显式打开开关 / 预览时才有内容；
 - `changes` / `selected_classes` 里只有课程号，页面为了可读性做了一个
   「课程号 → 课程名」的显示查找（见 `App.vue` 的 `courseNameById`）。
-  这**只是显示辅助**，不参与任何判定。
+  这**只是显示辅助**，不参与任何判定；
 - 生产构建产物是纯静态文件，部署时必须由能转发 `/api` 的服务器提供，
   或给后端配上 CORS 并设置 `VITE_API_BASE_URL`。
