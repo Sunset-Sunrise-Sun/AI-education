@@ -863,11 +863,16 @@ export function responsiveCases({ baseUrl }) {
             `关闭按钮过高（${closeLines.width}×${closeLines.height}px；` +
               `文本盒仅 ${closeBoxMetrics.textWidth}×${closeBoxMetrics.textHeight}px）`,
           )
-        } else {
+        } else if (closeLines.height > 56) {
+          // 只有**仍然偏高**时才提示：修复后（85×39）不应再出现这条噪音
           notes.push(
             `⚠️ 已知缺陷 K-1：关闭按钮偏高（${closeLines.width}×${closeLines.height}px，` +
               `文本盒 ${closeBoxMetrics.textWidth}×${closeBoxMetrics.textHeight}px）——` +
               `建议 .ai-drawer__head .button 加 flex-shrink: 0; white-space: nowrap（见报告 §5）`,
+          )
+        } else {
+          notes.push(
+            `✅ 缺陷 K-1 已修复：关闭按钮 ${closeLines.width}×${closeLines.height}px、标签 1 行`,
           )
         }
 

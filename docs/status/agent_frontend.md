@@ -1155,3 +1155,23 @@ frontend: npm test（9 文件 134 用例）· npm run typecheck（vue-tsc --noEm
 - 仍未验证：真实 DeepSeek 在线调用（NOT VERIFIED）、真实培养方案/教学班数据（BLOCKED）、
   真机浏览器与无障碍专项（未执行）。
 - 详见 `docs/final_upgrade/reports/UX_BROWSER_E2E_JOINT_REPORT.md`。
+
+## PR #70 最终验收（2026-10-09，`01fc7b5` 复跑）
+
+- 在 PR #70 远端 HEAD `01fc7b5`（仅 `frontend/src/styles/base.css` +5 行的 CSS 修复）上完成最后一轮验收。
+- **缺陷 K-1 已收口**：`QA_STRICT_HEADER_BUTTON=1` 严格模式下 R-375 **通过**；
+  手机端关闭按钮 **85×39px、标签 1 行**（修复前 61×77px、文字被折行），768/1440px 同样为 85×39px 单行。
+- **全量 23 项真实 Edge 浏览器 E2E：23 passed / 0 failed / 0 skipped**（205.9s）。
+- 前端 **Vitest 303 passed**、`vue-tsc` **exit 0**、`npm run build` **exit 0**；
+  后端 **3188 passed / 2 failed（既有平台差异）/ 2 skipped**。**无新回归。**
+- 375 / 768 / 1440 关键截图逐一目视核对：**无横向溢出、无按钮遮挡**。
+- **结论：达到合并条件（merge-ready）**；⛔ 未自动合并，Draft 状态由负责人决定是否转 Ready。
+- 非阻塞备注：① 后端 2 项既有平台差异失败（与本 PR 无关）；
+  ② 375px 下抽屉头部状态行仍偏密（2.8 行 / 头部占视口 17%），该文案被前端自身
+  `frontend/tests/ai-planning-drawer.spec.ts` 锁定，属有意披露，未改。
+- 仍未验证（属单独验收）：真实 DeepSeek 在线调用（NOT VERIFIED）、真实培养方案/教学班数据（BLOCKED）、
+  真机浏览器与无障碍专项（未执行）。
+- 顺带修复**测试基础设施缺陷**：Windows 下服务进程树未被清理，导致孤儿 Vite/uvicorn 累积
+  （实测 317 node / 97 python）并拖垮后续运行。现改用真实子进程 PID + `taskkill /T /F` 树级清理，
+  运行后残留进程 **0**，单例 19.6s、全量 205.9s。⛔ 未触碰业务逻辑。
+- 详见 `docs/final_upgrade/reports/UX_BROWSER_E2E_FINAL_ACCEPTANCE.md`。

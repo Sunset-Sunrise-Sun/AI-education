@@ -234,9 +234,12 @@ async function main() {
   if (failed > 0) {
     process.exitCode = 1
   }
+  // 显式退出：确保即便某个子进程句柄没关干净，runner 也不会挂住。
+  return failed > 0 ? 1 : 0
 }
 
-main().catch((error) => {
+const exitCode = await main().catch((error) => {
   process.stderr.write(`运行器异常：${error.stack ?? error.message}\n`)
-  process.exitCode = 2
+  return 2
 })
+process.exit(exitCode)

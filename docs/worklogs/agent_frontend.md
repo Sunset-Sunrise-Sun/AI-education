@@ -2053,3 +2053,30 @@
   是否调整抽屉头部状态行（需同步前端 Vitest 断言）；两个 PR 的合并顺序。
 - 对其他模块影响：无（生产代码零改动）。
 - 下一步：接入真实数据后补跑"转专业分析 → 个人规划成功路径"；用新密钥做真实 DeepSeek 在线验证。
+
+### 2026-10-09 - PR #70 最终验收复跑（`01fc7b5`）
+- 本次目标：在授权 CSS 修复提交上做最后一轮验收，确认手机端关闭按钮不再竖向换行，并给出合并结论。
+- 已完成：
+  - `QA_STRICT_HEADER_BUTTON=1 node tools/browser-e2e/run_browser_e2e.mjs --filter=R-375` ⇒ **1 passed**；
+    关闭按钮 85×39px、标签 1 行（修复前 61×77px、文本盒仅 14×54px 且被折行）。
+  - 全量 23 项浏览器 E2E ⇒ **23 passed / 0 failed / 0 skipped**（205.9s）。
+  - 前端 Vitest 303 passed、`vue-tsc` exit 0、`npm run build` exit 0；
+    后端 pytest 3188 passed / 2 failed（既有平台差异）/ 2 skipped。
+  - 375/768/1440 关键截图（抽屉与候选对比共 6 张）逐一目视核对：无横向溢出、无按钮遮挡。
+  - 修复**测试基础设施缺陷：Windows 服务进程泄漏**——
+    包装器 `shell: true` 产生 `node → cmd.exe → node/python` 链，`child.kill()` 只杀包装器，
+    导致孤儿 Vite/uvicorn 累积（实测 317 node / 97 python / 23 msedge）并把复跑拖到超时。
+    现由包装器把真实子进程 PID 写入日志，servers.mjs 用 `taskkill /PID <pid> /T /F` 做树级清理，
+    runner 结束时显式 `process.exit`。验证：运行后残留 **0**，单例 19.6s、全量 205.9s。
+  - K-1 观测项改为自动判定（高度 >56px 才提示缺陷，否则打印"已修复"），避免报告留下误导性文字。
+  - 用精确路径匹配清理了我自己遗留的 E2E 服务进程；用户自己的非 headless Edge（DSH Web GUI）未被触碰。
+- 修改文件：`tools/browser-e2e/{cases.mjs,lib/servers.mjs,dispatchers/stdio_inherit.mjs,run_browser_e2e.mjs}`、
+  新增 `docs/final_upgrade/reports/UX_BROWSER_E2E_FINAL_ACCEPTANCE.md`、本 worklog 与 STATUS。
+  ⛔ 未改 `frontend/src/**`（CSS 修复是负责人授权的独立提交）、`backend/app/**`、公共 Schema、Planner、main。
+- 测试：见上；**无新回归**。
+- 使用数据：Mock（人工构造演示数据）+ 注入式测试模型（`test_double`）。
+- 结论：**达到合并条件**；非阻塞备注两条（后端既有 2 项平台差异、375px 头部文案密度）。
+- 需要人工确认：是否把 PR #70 从 Draft 转为 Ready 并合并；是否另立小任务处理备注 B。
+- 对其他模块影响：无（业务逻辑零改动）。
+- 下一步：合并后在 `feature/final-upgrade` 复跑 23 项冒烟；接入真实数据后补跑个人规划成功路径；
+  用新密钥做真实 DeepSeek 在线验证。

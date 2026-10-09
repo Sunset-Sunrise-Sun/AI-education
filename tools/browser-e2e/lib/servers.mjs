@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 本地服务编排：真实 FastAPI（QA 注入式测试模型）+ Vite 前端（多档环境）。
  *
  * 三条硬边界：
@@ -13,8 +13,8 @@
  * 日志改为重定向到 `tools/browser-e2e/artifacts/logs/*.log`。
  */
 
-import { spawn } from 'node:child_process'
-import { closeSync, mkdirSync, openSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { closeSync, mkdirSync, openSync, readFileSync } from 'node:fs'
 import { mkdir } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { dirname, join } from 'node:path'
@@ -52,25 +52,50 @@ function openLogFd(name) {
   return openSync(join(LOG_DIR, `${name}.log`), 'a')
 }
 
-async function waitForHttp(url, { timeoutMs = 60000, intervalMs = 250 } = {}) {
-  const deadline = Date.now() + timeoutMs
-  let lastError = 'unknown'
-  while (Date.now() < deadline) {
-    try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 3000)
-      const response = await fetch(url, { signal: controller.signal })
-      clearTimeout(timer)
-      if (response.status < 500) {
-        return true
-      }
-      lastError = `HTTP ${response.status}`
-    } catch (error) {
-      lastError = error.message
+/** 包装器把真实子进程 PID 写进日志文件时使用的标记。 */
+const PID_PREFIX = '__E2E_CHILD_PID__'
+
+/**
+ * 从日志文件里解析包装器汇报的真实子进程 PID。
+ *
+ * 为什么需要：Windows 上 `shell: true` 会多出 `cmd.exe` → `node/python` 两层，
+ * 只 kill 包装器会留下孤儿 Vite / uvicorn 常驻（实测累积上百个，拖垮后续运行）。
+ */
+function readChildPid(name) {
+  try {
+    const text = readFileSync(join(LOG_DIR, `${name}.log`), 'utf-8')
+    const matches = [...text.matchAll(new RegExp(`${PID_PREFIX}\\s+(\\d+)`, 'g'))]
+    if (matches.length === 0) {
+      return null
     }
-    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+    return Number.parseInt(matches[matches.length - 1][1], 10)
+  } catch {
+    return null
   }
-  throw new Error(`等待 ${url} 就绪超时（最后错误：${lastError}）`)
+}
+
+/**
+ * 停掉一个服务：**整棵进程树**。
+ *
+ * Windows 用 `taskkill /T /F`（带走 cmd.exe 与真正的服务进程），
+ * 其它平台退回信号。
+ */
+function killTree(pid, name) {
+  if (!pid) {
+    return
+  }
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      stdio: 'ignore',
+      windowsHide: true,
+    })
+    return
+  }
+  try {
+    process.kill(pid, 'SIGTERM')
+  } catch {
+    // 已经退出
+  }
 }
 
 /**
@@ -92,6 +117,7 @@ export async function startBackend({
       python,
       '-m', 'uvicorn', 'tests.qa_browser_e2e.qa_app:app',
       '--host', '127.0.0.1', '--port', String(resolvedPort), '--log-level', 'warning',
+      `--pid-prefix=${PID_PREFIX}`,
     ],
     {
       cwd: join(REPO_ROOT, 'backend'),
@@ -112,11 +138,34 @@ export async function startBackend({
     baseUrl,
     port: resolvedPort,
     stop: async () => {
-      child.kill()
+      killTree(child.pid, name)
+      killTree(readChildPid(name), name)
       closeSync(logFd)
     },
   }
 }
+
+async function waitForHttp(url, { timeoutMs = 60000, intervalMs = 250 } = {}) {
+  const deadline = Date.now() + timeoutMs
+  let lastError = 'unknown'
+  while (Date.now() < deadline) {
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 3000)
+      const response = await fetch(url, { signal: controller.signal })
+      clearTimeout(timer)
+      if (response.status < 500) {
+        return true
+      }
+      lastError = `HTTP ${response.status}`
+    } catch (error) {
+      lastError = error.message
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+  throw new Error(`等待 ${url} 就绪超时（最后错误：${lastError}）`)
+}
+
 
 /**
  * 启动 Vite 开发服务器。`env` 里的 `VITE_*` 决定前端档位。
@@ -137,6 +186,7 @@ export async function startFrontend({
       join(REPO_ROOT, 'frontend'),
       npm,
       'run', 'dev', '--', '--port', String(resolvedPort), '--strictPort',
+      `--pid-prefix=${PID_PREFIX}`,
     ],
     {
       cwd: join(REPO_ROOT, 'frontend'),
@@ -156,7 +206,8 @@ export async function startFrontend({
     baseUrl,
     port: resolvedPort,
     stop: async () => {
-      child.kill()
+      killTree(child.pid, name)
+      killTree(readChildPid(name), name)
       closeSync(logFd)
     },
   }
