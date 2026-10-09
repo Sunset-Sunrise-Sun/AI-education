@@ -168,14 +168,22 @@ const aiDrawerOpen = ref(false)
 const aiFocusCourseId = ref<string | null>(null)
 /** 已采用的**进程内会话版本**（由后端 `adopted_version` 返回，⛔ 前端不生成）。 */
 const aiAdoptedVersion = ref<number | null>(null)
+/**
+ * 打开抽屉时预填的示例语句（来自 `AI 调整` 视图的示例入口）。
+ *
+ * ⚠️ 只是**输入提示**：预填不等于已解析，用户仍可改写或清空。
+ */
+const aiSeedMessage = ref<string | null>(null)
 
-function openAiDrawer(focusCourseId: string | null): void {
+function openAiDrawer(focusCourseId: string | null, seedMessage?: string): void {
   aiFocusCourseId.value = focusCourseId
+  aiSeedMessage.value = seedMessage ?? null
   aiDrawerOpen.value = true
 }
 
 function closeAiDrawer(): void {
   aiDrawerOpen.value = false
+  aiSeedMessage.value = null
 }
 
 /**
@@ -426,7 +434,7 @@ onMounted(() => {
               ? '演示数据加载失败，因此没有可调整的方案。'
               : '当前还没有规划结果可供调整。'
         "
-        @open-drawer="openAiDrawer(null)"
+        @open-drawer="openAiDrawer(null, $event)"
       />
     </main>
 
@@ -449,6 +457,7 @@ onMounted(() => {
       :course-offerings="data?.course_offerings ?? []"
       :preference="data?.preference ?? null"
       :focus-course-id="aiFocusCourseId"
+      :seed-message="aiSeedMessage"
       :api-enabled="AI_PLANNING_API_ENABLED"
       :preview-enabled="AI_PLANNING_PREVIEW"
       @close="closeAiDrawer"
@@ -467,7 +476,8 @@ onMounted(() => {
           <code class="mono">GET /api/v1/mock/demo</code> 通道提供，属<strong>演示数据</strong>。
           <br />
           <template v-if="planResultMode === 'ai_candidate'">
-            <strong>当前方案</strong>来自 AI 调整的<strong>后端确认采用</strong>结果；
+            <strong>当前方案</strong>来自 AI 调整的<strong>后端确认采用</strong>结果
+            （仅进程内会话，未持久化，也不代表教务系统已完成选课）；
           </template>
           <template v-else-if="planResultMode === 'real'">
             <strong>规划结果</strong>由 <code class="mono">POST /api/v1/plan</code> 返回（Real）；
@@ -475,8 +485,11 @@ onMounted(() => {
           <template v-else>
             <strong>规划结果</strong>当前同样来自上述 Mock 演示通道；尚未提交 Real Planning。
           </template>
-          AI 调整接口（<code class="mono">/api/v1/ai-planning/*</code>）尚未由后端实现，
-          未配置时页面明确显示"尚未配置"，<strong>不会</strong>伪造候选方案。
+          AI 调整（<code class="mono">/api/v1/ai-planning/status</code> 与
+          <code class="mono">/interpret</code> / <code class="mono">/solve</code> /
+          <code class="mono">/adopt</code>）在服务端未启用或尚未部署到当前后端时，
+          页面会如实显示<strong>不可用</strong>，<strong>不会</strong>伪造候选方案；
+          前端预览数据一律标注「仅前端预览」。
           <br />
           两类内容均<strong>不代表真实教务系统正式指令</strong>。
         </p>
