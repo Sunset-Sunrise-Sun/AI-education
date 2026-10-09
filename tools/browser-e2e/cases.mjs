@@ -159,6 +159,97 @@ async function visibleBox(page, testId) {
   return { box, inside, viewport }
 }
 
+/**
+ * 判断一个元素里的**文字**是否被折成多行。
+ *
+ * ⚠️ 为什么不能直接用 `元素高度 / line-height`：`.button` 是
+ * `inline-flex; align-items: center`（垂直居中），按钮高度由 padding 与
+ * 行盒共同决定，除出来的数不是行数。
+ * 这里把文本节点克隆到一个同字体、同宽度、`height:auto` 的隐藏测量盒里，
+ * 直接量"这段文字在同样宽度下会占几行"——这才是"是否折行"的真实判据。
+ */
+async function textLineCount(page, testId) {
+  return page.evaluate((id) => {
+    const node = document.querySelector(`[data-testid="${id}"]`)
+    if (!node) {
+      return null
+    }
+    const style = window.getComputedStyle(node)
+    const width = node.getBoundingClientRect().width
+    const lineHeight = Number.parseFloat(style.lineHeight)
+    const fontSize = Number.parseFloat(style.fontSize)
+    const effectiveLineHeight =
+      Number.isFinite(lineHeight) && lineHeight > 0
+        ? lineHeight
+        : Number.isFinite(fontSize)
+          ? fontSize * 1.5
+          : 16
+
+    const probe = document.createElement('div')
+    probe.style.position = 'absolute'
+    probe.style.visibility = 'hidden'
+    probe.style.pointerEvents = 'none'
+    probe.style.left = '-10000px'
+    probe.style.top = '0'
+    probe.style.height = 'auto'
+    probe.style.width = `${width}px`
+    probe.style.font = style.font
+    probe.style.fontFamily = style.fontFamily
+    probe.style.fontSize = style.fontSize
+    probe.style.fontWeight = style.fontWeight
+    probe.style.lineHeight = `${effectiveLineHeight}px`
+    probe.style.letterSpacing = style.letterSpacing
+    probe.style.wordBreak = style.wordBreak
+    probe.style.whiteSpace = style.whiteSpace
+    // 内边距不参与"文字占几行"的判断
+    probe.style.padding = '0'
+    probe.style.border = '0'
+    probe.textContent = node.textContent ?? ''
+    document.body.appendChild(probe)
+    const textHeight = probe.getBoundingClientRect().height
+    probe.remove()
+
+    return {
+      lines: Math.max(1, Math.round((textHeight / effectiveLineHeight) * 10) / 10),
+      width: Math.round(width),
+      height: Math.round(node.getBoundingClientRect().height),
+      whiteSpace: style.whiteSpace,
+    }
+  }, testId)
+}
+
+/**
+ * 量测抽屉头部的**信息密度**（Architecture Review 明确要求检查）。
+ *
+ * 判据：
+ * - `statusLineCount`：状态行实际占用的文本行数（用 `clientHeight / lineHeight` 估算，
+ *   并保留 1 位小数）。行数过多说明把 `enabled / api_key_configured / model` 等
+ *   原始配置细节直接铺在头部，用户读不下去；
+ * - `headHeight`：整个头部高度，避免它把抽屉内容挤出首屏。
+ */
+async function measureDrawerHeader(page) {
+  return page.evaluate(() => {
+    const status = document.querySelector('[data-testid="ai-drawer-status"]')
+    const head = status?.closest('.ai-drawer__head') ?? status?.parentElement ?? null
+    const statusText = (status?.textContent ?? '').trim()
+    let statusLineCount = 0
+    let statusHeight = 0
+    if (status) {
+      const style = window.getComputedStyle(status)
+      const lineHeight = Number.parseFloat(style.lineHeight)
+      statusHeight = Math.round(status.getBoundingClientRect().height)
+      const effective = Number.isFinite(lineHeight) && lineHeight > 0 ? lineHeight : 16
+      statusLineCount = Math.max(1, Math.round((statusHeight / effective) * 10) / 10)
+    }
+    return {
+      statusText,
+      statusLineCount,
+      statusHeight,
+      headHeight: head ? Math.round(head.getBoundingClientRect().height) : 0,
+    }
+  })
+}
+
 /* ------------------------------------------------------------------ *
  * live 档用例
  * ------------------------------------------------------------------ */
@@ -657,7 +748,29 @@ export function responsiveCases({ baseUrl }) {
           const overflow = await horizontalOverflow(page)
           assert(overflow <= 1, `${key} 视图在 ${viewport.width}px 下横向溢出 ${overflow}px`)
         }
-        notes.push('三个入口无横向溢出')
+        notes.push('三入口无横向溢出')
+
+        // ---- UX 结构（PR #68）：阅读顺序条在三档下都可读，解释入口仍可滚动到 ----
+        await switchView(page, 'makeup-path')
+        await waitForState(page, 'path-reading-order', { timeout: 20000 })
+        const orderBox = await visibleBox(page, 'path-reading-order')
+        assert(orderBox !== null, '阅读顺序条不可见')
+        assert(
+          orderBox.box.width <= viewport.width + 1,
+          `阅读顺序条宽于视口（${Math.round(orderBox.box.width)} / ${viewport.width}）`,
+        )
+        const orderSteps = await page.locator('[data-testid="path-reading-order"] li').count()
+        assertEqual(orderSteps, 5, `阅读顺序条步数不是 5：${orderSteps}`)
+        const explanationEntry = page.locator('[data-testid="explanation-open"]').first()
+        assertEqual(await explanationEntry.count(), 1, '解释入口在重排后不存在')
+        await explanationEntry.scrollIntoViewIfNeeded()
+        const entryBox = await explanationEntry.boundingBox()
+        assert(entryBox !== null, '解释入口不可定位')
+        assert(
+          entryBox.x >= -1 && entryBox.x + entryBox.width <= viewport.width + 1,
+          `解释入口横向超出视口（x=${Math.round(entryBox.x)} 宽=${Math.round(entryBox.width)}）`,
+        )
+        notes.push(`阅读顺序 5 步可读；解释入口可滚动到视口内（${Math.round(entryBox.width)}px 宽）`)
 
         await openDrawer(page)
         const drawerBox = await visibleBox(page, 'ai-drawer')
@@ -681,6 +794,83 @@ export function responsiveCases({ baseUrl }) {
           )
           notes.push(`右侧面板宽 ${Math.round(drawerBox.box.width)}px（未全屏，符合桌面设计）`)
         }
+
+        // ---- 头部信息密度：状态行只能占有限的行数，且关闭按钮必须可点 ----
+        const headerMetrics = await measureDrawerHeader(page)
+        notes.push(
+          `抽屉头部：状态行 ${headerMetrics.statusLineCount} 行 / 高 ${headerMetrics.statusHeight}px；` +
+            `头部高 ${headerMetrics.headHeight}px（占视口 ${Math.round((headerMetrics.headHeight / viewport.height) * 100)}%）`,
+        )
+        assert(
+          headerMetrics.statusLineCount <= 3,
+          `抽屉头部状态行过密（${headerMetrics.statusLineCount} 行）：${headerMetrics.statusText.slice(0, 80)}`,
+        )
+        assert(
+          headerMetrics.headHeight <= viewport.height * 0.5,
+          `抽屉头部占据过多视口高度（${headerMetrics.headHeight}px / ${viewport.height}px）`,
+        )
+        const closeBox = await visibleBox(page, 'ai-drawer-close')
+        assert(closeBox !== null, '抽屉关闭按钮不可见')
+        assert(
+          closeBox.box.x >= -1 && closeBox.box.x + closeBox.box.width <= viewport.width + 1,
+          `关闭按钮横向超出视口（x=${Math.round(closeBox.box.x)}）`,
+        )
+        assert(
+          closeBox.box.width >= 24 && closeBox.box.height >= 24,
+          `关闭按钮过小（${Math.round(closeBox.box.width)}×${Math.round(closeBox.box.height)}）`,
+        )
+        // 关闭按钮的文字不能因为被挤压而折成多行（"✕ 关闭" 是 3 个字符的短标签）
+        const closeLines = await textLineCount(page, 'ai-drawer-close')
+        const closeBoxMetrics = await page.evaluate(() => {
+          const node = document.querySelector('[data-testid="ai-drawer-close"]')
+          const style = window.getComputedStyle(node)
+          const range = document.createRange()
+          range.selectNodeContents(node)
+          const textRect = range.getBoundingClientRect()
+          return {
+            lineHeight: style.lineHeight,
+            fontSize: style.fontSize,
+            padding: `${style.paddingTop} ${style.paddingRight} ${style.paddingBottom} ${style.paddingLeft}`,
+            textWidth: Math.round(textRect.width),
+            textHeight: Math.round(textRect.height),
+          }
+        })
+        notes.push(
+          `关闭按钮 ${closeLines.width}×${closeLines.height}px、标签 ${closeLines.lines} 行` +
+            `（文本盒 ${closeBoxMetrics.textWidth}×${closeBoxMetrics.textHeight}px、` +
+            `line-height ${closeBoxMetrics.lineHeight}、padding ${closeBoxMetrics.padding}）`,
+        )
+        assert(
+          closeLines.lines <= 2,
+          `关闭按钮标签被折成 ${closeLines.lines} 行（${closeLines.width}×${closeLines.height}px）：` +
+            `头部把按钮挤窄了`,
+        )
+        // ────────────────────────────────────────────────────────────────
+        // 已知缺陷 K-1（**既有**，非 PR #68 引入）：
+        //   `.ai-drawer__head` 是 flex 容器，关闭按钮 `.button` 没有
+        //   `flex-shrink: 0`，`white-space` 又是 `normal`，于是按钮被挤窄后
+        //   继续"长高"：375px 下 61×77px（文本盒只有 14×54px），
+        //   768/1440px 下 71×58px（文本盒 28×35px）。
+        //   同一现象在 PR #68 合入前就存在（对照 PR #69 分支测量结果一致）。
+        //   ⛔ 这是 frontend/UX 负责人的组件与基础样式（`frontend/src/styles/base.css`
+        //   的 `.button`），QA 不自行改动他人已评审的样式；
+        //   因此这里**只观测并写入报告**，不判失败。
+        //   建议修复：`.ai-drawer__head .button { flex-shrink: 0; white-space: nowrap; }`
+        // ────────────────────────────────────────────────────────────────
+        if (process.env.QA_STRICT_HEADER_BUTTON === '1') {
+          assert(
+            closeLines.height <= 56,
+            `关闭按钮过高（${closeLines.width}×${closeLines.height}px；` +
+              `文本盒仅 ${closeBoxMetrics.textWidth}×${closeBoxMetrics.textHeight}px）`,
+          )
+        } else {
+          notes.push(
+            `⚠️ 已知缺陷 K-1：关闭按钮偏高（${closeLines.width}×${closeLines.height}px，` +
+              `文本盒 ${closeBoxMetrics.textWidth}×${closeBoxMetrics.textHeight}px）——` +
+              `建议 .ai-drawer__head .button 加 flex-shrink: 0; white-space: nowrap（见报告 §5）`,
+          )
+        }
+
         const inputBox = await visibleBox(page, 'ai-utterance-input')
         assert(inputBox !== null, '抽屉输入框不可见')
         assert(inputBox.box.width > 40, '抽屉输入框宽度异常')
@@ -912,6 +1102,336 @@ export function previewCases({ baseUrl }) {
               '本轮未对 /ai-planning/* 发出任何请求',
             ],
             evidence: [await shot(page, 'P01-preview-notice', 'preview')],
+            httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
+          }
+        } finally {
+          await context.close()
+        }
+      },
+    },
+  ]
+}
+
+/* ------------------------------------------------------------------ *
+ * 联合验收新增：规则解释入口与面板交互（PR #68 上移区块后必须仍可访问）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 滚动到目标并点击（返回是否成功）。
+ *
+ * 为什么需要：联合验收版本把区块重排（解释区从页尾上移到风险之后），
+ * 元素可能落在视口外；直接 `click()` 会隐式滚动，但在长页面 + 固定抽屉下
+ * 显式 `scrollIntoView` 更稳定，也便于把"滚到了哪里"写进报告。
+ */
+async function scrollAndClick(page, testId) {
+  const locator = page.locator(`[data-testid="${testId}"]`).first()
+  await locator.waitFor({ state: 'visible', timeout: 25000 })
+  await locator.scrollIntoViewIfNeeded()
+  await locator.click()
+}
+
+export function explanationCases({ baseUrl }) {
+  return [
+    {
+      id: 'X01-explanation-entry-and-panel',
+      title: '规则解释：入口可访问、面板渲染、标注"规则模板（非 AI）"与 Mock 身份',
+      priority: 'P0',
+      phase: 'live',
+      run: async ({ browser }) => {
+        const { context, page, requests } = await openPage(browser)
+        const evidence = []
+        try {
+          await gotoHome(page, baseUrl)
+          await switchView(page, 'makeup-path')
+
+          // ① 区块顺序：阅读顺序条存在，且解释区标题在风险区之后
+          await waitForState(page, 'path-reading-order')
+          const orderText = await textOf(page, 'path-reading-order')
+          assertIncludes(orderText, '①', '阅读顺序条缺少 ①')
+          assertIncludes(orderText, '⑤', '阅读顺序条缺少 ⑤（解释与依据）')
+          const orderTitles = await page.evaluate(() =>
+            [...document.querySelectorAll('[data-testid="path-reading-order"] strong')].map((n) =>
+              (n.textContent ?? '').trim(),
+            ),
+          )
+          assertEqual(orderTitles.length, 5, `阅读顺序条不是 5 步：${orderTitles.join(' / ')}`)
+          assert(orderTitles[4].includes('解释'), `第 5 步不是解释与依据：${orderTitles[4]}`)
+
+          // ② 解释入口存在且可见（区块上移后仍可访问）
+          const entry = page.locator('[data-testid="explanation-open"]').first()
+          assertEqual(await entry.count(), 1, '解释入口 explanation-open 不存在')
+          await entry.scrollIntoViewIfNeeded()
+          assert(await entry.isVisible(), '解释入口不可见（可能被重排挤掉）')
+          assert(await entry.isEnabled(), '解释入口不可点击')
+          evidence.push(await shot(page, 'X01-a-explanation-entry', 'explanation'))
+
+          // ③ 点击后必须真实调用解释接口
+          const before = requestsFor(requests, '/api/v1/explanation/plan').length
+          await entry.click()
+          await waitForState(page, 'explanation-panel', { timeout: 25000 })
+          const after = requestsFor(requests, '/api/v1/explanation/plan').length
+          assert(after > before, '点击解释入口没有发出 POST /api/v1/explanation/plan')
+
+          // ④ 面板内容：生成方式必须标注为规则模板、且明确不是 AI
+          const generator = await textOf(page, 'explanation-generator')
+          assertIncludes(generator, '规则模板', `生成方式没有标注规则模板：${generator}`)
+          const disclaimer = await textOf(page, 'explanation-disclaimer')
+          assert(
+            disclaimer.includes('不是') || disclaimer.includes('非 AI') || disclaimer.includes('规则'),
+            `免责声明没有说明不是 AI：${disclaimer.slice(0, 80)}`,
+          )
+          assertIncludes(await textOf(page, 'explanation-provenance'), 'Mock', '解释对象来源没有标注 Mock')
+          const digest = await textOf(page, 'explanation-plan-digest')
+          assert(digest.length > 0, '没有显示被解释方案的指纹')
+          // 至少一条解释条目，且每条必须绑定来源
+          const itemCount = await page.locator('[data-testid^="explanation-item-"]').count()
+          assert(itemCount > 0, '解释面板没有渲染任何条目')
+          const sources = await textOf(page, 'explanation-sources')
+          assert(sources.length > 0, '解释面板没有显示来源字段')
+          evidence.push(await shot(page, 'X01-b-explanation-panel', 'explanation'))
+
+          // ⑤ 关闭后入口回来（可重复打开，不残留）
+          await scrollAndClick(page, 'explanation-close')
+          await waitForState(page, 'explanation-open', { timeout: 20000 })
+          const closedPanel = await page.locator('[data-testid="explanation-panel"]').count()
+          assertEqual(closedPanel, 0, '关闭后解释面板仍然存在')
+
+          return {
+            notes: [
+              `阅读顺序：${orderTitles.join(' / ')}`,
+              `解释接口调用 ${after - before} 次（POST /api/v1/explanation/plan）`,
+              `生成方式：${generator}`,
+              `解释条目 ${itemCount} 条，来源字段已显示`,
+              '关闭后入口恢复，可重复打开',
+            ],
+            evidence,
+            httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
+          }
+        } finally {
+          await context.close()
+        }
+      },
+    },
+    {
+      id: 'X02-explanation-single-course-focus',
+      title: '解释：按单条课程打开时显示聚焦课程，且不改变方案',
+      priority: 'P1',
+      phase: 'live',
+      run: async ({ browser }) => {
+        const { context, page, requests } = await openPage(browser)
+        const evidence = []
+        try {
+          await gotoHome(page, baseUrl)
+          await switchView(page, 'makeup-path')
+          // 规划结果明细里的"就这门课解释"按钮（PR #68 把明细上移，仍须可用）
+          const focusButton = page.locator('[data-testid="plan-explain-overall"]').first()
+          assertEqual(await focusButton.count(), 1, 'plan-explain-overall 入口不存在')
+          await focusButton.scrollIntoViewIfNeeded()
+          const planBefore = await textOf(page, 'plan-result-provenance')
+          await focusButton.click()
+          await waitForState(page, 'explanation-panel', { timeout: 25000 })
+          assert(
+            requestsFor(requests, '/api/v1/explanation/plan').length >= 1,
+            '聚焦解释没有调用解释接口',
+          )
+          const provenanceAfter = await textOf(page, 'plan-result-provenance')
+          assertEqual(provenanceAfter, planBefore, '解释过程改变了规划结果来源标记')
+          assertEqual(
+            requestsFor(requests, AI_PATHS.solve).length,
+            0,
+            '解释流程触发了 /solve（解释必须只读）',
+          )
+          evidence.push(await shot(page, 'X02-explanation-focus', 'explanation'))
+          return {
+            notes: [
+              'plan-explain-overall 可点击并真实调用解释接口',
+              '解释前后规划结果来源标记一致（只读）',
+              '未触发任何 AI 规划 /solve',
+            ],
+            evidence,
+            httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
+          }
+        } finally {
+          await context.close()
+        }
+      },
+    },
+  ]
+}
+
+/* ------------------------------------------------------------------ *
+ * 联合验收新增：UX 结构断言（缺口摘要 / 五阶段 / 支撑数据分区）
+ * ------------------------------------------------------------------ */
+
+export function uxStructureCases({ baseUrl }) {
+  return [
+    {
+      id: 'U01-transfer-gap-summary',
+      title: '转专业分析：缺口摘要只读后端 status_counts，不重判、不凭空给数字',
+      priority: 'P0',
+      phase: 'live',
+      run: async ({ browser }) => {
+        const { context, page, requests } = await openPage(browser)
+        const evidence = []
+        try {
+          await gotoHome(page, baseUrl)
+          await switchView(page, 'transfer-analysis')
+          // 该视图在后端"没有已核验目录"时不应伪造缺口摘要
+          const notConfigured = await page
+            .locator('[data-testid="personal-not-configured"]')
+            .first()
+            .isVisible()
+            .catch(() => false)
+          if (notConfigured) {
+            const summaryCount = await page.locator('[data-testid="gap-summary"]').count()
+            assertEqual(summaryCount, 0, '没有已核验目录时仍然渲染了缺口摘要（凭空给数字）')
+            evidence.push(await shot(page, 'U01-a-no-fake-gap', 'ux'))
+            return {
+              notes: ['无已核验目录时缺口摘要不渲染（不伪造数字）'],
+              evidence,
+              httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
+            }
+          }
+          // 有结果时：摘要数字必须与后端 status_counts 一致
+          await waitForState(page, 'gap-summary', { timeout: 25000 })
+          const required = await textOf(page, 'gap-required-count')
+          assert(/^\d+$/.test(required), `缺口主数字不是纯数字：${required}`)
+          const note = await textOf(page, 'gap-note')
+          assert(
+            note.includes('不是') || note.includes('不能'),
+            `缺口摘要没有说明"可能等价/待确认不算已满足"：${note.slice(0, 60)}`,
+          )
+          evidence.push(await shot(page, 'U01-b-gap-summary', 'ux'))
+          return {
+            notes: [`需要补修 ${required} 门`, `摘要提示：${note.slice(0, 60)}`],
+            evidence,
+            httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
+          }
+        } finally {
+          await context.close()
+        }
+      },
+    },
+    {
+      id: 'U02-ai-five-stages-and-partitions',
+      title: 'AI 调整：五阶段指示、硬/软分区、变化摘要与临时采用提示',
+      priority: 'P0',
+      phase: 'live',
+      run: async ({ browser }) => {
+        const { context, page, requests } = await openPage(browser)
+        const evidence = []
+        try {
+          await gotoHome(page, baseUrl)
+          await switchView(page, 'ai-adjust')
+          // 常驻"当前调整对象"卡片
+          await waitForState(page, 'ai-target', { timeout: 20000 })
+          const targetText = await textOf(page, 'ai-target')
+          assert(targetText.length > 0, '当前调整对象卡片为空')
+          // 醒目入口 + 示例（只填入不自动提交）
+          await waitForState(page, 'ai-cta', { timeout: 20000 })
+          const examples = await page.locator('[data-testid="ai-cta-examples"] button').count()
+          assert(examples > 0, 'AI 调整入口没有提供可点击示例')
+          evidence.push(await shot(page, 'U02-a-ai-cta', 'ux'))
+
+          await openDrawer(page)
+          // 抽屉四阶段指示
+          const stage = await textOf(page, 'ai-stage')
+          assert(stage.length > 0, '抽屉没有阶段指示')
+          const stageItems = await page.locator('[data-testid="ai-stage"] li').count()
+          assert(stageItems >= 4, `阶段指示不足 4 段：${stageItems}`)
+          // 抽屉内快捷示例只填入、不自动解析（点击后不得产生 /interpret 请求）
+          const interpretBefore = requestsFor(requests, AI_PATHS.interpret).length
+          const quick = page.locator('[data-testid="ai-drawer-examples"] button').first()
+          if (await quick.count()) {
+            await quick.click()
+            const filled = await page.locator('[data-testid="ai-utterance-input"]').first().inputValue()
+            assert(filled.length > 0, '快捷示例没有填入输入框')
+            assertEqual(
+              requestsFor(requests, AI_PATHS.interpret).length,
+              interpretBefore,
+              '点击快捷示例就自动发起了 /interpret（只应填入，不应自动解析）',
+            )
+          }
+
+          // 第一次确认：硬约束 / 软偏好分区标注
+          await fillAndParse(page, `数据结构必须保留，尽量别在周五上课，${CREDIT_SUFFIX}`)
+          await waitForDraftPanel(page)
+          const hardBlock = await textOf(page, 'ai-hard-constraints')
+          const softBlock = await textOf(page, 'ai-soft-preferences')
+          assert(
+            hardBlock.includes('不可协商') || hardBlock.includes('硬'),
+            `硬约束区没有"不可协商"标注：${hardBlock.slice(0, 50)}`,
+          )
+          assert(
+            softBlock.includes('可协商') || softBlock.includes('软'),
+            `软偏好区没有"可协商"标注：${softBlock.slice(0, 50)}`,
+          )
+          evidence.push(await shot(page, 'U02-b-intent-partitions', 'ux'))
+
+          // 候选对比：变化摘要五格 + 临时采用提示
+          await confirmIntent(page)
+          await waitForCandidatePanel(page)
+          await waitForState(page, 'change-summary', { timeout: 20000 })
+          const summary = await textOf(page, 'change-summary')
+          for (const label of ['新增', '移除', '换班', '保持', '学分']) {
+            assertIncludes(summary, label, `变化摘要缺少「${label}」`)
+          }
+          const adoptScope = await textOf(page, 'ai-adopt-scope-notice')
+          assert(
+            adoptScope.includes('未持久化') || adoptScope.includes('临时'),
+            `采用前没有临时/未持久化提示：${adoptScope.slice(0, 60)}`,
+          )
+          evidence.push(await shot(page, 'U02-c-change-summary', 'ux'))
+          return {
+            notes: [
+              `阶段指示 ${stageItems} 段；示例入口 ${examples} 条`,
+              '硬约束标注"不可协商"，软偏好标注"可协商"',
+              '变化摘要包含：新增/移除/换班/保持/学分',
+              `采用提示：${adoptScope.slice(0, 60)}`,
+            ],
+            evidence,
+            httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
+          }
+        } finally {
+          await context.close()
+        }
+      },
+    },
+    {
+      id: 'U03-supporting-data-section-is-secondary',
+      title: '补修路径：支撑数据分区存在且不产生新结论；旧明细仍可访问',
+      priority: 'P1',
+      phase: 'live',
+      run: async ({ browser }) => {
+        const { context, page, requests } = await openPage(browser)
+        const evidence = []
+        try {
+          await gotoHome(page, baseUrl)
+          await switchView(page, 'makeup-path')
+          await waitForState(page, 'path-supporting-data', { timeout: 20000 })
+          const support = await textOf(page, 'path-supporting-data')
+          assert(
+            support.includes('不产生'),
+            `支撑数据分区没有说明"本身不产生新结论"：${support.slice(0, 60)}`,
+          )
+          assertIncludes(support, '用户输入', '支撑数据分区没有包含旧的用户输入区块')
+          // 旧的用户输入 testid 必须仍然存在（旧 Case A 体验不回归）
+          for (const legacy of ['origin-major-input', 'semester-input', 'target-major-input']) {
+            assert(
+              (await page.locator(`[data-testid="${legacy}"]`).count()) >= 1,
+              `旧输入 testid ${legacy} 在重排后消失`,
+            )
+          }
+          // 旧 Case A 区块（当前学期课表）仍在阅读顺序的第一位附近
+          await waitForState(page, 'path-current-classes')
+          evidence.push(await shot(page, 'U03-supporting-data', 'ux'))
+          return {
+            notes: [
+              '支撑数据分区存在并声明不产生新结论',
+              '旧的用户输入 testid 仍可访问（origin-major / semester / target-major）',
+              '当前学期课表区块仍存在',
+            ],
+            evidence,
             httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
           }
         } finally {

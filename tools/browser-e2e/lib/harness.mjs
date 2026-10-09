@@ -154,11 +154,30 @@ export function uniqueSorted(values) {
 
 /**
  * 极简 runner：顺序执行用例，收集结果，产出 JSON 结果供报告生成使用。
+ *
+ * `testCase.skip === true` 的用例会被**跳过并记录为 skipped**（不计入 passed/failed），
+ * 用于"只重跑某个 PR 原有用例"的对照验证。
  */
 export async function runCases(cases, { filter = null, onResult = null } = {}) {
   const results = []
   for (const testCase of cases) {
     if (filter && !testCase.id.includes(filter)) {
+      continue
+    }
+    if (testCase.skip === true) {
+      console.log(`  ⏭️  ${testCase.id} — ${testCase.title}（本变体跳过）`)
+      results.push({
+        id: testCase.id,
+        title: testCase.title,
+        priority: testCase.priority ?? 'P0',
+        phase: testCase.phase ?? 'live',
+        status: 'skipped',
+        error: null,
+        notes: ['该用例不属于本次验证范围，已跳过'],
+        evidence: [],
+        httpRequests: [],
+        durationMs: 0,
+      })
       continue
     }
     const started = Date.now()

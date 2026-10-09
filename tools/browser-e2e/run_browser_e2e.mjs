@@ -19,6 +19,7 @@
 
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   ARTIFACT_DIR,
   REPO_ROOT,
@@ -27,17 +28,26 @@ import {
   writeJson,
 } from './lib/harness.mjs'
 import { freePort, startBackend, startFrontend, stopAll } from './lib/servers.mjs'
-import {
-  disabledCases,
-  liveBaselineCases,
-  previewCases,
-  resilienceCases,
-  responsiveCases,
-} from './cases.mjs'
 
 const args = process.argv.slice(2)
 const filter = args.find((item) => item.startsWith('--filter='))?.slice('--filter='.length) ?? null
 const headed = args.includes('--headed')
+/**
+ * `--cases=<文件名>`：换一个用例文件（默认 `cases.mjs`）。
+ * 用途：只用**某个 PR 原有的用例集**重跑一次做对照验证。
+ */
+const casesArg = args.find((item) => item.startsWith('--cases='))?.slice('--cases='.length) ?? 'cases.mjs'
+
+const caseModule = await import(pathToFileURL(join(import.meta.dirname, casesArg)).href)
+const {
+  disabledCases,
+  explanationCases,
+  liveBaselineCases,
+  previewCases,
+  resilienceCases,
+  responsiveCases,
+  uxStructureCases,
+} = caseModule
 
 /** 找一个可用的 Python 解释器（优先环境变量 QA_PYTHON）。 */
 function detectPython() {
@@ -167,6 +177,8 @@ async function main() {
 
     const groups = [
       ['P0 主流程（live）', liveBaselineCases({ baseUrl: liveFrontend.baseUrl })],
+      ['联合验收：规则解释入口与面板', explanationCases({ baseUrl: liveFrontend.baseUrl })],
+      ['联合验收：UX 结构（缺口摘要 / 五阶段 / 支撑数据）', uxStructureCases({ baseUrl: liveFrontend.baseUrl })],
       ['P1 响应式布局', responsiveCases({ baseUrl: liveFrontend.baseUrl })],
       ['P1 异常与并发', resilienceCases({ baseUrl: liveFrontend.baseUrl })],
       ['未启用档（disabled）', disabledCases({ baseUrl: disabledFrontend.baseUrl })],
@@ -195,21 +207,29 @@ async function main() {
   }
 
   const passed = results.filter((item) => item.status === 'passed').length
-  const failed = results.filter((item) => item.status !== 'passed').length
+  const skipped = results.filter((item) => item.status === 'skipped').length
+  const failed = results.filter((item) => item.status !== 'passed' && item.status !== 'skipped').length
   const summary = {
     startedAt: startedAt.toISOString(),
     finishedAt: new Date().toISOString(),
     browser: 'Microsoft Edge（playwright-core channel=msedge）',
     headed,
     python,
+    casesModule: casesArg,
     envFilesDetected: envFiles,
     total: results.length,
     passed,
     failed,
+    skipped,
   }
 
-  await writeJson(join(ARTIFACT_DIR, 'browser-e2e-results.json'), { summary, results })
-  process.stdout.write(`\n=== 结果：${passed} passed / ${failed} failed / 共 ${results.length} ===\n`)
+  await writeJson(join(ARTIFACT_DIR, `browser-e2e-results${casesArg === 'cases.mjs' ? '' : `-${casesArg.replace(/\.mjs$/, '')}`}.json`), {
+    summary,
+    results,
+  })
+  process.stdout.write(
+    `\n=== 结果：${passed} passed / ${failed} failed / ${skipped} skipped / 共 ${results.length} ===\n`,
+  )
   process.stdout.write(`JSON: tools/browser-e2e/artifacts/browser-e2e-results.json\n`)
   if (failed > 0) {
     process.exitCode = 1

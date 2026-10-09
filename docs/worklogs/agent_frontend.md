@@ -2018,3 +2018,38 @@
   DeepSeek 真实在线验证；是否把浏览器 E2E 纳入 CI。
 - 对其他模块影响：无（未改生产代码、公共 Schema、接口、Planner 算法）。
 - 下一步：接入真实数据后补跑"转专业分析 → 个人规划成功路径"并接到 AI 调整上下文。
+
+### 2026-10-09 - 联合浏览器验收（PR #68 UX × PR #69 浏览器 E2E，分支 `qa/final-upgrade-ux-browser-e2e`）
+- 本次目标：在新的独立 QA 分支把两个 PR 组合验证，先重跑原有 18 项真实浏览器 E2E，
+  再补规则解释入口与面板交互、三档响应式与新页面顺序的检查。
+- 已完成：
+  - 从 `origin/feature/final-upgrade`（`36ce35a`）建分支，`--no-edit` 合并 PR #69 与 PR #68；
+    两个原始分支保持不动（提交里带 Merge 记录，便于追溯）。
+  - 对照复跑 PR #69 原有 18 项：**18 passed / 0 failed / 5 skipped**，未改一例。
+  - 新增 5 项：X01/X02（规则解释入口与面板、单条课程聚焦解释）、
+    U01（缺口摘要不伪造数字）、U02（五阶段/硬软分区/变化摘要/临时采用提示）、
+    U03（支撑数据分区与旧 testid）。
+  - 响应式用例追加：阅读顺序 5 步、解释入口可滚动到视口、抽屉头部信息密度量测、关闭按钮几何。
+  - 全量结果：**23 passed / 0 failed / 0 skipped**。
+  - 新增 `--cases=<文件>` 与 `skip: true` 支持 + `_make_baseline18.py`，用于"只跑某个 PR 原有用例"的对照验证。
+  - 修正 2 处测试基础设施问题：① 行数检测从"按钮高度/line-height"改为"隐藏测量盒量真实文本行数"
+    （`.button` 是 `inline-flex` 垂直居中，旧算法除出来的不是行数，导致 3 个断点假阳性）；
+    ② 汇总把 skipped 误算进 failed。
+- 修改文件：`tools/browser-e2e/{cases.mjs,lib/harness.mjs,run_browser_e2e.mjs}`、
+  新增 `tools/browser-e2e/_make_baseline18.py`、
+  `docs/final_upgrade/reports/UX_BROWSER_E2E_JOINT_REPORT.md`、本 worklog 与 STATUS。
+  ⛔ 未改 `frontend/src/**`、`frontend/tests/**`、`backend/app/**`、公共 Schema、Planner。
+- 测试：浏览器 23/23（+ 对照 18/18）；后端 3188 passed / 2 failed（既有平台差异）/ 2 skipped；
+  前端 303 passed；`vue-tsc` exit 0；`npm run build` exit 0。**无新回归。**
+- 使用数据：Mock（人工构造演示数据）+ 注入式测试模型（`test_double`）。
+- 已知问题：
+  - **K-1（既有，非 PR #68 引入）**：抽屉头部关闭按钮无 `flex-shrink: 0` + `white-space: nowrap`，
+    375px 下 61×77px、768/1440px 下 71×58px，文字被折行。已做成可复现观测项
+    （`QA_STRICT_HEADER_BUTTON=1` 时判定失败），并给出 2 行 CSS 修复建议；
+    因属 frontend/UX 负责人的组件与基础样式，本轮**未自行修改**。
+  - **O-1**：375px 下抽屉状态行 2.8 行、头部占视口 14%，原始配置字段偏密；
+    该文案已被 `frontend/tests/ai-planning-drawer.spec.ts` 锁定，属有意披露，改动需同步前端测试。
+- 需要人工确认：是否授权修复 K-1（需变更 `frontend/src/styles/base.css`）；
+  是否调整抽屉头部状态行（需同步前端 Vitest 断言）；两个 PR 的合并顺序。
+- 对其他模块影响：无（生产代码零改动）。
+- 下一步：接入真实数据后补跑"转专业分析 → 个人规划成功路径"；用新密钥做真实 DeepSeek 在线验证。

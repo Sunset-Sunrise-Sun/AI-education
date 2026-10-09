@@ -1129,3 +1129,29 @@ frontend: npm test（9 文件 134 用例）· npm run typecheck（vue-tsc --noEm
 - **仍未验证**：真实 DeepSeek 在线调用（NOT VERIFIED，无密钥）、真实已核验培养方案目录与
   真实教学班/成绩数据 E2E（BLOCKED）。
 - 详见 `docs/final_upgrade/reports/BROWSER_E2E_REPORT.md`。
+
+## 联合浏览器验收（2026-10-09，分支 `qa/final-upgrade-ux-browser-e2e`）
+
+- 把 PR #68（UX，`a38c9cd`）与 PR #69（浏览器 E2E，`d7e5f7e`）合到独立 QA 分支，
+  **两个原始分支均未修改**；在合并后的树上重跑真实浏览器验收。
+- **PR #69 原有 18 项全部通过**（对照跑法：`--cases=_cases_baseline18.mjs`，18 passed / 5 skipped）：
+  说明 PR #68 的区块重排与信息层级调整**没有破坏任何旧定位假设**。
+- 新增 5 项联合验收用例（共 23 项，**23/23 通过**）：
+  规则解释入口与面板（X01/X02，真实调用 `POST /api/v1/explanation/plan`，标注"规则模板（非 AI）"）、
+  缺口摘要不伪造数字（U01）、五阶段/硬软分区/变化摘要/临时采用提示（U02）、
+  支撑数据分区与旧 testid 未丢（U03）。
+- 响应式 375/768/1440 增加 UX 结构断言与**抽屉头部信息密度量测**，三档通过。
+- **发现 1 个既有缺陷 + 1 个观察项（均需人工确认，本轮未自行改前端）**：
+  - **K-1（既有样式缺陷，非 PR #68 引入）**：抽屉头部关闭按钮无 `flex-shrink: 0`，
+    375px 下被挤成 61×77px 的竖长条（文本盒仅 14×54px），768/1440px 为 71×58px；
+    在 PR #69 分支（UX 改动前）测得完全相同，属既有基线问题。
+    可用 `$env:QA_STRICT_HEADER_BUTTON=1` 一键复现为失败；
+    建议 `.ai-drawer__head .button { flex-shrink: 0; white-space: nowrap; }`。
+  - **O-1**：375px 下抽屉状态行折 2.8 行、头部占视口 14%，把 `enabled / api_key_configured /
+    live_model_available / model` 直接铺开偏密；但该文案已被
+    `frontend/tests/ai-planning-drawer.spec.ts` 锁定，属有意披露，改动需同步前端测试。
+- 回归：浏览器 23/23；后端 3188 / 2（既有平台差异）/ 2；前端 **303 passed**（含 PR #68 新增用例）；
+  `vue-tsc` exit 0；`npm run build` exit 0。**无新回归。**
+- 仍未验证：真实 DeepSeek 在线调用（NOT VERIFIED）、真实培养方案/教学班数据（BLOCKED）、
+  真机浏览器与无障碍专项（未执行）。
+- 详见 `docs/final_upgrade/reports/UX_BROWSER_E2E_JOINT_REPORT.md`。
