@@ -498,9 +498,18 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
     `GET /api/v1/personal-planning/curriculum-versions` 与
     `POST /api/v1/personal-planning/plan`。两者⛔ 不改 `/api/v1/plan` 契约，
     ⛔ 不读取已冻结 Case A runtime 的任何配置，也⛔ 不在未装配时回退到 Mock。
+
+    DeepSeek AI Planning Controller 新增四条**私有**入口
+    （见 `docs/final_upgrade/AI_PLANNING_API_HANDOFF.md`）：
+    `GET /api/v1/ai-planning/status`、
+    `POST /api/v1/ai-planning/interpret`、
+    `POST /api/v1/ai-planning/solve`、
+    `POST /api/v1/ai-planning/adopt`。
+    它们默认关闭（`AI_PLANNING_ENABLED=false`），⛔ 不覆盖任何旧路由，
+    ⛔ 不改 `PlannerProvider` 四参数签名，也⛔ 不在无密钥时伪造模型结果。
     """
 
-    # 合并验收：个人规划 2 条 API + 只读解释 1 条 API 均显式登记。
+    # 合并验收：个人规划 2 条 + 只读解释 1 条 + AI 规划 4 条 API 均显式登记。
     paths = set(client.get("/openapi.json").json()["paths"])
 
     for forbidden in ("/plan", "/integration", "/api/v1/integration"):
@@ -522,4 +531,9 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         "/api/v1/personal-planning/plan",
         # Final Upgrade · Agent B：只读解释入口。
         "/api/v1/explanation/plan",
+        # DeepSeek AI Planning Controller：私有前缀，默认关闭。
+        "/api/v1/ai-planning/status",
+        "/api/v1/ai-planning/interpret",
+        "/api/v1/ai-planning/solve",
+        "/api/v1/ai-planning/adopt",
     }

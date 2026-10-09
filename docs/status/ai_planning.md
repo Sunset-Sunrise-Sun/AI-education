@@ -1,0 +1,114 @@
+# AI Planning（DeepSeek Controller）当前状态
+
+更新日期：2026-10-09（联合验收轮）。分支：`feature/ai-planning-joint-e2e`（= 后端 PR #66 的
+`feature/deepseek-planning-controller` + 前端 PR #65 的 `feature/ai-planning-frontend`）。
+状态：**前后端联合验收已执行（真实 HTTP 闭环通过）**；真实在线调用 **仍为 NOT VERIFIED**。
+
+## 联合验收结果（2026-10-09）
+
+| 项 | 结果 |
+| --- | --- |
+| 后端完整 pytest | **3188 passed / 2 failed / 2 skipped**（2 项为既有 Windows 路径语义差异） |
+| 前端 Vitest | **274 passed / 0 failed**（18 文件） |
+| 前端 `vue-tsc --noEmit` | **exit 0** |
+| 前端 `npm run build` | **exit 0** |
+| 真实 HTTP 闭环（uvicorn + 真实请求） | `status` / `interpret` / `solve` / `adopt` **全部通过** |
+| 两次确认 / 候选 / 拒绝 / 过期 / 模型不可用 / 原方案不变 | **全部通过** |
+| 集成兼容性修复 | **2 处**（`diff.replaced` 键形状、`locked_courses[].reason` 可空）+ 20 项回归测试 |
+
+- 新增 `backend/tests/test_ai_planning_joint_e2e.py`（14 项，**真实监听端口 + 真实 HTTP**）；
+- 新增 `frontend/tests/ai-planning-joint-contract-fix.spec.ts`（6 项，先验证后修复）；
+- 完整逐项报告见 `docs/final_upgrade/reports/AI_PLANNING_JOINT_QA_REPORT.md`；
+- ⛔ 未改 `/schemas/**` 与 `/docs/interfaces/**`；⛔ 未改后端生产代码；
+- ⛔ 本轮仍**没有**密钥 ⇒ 真实 DeepSeek 在线调用 **NOT VERIFIED**，
+  全部用例的 `generator_kind` 是 `test_double` 或 `unavailable`。
+
+## 是什么
+
+转专业学生的"AI 调整补修方案"后端控制器：
+
+```text
+自然语言 → 结构化意图草稿（只读，不求解）
+        → 用户确认 → 受控 Planner 生成候选 + 确定性差异
+        → 用户二次确认 → 采用 / 拒绝（绑定方案指纹）
+```
+
+私有前缀 `/api/v1/ai-planning`：`GET /status`、`POST /interpret`、`POST /solve`、`POST /adopt`。
+契约（含 JSON 示例与全部错误码）见 `docs/final_upgrade/AI_PLANNING_API_HANDOFF.md`。
+
+## 已实现
+
+- **DeepSeek 接入**：OpenAI 兼容 `/chat/completions`、`response_format={"type":"json_object"}`；
+  仅用标准库 `urllib`（⛔ 未引入第三方依赖或 Agent 框架）。
+  配置全部走环境变量：`DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` /
+  `AI_PLANNING_ENABLED`（**默认 false**）/ `AI_PLANNING_MAX_OUTPUT_TOKENS` /
+  `AI_PLANNING_REQUEST_TIMEOUT` / `AI_PLANNING_MAX_CALLS_PER_REQUEST` /
+  `AI_PLANNING_MAX_SESSIONS` / `AI_PLANNING_ADOPT_TTL_SECONDS`。
+  占位样例见 `backend/.env.example`（⛔ 无真实值）。取值都有**硬上界**。
+- **严格意图解析**：枚举白名单 + 课程 / 教学班白名单 + 学分依据校验；
+  **白名单外标识 ⇒ 拒绝整份草稿**（不是静默丢弃）；
+  "太累 / 少上一点"⛔ 不会被换算成任何固定学分数；
+  硬约束 `max_credit_limit` 必须带 `evidence`。
+- **确认门**：`solve()` 只有在用户确认且 `plan_digest` 与当前上下文一致时才执行；
+  `intent_id` / `candidate_id` 由内容派生（⛔ 不含个人信息）。
+- **候选只由受控 Planner 产生**：调用冻结的
+  `PlannerProvider.plan(makeup_tasks, offerings, current_schedule, preference)` 四参数签名；
+  ⛔ 未改签名、⛔ 未复制求解逻辑、⛔ 不接受模型输出的 `PlanResult`。
+  服务端再做确定性复核：锁定课程 / 未知班次 / 学分与数据来源。
+- **确定性差异**：`diff`（added / removed / replaced / kept / 学分增减）与 `risks`
+  全部由后端计算，⛔ 不来自模型输出。
+- **二次确认采用**：`adopt(accept=true/false)`；重复采用 409、指纹不符或过期 410、
+  未知 id 404；拒绝 / 超时 / 出错都**不改变原方案**。
+- **有界错误与成本**：401/402/429/5xx、超时、网络、超大响应、空 JSON、
+  幻觉课程号、预算超限 —— 全部有固定错误码与有边界 HTTP 状态；⛔ 不重试、⛔ 不回退到 Mock。
+- **PII 边界**：消息命中个人信息 / 凭据模式 ⇒ **400 且一个字节都不外发**；
+  发给模型的上下文只含课程号、学分、状态、学期、已声明约束；
+  ⛔ 不含姓名 / 学号 / 成绩 / GPA / Cookie / Token。
+- **无密钥可测**：`RuleFakeIntentModel` / `ScriptedIntentModel` / `UnavailableIntentModel`
+  通过依赖注入使用；它们返回 `generator_kind = test_double`，⛔ **绝不**是 `deepseek_live`。
+
+## 生成方式标记（前端必须如实展示）
+
+```text
+deepseek_live   真实在线调用成功（唯一可声称"已接入"的取值）
+test_double     注入的测试替身（无密钥测试用）
+unavailable     未启用 / 无密钥 / 网络 / 协议 / 空输出
+```
+
+## 当前未完成 / BLOCKED
+
+- **真实在线调用：NOT VERIFIED** —— 运行环境未注入密钥；
+  ⛔ 报告与响应都未声称已完成真实调用。
+- **真实已核验培养方案目录与真实教学班快照未装配**（沿用上一轮结论）；
+  控制器只消费调用方传入的已验证对象，并如实标注 `data_source`（mock/real/mixed/unknown）。
+- **会话仅进程内**：`adopted_version_scope = process_local_session`；
+  重启 / 淘汰即失效并返回 404，⛔ 不宣称持久账户或跨设备同步。
+- **不支持**：`exclude_course` 硬约束、跨学期自动重排 —— 明确返回 `blocked` + 固定原因，
+  ⛔ 不硬造候选（需负责人裁决是否扩展 Planner）。
+- **前端未实现**（属 Agent B）。
+- 未做"可行子集搜索 / 多候选排序"：当前超限时按保守拒绝处理，
+  这不等于最优补修路径（`INTEGRATION_QA_STATUS.md` 已记录）。
+
+## 边界（硬）
+
+- ⛔ 未改 `/schemas/`、`/docs/interfaces/`、`AGENTS.md`；
+- ⛔ 未改 `PlannerProvider` 四参数签名或 `app/planner/**` 实现；
+- ⛔ 未改 `/api/v1/plan`、`/api/v1/mock/*`、`/api/v1/personal-planning/*`、`/api/v1/explanation/*`；
+- ⛔ 未改 `app/curriculum/**`、`app/personal/**`、`app/explanation/**`、`app/integration/**`；
+- ⛔ 未引入数据库、未落盘会话、未联网（联网只发生在真实客户端被调用时）。
+
+## 测试
+
+```powershell
+cd backend && $env:PYTHONUTF8="1"; python -m pytest -q
+```
+
+后端全量 **3174 passed / 2 failed / 2 skipped**（基线同命令 3078 / 2 / 2）。
+新增 96 项（service 47 / api 22 / client 27）。
+2 项失败为既有 Windows 路径语义差异，与本轮无关，详见
+`docs/final_upgrade/reports/DEEPSEEK_CONTROLLER_REPORT.md` §5。
+
+## 下一步
+
+1. Reviewer 评审；2. 运行方用**新密钥**做在线验证；3. B 按 HANDOFF 实现前端；
+4. 是否扩展 Planner（exclude / 跨学期 / 可行子集）需先走接口变更提案。
