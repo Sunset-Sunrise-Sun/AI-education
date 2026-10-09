@@ -1994,3 +1994,27 @@
 - 下一步：
   - 与 Agent A 的个人输入管线联调（解释改为直接消费其已证实结果，避免上下文重复传输）；
   - 课表图片识别 / 聊天框 / 自然语言调课仍为**明确延后项**，本轮未做任何假 OCR 或假模型调用。
+
+### 2026-10-09 - 浏览器级 E2E 与系统验收（分支 `test/final-upgrade-browser-e2e`）
+- 本次目标：在真实浏览器里跑通三入口与 AI 调整闭环，并验证"浏览器实际发出的 HTTP 请求"。
+- 已完成：
+  - 新增测试基础设施 `tools/browser-e2e/`（harness / 服务编排 / 18 个用例 / 运行器 / 沙箱兼容启动包装器）
+    与 `backend/tests/qa_browser_e2e/`（QA 专用 ASGI 入口 + 演示数据 + 夹具自检脚本）。
+  - 浏览器：系统 Edge（`playwright-core` `channel=msedge`）；依赖只加在子目录，`frontend/package.json`
+    未改动；该依赖 `npm audit` 为 **0 漏洞**、无浏览器下载。
+  - 用例结果：**18 passed / 0 failed**（P0 主流程 10 项、响应式 3 项、异常与并发 3 项、未启用 1 项、预览 1 项）。
+  - 关键断言：完整闭环真实调用 status/interpret/solve/adopt；未确认时 /solve 为 0；
+    歧义时不求解；拒绝/过期/冲突保持原方案；未启用档 AI 请求为 0；预览档 /ai-planning/* 为 0；
+    后端不可用不回退 fixture；连点只发一次请求。
+  - 发现并修正 4 类**测试自身**问题（路由覆盖顺序、沙箱 stdio、截图目录、用例假设），
+    ⛔ 未修改任何生产代码或业务规则。
+- 修改文件：见 `docs/final_upgrade/reports/BROWSER_E2E_REPORT.md` §8。
+- 测试：浏览器 18/18；后端 3188 passed / 2 failed（既有平台差异）/ 2 skipped；前端 274 passed；
+  `vue-tsc` exit 0；`npm run build` exit 0。**无新回归。**
+- 使用数据：Mock（人工构造演示数据）+ 注入式测试模型（`test_double`）。
+- 已知问题：抽屉头部在 375px 下把 `enabled/api_key_configured/live_model_available/model`
+  等原始配置细节直接铺在状态行里，换行较长（不溢出、不影响操作）——建议后续收敛为简短文案。
+- 需要人工确认：真实已核验培养方案目录与真实教学班/成绩数据接入后的浏览器复跑；
+  DeepSeek 真实在线验证；是否把浏览器 E2E 纳入 CI。
+- 对其他模块影响：无（未改生产代码、公共 Schema、接口、Planner 算法）。
+- 下一步：接入真实数据后补跑"转专业分析 → 个人规划成功路径"并接到 AI 调整上下文。

@@ -1112,3 +1112,20 @@ frontend: npm test（9 文件 134 用例）· npm run typecheck（vue-tsc --noEm
 - `partial` snapshot 仍不得进入产品链路，真实 Capture Bundle 仍不得进入 public Git；
 - G11 学校侧业务原因仍未知；前端只展示 `meetings=[]` 的中性数据状态，不命名学校业务状态；
 - 完成真实 Provider 联调后，再做 Case A 端到端 Demo 与比赛展示收尾。
+
+## 浏览器 E2E 验收（2026-10-09，分支 `test/final-upgrade-browser-e2e`）
+
+- 用**真实浏览器**（系统 Microsoft Edge，`playwright-core` `channel=msedge`，⛔ 未下载浏览器）
+  对真实 FastAPI + 真实 Vite 前端跑通三入口与 AI 调整两次确认闭环：**18 / 18 通过**。
+- 断言的是**浏览器实际发出的 HTTP 请求**：完整闭环四接口全部真实调用；
+  未确认时 `/solve` 调用数为 0；未启用档 AI 请求为 0；预览档 `/ai-planning/*` 请求为 0。
+- 覆盖：三入口切换、转专业分析如实显示"没有已核验版本目录"、补修路径四状态与 Mock 标识、
+  候选对比（真实 Planner 新增一门课）、采用后刷新展示方案、拒绝/过期/冲突保持原方案、
+  抽屉重开与导航切换不误导、375/768/1440 三档布局、连点只发一次请求、后端不可用不回退 fixture。
+- 本轮**未改任何生产代码、公共 Schema、接口或 Planner 算法**；
+  新增内容全部在 `backend/tests/qa_browser_e2e/` 与 `tools/browser-e2e/`（测试基础设施）。
+- 回归：后端 3188 passed / 2 failed（既有平台差异）/ 2 skipped；前端 274 passed；
+  `vue-tsc` exit 0；`npm run build` exit 0。**无新回归。**
+- **仍未验证**：真实 DeepSeek 在线调用（NOT VERIFIED，无密钥）、真实已核验培养方案目录与
+  真实教学班/成绩数据 E2E（BLOCKED）。
+- 详见 `docs/final_upgrade/reports/BROWSER_E2E_REPORT.md`。
