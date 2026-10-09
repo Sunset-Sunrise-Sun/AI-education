@@ -1,0 +1,105 @@
+# CI：后端回归 / 前端回归 / 依赖审计（只报告，⛔ 不自动修复依赖）
+#
+# ## 安全边界（任务书要求，⛔ 不要放宽）
+#
+# - 顶层 `permissions: contents: read`：Job 拿不到写权限，即使被恶意 PR 触发也无法改仓库。
+# - ⛔ 不使用 `pull_request_target`（它会把 base 分支的 secrets 暴露给 fork PR）。
+# - ⛔ 本文件**没有任何** `secrets.*` 引用：任何密钥都不会进入 CI。
+# - ⛔ 不运行 `npm audit fix` / `--force`：审计只报告，**绝不自动修改依赖**。
+# - ⛔ 没有 auto-merge、没有自动提交、没有部署步骤。
+#
+# ## 覆盖范围
+#
+# - 后端：`backend/` 的 pytest（`PYTHONUTF8=1`，与本地一致）。
+# - 前端：`npm ci` → `vitest run` → `vue-tsc --noEmit` → `npm run build`。
+# - 依赖：`npm audit --audit-level=high`（只读命令，非零退出即让 Job 失败）。
+#
+# ## 明确**不**在 CI 里做的事
+#
+# - 不跑浏览器 E2E（需要浏览器二进制，成本与稳定性不可控；见
+#   `tools/browser-e2e/README` 与 `docs/final_upgrade/DEMO_ACCEPTANCE_RUNBOOK.md`）。
+# - 不访问任何学校系统、真实教务数据或真实模型。
+#
+# ## 未验证
+#
+# 该工作流**尚未在 GitHub Actions 上运行过**（仓库此前没有 CI）。
+# 详见 `docs/final_upgrade/CI_PLAN.md` §4。
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - feature/final-upgrade
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+      - name: pytest
+        run: python -m pytest -q
+        env:
+          # 与本地一致：Windows/GBK 环境必需；Linux 上无副作用。
+          PYTHONUTF8: '1'
+          # 明确关闭真实模型：CI 永不调用在线模型。
+          AI_PLANNING_ENABLED: 'false'
+
+  frontend:
+    name: Frontend tests / typecheck / build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: 安装依赖（按 lockfile，可复现）
+        run: npm ci
+      - name: 单元测试
+        run: npx vitest run
+      - name: 类型检查
+        run: npx vue-tsc --noEmit
+      - name: 构建
+        run: npm run build
+
+  dependencies:
+    name: Dependency audit（只报告）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: npm audit（⛔ 不执行 fix，不修改任何依赖）
+        run: npm audit --audit-level=high

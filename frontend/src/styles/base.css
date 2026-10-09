@@ -2582,6 +2582,15 @@ code.mono {
   gap: 12px;
 }
 
+/*
+ * 头部主列：允许收缩（`min-width: 0`），这样长文本会在**列内**换行，
+ * ⛔ 不会把右侧关闭按钮挤窄（关闭按钮本身另有 `flex-shrink: 0`）。
+ */
+.ai-drawer__head-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .ai-drawer__head .button {
   flex-shrink: 0;
   white-space: nowrap;
@@ -2597,6 +2606,83 @@ code.mono {
   font-size: 12px;
   color: var(--text-muted);
   word-break: break-all;
+}
+
+/*
+ * 面向用户的能力状态：一行可读的摘要（375px 下最多两三行）。
+ * ⛔ 原始配置字段不再放在这里，而是收进 `.ai-drawer__tech`（默认折叠）。
+ */
+.ai-drawer__capability {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.ai-drawer__tech {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.ai-drawer__tech > summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  /* 折叠标题是短标签，⛔ 不允许被挤成多行 */
+  white-space: nowrap;
+  list-style: revert;
+}
+
+.ai-drawer__tech > summary:hover {
+  color: var(--accent);
+}
+
+.ai-drawer__tech-line {
+  margin: 6px 0 4px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  word-break: break-all;
+  background: var(--panel-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+}
+
+.ai-drawer__tech-list {
+  margin: 4px 0;
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+  gap: 2px 10px;
+}
+
+.ai-drawer__tech-list dt {
+  margin: 0;
+  color: var(--text-muted);
+}
+
+.ai-drawer__tech-list dd {
+  margin: 0;
+  word-break: break-all;
+}
+
+.ai-drawer__tech-note {
+  margin: 6px 0 0;
+  line-height: 1.5;
+}
+
+/* 手机宽度：技术详情改为单列，避免两列在 375px 下互相挤压 */
+@media (max-width: 720px) {
+  .ai-drawer__tech-list {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .ai-drawer__tech-list dd {
+    margin: 0 0 4px;
+  }
 }
 
 .ai-drawer__sep {
