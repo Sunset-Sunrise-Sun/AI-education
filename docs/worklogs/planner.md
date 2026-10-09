@@ -235,3 +235,34 @@
 - 当前治理状态保持：DG-07A / DG-07B 已实施并 Review；DG-07C 代码已正式审查、等待本次文档修复复验；DG-07D 尚未批准 / merge；DG-07 overall 仍 IMPLEMENTATION PENDING；Data Gate 仍 Reopened；G11 仍 not resolved。
 - 修改范围：仅 `docs/status/planner.md`、`docs/worklogs/planner.md`、`docs/interfaces/planner.md`。
 
+### 2026-10-08 - Final Upgrade · Agent A：学分上限的确定性接纳校验（**行为变更**，分支 `feature/personal-planning-pipeline`）
+- 本次目标：定位"选修新增通道"的确定性校验缺口，防止多门新增相互冲突、
+  已选与新增冲突、以及**总学分上限越界**被错误接纳。
+- 已完成：
+  - 新增 `backend/app/planner/credit_limit.py`（纯函数）：
+    `credit_ledger(...)` 按 `CourseOffering.credit` → `MakeupTask.credit` 统计学分，
+    ⛔ 不把缺失学分当 0、⛔ 不按同类课程推测；`credit_state(...)` 返回
+    `not_declared / within_limit / over_limit / unverifiable` 四个**固定状态**，
+    ⛔ 不返回布尔值（"无法证明"与"已确认越界"必须分开处理）。
+  - `RestrictedPlannerProvider._apply_credit_limit(...)`：在"冲突组合已排除、
+    当前课表无已知冲突"之后，把学生**本人显式声明**的 `Preference.max_credit`
+    作用于 `原课表 + 累计新增` 这一整集合。
+  - `_pending_non_time` 不再把 `max_credit` 列进"语义未确认"（它已成为显式判断）。
+- 边界（⛔ 未做）：不改四参数签名、不改 `PlanResult` / `unresolved[].type` 取值、
+  不改公共 Schema、不排序 / 不评分 / 不挑选牺牲哪一门、不改学校规则或 Path Repair 目标。
+- 测试：
+  - 新增 `backend/tests/test_planner_credit_limit.py`（21 项）：台账纯函数、两门新增互相冲突、
+    周次不重叠、累计超限、原课表已超限只提示、重复身份 / 重复任务拒绝、
+    以及"最终建议集合必然无已知冲突"的独立复核。
+  - 改写 2 处既有断言口径（⛔ 不是为了让测试变绿而放宽）：
+    `test_unconfirmed_preferences_do_not_filter_score_or_make_infeasible` 去掉
+    `max_credit` 参数化（改由新用例覆盖），
+    `test_synthetic_production_e2e.py::test_preference_fields_are_passed_through_and_reported`
+    对 `max_credit` 改断言"学分上限"语义；两者都补充了说明注释。
+- 使用数据：Mock（合成教学班夹具，未改 `mock_data/`）。
+- 已知问题：**信用额度模型**（哪些课计入本学期、是否含重修）仍需负责人确认；
+  该口径未确认前不应据此在真实链路上做产品承诺。
+- 需要人工确认：`max_credit` 是否应影响 Planner 接纳（本轮的判断依据是
+  "用户显式偏好即生效" + 任务书明确要求"防止总学分上限越界被错误接纳"）。
+- 对其他模块影响：Curriculum / 个人规划入口会看到新增的 `manual_confirmation` 文案；
+  `/schemas/`、`/docs/interfaces/`、Integration 签名均未改动。

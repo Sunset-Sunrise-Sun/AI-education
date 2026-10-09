@@ -15,7 +15,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api import completed_courses, health, mock, plan
+from app.api import completed_courses, explanation, health, mock, personal_plan, plan
 from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
 from app.course_data import CourseDataAcceptanceError
 from app.services.mock_service import MockDataError
@@ -115,3 +115,11 @@ app.include_router(plan.router, prefix=API_V1_PREFIX)
 # 通用已修课程 XLSX 摄取入口（Gate F）：
 # ⛔ 不接入已冻结的 Case A fixed-case runtime，也⛔ 不改动 `/api/v1/plan` 的请求契约。
 app.include_router(completed_courses.router, prefix=API_V1_PREFIX)
+
+# 个人规划入口（Final Upgrade · Agent A）：
+# 独立的版本目录 + 独立的学生输入 → 本学生自己的 Curriculum case → 既有 MakeupTask[] 路线。
+# ⛔ 不改动 `/api/v1/plan`，⛔ 不读取已冻结 Case A runtime 的任何配置。
+app.include_router(personal_plan.router, prefix=API_V1_PREFIX)
+
+# Final Upgrade · Agent B：只读解释 API，不改课程认定或 Planner。
+app.include_router(explanation.router, prefix=API_V1_PREFIX)

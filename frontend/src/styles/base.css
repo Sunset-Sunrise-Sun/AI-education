@@ -2004,3 +2004,264 @@ code.mono {
     text-align: center;
   }
 }
+
+/* ---------- 解释与依据（Final Upgrade · Agent B） ---------- */
+/* 只负责展示布局与视觉区分；不承载任何业务判断。 */
+
+.button--ghost {
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border);
+}
+
+.button--ghost:hover {
+  background: var(--panel-subtle);
+}
+
+.cell-explain {
+  white-space: nowrap;
+}
+
+.selected-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.plan-hero__evidence {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
+.plan-hero__evidence-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.explain-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.explain-panel__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.explain-panel__title h3 {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+
+.explain-panel__subtitle {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  max-width: 70ch;
+}
+
+.explain-panel__actions {
+  display: flex;
+  gap: 8px;
+}
+
+.explain-panel__focus {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-subtle);
+  border: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.explain-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.explain-disclaimer,
+.explain-fallback {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel-subtle);
+  font-size: 13px;
+}
+
+.explain-fallback {
+  border-color: #f0c36d;
+  background: #fff8e6;
+}
+
+.explain-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  font-size: 13px;
+}
+
+.explain-notes,
+.explain-warnings {
+  margin: 0;
+  padding: 10px 12px 10px 28px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel-subtle);
+  font-size: 13px;
+}
+
+.explain-warnings {
+  border-color: #f0c36d;
+  background: #fff8e6;
+}
+
+.explain-warnings ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.explain-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.explain-item {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel);
+}
+
+.explain-item__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.explain-item__title {
+  font-weight: 600;
+}
+
+.explain-item__answer {
+  margin: 0 0 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.explain-item__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.explain-block {
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-subtle);
+}
+
+.explain-block--confirm {
+  border-style: solid;
+}
+
+.explain-block__title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+.evidence-list,
+.confirm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.evidence-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.evidence-row__source {
+  font-weight: 600;
+}
+
+.evidence-row__note,
+.evidence-row__hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.confirm-row {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.explain-footnote {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.tag--generator-model {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.tag--generator-template {
+  background: #e0e7ff;
+  color: #3730a3;
+}
+
+.tag--generator-fallback {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+.tag--generator-unknown {
+  background: #f3f4f6;
+  color: var(--text-muted);
+}
+
+.tag--explain-kind {
+  background: var(--panel-subtle);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.tag--evidence {
+  background: var(--panel-subtle);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.tag--evidence-absent,
+.tag--evidence-unknown {
+  border-style: dashed;
+  color: var(--text-muted);
+}

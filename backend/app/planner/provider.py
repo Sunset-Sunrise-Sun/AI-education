@@ -17,6 +17,13 @@ from app.models.contracts import (
     PlanStatus, Preference, SelectedClass, Unresolved,
 )
 from app.planner.conflicts import ConflictState, check_conflict, check_schedule_conflict
+from app.planner.credit_limit import (
+    CREDIT_STATE_OVER_LIMIT,
+    CREDIT_STATE_UNVERIFIABLE,
+    credit_ledger,
+    credit_state as credit_state_for,
+    task_credit_map,
+)
 from app.planner.feasibility import combination_state, schedule_state
 from app.planner.section_repair import find_alternative_sections
 
@@ -150,6 +157,10 @@ class RestrictedPlannerProvider:
         if schedule_state(current) is ConflictState.CONFLICT:
             issue("manual_confirmation", "当前课表含已知时间冲突，仍保留当前选择事实；未认证为可执行课表。")
             proposed = []
+        # 学分上限（学生本人显式声明的 `Preference.max_credit`）：
+        # 新增彼此不冲突 ≠ 本次建议仍符合学生自己声明的上限。
+        # 只校验**原课表 + 累计新增**这一整集合；⛔ 不排序、⛔ 不挑选牺牲哪一门。
+        proposed = self._apply_credit_limit(current, proposed, tasks, pref, issue)
         selected = [*current, *proposed]
 
         # 四参数契约没有本次学期与相对学期的映射；required != 本学期必达。
@@ -200,6 +211,77 @@ class RestrictedPlannerProvider:
         )
 
     @staticmethod
+    def _apply_credit_limit(
+        current: list[CourseOffering],
+        proposed: list[CourseOffering],
+        tasks: list[MakeupTask],
+        pref: Preference,
+        issue: Callable[[str, str], None],
+    ) -> list[CourseOffering]:
+        """把学生自己声明的学分上限变成对候选集合的确定性接纳判断。
+
+        - 已声明学分合计**可证明超限** → 本次不加入任何新增（⛔ 不排序、⛔ 不牺牲某门）；
+        - 有课程没有声明学分 → 上限是否满足**无法证明**，明确要求人工核验，
+          并且**不**把新增当成"已通过学分校验"；
+        - 原课表本身已超限 → 只提示，⛔ 不篡改学生已选事实。
+
+        ⛔ 本函数不发明上限、⛔ 不折算学分、⛔ 不改变任何冲突判定或学业优先级。
+        """
+
+        if pref.max_credit is None:
+            return proposed
+        credits = task_credit_map(tasks)
+        ledger = credit_ledger([*current, *proposed], task_credits=credits)
+        state = credit_state_for(pref, ledger)
+        current_ledger = credit_ledger(current, task_credits=credits)
+        original_over_limit = (
+            current_ledger.complete and current_ledger.declared_total > pref.max_credit
+        )
+        if state is CREDIT_STATE_OVER_LIMIT:
+            if original_over_limit and not proposed:
+                # 超限**完全来自学生已选的课表**：只提示，⛔ 不篡改已选事实。
+                issue(
+                    "manual_confirmation",
+                    f"当前课表已声明学分合计 {current_ledger.declared_total:g} 本身已超过"
+                    f"学生声明的学分上限 {pref.max_credit:g}；保留当前选择事实，"
+                    "不自动删除或替换任何当前班，也不据此判定本次建议不可执行。",
+                )
+                return proposed
+            issue(
+                "manual_confirmation",
+                f"本次建议课表（原课表 {len(current)} 个班 + 新增 {len(proposed)} 个班）"
+                f"已声明学分合计 {ledger.declared_total:g} 超过学生声明的学分上限 "
+                f"{pref.max_credit:g}；本次不自动加入新增，也不折算或删除任何课程。",
+            )
+            return []
+        if state is CREDIT_STATE_UNVERIFIABLE:
+            issue(
+                "manual_confirmation",
+                "本次建议课表中有教学班没有声明学分（"
+                + "、".join(sorted(ledger.unknown_course_ids))
+                + "），因此是否超过学生声明的学分上限无法证明，需要人工核验；"
+                "本次仍列出已确认无时间冲突的唯一 CLEAR 新增，但不认证其学分合规性。",
+            )
+        if original_over_limit:
+            issue(
+                "manual_confirmation",
+                f"当前课表已声明学分合计 {current_ledger.declared_total:g} 本身已超过"
+                f"学生声明的学分上限 {pref.max_credit:g}；保留当前选择事实，"
+                "不自动删除或替换任何当前班。",
+            )
+        else:
+            # 已校验通过时也**逐字回报本次真正使用的输入**：
+            # 这样"Planner 收到了调用方真实的 max_credit，而不是悄悄丢弃 / 改写"
+            # 这件事是可复核的，而不是只靠"没有报错"。
+            issue(
+                "manual_confirmation",
+                f"本次建议课表已声明学分合计 {ledger.declared_total:g} 未超过"
+                f"学生声明的学分上限 {pref.max_credit:g}；学分上限仅用于本次接纳判断，"
+                "不改变任何学业优先级、必修要求或学校规则。",
+            )
+        return proposed
+
+    @staticmethod
     def _unknown_message(item: CourseOffering) -> str:
         return f"当前班 {item.course_id}/{item.class_id} 在当前来源快照中没有可用排课信息，无法完成完整时间冲突确认，需要人工核验；保留当前选择不代表 CLEAR。"
 
@@ -208,8 +290,13 @@ class RestrictedPlannerProvider:
         selected: list[CourseOffering], preference: Preference,
         issue: Callable[[str, str], None],
     ) -> None:
-        active = [name for name, value in preference.model_dump().items()
-                  if value is not None and value is not False and value != [] and value != ""]
+        # `max_credit` 由 `_apply_credit_limit` 单独处理（见上），这里不重复报告：
+        # 它已经从"语义未确认"变成一次显式的确定性接纳判断。
+        active = [
+            name for name, value in preference.model_dump().items()
+            if name != "max_credit" and value is not None and value is not False
+            and value != [] and value != ""
+        ]
         if active:
             issue("manual_confirmation", f"Preference 字段 {', '.join(active)} 的硬/软分类或执行口径尚未完整确认；不据此筛班、评分或证明无解，影响可执行性/需求满足情况待确认。")
         # 不把供给里的未用班状态带入方案，也不把容量字段默认升级为硬规则。

@@ -277,3 +277,30 @@
   声明撒谎但实际超限 ⇒ 413），并对关键用例同时走**真实 endpoint** 与**裸 ASGI**。
 - 边界：⛔ 未扩 API（同一 endpoint、同一错误模型，只是把解析变严格）；
   ⛔ 未改 public Schema / frozen Provider contract；⛔ 未触碰 Gate E 与已合并 runtime/store stack。
+
+### 2026-10-08 - Final Upgrade · Agent A：受核验培养方案目录 + 个人规划入口（分支 `feature/personal-planning-pipeline`）
+- 本次目标：保留旧 Case A，新增"仅在现有已验证版本与规则范围内"的个人规划入口；
+  同时修复新增/选修接纳的确定性校验缺口。
+- 已完成：
+  - 新增 `backend/app/curriculum/catalog.py`：只从**显式给出**的本地 artifact 读取可选版本，
+    `verification` / `supported` / 记录合法性全部 fail closed，不可选版本**不进入可选列表**；
+    目录缺失 = 空目录（不是异常）；未知 `catalog_version` 不做向前兼容解析。
+  - 新增 `backend/app/personal/`（`student_input.py` / `planning.py` / `__init__.py`）：
+    本学生输入归一化 + 复用既有 `CurriculumCase` / `CurriculumCaseProvider` 计算，
+    ⛔ 不复用任何 case 文件、⛔ 不继承其他学生的 `satisfied` 结论。
+  - 新增 `backend/app/api/personal_plan.py`（两条路由）与
+    `backend/app/services/personal_runtime.py`；`app/main.py` 只加一行 `include_router`。
+  - **未修改** `/schemas/`、`/docs/interfaces/`、四个冻结 Integration 调用签名、
+    `POST /api/v1/plan` 契约、已冻结 Case A runtime。
+- 修改文件：见 `docs/final_upgrade/reports/AGENT_A_REPORT.md`。
+- 测试：`backend/tests/test_personal_planning.py`（27 项）、
+  `backend/tests/test_personal_planning_api.py`（14 项）；
+  UTF-8 模式后端全量 **3045 passed / 2 failed / 2 skipped**，
+  2 项失败为既有 Windows 路径语义差异，与本次改动无关。
+- 使用数据：**Mock**（`backend/tests/personal_fixtures.py`，全部人工构造并显式标注 `mock://`）。
+  真实已核验目录与第二位学生材料**未交接**，本轮不等待、不编造。
+- 已知问题：真实数据验证未完成；新 API 路径与目录 artifact 格式待负责人 / Reviewer 确认。
+- 需要人工确认：`APP_PERSONAL_CATALOG_DIR` 的真实内容；`/api/v1/personal-planning/*` 路径；
+  目录 artifact 字段是否作为长期内部格式保留。
+- 对其他模块影响：Planner 新增 `credit_limit.py` 并改变 `max_credit` 接纳口径（见 planner STATUS/WORKLOG）。
+- 下一步：项目 Reviewer 审核；负责人提供已核验目录与第二位学生脱敏材料后做真实联调。

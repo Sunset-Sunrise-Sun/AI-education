@@ -492,8 +492,15 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
     Gate F 只新增了一条：通用已修课程 XLSX 摄取入口
     `POST /api/v1/completed-courses/import`（见 `docs/data/XLSX_COMPLETED_COURSES_IMPORT.md`），
     它⛔ 不改 `/api/v1/plan` 契约，也⛔ 不接入 Case A fixed-case runtime。
+
+    Final Upgrade · Agent A 新增两条**个人规划**入口（见
+    `docs/final_upgrade/reports/AGENT_A_REPORT.md`）：
+    `GET /api/v1/personal-planning/curriculum-versions` 与
+    `POST /api/v1/personal-planning/plan`。两者⛔ 不改 `/api/v1/plan` 契约，
+    ⛔ 不读取已冻结 Case A runtime 的任何配置，也⛔ 不在未装配时回退到 Mock。
     """
 
+    # 合并验收：个人规划 2 条 API + 只读解释 1 条 API 均显式登记。
     paths = set(client.get("/openapi.json").json()["paths"])
 
     for forbidden in ("/plan", "/integration", "/api/v1/integration"):
@@ -510,4 +517,9 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         "/api/v1/plan",
         # Gate F（已授权的新增入口）：通用 XLSX 摄取，⛔ 不是 integration 数据通道。
         "/api/v1/completed-courses/import",
+        # Final Upgrade · Agent A：个人规划入口（独立模块 + 最小注册改动）。
+        "/api/v1/personal-planning/curriculum-versions",
+        "/api/v1/personal-planning/plan",
+        # Final Upgrade · Agent B：只读解释入口。
+        "/api/v1/explanation/plan",
     }

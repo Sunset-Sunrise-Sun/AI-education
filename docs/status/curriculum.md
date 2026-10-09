@@ -1,6 +1,6 @@
 # Curriculum 当前状态
 
-更新日期：2026-10-05。状态：文件导入与结构化输入的 Mock MVP 已合入 main；本轮新增**补修判定时点（historical makeup scope）**内部机制，待 Architecture Review。
+更新日期：2026-10-08（Final Upgrade · Agent A 补充）。状态：文件导入与结构化输入的 Mock MVP 已合入 main；**补修判定时点（historical makeup scope）**内部机制待 Architecture Review；本轮在分支 `feature/personal-planning-pipeline` 上新增**受核验培养方案目录读取器**（`backend/app/curriculum/catalog.py`），同样待 Architecture Review。
 
 - Case A 已选定。D4 脱敏表已私下交接，D2/D3 完整方案待私下交接。
 - 已实现内部 `CompletedCourse`、规范化和 XLSX 只读入口。待确认 ID 保留为空。
@@ -48,6 +48,34 @@
 - 最新后端回归：**2032 passed、2 failed、2 skipped**（UTF-8 模式）。两类失败均为既有环境性差异，与本次改动无关，详见下方说明。
 - 人工 Office 文件到 Provider 的计算链路已验证。真实 D2/D3、真实规则和真实端到端结果尚未验收，官方 Word 格式仍须按实物核对映射。
 
+## Final Upgrade · Agent A（2026-10-08，分支 `feature/personal-planning-pipeline`）
+
+- **新增受核验培养方案目录读取器** `backend/app/curriculum/catalog.py`：从调用方**显式给出**的本地
+  artifact 读取"可选版本"元信息（年级 / 校区 / 方向 / 来源 / 核验依据 / 课程数 / 学分等），
+  并复用既有 `normalize_curriculum_version` 构造 `CurriculumVersion`。
+  - ⛔ **不扫描文件系统找默认目录**、⛔ 不联网、⛔ 不读数据库、⛔ 不读 `mock_data`；
+  - ⛔ **不解析 docx**：artifact 只能给出**既有 reader 已支持**的结构化 course records；
+    Word 培养方案的读取仍走既有 `app.curriculum` 入口，本模块不为个人入口另造解析路径；
+  - `verification.verified != true` → `not_verified`；`supported=false` → `unsupported_by_source`；
+    同一 `version_id` 出现多次 → `version_identity_conflict`；形状 / 记录非法 → `entry_invalid`；
+    artifact 缺失 → **空目录（不是异常）**；`catalog_version` 未知 → `artifact_format_unsupported`
+    且⛔ 不做向前兼容解析；
+  - 目录只暴露**可选**版本；`resolve()` 对不可选版本抛错，⛔ **不回退到 Case A / 第一个版本 / 任何默认值**；
+  - 目录 artifact 格式（`catalog_version` / `versions[]` / `verification`）是**本模块内部声明**，
+    ⛔ 不是公共 Schema。
+- **新增个人规划入口**（模块 `backend/app/personal/`，非公共契约）：
+  - `normalize_student_input(...)`：把"这一位学生"的输入归一化成显式对象；
+    `completed_source_id` 由**调用方**给出，⛔ 不取学生行里的来源字段；
+    全部认定 / 缺课记录必须属于本人来源，否则拒绝；
+  - `build_personal_plan(...)`：组装**本学生**的 `CurriculumCase` 并复用既有
+    `CurriculumCaseProvider.get_makeup_tasks()`；可选接入**已冻结的** `PlannerProvider.plan(...)`
+    四参数签名（⛔ 不新增参数、⛔ 不复制 Planner 逻辑）；
+  - `planning_assumptions` 是**明确标注的规划假设**（`planning_assumption_not_a_recognition`）：
+    ⛔ 绝不改变任何 `MakeupTask.status`，只作为待人工核验依据出现在结果说明里。
+- **公共输出 / 契约**：仍只有既有 `MakeupTask[]`（`CourseMatch.status` 语义
+  `required / possibly_equivalent / manual_confirmation / satisfied` 一字未改）；
+  `/schemas/` 与 `/docs/interfaces/` **未修改**；`CurriculumProvider` 签名未改。
+
 ## 判定时点与已知环境差异
 
 - 本轮新增 `as_of_term` 是**输入事实**，不是学校政策结论：Case A 的真实转专业执行时点（例如是否 `2025-2`）**仍需正式证据或负责人确认**。当前 Mock 只使用人工假定的 `mock://` 依据，明确标注“不是学校转专业执行时点”。
@@ -56,3 +84,13 @@
 - 环境差异（非本次改动引入）：宿主为 Windows + GBK（`cp936`）时，依赖 UTF-8 的既有用例会因解码失败报错；以 `PYTHONUTF8=1` 运行即可消除其中的解码类失败。剩余 2 项为 Windows 路径语义差异（含 `\x00` 的路径、ZIP 成员名中的字面反斜杠），既存在于本次改动之前，也与本次功能无关。
 
 下一步：项目 Reviewer 正式审核本轮补修判定时点机制，再由负责人提供 Case A 的正式 `as_of_term` 依据；接入私下交接的完整课程列表和规则依据。仓库外的待交接 case 已接入 D4，D2/D3 课程列表仍为空并保持不完整。当前没有 Planner 实际求解实现，联调仅验证契约传递。
+
+## 下一步（Final Upgrade · Agent A）
+
+- 负责人确认 `APP_PERSONAL_CATALOG_DIR` 指向的**真实**已核验目录内容：目录 artifact 必须由
+  负责人（或已批准工具）产出并逐条声明 `verification.evidence`；⛔ Builder 不自行批准任何版本。
+- 目录 artifact 的字段设计（`campus` / `track` / `verification` 等）需要项目 Reviewer 确认
+  是否作为**长期内部格式**保留；本轮它只被 `app/curriculum/catalog.py` 读取，
+  ⛔ 未进入 `/schemas/` 或 `/docs/interfaces/`。
+- 本轮全部验证使用**人工构造 Mock**（`backend/tests/personal_fixtures.py`）：
+  **当前功能仅使用 Mock 数据验证，尚未完成真实数据验证。**

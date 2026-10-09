@@ -35,6 +35,24 @@ export const PLAN_ENDPOINT = `${API_BASE_URL}/api/v1/plan`
  */
 export const PLAN_API_ENABLED: boolean = import.meta.env.VITE_PLAN_API_ENABLED === 'true'
 
+/**
+ * 解释接口：`POST /api/v1/explanation/plan`（Final Upgrade · Agent B）。
+ *
+ * 这是**新增的私有解释接口**：只读消费已有的 `PlanResult`（可选附带 MakeupTask / CourseOffering
+ * 上下文），返回带来源字段与证据强度的解释；⛔ 不改既有路径、⛔ 不改公共 Schema、⛔ 不参与计算。
+ */
+export const EXPLANATION_ENDPOINT = `${API_BASE_URL}/api/v1/explanation/plan`
+
+/**
+ * 解释通道开关。
+ *
+ * 默认 **关闭**：解释是**可选**能力，关闭时页面不会发出任何解释请求，
+ * 并明确显示"解释功能未启用"，⛔ **不会**在前端自行合成解释文本。
+ * 打开方式：在 `.env.local` 中设置 `VITE_EXPLANATION_API_ENABLED=true`。
+ */
+export const EXPLANATION_API_ENABLED: boolean =
+  import.meta.env.VITE_EXPLANATION_API_ENABLED === 'true'
+
 export const APP_TITLE = '学航·转衔'
 export const APP_SUBTITLE = '面向转专业学生的 AI 学业路径重构 Agent'
 
