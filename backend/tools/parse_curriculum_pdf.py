@@ -45,7 +45,10 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 from app.curriculum.errors import CurriculumNormalizationError  # noqa: E402
-from app.curriculum.pdf_reader import load_curriculum_pdf  # noqa: E402
+from app.curriculum.pdf_reader import (  # noqa: E402
+    inspect_curriculum_pdf,
+    load_curriculum_pdf,
+)
 from app.services.curriculum_pdf_ingest import (  # noqa: E402
     build_draft_from_result,
     describe_outcome,
@@ -131,6 +134,17 @@ def main(argv: list[str] | None = None) -> int:
         "--show-tables", action="store_true",
         help="先打印每页识别到的表格数量与表头，便于人工确认声明是否匹配",
     )
+    parser.add_argument(
+        "--inspect", action="store_true",
+        help=(
+            "只做逐页结构检查（表格数量 / 列数 / 行数 / 逐行表头原文）并以 JSON 输出，"
+            "⛔ 不解析课程、⛔ 不产出草稿。写 profile 前应先跑这个。"
+        ),
+    )
+    parser.add_argument(
+        "--inspect-out", default=None,
+        help="可选：把 --inspect 的 JSON 写到该路径（便于归档为逐页解析检查记录）",
+    )
     args = parser.parse_args(argv)
 
     pdf_path = Path(args.pdf)
@@ -138,6 +152,24 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"status": "failed", "reason": "pdf_unreadable"},
                          ensure_ascii=False), file=sys.stderr)
         return EXIT_INPUT
+
+    if args.inspect:
+        # ⛔ 只读检查：不解析课程、不产出草稿、不写目录。
+        try:
+            report = inspect_curriculum_pdf(pdf_path.read_bytes())
+        except CurriculumNormalizationError as error:
+            print(json.dumps({"status": "failed", "reason": str(error)},
+                             ensure_ascii=False), file=sys.stderr)
+            return EXIT_INPUT
+        report["file_name"] = pdf_path.name
+        report["note"] = (
+            "⛔ 这不是解析结果。请照抄 header_rows 里的表头原文来写 expected_headers。"
+        )
+        text = json.dumps(report, ensure_ascii=False, indent=2) + "\n"
+        if args.inspect_out:
+            Path(args.inspect_out).write_text(text, encoding="utf-8")
+        print(text)
+        return EXIT_OK
 
     tables = DEFAULT_TABLES
     if args.profile:

@@ -6,7 +6,8 @@ PDF bytes
    │  ② 文本层探测（扫描件 ⇒ fail closed，⛔ 不自动 OCR）
    │  ③ 表格识别（PyMuPDF `find_tables()`）
    ▼
-声明式 profile（`mode="tables"`）：**表头精确匹配** → 声明列位
+声明式 profile（`mode="tables"`）：**逐行表头精确匹配** → 声明列位
+   │  ⚠️ 支持 `header_rows`：真实培养方案常见**双行表头 + 合并单元格**
    ▼
 DocxCourseRow（含唯一 `source_record = "page:{n}!row:{i}"`）+ DocxImportIssue
    ▼
@@ -14,6 +15,10 @@ DocxImportResult  ← 与 DOCX 路径**完全相同**的类型
    ▼
 （零改动复用）catalog_draft → catalog.json → 审核 → provenance 门禁 → 个人规划
 ```
+
+**写 profile 之前先跑 `inspect_curriculum_pdf()`**（CLI：`--inspect`）：
+它逐页给出表格数量、列数、行数与**逐行表头原文**，⛔ 不猜任何列位。
+profile 的 `expected_headers` 必须**照抄**那里的表头文字。
 
 ## 为什么输出的是 `DocxImportResult`
 
@@ -59,6 +64,7 @@ __all__ = [
     "MAX_PDF_PAGES",
     "MIN_TEXT_CHARS_PER_PAGE",
     "PDF_PROFILE_FIELDS",
+    "inspect_curriculum_pdf",
     "load_curriculum_pdf",
 ]
 
@@ -86,9 +92,12 @@ PDF_PROFILE_FIELDS = frozenset({
 #: ⛔ 只支持这一种模式：先按**表头文字精确匹配**定位列，再按声明列位取值。
 #: ⛔ 不支持"按固定序号猜列"——PDF 没有稳定的列序保证，猜列就是猜数据。
 _PDF_PROFILE_FIELDS = frozenset({
-    "mode", "table_index", "columns", "expected_headers",
+    "mode", "table_index", "columns", "expected_headers", "header_rows",
     "requirement", "course_type", "group_id", "requirement_values",
 })
+
+#: 表头行数上限（真实培养方案常见 1–2 行；⛔ 不给"随便多写几行"的空间）。
+_MAX_HEADER_ROWS = 3
 
 _PDF_MAGIC = b"%PDF-"
 
@@ -107,7 +116,10 @@ class _TableProfile:
 
     table_index: int
     columns: tuple[tuple[str, int], ...]
-    expected_headers: tuple[tuple[str, tuple[str, ...]], ...]
+    #: `expected_headers[列名] = (候选1, 候选2, …)`，每个候选是**逐行表头文字**的元组。
+    #: 单行表头 ⇒ 每个候选是 1 元组；双行表头 ⇒ 2 元组。
+    expected_headers: tuple[tuple[str, tuple[tuple[str, ...], ...]], ...]
+    header_rows: int
     requirement: RequirementKind
     fixed_requirement: bool
     course_type: str | None
@@ -135,24 +147,84 @@ def _positive_int(value: object, label: str) -> int:
     return value
 
 
-def _header_candidates(value: object, label: str) -> tuple[str, ...]:
-    """一个映射列可以接受**若干种精确写法**（如中文表头 + 英文表头）。
+def _header_text(value: object, label: str, *, allow_null: bool) -> str:
+    """一行表头文字：字符串，或（`allow_null` 时）`None` 表示该格为空。"""
 
-    ⛔ 仍然是**精确匹配**：每个候选都要与单元格文字**完全相等**。
+    if value is None:
+        if allow_null:
+            return ""
+        _fail(f"{label}: expected text")
+    if not isinstance(value, str):
+        _fail(f"{label}: expected text")
+    return value.strip()
+
+
+def _header_candidates(value: object, label: str, *, rows: int) -> tuple[tuple[str, ...], ...]:
+    """一个映射列可以接受**若干种精确写法**；每种写法是**逐行表头文字**的元组。
+
+    单行表头（`rows=1`）两种等价写法：
+
+    ```json
+    "expected_headers": { "course_id": "课程号" }
+    "expected_headers": { "course_id": ["课程号", "Course Code"] }
+    ```
+
+    双行表头（`rows=2`）必须给出"每行一个候选"的列表；`null` = 该行这一格为空：
+
+    ```json
+    "expected_headers": { "credit": [["学分", null], ["Credit", "Credits"]] }
+    ```
+
+    ⚠️ 实测结论：**合并单元格不会产生 `""`**，而是 `null`（或横线渲染出的 `"-----"`）。
+    因此 `null` 表示"该行这一格为空"，而 `""` **永远匹配不上**——
+    这正是我们想要的：⛔ 不允许"向上填充"式的宽松匹配。
+
+    ⛔ 仍然是**逐行精确匹配**：每一行的单元格文字都要与对应候选**完全相等**。
     ⛔ 不做模糊匹配、⛔ 不做包含匹配、⛔ 不做大小写折叠——
     那些都会让"这一列到底是什么"变成猜测。
     """
 
-    if isinstance(value, str):
-        return (_text(value, label),)
-    if isinstance(value, (bytes, bytearray)) or not isinstance(value, Sequence):
+    if isinstance(value, (bytes, bytearray)):
         _fail(f"{label}: expected text or a list of texts")
-    candidates = tuple(_text(item, label) for item in value)
-    if not candidates:
+
+    if rows == 1:
+        if isinstance(value, str):
+            return ((value.strip(),),)
+        if not isinstance(value, Sequence):
+            _fail(f"{label}: expected text or a list of texts")
+        candidates: list[tuple[str, ...]] = []
+        for item in value:
+            if isinstance(item, str):
+                candidates.append((item.strip(),))
+            elif isinstance(item, Sequence):
+                entry = tuple(item)
+                if len(entry) != 1:
+                    # 单行表头不能接受"多行候选"。
+                    _fail(f"{label}: single-row header expects one text per candidate")
+                candidates.append((_header_text(entry[0], label, allow_null=True),))
+            else:
+                _fail(f"{label}: expected text or a list of texts")
+        if not candidates:
+            _fail(f"{label}: expected at least one candidate")
+        if len(set(candidates)) != len(candidates):
+            _fail(f"{label}: duplicate candidate")
+        return tuple(candidates)
+
+    if isinstance(value, str) or not isinstance(value, Sequence):
+        _fail(f"{label}: a {rows}-row header expects a list of candidates")
+    multi: list[tuple[str, ...]] = []
+    for item in value:
+        if isinstance(item, str) or not isinstance(item, Sequence):
+            _fail(f"{label}: a {rows}-row header expects a list of candidates")
+        entry = tuple(item)
+        if len(entry) != rows:
+            _fail(f"{label}: each candidate must give exactly {rows} header row(s)")
+        multi.append(tuple(_header_text(part, label, allow_null=True) for part in entry))
+    if not multi:
         _fail(f"{label}: expected at least one candidate")
-    if len(set(candidates)) != len(candidates):
+    if len(set(multi)) != len(multi):
         _fail(f"{label}: duplicate candidate")
-    return candidates
+    return tuple(multi)
 
 
 def _requirement_kind(value: object) -> RequirementKind:
@@ -187,8 +259,15 @@ def _profile(spec: Mapping[str, object]) -> _TableProfile:
     # ⛔ 表头必须**恰好**覆盖所有映射列：多一个少一个都会让列位含义漂移。
     if set(raw_headers) != set(columns):
         _fail("expected_headers: must cover exactly the mapped columns")
+
+    header_rows = spec.get("header_rows", 1)
+    if isinstance(header_rows, bool) or not isinstance(header_rows, int) \
+            or not 1 <= header_rows <= _MAX_HEADER_ROWS:
+        _fail("header_rows: expected an integer between 1 and 3")
+
     expected = tuple(
-        (key, _header_candidates(raw_headers[key], f"expected_headers.{key}")) for key in columns
+        (key, _header_candidates(raw_headers[key], f"expected_headers.{key}", rows=header_rows))
+        for key in columns
     )
 
     mapping = spec.get("requirement_values", {})
@@ -204,6 +283,7 @@ def _profile(spec: Mapping[str, object]) -> _TableProfile:
         table_index=_positive_int(spec.get("table_index"), "table_index"),
         columns=tuple((str(key), int(value)) for key, value in columns.items()),
         expected_headers=expected,
+        header_rows=header_rows,
         requirement=_requirement_kind(spec.get("requirement", RequirementKind.UNKNOWN)),
         fixed_requirement="requirement" in spec,
         course_type=None if course_type is None else _text(course_type, "course_type"),
@@ -231,7 +311,13 @@ def _profiles(tables: Sequence[Mapping[str, object]]) -> tuple[_TableProfile, ..
 # --------------------------------------------------------------------------- #
 
 def _cell(value: object) -> str | None:
-    """把一个表格单元格归一成文本；⛔ 空即 `None`，⛔ 不填充占位符。"""
+    """把一个表格单元格归一成文本；⛔ 空即 `None`，⛔ 不填充占位符。
+
+    ⚠️ 结论（实测）：**合并单元格不会产生 `""`**。`find_tables()` 对没有内容的格子
+    要么给出 `None`，要么给出一条横线渲染成的 `"-----"`（长度 > 0）。
+    因此 profile 里只有两种写法有实际意义：**正常表头文字**，或 **`null`**（该格为空）。
+    写成 `""` 永远匹配不上——那正是我们想要的：⛔ 不允许"填充式"的宽松匹配。
+    """
 
     if value is None:
         return None
@@ -292,48 +378,135 @@ def _requirement(raw: str | None, profile: _TableProfile) -> tuple[RequirementKi
 # 表格 → 行
 # --------------------------------------------------------------------------- #
 
-def _header_index(row: Sequence[str | None]) -> dict[str, int]:
-    """表头行 → `{表头文字: 列号}`；重复表头文字会被**降级**为不可用。"""
+def _geometry_grid(table: object, page: object) -> list[list[str | None]] | None:
+    """按**库给出的行/列几何**重建表格网格；⛔ 不信任 `extract()` 的行序。
 
-    index: dict[str, int] = {}
-    duplicated: set[str] = set()
-    for position, value in enumerate(row):
-        text = (value or "").strip()
-        if not text:
-            continue
-        if text in index:
-            duplicated.add(text)
-            continue
-        index[text] = position
-    for text in duplicated:
-        index.pop(text, None)
-    return index
+    ⚠️ 为什么必须自己重建（**实测缺陷**）：
+    `table.extract()` 返回的行序**不是**页面上从上到下的顺序。实测一份
+    4 行表格（表头 2 行 + 数据 2 行）时，`extract()` 把**最后一行放在最前面**，
+    而依此写出的 `source_record = page:{n}!row:{i}` 也就**指错了行**——
+    人工拿它去 PDF 里核对会对不上，可追溯性直接失效。
+
+    ✅ 而 `table.rows[i].bbox` 的**顺序是对的**（实测：y0 递增 = 从上到下）。
+    因此这里以行 bbox 为行、以 `table.header.cells` 给出的列 bbox 的中点为列，
+    逐格 `page.get_text("text", clip=…)` 取文字。
+
+    ⛔ 取值一律不推断：格子里没有文字就是 `None`。
+    ⛔ 几何不可用时返回 `None`，由调用方 fail closed（⛔ 不"猜一个顺序"）。
+    """
+
+    rows = getattr(table, "rows", None)
+    header = getattr(table, "header", None)
+    if not rows or header is None or page is None:
+        return None
+    column_cells = getattr(header, "cells", None)
+    if not column_cells:
+        return None
+
+    def bounds(cell: object) -> tuple[float, float, float, float] | None:
+        if not isinstance(cell, Sequence) or len(cell) != 4:
+            return None
+        try:
+            x0, y0, x1, y1 = (float(value) for value in cell)
+        except (TypeError, ValueError):
+            return None
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (x0, y0, x1, y1)
+
+    column_boxes: list[tuple[float, float, float, float]] = []
+    for cell in column_cells:
+        box = bounds(cell)
+        if box is None:
+            return None
+        column_boxes.append(box)
+
+    grid: list[list[str | None]] = []
+    for row in rows:
+        row_box = bounds(getattr(row, "bbox", None))
+        if row_box is None:
+            return None
+        _, row_top, _, row_bottom = row_box
+        values: list[str | None] = []
+        for (col_left, _, col_right, _) in column_boxes:
+            # ⚠️ 横向用**整列**范围（列中点会把跨列文字切碎），
+            #    纵向用**该行**的上下界 —— 这样既不会吃到相邻列的边，
+            #    也不会吃到表格上下的正文（例如标题）。
+            text = page.get_text("text", clip=(col_left, row_top, col_right, row_bottom))
+            values.append(_cell(text))
+        grid.append(values)
+    return grid
+
+
+def _table_rows(table: object, page: object = None) -> list[list[str | None]] | None:
+    """取表格的二维文本网格（**按页面阅读顺序**）；无法确定时返回 `None`。"""
+
+    grid = _geometry_grid(table, page)
+    if grid is not None:
+        return grid
+    # 回退：库自己的输出顺序（⚠️ 顺序不可靠，但至少能解析；由结构 issue 提示）。
+    extracted = getattr(table, "extract", None)
+    if not callable(extracted):
+        return None
+    raw_rows = extracted()
+    if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes, bytearray)):
+        return None
+    return [[_cell(value) for value in row] for row in raw_rows]
+
+
+def _multi_row_header_columns(
+    header_rows: Sequence[Sequence[str | None]], column_count: int,
+) -> list[tuple[str, ...]]:
+    """把 N 行表头**按列**折成 N 元组序列：`[(第1行, 第2行, …), …]`。
+
+    ⚠️ 合并单元格在网格里表现为 `None`（实测：**不是** `""`）：
+    双行表头中第一行的"学分"往往跨两列合并，第二行才是"必修/选修"。
+    因此这里**逐列**取 N 行的文字，⛔ 不做任何"向上填充"，
+    匹配仍然要求声明的候选**逐行完全相等**（`null` 表示该行为空）。
+    """
+
+    columns: list[tuple[str, ...]] = []
+    for position in range(column_count):
+        entry: list[str] = []
+        for row in header_rows:
+            text = ""
+            if position < len(row):
+                text = (row[position] or "").strip()
+            entry.append(text)
+        columns.append(tuple(entry))
+    return columns
 
 
 def _rows_from_table(
-    table: object, profile: _TableProfile, page_number: int, *, issues: list[DocxImportIssue],
+    table: object, profile: _TableProfile, page_number: int, *,
+    issues: list[DocxImportIssue], page: object = None,
 ) -> list[DocxCourseRow]:
     """把一张已识别的表转成课程行；⛔ 任何不确定都产出行级 issue。"""
 
-    extracted = getattr(table, "extract", None)
-    if not callable(extracted):
+    normalized = _table_rows(table, page)
+    if normalized is None:
         issues.append(DocxImportIssue("table_extraction_unavailable", profile.table_index, 0))
         return []
-    raw_rows = extracted()
-    if not isinstance(raw_rows, Sequence) or isinstance(raw_rows, (str, bytes, bytearray)):
-        issues.append(DocxImportIssue("table_extraction_unavailable", profile.table_index, 0))
-        return []
-    normalized = [[_cell(value) for value in row] for row in raw_rows]
     if not normalized:
         issues.append(DocxImportIssue("empty_table", profile.table_index, 0))
         return []
 
-    header = _header_index(normalized[0])
-    # ⛔ 每个映射列都必须命中它声明的**某一种**精确写法；否则整表拒绝
-    #    （⛔ 不按位置硬套、⛔ 不做模糊匹配）。
+    header_rows = profile.header_rows
+    if len(normalized) < header_rows + 1:
+        # 连表头都读不全：⛔ 不猜，直接报结构不匹配。
+        issues.append(DocxImportIssue("table_header_mismatch", profile.table_index, 0))
+        return []
+
+    column_count = max((len(row) for row in normalized), default=0)
+    folded = _multi_row_header_columns(normalized[:header_rows], column_count)
+    # ⛔ 每个映射列都必须命中它声明的**某一种**精确写法（逐行比较）；
+    #    否则整表拒绝（⛔ 不按位置硬套、⛔ 不做模糊匹配）。
     resolved: dict[str, int] = {}
     for key, candidates in profile.expected_headers:
-        hit = next((header[text] for text in candidates if text in header), None)
+        hit = next(
+            (position for position, value in enumerate(folded) if value in candidates),
+            None,
+        )
         if hit is None:
             issues.append(DocxImportIssue("table_header_mismatch", profile.table_index, 0))
             return []
@@ -346,7 +519,9 @@ def _rows_from_table(
     column_of = resolved
 
     rows: list[DocxCourseRow] = []
-    for offset, values in enumerate(normalized[1:], start=1):
+    # ⚠️ 数据行从**表头之后**开始；行号相对**数据区第一行**计数，
+    #    这样表头有几行都不会改变 `source_record` 的含义。
+    for offset, values in enumerate(normalized[header_rows:], start=1):
         if not any(value is not None for value in values):
             # 全空行：PDF 表格常见，⛔ 不算未识别，直接跳过。
             continue
@@ -430,14 +605,8 @@ def _optional_get(values: Sequence[str | None], position: int) -> str | None:
 # 公开入口
 # --------------------------------------------------------------------------- #
 
-def load_curriculum_pdf(
-    data: bytes, *, source_id: str, tables: Sequence[Mapping[str, object]],
-) -> DocxImportResult:
-    """把 PDF 字节解析成 `DocxImportResult`（= 审核草稿的输入契约）。
-
-    ⛔ 失败即 `CurriculumNormalizationError`（fail closed）；⛔ 从不返回"部分猜测"的结果。
-    ⛔ 不写任何文件、⛔ 不联网、⛔ 不调用 OCR。
-    """
+def _open_document(data: bytes):
+    """共用的结构校验 + 打开；⛔ 失败即固定文案、⛔ 不泄漏底层异常文本。"""
 
     if not isinstance(data, bytes):
         raise CurriculumNormalizationError("pdf import: expected bytes")
@@ -445,11 +614,9 @@ def load_curriculum_pdf(
         raise CurriculumNormalizationError("pdf import: empty input")
     if len(data) > MAX_PDF_BYTES:
         raise CurriculumNormalizationError("pdf import: file is too large")
-    # ⛔ magic 校验：PDF 头必须出现在**最前面**（允许少量前导空白/BOM 不符合 PDF 规范，故不接受）。
+    # ⛔ magic 校验：PDF 头必须出现在**最前面**。
     if not data.startswith(_PDF_MAGIC):
         raise CurriculumNormalizationError("pdf import: not a PDF (missing %PDF- header)")
-
-    profiles = _profiles(tables)
 
     try:
         import pymupdf
@@ -461,7 +628,6 @@ def load_curriculum_pdf(
     try:
         document = pymupdf.open(stream=data, filetype="pdf")
     except Exception:
-        # ⛔ 不把底层异常文本冒出去（可能含路径 / 库版本信息）。
         raise CurriculumNormalizationError("pdf import: file is damaged or unreadable") from None
 
     try:
@@ -473,7 +639,72 @@ def load_curriculum_pdf(
             raise CurriculumNormalizationError("pdf import: empty document")
         if page_count > MAX_PDF_PAGES:
             raise CurriculumNormalizationError("pdf import: too many pages")
+    except Exception:
+        document.close()
+        raise
+    return document
 
+
+def inspect_curriculum_pdf(data: bytes) -> dict:
+    """逐页**只读**检查：表格数量、列数、行数、**逐行表头原文**。
+
+    ⛔ 不猜列位、⛔ 不解析课程、⛔ 不写文件。它唯一的用途是让人**照着**写 profile：
+    `expected_headers` 必须与这里打印的表头文字**逐字相同**。
+
+    ⛔ 扫描件与损坏文件在这里也 fail closed（与解析路径同一套校验）。
+    """
+
+    document = _open_document(data)
+    try:
+        pages: list[dict] = []
+        for page_index in range(int(document.page_count)):
+            page = document.load_page(page_index)
+            text = page.get_text("text") or ""
+            # ⚠️ 只调用一次 `find_tables()`（概率性识别；重复调用行号会失去可追溯性）。
+            tables = list((page.find_tables().tables) or ())
+            entries: list[dict] = []
+            for order, table in enumerate(tables, start=1):
+                rows = _table_rows(table, page) or []
+                column_count = max((len(row) for row in rows), default=0)
+                # 逐行原文表头（最多前 3 行）——profile 要照抄的就是它。
+                header_rows = [row[:column_count] for row in rows[:3]]
+                entries.append({
+                    "table_index": order,
+                    "column_count": column_count,
+                    "data_row_count": max(0, len(rows) - 1),
+                    "header_rows": header_rows,
+                })
+            pages.append({
+                "page": page_index + 1,
+                "text_chars": len(text.strip()),
+                "table_count": len(tables),
+                "tables": entries,
+            })
+        total_chars = sum(page["text_chars"] for page in pages)
+        return {
+            "page_count": len(pages),
+            "total_text_chars": total_chars,
+            "scanned_suspected": total_chars < MIN_TEXT_CHARS_PER_PAGE * max(1, len(pages)),
+            "pages": pages,
+        }
+    finally:
+        document.close()
+
+
+def load_curriculum_pdf(
+    data: bytes, *, source_id: str, tables: Sequence[Mapping[str, object]],
+) -> DocxImportResult:
+    """把 PDF 字节解析成 `DocxImportResult`（= 审核草稿的输入契约）。
+
+    ⛔ 失败即 `CurriculumNormalizationError`（fail closed）；⛔ 从不返回"部分猜测"的结果。
+    ⛔ 不写任何文件、⛔ 不联网、⛔ 不调用 OCR。
+    """
+
+    document = _open_document(data)
+    page_count = int(document.page_count)
+    profiles = _profiles(tables)
+
+    try:
         issues: list[DocxImportIssue] = []
         rows: list[DocxCourseRow] = []
         total_chars = 0
@@ -499,7 +730,7 @@ def load_curriculum_pdf(
                 by_index.setdefault(profile.table_index, []).extend(
                     _rows_from_table(
                         tables_on_page[profile.table_index - 1], profile, page_number,
-                        issues=issues,
+                        issues=issues, page=page,
                     )
                 )
             for index in sorted(by_index):

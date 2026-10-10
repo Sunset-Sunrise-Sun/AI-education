@@ -170,3 +170,13 @@
 两份 PDF（遥感 2025级 8页、网络空间安全 2025级 9页）**在本机不存在**（已整机搜索）。
 真实材料相关的 5 项验收保持 BLOCKED；放置目录与执行步骤已备好
 （见验收报告 §5）。⛔ 未用合成数据冒充真实验收结果。
+
+### 第 2 轮（2026-10-10）真实文件验收
+- **BLOCKED**：两份真实 PDF（遥感 8 页 / 网络空间安全 9 页）仍不在本机
+  （`real-curriculum-pdf\` 为空；C:/D: 全盘按精确文件名搜索未找到）。⛔ 未用合成数据冒充。
+- 真实验收的全部程序性前提已就绪：逐页结构检查（`--inspect`）、双行表头/合并单元格/
+  分页/不同列数的声明式 profile、许可证评估、执行手册。
+- **已修复真实缺陷**：`extract()` 行序与页面阅读顺序相反 ⇒ `page:{n}!row:{i}` 曾指错行。
+  改为按 `table.rows[i].bbox` + `table.header.cells` 重建网格，几何不可用时 fail closed。
+- 材料到位后：`python tools/parse_curriculum_pdf.py --pdf <路径> ... --inspect`
+  再按输出写 `--profile`，步骤见 `docs/final_upgrade/PDF_IMPORT_REAL_ACCEPTANCE.md`。

@@ -3,6 +3,14 @@
 > 分支：`feature/pdf-curriculum-import`（基线 `feature/final-upgrade`）
 > 复用面分析见 `PDF_IMPORT_REUSE_REPORT.md`（先交付的那一份）
 > ⚠️ **两份真实 PDF 不在本机**，因此与真实材料相关的验收项**保持 BLOCKED**（见 §5）
+>
+> **🔄 第 2 轮更新（架构审核 CHANGES REQUIRED 之后）**：
+> 真实文件验收的程序性障碍已全部清除，并且**发现并修复了一个会毁掉可追溯性的真实缺陷**
+> —— `find_tables()` 的行序与页面阅读顺序**相反**，会让 `page:N!row:M` 指错行。
+> 详见 `PDF_IMPORT_REAL_ACCEPTANCE.md` §2（含负向回归）。
+> 新增：逐页结构检查 `inspect_curriculum_pdf()` / CLI `--inspect`、
+> 双行表头 + 合并单元格（`header_rows`）、许可证评估 `PYMUPDF_LICENSE_ASSESSMENT.md`。
+> ⚠️ 两份真实 PDF **仍未出现在**约定目录（C:/D: 全盘按精确文件名搜索均未找到）。
 
 ---
 

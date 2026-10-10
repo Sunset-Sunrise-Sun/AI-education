@@ -350,3 +350,26 @@
 - 测试：后端 2 个新文件（含自建最小 PDF 生成器）、前端 1 个新文件、E2E L11。
 - 使用数据：**合成 PDF**；真实两份 PDF 不在本机 ⇒ 真实验收保持 BLOCKED。
 - 需要人工确认：真实 PDF 的表头与表格位置（用于调整声明式 profile，⛔ 不让 Agent 猜列位）。
+
+### 2026-10-10（第 2 轮）真实文件验收准备 + 修复行序缺陷
+架构审核要求先做真实文件验收。两份 PDF 仍未出现在 `real-curriculum-pdf\`（C:/D: 全盘按精确
+文件名搜索均未找到）⇒ 真实验收**保持 BLOCKED**，如实报告，⛔ 未用合成数据冒充。
+
+本轮交付（真实验收的全部程序性前提）：
+- **修复真实缺陷**：`find_tables()` 的 `extract()` 行序与页面阅读顺序**相反**，
+  会让 `source_record = page:{n}!row:{i}` 指错行（比报错更糟）。已改为按
+  `table.rows[i].bbox`（顺序可信）+ `table.header.cells` 重建网格，几何不可解释时
+  fail closed。⛔ 无法靠 profile 解决（行序发生在列映射之前）。
+- 新增逐页结构检查 `inspect_curriculum_pdf()` / CLI `--inspect`（表格数量、列数、
+  行数、逐行表头原文），profile 的 `expected_headers` 直接照抄其输出（有往返测试）。
+- 声明式 profile 新增 `header_rows`（1–3）：支持**双行表头 + 合并单元格**；
+  合并单元格实测为 `null`（⛔ 不是 `""`），⛔ 不向上填充。分页/不同列数用
+  "每页每表一条 profile"覆盖，⛔ 无需新代码。
+- 新增 `PYMUPDF_LICENSE_ASSESSMENT.md`：AGPL 在"公开仓库 + 网络服务"现状下可满足；
+  需负责人确认**将来是否闭源**，以及仓库目前**没有 LICENSE 文件**。
+- 夹具修正：`build_two_row_header_pdf` 用 PyMuPDF 嵌 CJK 字体（⛔ 不引第二个库）；
+  修掉两个夹具几何 bug（行边界切进字形、`insert_text` 是左上原点）。
+
+测试：后端 3435 passed / 2 failed（既有 Windows+Py3.14 平台差异）/ 2 skipped，
+其中 PDF 相关 72 例；前端 341 passed；vue-tsc 0；build 0；浏览器 E2E 25 passed。
+使用数据：**合成 PDF**；真实 PDF 验收仍 BLOCKED（见 PDF_IMPORT_REAL_ACCEPTANCE.md）。
