@@ -19,6 +19,7 @@ from app.api import (
     ai_planning,
     completed_courses,
     curriculum_import,
+    curriculum_review,
     explanation,
     health,
     mock,
@@ -143,3 +144,9 @@ app.include_router(ai_planning.router, prefix=API_V1_PREFIX)
 # ⛔ 不写 APP_PERSONAL_CATALOG_DIR、⛔ 不写批准锚点、⛔ 不把草稿标成已核验；
 # 请求 / 响应模型定义在该模块内（⛔ 不改 /schemas/** 与 /docs/interfaces/**）。
 app.include_router(curriculum_import.router, prefix=API_V1_PREFIX)
+
+# 培养方案**课程分类审核**（本轮新增，已获架构确认）：
+# 解析草稿 → 分类候选 + 原文证据 → 组长审核**草稿** → 导出。
+# ⛔ 不写批准锚点、⛔ 不改 verification.verified、⛔ 不接入正式个人补修规划；
+# 请求 / 响应模型定义在该模块内（⛔ 不改 /schemas/** 与 /docs/interfaces/**）。
+app.include_router(curriculum_review.router, prefix=API_V1_PREFIX)

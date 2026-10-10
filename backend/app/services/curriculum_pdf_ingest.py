@@ -154,6 +154,9 @@ class PdfUploadOutcome:
     cohort: str
     draft: CatalogDraftInput
     result: DocxImportResult = field(repr=False)
+    #: 已验收文档类型（含分类证据表声明）。供审核层读取；
+    #: ⛔ 它不参与任何"数据真实性"判定（那条只由内容结构决定）。
+    document: object = None
     review_conclusion: str = PENDING_REVIEW_CONCLUSION
 
     @property
@@ -392,6 +395,7 @@ def ingest_pdf_upload(
         file_name=_safe_file_name(file_name),
         role=role_text,
         kind=document.key,
+        document=document,
         major=_require_text(major, "major"),
         cohort=_require_text(cohort, "cohort"),
         draft=draft,

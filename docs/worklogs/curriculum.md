@@ -407,3 +407,19 @@
 - 许可证：标注"**正式公开部署前必须完成核查**"；⛔ 未改仓库 LICENSE。
 - 测试：后端 3493 passed（新增 40 例）/ 2 既有平台差异 / 2 skipped；前端 351 passed；
   vue-tsc 0；build 0；浏览器 E2E 26 passed。
+
+### 2026-10-10（第 5 轮）审核会话 + 决策 API + 审核前端
+架构确认：`table_purpose` 接受；三条审核路由接受；会话内存 + 2h TTL；`category_values` 留在受控 profile。
+- `app/services/curriculum_review.py`：服务端会话（`secrets.token_urlsafe(32)`）、SHA-256/课程/候选/证据
+  **全部服务端保管**；决策主键 `source_record`；容量 64 会话 + 2h TTL + 单次 512 条 + 理由 500 字；
+  未知/过期 404（⛔ 不自动新建）；每条解析**新建**会话（⛔ 不继承旧决定）。
+- `app/api/curriculum_review.py`：`GET 状态` / `POST 决策` / `GET 导出`。
+  `confirm` 仅接受明确类别候选；`override` 必须给类别 + 理由，且标注
+  `decided_by=reviewer_input_not_a_pdf_evidence`；⛔ **没有 reject**（拒绝 = `defer`，回到未确定）；
+  整批校验后应用（⛔ 不部分应用）。
+- `CurriculumReviewPanel.vue`：候选/证据展开/确认·人工修改·暂缓/进度/未解决统计/导出；
+  无证据与冲突项**按钮禁用**；⛔ 页面不出现"已认证/已完成课程认定"。
+- 测试：后端 +37（含真实文件分类回归）、前端 +20、E2E +L13。
+- 真实 HTTP 验收：遥感 84 候选（59 有证据/25 无/10 仅小节）、网安 89（57/32/23）；
+  导出绑定摘要、`verified=false`、未解决项已分类列出。
+- 实测修掉 2 个自身缺陷：面板 `enabled` 判定反了导致不加载；PowerShell 生成的编辑留下转义字符。

@@ -100,6 +100,18 @@ PDF_PROFILE_FIELDS = frozenset({
 _PDF_PROFILE_FIELDS = frozenset({
     "mode", "table_index", "pages", "columns", "expected_headers", "header_rows",
     "requirement", "course_type", "group_id", "requirement_values",
+    # 表用途与小节列：由课程明细表声明；证据表（类别学分要求表 / 实践附表）
+    # 由 pdf_evidence 消费，⛔ 不产出课程行。
+    "table_purpose", "section_columns",
+    # 证据表专用（course_detail 不会用到，但同一份 profile 里要允许出现）
+    "category_values",
+})
+
+#: 表用途码（与 `app/curriculum/pdf_evidence.py` **同一套**取值）。
+#: ⛔ 只有 `course_detail` 会产出课程行；其余用途只产出**证据**。
+_PURPOSE_COURSE_DETAIL = "course_detail"
+_TABLE_PURPOSES = frozenset({
+    _PURPOSE_COURSE_DETAIL, "category_credit_requirement", "practice_appendix",
 })
 
 #: 表头行数上限（真实培养方案常见 1–2 行；⛔ 不给"随便多写几行"的空间）。
@@ -320,7 +332,24 @@ def _profiles(tables: Sequence[Mapping[str, object]]) -> tuple[_TableProfile, ..
         _fail("at least one table declaration is required")
     if len(tables) > 128:
         _fail("too many table declarations")
-    result = tuple(_profile(spec) for spec in tables)
+    # ⛔ 每个声明都必须是 mapping；⛔ 用途码必须合法
+    #    （写错用途就静默忽略是最危险的行为，所以未知用途直接拒绝）。
+    for spec in tables:
+        if not isinstance(spec, Mapping):
+            _fail("each table declaration must be a mapping")
+        purpose = spec.get("table_purpose", "course_detail")
+        if purpose not in _TABLE_PURPOSES:
+            _fail("unsupported table_purpose")
+    # ⚠️ 只处理**课程明细表**：一份 profile 里会同时带着"分类证据表"
+    #    （类别学分要求表 / 实践教学附表）。⛔ 那些表绝不能产出课程行 ——
+    #    否则学分汇总表会被当成课程导入（PR #75 已确立的边界）。
+    detail = [
+        spec for spec in tables
+        if spec.get("table_purpose", "course_detail") == _PURPOSE_COURSE_DETAIL
+    ]
+    if not detail:
+        _fail("at least one course_detail table declaration is required")
+    result = tuple(_profile(spec) for spec in detail)
     # ⛔ 同一 `table_index` 只有在**页范围互不重叠**时才能重复声明：
     #    真实培养方案里"第 1 张表"在不同页可能是完全不同的表
     #    （课程明细表 vs 学分汇总表），所以按页区分是必要的；

@@ -841,6 +841,57 @@ export function liveBaselineCases({ baseUrl }) {
         }
       },
     },
+    {
+      id: 'L13-curriculum-review-wiring',
+      title: '课程分类审核：未解析时不出面板、不发审核请求、不出现不实结论',
+      priority: 'P1',
+      phase: 'live',
+      run: async ({ browser }) => {
+        const { context, page, requests, consoleErrors } = await openPage(browser)
+        try {
+          await gotoHome(page, baseUrl)
+          await page.locator('[data-testid="nav-curriculum-import"]').first().click()
+          await waitForState(page, 'curriculum-pdf-import')
+
+          // ① 尚无 review_id ⇒ ⛔ 不得渲染审核面板，也⛔ 不得请求审核接口
+          assert(
+            (await page.locator('[data-testid="curriculum-review"]').count()) === 0,
+            '未解析时就渲染了审核面板',
+          )
+          assert(
+            requestsFor(requests, '/api/v1/curriculum-review').length === 0,
+            '未解析时就请求了审核接口',
+          )
+
+          // ② ⛔ 页面不得出现"已认证 / 已完成课程认定 / 已批准"这类不实结论
+          const body = await page.content()
+          for (const forbidden of ['已获学校认证', '已完成正式课程认定', '来源已核验']) {
+            assert(!body.includes(forbidden), `页面出现了不实结论：${forbidden}`)
+          }
+
+          // ③ 解析入口仍然可用（回归：审核面板没有破坏导入视图）
+          for (const role of ['origin', 'target']) {
+            assert(
+              (await page.locator(`[data-testid="pdf-file-${role}"]`).count()) === 1,
+              `导入视图的 ${role} 文件入口丢失`,
+            )
+          }
+
+          return {
+            notes: [
+              '未解析时不渲染审核面板、不请求审核接口',
+              '页面未出现"已认证 / 已完成课程认定 / 已核验"等不实结论',
+              '导入视图的文件入口未受影响',
+            ],
+            evidence: [await shot(page, 'L13-curriculum-review-wiring', 'live')],
+            httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
+            consoleErrors,
+          }
+        } finally {
+          await context.close()
+        }
+      },
+    },
   ]
 }
 

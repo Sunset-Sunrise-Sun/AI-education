@@ -128,6 +128,16 @@ export const CURRICULUM_IMPORT_ENDPOINTS = {
 export const CURRICULUM_IMPORT_API_ENABLED: boolean =
   import.meta.env.VITE_CURRICULUM_IMPORT_API_ENABLED === 'true'
 
+/**
+ * 课程分类**审核**接口（本轮新增）。
+ *
+ * ⚠️ 审核决定是**内部草稿**：⛔ 不写批准锚点、⛔ 不改 verification.verified、
+ * ⛔ 不作为正式个人补修规划的放行依据。
+ */
+export const CURRICULUM_REVIEW_ENDPOINTS = {
+  status: `${API_BASE_URL}/api/v1/curriculum-review`,
+} as const
+
 export const APP_TITLE = '学航·转衔'
 export const APP_SUBTITLE = '面向转专业学生的 AI 学业路径重构 Agent'
 
