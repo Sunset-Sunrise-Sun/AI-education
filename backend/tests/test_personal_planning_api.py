@@ -27,12 +27,49 @@ VERSIONS_PATH = "/api/v1/personal-planning/curriculum-versions"
 PLAN_PATH = "/api/v1/personal-planning/plan"
 
 
+def _write_approval_anchor(tmp_path, *, version_ids, name: str = "trust-anchor.json"):
+    """写一份**测试专用**批准锚点（⛔ 不是任何真实人工批准）。
+
+    ⚠️ 本轮（F-03）起 `verification.verified=true` 只是自述，
+    production 目录装载还会要求 `APP_TRUST_ANCHOR_PATH` 里有对应的
+    `curriculum_catalog` 批准记录。这里为合成夹具补上那一步，
+    以便继续验证"批准之后"的目录 / 规划行为。
+    """
+
+    import json as _json
+    from pathlib import Path
+
+    path = Path(tmp_path) / name
+    path.write_text(
+        _json.dumps({
+            "trust_anchor_version": 1,
+            "approvals": [
+                {
+                    "kind": "curriculum_catalog",
+                    "identity": {"version_id": version_id},
+                    "artifact_sha256": "a" * 64,
+                    "approver": "本地合成夹具负责人（非真实批准）",
+                    "authorization": "test fixture",
+                    "approved_at": "2026-10-09T00:00:00Z",
+                }
+                for version_id in version_ids
+            ],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
 @pytest.fixture
 def catalog_dir(tmp_path, monkeypatch):
     """把已核验目录配置为测试目录（⛔ 不读任何默认目录）。"""
 
     write_catalog(tmp_path)
     monkeypatch.setenv("APP_PERSONAL_CATALOG_DIR", str(tmp_path))
+    monkeypatch.setenv(
+        "APP_TRUST_ANCHOR_PATH",
+        str(_write_approval_anchor(tmp_path, version_ids=(OLD_VERSION_ID, TARGET_VERSION_ID))),
+    )
     return tmp_path
 
 
@@ -70,6 +107,12 @@ def test_versions_endpoint_reports_rejected_entries(client: TestClient, tmp_path
     payload["versions"][0]["verification"]["verified"] = False
     write_catalog(tmp_path, payload)
     monkeypatch.setenv("APP_PERSONAL_CATALOG_DIR", str(tmp_path))
+    # ⚠️ 锚点**同时**批准两个版本：这样被拒的那一个才是因为 `verified=false`
+    #    （`not_verified`），而不是因为缺少批准（`provenance_not_verified`）。
+    monkeypatch.setenv(
+        "APP_TRUST_ANCHOR_PATH",
+        str(_write_approval_anchor(tmp_path, version_ids=(OLD_VERSION_ID, TARGET_VERSION_ID))),
+    )
 
     response = client.get(VERSIONS_PATH)
     assert response.status_code == 200

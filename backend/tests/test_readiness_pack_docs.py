@@ -65,6 +65,9 @@ RUNTIME_ENV_NAMES = (
     "APP_COURSE_DATA_SQLITE_PATH",
     "APP_COURSE_DATA_SEMESTER",
     "APP_COURSE_DATA_ACCEPTANCE_SHA256",
+    # ⚠️ 本轮新增（F-01/F-02/F-03）：带外批准锚点。
+    # 缺它 ⇒ runtime 以 `provenance_not_verified` 拒绝装配。
+    "APP_TRUST_ANCHOR_PATH",
 )
 
 

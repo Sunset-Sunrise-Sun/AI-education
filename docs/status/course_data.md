@@ -1832,3 +1832,37 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
 - ⛔ 未改 frozen Provider Protocol / public Schema / `PlanningOrchestrator` / API 响应体；
   详见 `docs/data/CASE_A_RUNTIME_WIRING.md` 与 `docs/status/integration.md`；
 - ⛔ 仍未处理真实 artifact ⇒ formal Real E2E 继续 **LEVEL0**。
+
+## 来源可信性门（2026-10-10，`feature/verified-provenance-gate`）
+
+**一句话**：`data_source=real` / `verification.verified=true` 从此**只是声明**；
+装配期必须在**带外批准锚点**（`APP_TRUST_ANCHOR_PATH`）里找到匹配记录，否则 fail closed。
+
+### 修复的缺口（PR #72 审计）
+
+| 缺口 | 修复 |
+| --- | --- |
+| F-01 摄取链无条件标 real、运行时无真实性不变式 | `build_planning_runtime` 先决检查锚点；`build_course_data_provider` 传入批准摘要；`store.load_accepted_offerings` 新增第 0b 步：重算的 canonical manifest 摘要必须 ∈ 批准集合 |
+| F-02 唯一守卫是 `mock://` 子串 | `build_curriculum_provider(case_path, anchor=)` 要求 case **文件字节** SHA-256 + 身份一致；`anchor=None` ⇒ 直接拒绝 |
+| F-03 catalog `verified` 是自述布尔 | 新拒绝码 `provenance_not_verified`；`load_curriculum_catalog(approved_versions=...)`；`load_personal_catalog` 必须读锚点；API 新错误码 `personal_catalog_provenance_not_verified` |
+| F-05 AI 上下文来源由请求体推导 | 新取值 `real_unverified` + `source_verified` 不变量；AI 接口硬编码 `source_verified=False`；风险提示判据改为 `not source_verified`（⛔ 不可被请求体抑制）；响应新增 `context_source_verified` |
+| F-07 前端 Real 标签只看 HTTP 成功 | 前端区分"HTTP 成功"与"已核验来源"；新增 `real_unverified` 文案 |
+| F-08 handoff 闸门可选且自述 | `ready` 现在要求 store + curriculum + **独立 handoff** 三方通过；`_build_handoff` ⛔ 不再硬编码 `authorized_user_session=True` |
+
+### 新增文件
+
+- `backend/app/provenance/__init__.py` —— 批准锚点装载与校验（⛔ 无密码学签名）
+- `docs/final_upgrade/TRUST_ANCHOR_DESIGN.md` —— 来源信任模型设计
+- `docs/final_upgrade/PROVENANCE_GATE_CLOSURE.md` —— 收口报告 + 迁移影响 + 残留点
+- 测试：`test_provenance_anchor.py`（31）、`test_provenance_gate_bypass.py`（13）、
+  `test_ai_planning_provenance.py`（10）、`frontend/tests/provenance-source-labels.spec.ts`（10）
+
+### `test_KNOWN_GAP_*` 已按要求改写
+
+三个"断言不安全行为是正确的"用例已**删除**，替换为断言**必须拒绝 / 必须降级**的回归测试。
+
+### 【BLOCKED】仅剩签发环节
+
+⛔ 仓库内没有可信身份与信任锚，Agent 只实现了安全的拒绝路径与证据记录接口，
+⛔ 未自创伪安全签名方案。锚点文件位置 / 权限、approver 口径、authorization 依据形式、
+是否签名，均需人工配置。详见 `PROVENANCE_GATE_CLOSURE.md` §5。

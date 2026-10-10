@@ -109,3 +109,18 @@
 - ⛔ 未修改 `docx_reader.py` / `plan_profiles.py` / `catalog.py` / `requirements.py` / `__main__.py`。
 - 仍未验证：真实培养方案 DOCX 不在仓库内，本工具**从未**在真实文档上运行过。
 - 详见 `docs/final_upgrade/DOCX_CATALOG_DRAFT.md`。
+
+## 来源可信性门：catalog 的 verified 不再自述生效（2026-10-10）
+
+- `verification.verified=true` 从此**只是自述**：`load_curriculum_catalog(..., approved_versions=...)`
+  要求 `version_id` 出现在**带外批准锚点**（`APP_TRUST_ANCHOR_PATH`）里，
+  否则以**新拒绝码 `provenance_not_verified`** 拒绝（与 `not_verified` 区分：
+  后者是"文件自己说没核验"，前者是"自称核验却拿不出独立依据"）。
+- production 路径 `services/personal_runtime.py::load_personal_catalog` **必须**读锚点；
+  缺锚点 ⇒ `provenance_not_verified`；锚点无 `curriculum_catalog` 记录 ⇒ `catalog_provenance_empty`。
+  API 侧新增独立错误码 `personal_catalog_provenance_not_verified`（503），
+  与"没配置目录"区分开。
+- `approved_versions=None` 仍保留旧的"只按自述"行为，**仅供单元测试**；
+  ⛔ production 调用点已全部传集合。
+- ⛔ 未修改 `/schemas/**`、`docs/interfaces/**`、`requirements.py` 的公共形状。
+- 详见 `docs/final_upgrade/TRUST_ANCHOR_DESIGN.md`、`PROVENANCE_GATE_CLOSURE.md`。

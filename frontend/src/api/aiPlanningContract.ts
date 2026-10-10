@@ -34,8 +34,15 @@ export const AI_PLANNING_PREFIX = '/api/v1/ai-planning'
 export const GENERATOR_KINDS = ['deepseek_live', 'test_double', 'unavailable'] as const
 export type AiGeneratorKind = (typeof GENERATOR_KINDS)[number]
 
-/** `data_source`：由**教学班自身**的 data_source 判定，与页面模式无关。 */
-export const DATA_SOURCES = ['real', 'mock', 'mixed', 'unknown'] as const
+/**
+ * `data_source`：由**教学班自身**的 data_source 判定，与页面模式无关。
+ *
+ * ⚠️ 本轮新增 `real_unverified`：教学班自称 `real`，但**服务端没有独立批准依据**。
+ * AI 接口的教学班全部来自请求体，因此**实际总是** `real_unverified`。
+ * 前端⛔ 不得把 `real_unverified` 显示成"已核验真实教务数据"，
+ * 且必须保留来源风险提示。
+ */
+export const DATA_SOURCES = ['real', 'real_unverified', 'mock', 'mixed', 'unknown'] as const
 export type AiDataSource = (typeof DATA_SOURCES)[number]
 
 /** `solve` 的固定状态取值。 */
@@ -168,6 +175,14 @@ export interface AiInterpretResponse {
   parsed_intent: AiParsedIntentDraft
   ambiguities: AiAmbiguity[]
   data_source: AiDataSource
+  /**
+   * ⚠️ 本轮新增：服务端是否有**独立批准依据**证明上下文教学班确已核验。
+   *
+   * AI 接口的教学班来自请求体，因此服务端恒为 `false`。
+   * 前端⛔ 不得仅凭 `data_source === 'real'` 显示"已核验"，
+   * 必须同时看这个字段；`false` ⇒ 一律显示"未核验"并保留风险提示。
+   */
+  context_source_verified: boolean
   generator_kind: AiGeneratorKind
   generator_note: string
   model_id: string
@@ -457,6 +472,11 @@ export function parseInterpretResponse(payload: unknown): AiInterpretResponse {
     parsed_intent: parseParsedIntent(record['parsed_intent']),
     ambiguities: asObjectArray(record['ambiguities'], 'ambiguities').map(parseAmbiguity),
     data_source: parseDataSource(record['data_source']),
+    // ⚠️ 缺字段一律视为 **未核验**（fail closed）：⛔ 不默认成"已核验"。
+    context_source_verified:
+      record['context_source_verified'] === undefined
+        ? false
+        : asBoolean(record['context_source_verified'], 'context_source_verified'),
     generator_kind: parseGeneratorKind(record['generator_kind']),
     generator_note: asString(record['generator_note'], 'generator_note'),
     model_id: asString(record['model_id'], 'model_id'),

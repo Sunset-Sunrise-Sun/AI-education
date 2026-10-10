@@ -100,7 +100,7 @@ import hashlib
 import json
 import re
 import sqlite3
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1482,19 +1482,32 @@ def load_accepted_offerings(
     semester: str,
     acceptance_sha256: str,
     scope: SnapshotScope | None = None,
+    approved_manifest_sha256: Collection[str] = (),
+    require_approval: bool = True,
 ) -> AcceptedDataset:
     """在一次**一致读事务**里完整校验并物化一个 acceptance 接受的教学班。
 
     `scope=None` ⇒ 默认 `full_semester / <semester>`（production Provider 语义）；
     campus acceptance 的调用方（campus CLI 回读）显式传入 `campus / <number>`。
 
+    `approved_manifest_sha256`：**带外批准锚点**里记录的、被人工批准的 manifest 摘要集合。
+    ⛔ 空集合 ⇒ 直接拒绝（没有独立批准依据就不算真实来源）。
+
+    `require_approval`：⛔ **只有**产出/internal 工具在**批准之前**的阶段才允许设为
+    `False`（例如 campus bundle 刚被验收、还没有 full-semester manifest 可批）。
+    production 读取路径（`StoreBackedCourseDataProvider` → Planner）**永远**保持
+    默认 `True`，因此"未经批准的数据不进 Planner"是硬条件。
+
     校验（任一不满足 ⇒ `CourseDataStoreError`，fail closed）：
 
     ```text
-     0. **immutable acceptance identity trust chain**（本轮 BLOCK 的修复点）：
+     0. **immutable acceptance identity trust chain**：
         configured SHA
           → 已持久化的 canonical_manifest_json
           → SHA256(canonical bytes) == configured SHA      （可重算，⛔ 不靠 DB 自报）
+          → SHA256(canonical bytes) ∈ approved_manifest_sha256
+            （⛔ 只有"内容与人工批准记录一致"才算已核验；
+               DB 与 manifest 被**一起**改写时，这里必然失败）
           → manifest 语义字段 == 列式 metadata（semester / scope / counts /
             offering_set_sha256 / baseline）
         ⇒ full_semester acceptance 没有 canonical manifest 时**拒绝服务**
@@ -1534,6 +1547,22 @@ def load_accepted_offerings(
 
     target_semester = _require_semester(semester)
     digest = _require_sha256(acceptance_sha256)
+
+    # ⚠️ **独立批准门**（本轮新增，F-01/F-03）：调用方必须给出带外批准锚点里
+    # 记录的 manifest 摘要集合。⛔ 空集合 ⇒ 立即拒绝：没有人工批准依据，
+    # 本地库里的 self-declared `real` 行不算"已核验真实来源"。
+    approved: frozenset[str] = frozenset()
+    for item in approved_manifest_sha256:
+        normalized = str(item).strip().lower()
+        if ARTIFACT_SHA256_PATTERN.match(normalized) is None:
+            raise CourseDataStoreError(
+                "approved_manifest_sha256 里必须是 64 位小写十六进制摘要"
+            )
+        approved = approved | {normalized}
+    if require_approval and not approved:
+        raise CourseDataStoreError(
+            "缺少独立批准锚点记录的 manifest 摘要：⛔ 拒绝把未经批准的本地库当作已核验真实来源"
+        )
 
     if scope is None:
         wanted_scope = SnapshotScope(
@@ -1579,6 +1608,15 @@ def load_accepted_offerings(
                 offering_count=acceptance_row["offering_count"],
                 set_digest=acceptance_row["offering_set_sha256"],
             )
+            # ---- 0b. **独立批准门**（本轮新增）------------------------------
+            # 摘要一致只证明"内容没被改"，⛔ 不证明"这份内容被人批准过"。
+            # 因此还必须在**带外批准锚点**里找到这条摘要。
+            # `require_approval=False` 仅限产出工具在批准**之前**的阶段使用。
+            if require_approval and manifest_sha256 not in approved:
+                raise CourseDataStoreError(
+                    "该 acceptance 的 canonical manifest 摘要不在独立批准锚点中；"
+                    "⛔ 拒绝把未经人工批准的本地数据当作已核验真实来源"
+                )
         elif wanted_scope.scope_kind == SCOPE_KIND_FULL_SEMESTER:
             raise CourseDataStoreError(
                 "该 full_semester acceptance 没有持久化的 canonical manifest；"

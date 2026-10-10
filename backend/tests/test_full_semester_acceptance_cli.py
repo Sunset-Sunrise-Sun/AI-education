@@ -1038,6 +1038,8 @@ def test_import_writes_and_reads_back_a_full_semester_record(
         sqlite_path,
         semester=SEMESTER,
         acceptance_sha256=str(payload["manifest_sha256"]),
+        # ⚠️ 本用例验证 CLI 的写入回读（批准之前的阶段）⇒ 显式声明不要求批准。
+        require_approval=False,
     )
     assert len(dataset.offerings) == 5
     assert dataset.acceptance.offering_set_sha256 == payload["merged_offering_set_sha256"]
@@ -1181,7 +1183,8 @@ def test_content_tampering_is_detected_on_read_and_repaired_by_reimport(
     # ⛔ 读路径必须 fail closed（content binding），而不是照原样返回被替换的内容。
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            sqlite_path, semester=SEMESTER, acceptance_sha256=acceptance_sha
+            sqlite_path, semester=SEMESTER, acceptance_sha256=acceptance_sha,
+            require_approval=False,
         )
 
     # CLI 重跑 = 用**已批准**内容重新导入（自愈），并如实报告 updated。
@@ -1191,7 +1194,8 @@ def test_content_tampering_is_detected_on_read_and_repaired_by_reimport(
     assert payload["updated"] == 1
     assert payload["accepted_row_count"] == 5
     dataset = load_accepted_offerings(
-        sqlite_path, semester=SEMESTER, acceptance_sha256=acceptance_sha
+        sqlite_path, semester=SEMESTER, acceptance_sha256=acceptance_sha,
+        require_approval=False,
     )
     assert "内容被替换" not in {offering.course_name for offering in dataset.offerings}
 

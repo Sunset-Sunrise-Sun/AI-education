@@ -6,6 +6,7 @@ APP_CASE_A_CURRICULUM_CASE_PATH=<real Case A case JSON>
 APP_COURSE_DATA_SQLITE_PATH=<local SQLite course data store>
 APP_COURSE_DATA_SEMESTER=<semester bound by the approved acceptance>
 APP_COURSE_DATA_ACCEPTANCE_SHA256=<approved full-semester manifest SHA-256>
+APP_TRUST_ANCHOR_PATH=<由负责人带外提供的批准锚点；缺它即 provenance_not_verified>
         ↓  build_planning_runtime(environment)
 CurriculumCaseProvider  +  StoreBackedCourseDataProvider  +  RestrictedPlannerProvider
         ↓
@@ -93,7 +94,7 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -111,6 +112,17 @@ from app.curriculum.case_a_decisions import (
 from app.integration import PlanningOrchestrator
 from app.planner import RestrictedPlannerProvider
 from app.models.contracts import DataSource
+from app.provenance import (
+    APPROVAL_KIND_COURSE_DATA_MANIFEST,
+    APPROVAL_KIND_CURRICULUM_CASE,
+    ProvenanceDenied,
+    ProvenanceReason,
+    TrustAnchor,
+    TrustAnchorUnavailable,
+    load_trust_anchor,
+    sha256_file,
+    verify_approval,
+)
 
 __all__ = [
     "PlanningRuntimeInspection",
@@ -137,6 +149,13 @@ _COURSE_DATA_SEMESTER = "APP_COURSE_DATA_SEMESTER"
 
 #: **正式** full-semester acceptance 的 manifest SHA-256。
 _COURSE_DATA_ACCEPTANCE_SHA256 = "APP_COURSE_DATA_ACCEPTANCE_SHA256"
+
+#: 带外批准锚点文件的本地路径（⚠️ 本轮新增，F-01/F-02/F-03）。
+#:
+#: 缺省 / 不可读 / 版本不符 / 结构非法 / 自签 ⇒ `provenance_not_verified`。
+#: 规范定义在 `app.provenance.TRUST_ANCHOR_ENV`，这里保留同名常量，
+#: 使"runtime 读取哪些环境变量"在本模块内是**自解释**的（与运维手册交叉核对）。
+_TRUST_ANCHOR_PATH = "APP_TRUST_ANCHOR_PATH"
 
 _SHA256_PATTERN = re.compile(r"[0-9a-fA-F]{64}")
 
@@ -167,18 +186,31 @@ class PlanningRuntimeInspection:
         return self.orchestrator is not None
 
 
-def build_curriculum_provider(case_path: str) -> CurriculumCaseProvider:
+def build_curriculum_provider(
+    case_path: str,
+    *,
+    anchor: TrustAnchor | None = None,
+) -> CurriculumCaseProvider:
     """从调用方**显式指定**的 Case A manifest 构造真实 Curriculum Provider。
 
-    受控条件（与 PR #39 相同的一套 Curriculum 侧校验）：
+    受控条件：
 
     ```text
-    case.data_source                == real
+    case.data_source                == real          （⚠️ 仅自述，不再单独采信）
     case.new.version_id             == CASE_TARGET_VERSION_ID
     case.makeup_scope.as_of_term    == AS_OF_TERM
     case.confirmed_scope_decisions  == 已批准的决策集合
+    ★ case 文件摘要必须出现在**带外批准锚点**的 curriculum_case 记录里（本轮新增）
     provider.get_makeup_tasks()     构造期即可成功（⛔ 不推迟到请求中才发现未就绪）
     ```
+
+    ⚠️ **本轮的修复（F-02）**：`case.data_source == real` 与"来源真实"无关——
+    它只是 case JSON 里的一个自述字段，而唯一的旧守卫是 `"mock://"` 子串扫描。
+    因此这里新增**摘要 + 身份**批准门：`case_path` 的**文件字节** SHA-256
+    必须与锚点里 `curriculum_case` 记录的 `artifact_sha256` 一致，
+    且记录的身份（`target_version_id` / `as_of_term`）与 case 内容一致。
+    ⛔ `anchor` 为 `None` ⇒ 抛 `_RuntimeSourceUnavailable`（fail closed），
+    ⛔ 不会退回"只看 data_source"的旧行为。
     """
 
     case = load_curriculum_case(case_path)
@@ -192,6 +224,26 @@ def build_curriculum_provider(case_path: str) -> CurriculumCaseProvider:
     if case.confirmed_scope_decisions != confirmed_scope_decisions():
         raise _RuntimeSourceUnavailable("curriculum case decisions are not approved")
 
+    # ---- 独立批准门（F-02）------------------------------------------------
+    if anchor is None:
+        raise _RuntimeSourceUnavailable("curriculum case has no approved provenance anchor")
+    # `sha256_file` 已经把 OSError 规范化成 TrustAnchorUnavailable（显式领域异常），
+    # 因此本模块⛔ 不需要捕获 OSError。
+    case_digest = sha256_file(case_path, reason=ProvenanceReason.ANCHOR_UNREADABLE)
+    decision = verify_approval(
+        kind=APPROVAL_KIND_CURRICULUM_CASE,
+        identity={
+            "target_version_id": case.new.version_id,
+            "as_of_term": case.makeup_scope.as_of_term,
+        },
+        artifact_sha256=case_digest,
+        anchor=anchor,
+    )
+    if not decision.verified:
+        raise _RuntimeSourceUnavailable(
+            f"curriculum case provenance is not approved ({decision.reason})"
+        )
+
     provider = CurriculumCaseProvider(case)
     # 构造期即验证 projection；⛔ 不等到请求中再发现 case 未就绪。
     provider.get_makeup_tasks()
@@ -203,17 +255,24 @@ def build_course_data_provider(
     *,
     semester: str,
     approved_acceptance_sha256: str,
+    approved_manifest_sha256: Collection[str] = (),
 ) -> StoreBackedCourseDataProvider:
     """从**已正式验收**的 full_semester SQLite 记录构造 Course Data Provider。
 
+    `approved_manifest_sha256` 必须来自**带外批准锚点**
+    （`app.provenance`，`APP_TRUST_ANCHOR_PATH`）。
+    ⛔ 缺省空集合 ⇒ 构造期即拒绝：本地库自报的 `real` 不构成"已核验真实来源"。
+
     ⛔ 这里**没有** campus / 单 bundle / "库里有一些行"的退化路径：
-    绑定与全部计数校验都由 `StoreBackedCourseDataProvider` 在构造期 fail closed 完成。
+    绑定、全部计数校验与摘要批准门都由 `StoreBackedCourseDataProvider`
+    在构造期 fail closed 完成，并在**每次读取**时重跑。
     """
 
     return StoreBackedCourseDataProvider(
         sqlite_path=sqlite_path,
         semester=semester,
         acceptance_sha256=approved_acceptance_sha256,
+        approved_manifest_sha256=tuple(approved_manifest_sha256),
     )
 
 
@@ -252,6 +311,18 @@ def build_planning_runtime(
     if enabled != "1":
         return PlanningRuntimeInspection(None, "invalid_runtime_configuration")
 
+    # ---- 独立批准锚点（本轮新增，F-01/F-02/F-03）--------------------------
+    # ⚠️ 这是**先决条件**：读不到锚点 ⇒ 无法证明任何来源已被批准 ⇒
+    # 直接判 `provenance_not_verified`，⛔ 不继续往下装配。
+    # ⛔ 不缓存：每次装配重新读文件，避免"启动时通过、之后被换掉"。
+    try:
+        anchor = load_trust_anchor(environment)
+    except TrustAnchorUnavailable:
+        # ⛔ 只捕这一个显式领域异常：锚点缺失 / 不可读 / 版本不符 / 结构非法 /
+        #    自签，全部归为"来源未经独立核验"。
+        #    ⛔ 不捕泛型异常——锚点装载里的程序缺陷必须冒到 API 层。
+        return PlanningRuntimeInspection(None, "provenance_not_verified")
+
     case_path = _required(environment, _CURRICULUM_CASE_PATH)
     if case_path is None:
         return PlanningRuntimeInspection(None, "curriculum_not_ready")
@@ -268,21 +339,36 @@ def build_planning_runtime(
         return PlanningRuntimeInspection(None, "invalid_runtime_configuration")
 
     try:
-        curriculum = build_curriculum_provider(case_path.strip())
+        curriculum = build_curriculum_provider(case_path.strip(), anchor=anchor)
     except (
         # ⛔ 只捕获**显式领域失败**：case loader / normalizer 已经把
         #    OSError / ValueError / RuntimeError 规范化成 CurriculumNormalizationError；
+        #    `sha256_file` 也把 OSError 规范化成 TrustAnchorUnavailable。
         #    因此这里再捕泛型异常只会吞掉程序缺陷。
         CurriculumNormalizationError,
+        TrustAnchorUnavailable,
         _RuntimeSourceUnavailable,
     ):
         return PlanningRuntimeInspection(None, "curriculum_not_ready")
+
+    # 课程数据侧的批准摘要：只取锚点里与该学期 + acceptance 身份匹配的记录。
+    approved_manifests = tuple(
+        item.artifact_sha256
+        for item in anchor.matching(APPROVAL_KIND_COURSE_DATA_MANIFEST)
+        if item.identity_map() == {
+            "semester": semester.strip(),
+            "acceptance_sha256": normalized_digest,
+        }
+    )
+    if not approved_manifests:
+        return PlanningRuntimeInspection(None, "provenance_not_verified")
 
     try:
         course_data = build_course_data_provider(
             sqlite_path.strip(),
             semester=semester.strip(),
             approved_acceptance_sha256=normalized_digest,
+            approved_manifest_sha256=approved_manifests,
         )
     except CourseDataStoreError:
         # ⛔ store 领域失败基类（含 CourseDataAcceptanceError /

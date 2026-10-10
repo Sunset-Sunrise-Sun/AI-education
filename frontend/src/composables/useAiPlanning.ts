@@ -662,11 +662,19 @@ export function generatorKindLabel(kind: AiGeneratorKind | null): string {
   }
 }
 
-/** `data_source` → 界面文案（⛔ `unknown` 不等于 `real`）。 */
+/**
+ * `data_source` → 界面文案（⛔ `unknown` 不等于 `real`）。
+ *
+ * ⚠️ **本轮新增（F-05）**：`real_unverified` 是"数据自称 real、但服务端没有
+ * 独立批准依据"。AI 接口的教学班全部来自请求体 ⇒ **实际总是这一档**。
+ * ⛔ 不得把它显示成"上下文全部为 real 教学班"。
+ */
 export function dataSourceLabel(source: AiDataSource | null): string {
   switch (source) {
     case 'real':
-      return '上下文全部为 real 教学班'
+      return '上下文全部为 real 教学班（服务端已核验来源）'
+    case 'real_unverified':
+      return '上下文自称 real，但未经服务端独立核验（⛔ 不代表真实教务开课）'
     case 'mock':
       return '上下文全部为 mock 教学班'
     case 'mixed':

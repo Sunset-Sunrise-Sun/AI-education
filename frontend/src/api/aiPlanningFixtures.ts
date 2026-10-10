@@ -61,6 +61,8 @@ export const PREVIEW_INTERPRET_OK: AiInterpretResponse = {
   },
   ambiguities: [],
   data_source: 'mock',
+  // ⚠️ 前端预览 fixture 永远是"服务端未核验"（它根本没调用后端）。
+  context_source_verified: false,
   generator_kind: 'test_double',
   generator_note: '（前端预览）注入的测试替身模型（不是线上模型）',
   model_id: 'preview-rule-fixture',

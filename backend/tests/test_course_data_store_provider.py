@@ -179,9 +179,24 @@ def _accepted_store(
 
 
 def _provider(path: Path, digest: str = ACCEPTANCE) -> StoreBackedCourseDataProvider:
+    """构造 provider，并给出**测试专用**批准摘要。
+
+    ⚠️ 本轮（F-01/F-03）起 provider 要求"带外批准锚点里记录的 manifest 摘要"。
+    这些用例验证的是**批准门之后**的 content-bound 校验（计数 / membership /
+    逐行指纹 / 整批 digest / 读取不缓存），因此这里提供 `digest` 作为批准值——
+    它恰好就是这些合成夹具自己的 manifest 摘要。
+    ⛔ 这不代表任何真实批准：没有锚点文件、也没有人。
+    """
+
     return StoreBackedCourseDataProvider(
-        sqlite_path=path, semester=SEMESTER, acceptance_sha256=digest
+        sqlite_path=path, semester=SEMESTER, acceptance_sha256=digest,
+        approved_manifest_sha256=(digest,) if _is_sha256(digest) else (),
+        require_approval=_is_sha256(digest),
     )
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdefABCDEF" for character in value)
 
 
 def _tamper(path: Path, statement: str, parameters: tuple[object, ...]) -> None:
@@ -673,7 +688,8 @@ def test_accepted_dataset_shape(tmp_path: Path) -> None:
     store, digest = _accepted_store(tmp_path)
 
     dataset = load_accepted_offerings(
-        store, semester=SEMESTER, acceptance_sha256=digest
+        store, semester=SEMESTER, acceptance_sha256=digest,
+        approved_manifest_sha256=(digest,),
     )
 
     assert isinstance(dataset, AcceptedDataset)
@@ -792,7 +808,8 @@ def test_campus_scope_same_sha_reimport_is_rejected(tmp_path: Path) -> None:
         )
 
     dataset = load_accepted_offerings(
-        store, semester=SEMESTER, acceptance_sha256=digest, scope=CAMPUS_SCOPE
+        store, semester=SEMESTER, acceptance_sha256=digest, scope=CAMPUS_SCOPE,
+        require_approval=False,
     )
     assert [offering.course_name for offering in dataset.offerings] == ["DATASET_A"]
 
@@ -843,7 +860,8 @@ def test_accepted_read_exposes_the_manifest_identity(tmp_path: Path) -> None:
     store, digest = _accepted_store(tmp_path)
 
     dataset = load_accepted_offerings(
-        store, semester=SEMESTER, acceptance_sha256=digest
+        store, semester=SEMESTER, acceptance_sha256=digest,
+        approved_manifest_sha256=(digest,),
     )
 
     assert dataset.acceptance.canonical_manifest_sha256 == digest

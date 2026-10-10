@@ -714,12 +714,43 @@ def _write_handoff(
         diagnostics_path=None,
         approved_by="demo-operator" if state == TOOL.HANDOFF_STATE_APPROVED else None,
         approved_at="2026-10-06T00:00:00+00:00" if state == TOOL.HANDOFF_STATE_APPROVED else None,
+        # ⚠️ 本轮（F-08）后 `authorized_user_session` ⛔ 不再由工具硬编码为 True。
+        #    测试里显式声明"该 handoff 断言存在已授权会话"，以便继续验证**批准门本身**；
+        #    `test_handoff_draft_never_claims_an_authorized_session` 单独锁定"工具默认不签这句话"。
+        authorized_user_session=True,
     )
     if mutate is not None:
         mutate(document)
     path = tmp_path / name
     path.write_text(json.dumps(document, ensure_ascii=False), encoding="utf-8")
     return path
+
+
+def test_handoff_draft_never_claims_an_authorized_session(capsys, tmp_path: Path) -> None:
+    """⛔ **F-08 回归**：工具产出的 handoff 草稿**不得**自称存在已授权用户会话。
+
+    修复前 `_build_handoff` 把 `authorized_user_session` 硬编码为 `True`：
+    工具自己写下"授权会话发生过"，批准门又把它读回来——自述闭环。
+
+    现在它必须由调用方传入，缺省 `None` ⇒ 落盘 `null` ⇒ 授权门不成立。
+    """
+
+    document = TOOL._build_handoff(
+        semester=SEMESTER,
+        bundles=_write_bundles(tmp_path),
+        baseline_before=0,
+        baseline_after=0,
+        state=TOOL.HANDOFF_STATE_DRAFT,
+        synthetic=False,
+        collector_commit="demo-commit",
+        window_started_at=None,
+        window_ended_at=None,
+        diagnostics_path=None,
+    )
+
+    assert document["authorized_user_session"] is None, (
+        "⛔ 工具不能替人断言'存在已授权的用户会话'；必须由调用方显式提供"
+    )
 
 
 def test_handoff_contains_only_safe_metadata(capsys, tmp_path: Path) -> None:
@@ -1024,12 +1055,19 @@ def _handoff_run(capsys, tmp_path: Path, *, mutate, name: str) -> tuple[int, dic
     ],
 )
 def test_empty_or_invalid_approval_metadata_blocks_level2(capsys, tmp_path, mutate, expected_blocker) -> None:
-    """⛔ 空 approver / 缺失或非法（含无时区）时间戳 ⇒ level2_eligible=false + 明确 blocker。"""
+    """⛔ 空 approver / 缺失或非法（含无时区）时间戳 ⇒ level2_eligible=false + 明确 blocker。
+
+    ⚠️ **本轮行为变更（F-08）**：修复前这里断言 `status == "ready"`，
+    即"批准门不可用也照样输出 `ready` 与可启用的 `runtime_environment`"。
+    那正是被修掉的缺口：`ready` 现在必须同时满足
+    **store + curriculum + 独立 handoff**。批准元数据不完整 ⇒ handoff 未获批准
+    ⇒ ⛔ 只能是 `partial_ready`，且⛔ 不能输出可启用的运行配置。
+    """
 
     code, payload = _handoff_run(capsys, tmp_path, mutate=mutate, name="handoff.bad-approval.json")
 
     assert code == TOOL.EXIT_OK, payload
-    assert payload["status"] == "ready"
+    assert payload["status"] == "partial_ready"
     assert payload["level2_eligible"] is False
     assert expected_blocker in payload["level2_blockers"]
     assert payload["real_source_provenance"]["approval_blockers"] == [expected_blocker]

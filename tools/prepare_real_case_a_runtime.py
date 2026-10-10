@@ -484,17 +484,25 @@ def _resolve_readiness_status(
     final_verification: dict[str, object],
     environment: dict[str, str],
     verified_curriculum: VerifiedCurriculum | None,
+    handoff_ok: bool = False,
 ) -> str:
-    """状态模型：⛔ 只有两边都最终验证通过（且 env 里两者都在）才是 `ready`。
+    """状态模型：⛔ 只有**三方**都通过才是 `ready`。
 
     ```text
     ready           final_store_reverified == true
                     AND final_curriculum_reverified == true
                     AND env 同时含已验证的 store 配置与 curriculum 配置
-    partial_ready   final_store_reverified == true
-                    AND final_curriculum_reverified == false
-                    （Curriculum provenance/输入**刻意缺席**）
+                    AND ★ handoff_ok == true
+                      （存在**独立**的已批准 handoff，且其中没有 approval blocker）
+    partial_ready   其余情况（含"handoff 缺失 / 仍是 draft / approval 元数据不全"）
     ```
+
+    ⚠️ **本轮修复（F-08）**：修复前 `handoff_ok` 不参与判断，因此
+    "有合法的 store + curriculum、但**完全没有** handoff" 也会输出
+    `status == "ready"` 与**完整可启用**的 `runtime_environment`，
+    而唯一提到 handoff 的字段 `level2_eligible` 后端**从不读取**。
+    现在：没有独立 handoff ⇒ ⛔ 永远拿不到 `ready`、⛔ 也不输出可启用配置。
+
     ⚠️ "supplied 但最终验证失败" 不会走到这里：那种情况在 `_final_readiness_verification`
     里已经 **硬失败**（⛔ 不会降级成 partial_ready）。
     """
@@ -511,7 +519,9 @@ def _resolve_readiness_status(
         and environment.get("APP_CASE_A_CURRICULUM_CASE_PATH")
         == str(verified_curriculum.resolved_path)
     )
-    return STATUS_READY if (store_ok and curriculum_ok and env_ok) else STATUS_PARTIAL_READY
+    if store_ok and curriculum_ok and env_ok and handoff_ok:
+        return STATUS_READY
+    return STATUS_PARTIAL_READY
 
 
 def _require_ready_invariant(
@@ -723,8 +733,16 @@ def _build_handoff(
     approved_by: str | None = None,
     approved_at: str | None = None,
     approval_note: str | None = None,
+    authorized_user_session: bool | None = None,
 ) -> dict[str, object]:
-    """构造 handoff 文档（⛔ 只含安全元数据：digest / 计数 / 枚举 / 时间）。"""
+    """构造 handoff 文档（⛔ 只含安全元数据：digest / 计数 / 枚举 / 时间）。
+
+    ⚠️ **本轮修复（F-08）**：`authorized_user_session` 以前在这里被**硬编码为 `True`**，
+    于是"本工具观察到一个已授权的用户会话"变成了一句工具自己写下、又自己读回的话
+    （`_validate_handoff` 在别处读它）。现在它必须由调用方传入，缺省为 `None`
+    ⇒ 落盘为 `null` ⇒ 授权门（要求 `is True`）自然不成立。
+    ⛔ 本工具**无法**证明任何授权会话确实发生过，因此⛔ 不再替人签这句话。
+    """
 
     return {
         "handoff_format": HANDOFF_FORMAT,
@@ -748,7 +766,8 @@ def _build_handoff(
             for shard in APPROVED_FULL_SEMESTER_SHARDS
         ],
         "diagnostics_sha256": _sha256_file(diagnostics_path) if diagnostics_path else None,
-        "authorized_user_session": True,
+        # ⛔ 不硬编码 True：工具不能证明"存在已授权的用户会话"。
+        "authorized_user_session": authorized_user_session,
         "approved_by": approved_by,
         "approved_at": approved_at,
         "approval_note": approval_note,
@@ -1289,9 +1308,17 @@ def _provider_read_back(
             sqlite_path=sqlite,
             semester=semester,
             acceptance_sha256=acceptance_sha256,
+            # ⚠️ **这是产出工具在批准之前的自洽回读**：full-semester manifest 刚生成，
+            #    还不存在人工批准可引用。因此显式声明"本次读取不要求批准"——
+            #    ⛔ 不伪造任何批准摘要，⛔ production 读取路径
+            #    （`app/services/planning_runtime.py`）始终保持 require_approval=True。
+            require_approval=False,
         )
         offerings = provider.get_course_offerings(semester)
-        dataset = load_accepted_offerings(sqlite, semester=semester, acceptance_sha256=acceptance_sha256)
+        dataset = load_accepted_offerings(
+            sqlite, semester=semester, acceptance_sha256=acceptance_sha256,
+            require_approval=False,
+        )
     except CourseDataStoreError as exc:
         # ⛔ 只捕获**领域失败**（含 CourseDataAcceptanceError）：其它异常是程序缺陷，
         #    必须原样上抛，⛔ 不伪装成"数据未就绪"。
@@ -1343,6 +1370,11 @@ def _runtime_environment(
     }
     if curriculum is not None:
         environment["APP_CASE_A_CURRICULUM_CASE_PATH"] = str(curriculum.resolved_path)
+    # ⚠️ **本轮新增（F-01/F-02/F-03）**：后端现在**额外要求**
+    #    `APP_TRUST_ANCHOR_PATH` 指向一份人工批准锚点，否则 runtime 以
+    #    `provenance_not_verified` 拒绝装配。
+    #    ⛔ 本工具**不签发**批准，因此这里**不**输出该变量（也⛔ 不输出占位值）：
+    #    它必须由负责人在**带外**提供。缺它时后端就应当 503 —— 这正是设计意图。
     return environment
 
 
@@ -1401,7 +1433,10 @@ def _assert_ready_binding(
 
     try:
         dataset = load_accepted_offerings(
-            store.path, semester=semester, acceptance_sha256=store.acceptance_sha256
+            store.path, semester=semester, acceptance_sha256=store.acceptance_sha256,
+            # ⚠️ 产出工具的最终自洽回读，仍在人工批准之前 ⇒ 显式声明不要求批准。
+            #    ⛔ production 读取路径保持 require_approval=True。
+            require_approval=False,
         )
     except CourseDataStoreError as exc:
         _fail(
@@ -1941,10 +1976,15 @@ def _orchestrate(
     )
 
     blockers: list[str] = []
+    handoff_approval_blockers: list[str] = []
     if handoff_summary is None:
         blockers.append("real_source_handoff_missing")
+        handoff_approval_blockers.append("real_source_handoff_missing")
     else:
-        blockers.extend(handoff_summary.get("approval_blockers", []))  # type: ignore[arg-type]
+        handoff_approval_blockers.extend(
+            handoff_summary.get("approval_blockers", [])  # type: ignore[arg-type]
+        )
+        blockers.extend(handoff_approval_blockers)
     blockers.extend(curriculum_blockers)
     if store.offering_count <= 0:
         blockers.append("no_accepted_offerings")
@@ -1952,11 +1992,22 @@ def _orchestrate(
         blockers == [] and final_verification["final_curriculum_reverified"]
     )
 
-    # ---- 状态模型（⛔ 只有两边最终验证通过才是 ready） -------------------- #
+    # ⚠️ **本轮修复（F-08）**：独立 handoff 是否真的到位。
+    # 修复前这个判断**不参与** `ready` 决策，于是"有 store + curriculum、
+    # 但完全没有 handoff" 也会输出 `ready` 与可启用的 `runtime_environment`，
+    # 而唯一提到它的 `level2_eligible` 后端从不读取。
+    handoff_ok = bool(
+        handoff_summary is not None
+        and handoff_approval_blockers == []
+        and handoff_summary.get("synthetic") is False  # type: ignore[union-attr]
+    )
+
+    # ---- 状态模型（⛔ store + curriculum + 独立 handoff 三方都通过才 ready） #
     status = _resolve_readiness_status(
         final_verification=final_verification,
         environment=environment,
         verified_curriculum=verified_curriculum,
+        handoff_ok=handoff_ok,
     )
     _require_ready_invariant(
         status=status, final_verification=final_verification, environment=environment

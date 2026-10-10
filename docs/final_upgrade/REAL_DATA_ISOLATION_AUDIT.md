@@ -160,18 +160,41 @@ if self.data_source is DataSource.REAL and any("mock://" in value.lower() for va
 
 ---
 
-## 6. 【BLOCKED】运行时真实性不变式
+## 6. 【BLOCKED】运行时真实性不变式 —— ✅ 已由 `feature/verified-provenance-gate` 收口
+
+> **本节状态：已关闭（架构负责人批准原则后实施）。**
+> 实施记录见 `PROVENANCE_GATE_CLOSURE.md`，信任模型见 `TRUST_ANCHOR_DESIGN.md`。
+> §4 的第 1–3 项与第 5 项已落地为运行时门；**签发环节本身**仍需人工配置（见下）。
 
 ```text
-【BLOCKED】
-阻塞原因：F-01 / F-02 / F-03 / F-08 的修复都需要决定"什么才算真实来源"这一
-          业务/架构定义（签名 provenance、批准链、摘要绑定），属人工决策范围。
-已经确认：合成数据可纯自动获得 data_source=real 与前端 Real 标签；
-          唯一守卫是 mock:// 子串启发式；verification 是自述布尔；
-          工具层 synthetic 闸门默认不生效。
-无法确认：真实已核验 catalog / 真实 Case A case 是否已在仓库外产出；
-          五个已批准校区编号与学校当前系统是否一致。
-需要人工提供：① 是否采纳 §4 的第 1–3 项运行时不变式；② 由谁签发 provenance；
-          ③ 现有合成 E2E（test_synthetic_production_e2e.py）在改动后应如何标注。
-在确认前不会修改：course_data / planning_runtime / case / catalog 的任何生产逻辑。
+【BLOCKED — 仅剩签发环节】
+阻塞原因：仓库内没有可信身份与信任锚，"谁有权批准"无技术依据。
+          Agent 只实现了安全的拒绝路径与证据记录接口，
+          ⛔ 未自创伪安全签名方案。
+已经确认：① 合成数据可纯自动获得 data_source=real 与前端 Real 标签（F-01/F-02/F-03）；
+          ② SHA-256 只证明"输入与摘要一致"，单独不证明来源真实；
+          ③ 锚点文件无防篡改能力，真正边界是文件权限；
+          ④ 没有任何 Agent 可以自己完成签发。
+无法确认：批准锚点的实际路径与文件权限、approver 身份口径、authorization 依据形式、
+          是否设 expires_at、是否引入真正的签名机制。
+需要人工提供：① 锚点文件位置与写权限归属；② approver 身份口径；
+          ③ authorization 依据形式；④ 是否签名；⑤ 真实 artifact。
+在确认前不会修改：course_data 摄取期的 real 标记本身、case.py 的 mock:// 声明侧守卫、
+          公共 Schema、以及任何学业认定规则。
 ```
+
+### 6.1 逐条处置
+
+| 审计项 | 处置 | 落点 |
+| --- | --- | --- |
+| F-01 | ✅ 已加运行时不变式（批准锚点 + manifest 摘要绑定） | `planning_runtime` / `store_provider` / `store.load_accepted_offerings` 第 0b 步 |
+| F-02 | ✅ 已改为摘要 + 身份绑定（`mock://` 不再是唯一守卫） | `build_curriculum_provider(..., anchor=)` |
+| F-03 | ✅ 已要求锚点列出该 `version_id`（新拒绝码 `provenance_not_verified`） | `catalog.load_curriculum_catalog` / `personal_runtime` |
+| F-05 | ✅ 已降级为 `real_unverified` 并强制风险提示 | `ai_planning/context.py` / `api/ai_planning.py` / `ai_planning/service.py` |
+| F-07 | ⚠️ 已明示化：前端区分"HTTP 成功"与"已核验来源"（`usesVerifiedSource` 当前恒 false） | `frontend/src/App.vue` |
+| F-08 | ✅ handoff 成为 `ready` 的硬条件；工具不再硬编码 `authorized_user_session=True` | `tools/prepare_real_case_a_runtime.py` |
+
+### 6.2 仍未修的残留点
+
+见 `PROVENANCE_GATE_CLOSURE.md` §5"仍未修的残留点"（共 5 条，含
+`_build_curriculum_provenance` 里残留的 `"synthetic": False` 字面量）。

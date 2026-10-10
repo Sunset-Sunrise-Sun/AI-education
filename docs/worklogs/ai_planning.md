@@ -95,3 +95,22 @@
   前端 313 passed；`vue-tsc` exit 0；`npm run build` exit 0。
 - 使用数据：Mock + 注入式测试替身（离线）；真实在线 **BLOCKED**（无密钥）。
 - 需要人工确认：是否按 `REAL_DATA_ISOLATION_AUDIT.md` §4 落地运行时真实性不变式。
+
+### 2026-10-10 - 来源可信性门（`feature/verified-provenance-gate`）
+- 本次目标：修复 PR #72 审计确认的 F-01/F-02/F-03/F-05/F-08。
+- 先设计后实施：`docs/final_upgrade/TRUST_ANCHOR_DESIGN.md`（批准记录字段、
+  摘要计算对象、核验人身份与授权依据、版本绑定、失效规则、存储位置、运行时校验时机）。
+- 核心实现：`backend/app/provenance/__init__.py`（批准锚点装载与校验，fail closed，
+  ⛔ 无密码学签名，README 明确声明其强度边界）。
+- 实施：Course Data（store 第 0b 步 / provider / planning_runtime）、
+  Curriculum（case 摘要+身份 / catalog 批准集合 / personal_runtime）、
+  AI 规划（real_unverified + source_verified + 风险提示判据）、
+  工具层（handoff 成为 ready 硬条件；不再硬编码 authorized_user_session）。
+- 测试：新增 `test_provenance_anchor.py`、`test_provenance_gate_bypass.py`、
+  `test_ai_planning_provenance.py`、`frontend/tests/provenance-source-labels.spec.ts`；
+  三个 `test_KNOWN_GAP_*` 已改写为"必须拒绝绕过"的回归。
+- 修改文件：见 `docs/final_upgrade/PROVENANCE_GATE_CLOSURE.md` §4 迁移影响。
+- 使用数据：全合成夹具（⛔ 无真实教务数据）。
+- 需要人工确认：锚点文件位置与权限、approver 身份口径、authorization 依据形式、是否签名。
+- 仍未完成：`_build_curriculum_provenance` 里残留的 `"synthetic": False` 字面量等 5 条，
+  见 `PROVENANCE_GATE_CLOSURE.md` §5。

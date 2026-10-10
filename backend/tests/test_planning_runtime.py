@@ -309,6 +309,7 @@ def _environment(
     digest: str | None = None,
     enabled: str | None = "1",
     with_decisions: bool = True,
+    with_anchor: bool = True,
 ) -> dict[str, str]:
     if sqlite_path is None:
         sqlite_path, acceptance = _full_semester_store(tmp_path / "store")
@@ -325,7 +326,55 @@ def _environment(
     environment["APP_COURSE_DATA_SQLITE_PATH"] = str(sqlite_path)
     environment["APP_COURSE_DATA_SEMESTER"] = semester
     environment["APP_COURSE_DATA_ACCEPTANCE_SHA256"] = digest
+    if with_anchor:
+        environment["APP_TRUST_ANCHOR_PATH"] = str(
+            _write_test_anchor(
+                tmp_path / "trust-anchor.json", case_path=case_path,
+                digest=digest.strip().lower(), semester=semester,
+            )
+        )
     return environment
+
+
+def _write_test_anchor(
+    path: Path, *, case_path: Path, digest: str, semester: str = SEMESTER,
+) -> Path:
+    """为这些合成夹具写一份**测试专用**批准锚点。
+
+    ⚠️ 它**只**用来让既有的就绪性 / 异常边界探针能走到**批准门之后**的代码；
+    ⛔ 不代表任何真实人工批准，⛔ 不会被任何 production 环境引用
+    （路径只出现在本测试构造的环境映射里）。
+
+    `approver` 必须避开 `app.provenance` 的自签启发式。
+    """
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "trust_anchor_version": 1,
+        "approvals": [
+            {
+                "kind": "curriculum_case",
+                "identity": {
+                    "target_version_id": CASE_TARGET_VERSION_ID,
+                    "as_of_term": AS_OF_TERM,
+                },
+                "artifact_sha256": hashlib.sha256(case_path.read_bytes()).hexdigest(),
+                "approver": "本地合成夹具负责人（非真实批准）",
+                "authorization": "test fixture",
+                "approved_at": "2026-10-09T00:00:00Z",
+            },
+            {
+                "kind": "course_data_semester_manifest",
+                "identity": {"semester": semester, "acceptance_sha256": digest},
+                "artifact_sha256": digest,
+                "approver": "本地合成夹具负责人（非真实批准）",
+                "authorization": "test fixture",
+                "approved_at": "2026-10-09T00:00:00Z",
+            },
+        ],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def _install_environment(
@@ -337,6 +386,7 @@ def _install_environment(
         "APP_COURSE_DATA_SQLITE_PATH",
         "APP_COURSE_DATA_SEMESTER",
         "APP_COURSE_DATA_ACCEPTANCE_SHA256",
+        "APP_TRUST_ANCHOR_PATH",
     ):
         monkeypatch.delenv(name, raising=False)
     for name, value in environment.items():
@@ -425,7 +475,9 @@ def test_blank_semester_is_course_data_not_ready(
 ) -> None:
     environment = _environment(tmp_path, semester=semester)
 
-    assert build_planning_runtime(environment).reason == "course_data_not_ready"
+    assert build_planning_runtime(environment).reason in {
+        "course_data_not_ready", "provenance_not_verified",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -488,16 +540,49 @@ def test_campus_only_store_is_not_ready(tmp_path: Path) -> None:
 
 
 def test_wrong_acceptance_digest_is_not_ready(tmp_path: Path) -> None:
+    """锚点批准的是**另一个** digest ⇒ 该 acceptance 未获批准 ⇒ 不装配。
+
+    ⚠️ 本轮口径变化：修复前"digest 写错"只会在 store 里对不上；
+    现在它同样过不了**独立批准门**（`provenance_not_verified`）。
+    两者都是 fail closed 的 503，区别只是**哪一道门**先拦住它。
+    """
+
     environment = _environment(tmp_path)
     environment["APP_COURSE_DATA_ACCEPTANCE_SHA256"] = "b" * 64
+
+    assert build_planning_runtime(environment).reason == "provenance_not_verified"
+
+
+def test_approved_but_absent_digest_is_course_data_not_ready(tmp_path: Path) -> None:
+    """锚点**批准了**该 digest、但库里没有对应 acceptance ⇒ `course_data_not_ready`。
+
+    这条用来证明批准门不是"一律拒绝"：批准通过后，仍然由 store 的
+    content-bound 校验决定就绪性。
+    """
+
+    sqlite_path, acceptance = _full_semester_store(tmp_path / "store")
+    digest = acceptance.manifest_sha256  # type: ignore[attr-defined]
+    environment = _environment(tmp_path, sqlite_path=sqlite_path, digest=digest)
+    # 让锚点批准一个**库中不存在**的 digest，并把配置指向它
+    absent = "b" * 64
+    environment["APP_COURSE_DATA_ACCEPTANCE_SHA256"] = absent
+    environment["APP_TRUST_ANCHOR_PATH"] = str(_write_test_anchor(
+        tmp_path / "anchor-absent.json",
+        case_path=Path(environment["APP_CASE_A_CURRICULUM_CASE_PATH"]),
+        digest=absent,
+    ))
 
     assert build_planning_runtime(environment).reason == "course_data_not_ready"
 
 
 def test_wrong_semester_is_not_ready(tmp_path: Path) -> None:
+    """锚点按**该**学期批准，但库里绑定的学期不同 ⇒ 仍然不装配。"""
+
     environment = _environment(tmp_path, semester=OTHER_SEMESTER)
 
-    assert build_planning_runtime(environment).reason == "course_data_not_ready"
+    assert build_planning_runtime(environment).reason in {
+        "course_data_not_ready", "provenance_not_verified",
+    }
 
 
 def test_store_without_tables_is_not_ready(tmp_path: Path) -> None:
@@ -1267,6 +1352,9 @@ def test_runtime_module_only_catches_explicit_domain_exceptions() -> None:
         "_RuntimeSourceUnavailable",
         "CourseDataStoreError",
         "_RuntimeConfigurationInvalid",
+        # ⚠️ 本轮新增：批准锚点装载是一个**显式领域**失败源
+        #    （未配置 / 不可读 / 版本不符 / 结构非法 / 自签）。
+        "TrustAnchorUnavailable",
     }
 
     def _names(node: ast.expr | None) -> set[str]:

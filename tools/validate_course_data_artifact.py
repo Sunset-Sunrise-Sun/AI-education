@@ -430,6 +430,9 @@ def accept_artifact(args: argparse.Namespace) -> dict[str, object]:
             semester=expected_semester,
             acceptance_sha256=artifact_sha256,
             scope=scope,
+            # ⚠️ 这是**校验工具**对 campus artifact 的自洽回读（批准之前的阶段）。
+            #    ⛔ 不伪造批准摘要；⛔ production 读取路径保持 require_approval=True。
+            require_approval=False,
         )
         if (
             dataset.acceptance.artifact_sha256 != artifact_sha256

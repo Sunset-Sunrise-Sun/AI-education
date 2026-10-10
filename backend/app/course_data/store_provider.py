@@ -63,6 +63,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.course_data.store import (
+    ARTIFACT_SHA256_PATTERN,
     AcceptedDataset,
     CourseDataProvenance,
     CourseDataStoreError,
@@ -123,6 +124,8 @@ class StoreBackedCourseDataProvider:
         sqlite_path: str | Path,
         semester: str,
         acceptance_sha256: str,
+        approved_manifest_sha256: tuple[str, ...] = (),
+        require_approval: bool = True,
     ) -> None:
         resolved_semester = _require_semester(semester)
         resolved_sha256 = _require_sha256(acceptance_sha256)
@@ -132,9 +135,27 @@ class StoreBackedCourseDataProvider:
                 f"sqlite_path 必须是 str 或 Path，实际是 {type(sqlite_path).__name__}"
             )
 
+        # ⚠️ 来源门：调用方必须给出**带外批准锚点**里记录的 manifest 摘要。
+        # 没有它 ⇒ 构造期即 fail closed（⛔ 不允许"没有批准也能读"）。
+        # `require_approval=False` 仅限**产出工具在批准之前**的自洽回读，
+        # ⛔ production 构造路径保持默认 True。
+        approved: tuple[str, ...] = ()
+        for item in approved_manifest_sha256:
+            if not ARTIFACT_SHA256_PATTERN.match(str(item).strip().lower()):
+                raise CourseDataAcceptanceError(
+                    "approved_manifest_sha256 里必须是 64 位小写十六进制摘要"
+                )
+            approved += (str(item).strip().lower(),)
+        if require_approval and not approved:
+            raise CourseDataAcceptanceError(
+                "没有独立批准锚点记录的 manifest 摘要：⛔ 拒绝把本地库当作已核验真实来源"
+            )
+
         self._sqlite_path = sqlite_path
         self._semester = resolved_semester
         self._acceptance_sha256 = resolved_sha256
+        self._approved_manifest_sha256 = frozenset(approved)
+        self._require_approval = bool(require_approval)
 
         # 构造期 fail fast：走**同一条**验证路径（⛔ 结果不作为此后读取的依据）。
         dataset = self._read_accepted_dataset()
@@ -149,6 +170,8 @@ class StoreBackedCourseDataProvider:
                 self._sqlite_path,
                 semester=self._semester,
                 acceptance_sha256=self._acceptance_sha256,
+                approved_manifest_sha256=self._approved_manifest_sha256,
+                require_approval=self._require_approval,
             )
         except CourseDataStoreError as exc:
             # 统一成 readiness 语义（⛔ 不泄漏库内取值 / 路径）。
