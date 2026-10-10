@@ -189,3 +189,13 @@
 - 新增 `pages` 页限定；`source_record` 现为 `page:{n}!table:{t}!row:{i}`。
 - ⚠️ 待人工：`requirement`（必修/选修）仍需人工或经批准规则补齐。
 - 报告见 `docs/final_upgrade/PDF_IMPORT_REAL_ACCEPTANCE.md`。
+
+### 第 4 轮（2026-10-10）CLI / HTTP profile 统一
+- **已修复审核缺口**：CLI 与 HTTP 现在共用 `app/curriculum/pdf_profiles.py` 一份已验收 profile；
+  旧的 `_install_pdf_tables()` 与 CLI 本地默认声明均已删除。
+- 文档类型**只由内容结构判定**；`document_type` 只是断言（不一致 422）；
+  HTTP 摄取签名不含 `tables`（⛔ 调用方无法提交列位映射）。
+- **HTTP 实测**：遥感 84 行 / 2 待确认；网络空间安全 89 行 / 6 待确认；文档级问题 0。
+- `requirement` 两份文件均为 `unknown` ⇒ ⛔ 不能直接进入正式补修分析（如实呈现）。
+- 重复课程编码保留各自定位，⛔ 不自动去重；`group_records` 仍需人工核验。
+- ⚠️ 许可证：**正式公开部署前必须完成核查**。

@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 /**
  * 培养方案 PDF 导入（⚠️ 本轮新增）。
  *
@@ -20,16 +20,17 @@
  * | 在前端重新解析 PDF | 前端只做**本地快速失败**（大小 / 类型），权威校验在后端 |
  */
 
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { CURRICULUM_IMPORT_API_ENABLED } from '../config'
 import {
   CURRICULUM_IMPORT_ERROR_LABEL,
   CurriculumImportError,
   MAX_PDF_UPLOAD_BYTES,
-  PDF_MIME_TYPE,
+  fetchCurriculumDocumentTypes,
   parseCurriculumPdf,
   validatePdfFile,
+  type CurriculumDocumentType,
   type CurriculumParseResult,
   type CurriculumRole,
 } from '../api/curriculumImport'
@@ -73,6 +74,36 @@ const targetSource = ref('教务系统保存网页重排生成的 PDF')
 
 const enabled = CURRICULUM_IMPORT_API_ENABLED
 const maxMiB = Math.round(MAX_PDF_UPLOAD_BYTES / 1024 / 1024)
+
+/**
+ * **已验收**的文档类型清单（来自后端注册表）。
+ *
+ * ⛔ 前端⛔ 不硬编码任何列位映射，也⛔ 不允许用户自定义：
+ * 用户只能"选择用哪份已验收声明解析"，⛔ 无法影响"哪一列是课程编码"。
+ */
+const documentTypes = ref<CurriculumDocumentType[]>([])
+const documentTypeKey = ref('')
+const documentTypesError = ref<string | null>(null)
+
+async function loadDocumentTypes(): Promise<void> {
+  if (!enabled) {
+    return
+  }
+  try {
+    documentTypes.value = await fetchCurriculumDocumentTypes({ enabled })
+    documentTypesError.value = null
+    if (!documentTypeKey.value && documentTypes.value.length > 0) {
+      documentTypeKey.value = documentTypes.value[0]!.key
+    }
+  } catch (error) {
+    documentTypes.value = []
+    documentTypesError.value = CURRICULUM_IMPORT_ERROR_LABEL[
+      error instanceof CurriculumImportError ? error.kind : 'network'
+    ]
+  }
+}
+
+onMounted(loadDocumentTypes)
 
 function slotOf(role: CurriculumRole): SlotState {
   return role === 'origin' ? origin.value : target.value
@@ -118,6 +149,8 @@ async function upload(role: CurriculumRole): Promise<void> {
       cohort: cohort.value,
       source: sourceOf(role),
       enabled,
+      // ⚠️ 只是**断言**：后端会与按内容结构判定的结果核对，不一致即 422。
+      documentType: documentTypeKey.value || undefined,
     })
     slot.status = 'parsed'
   } catch (error) {
@@ -185,6 +218,27 @@ const allConfirmed = computed(
       </label>
     </fieldset>
 
+    <fieldset class="pdf-import__doc-types">
+      <legend>培养方案版本（只能选**已验收**的文档类型）</legend>
+      <label>
+        文档类型
+        <select v-model="documentTypeKey" data-testid="pdf-document-type">
+          <option v-if="documentTypes.length === 0" value="">（尚未取得清单）</option>
+          <option v-for="item in documentTypes" :key="item.key" :value="item.key">
+            {{ item.label }}
+          </option>
+        </select>
+      </label>
+      <p class="pdf-import__filemeta" data-testid="pdf-document-type-note">
+        ⛔ 这里只选择"用哪份**已验收声明**解析"，⛔ 不能提交任何课程列位映射。
+        后端会按<strong>内容结构</strong>核对上传的文件是否真的是该文档类型，
+        不一致即拒绝；专业名、文件名、角色<strong>都不参与</strong>真实性判定。
+      </p>
+      <p v-if="documentTypes.length === 0 && !documentTypesError" class="pdf-import__filemeta">
+        正在获取已验收文档类型清单…
+      </p>
+    </fieldset>
+
     <div class="pdf-import__slots">
       <article
         v-for="slot in [
@@ -213,6 +267,15 @@ const allConfirmed = computed(
           />
         </label>
 
+        <p
+          v-if="documentTypesError"
+          class="pdf-import__error"
+          data-testid="pdf-document-types-error"
+          role="alert"
+        >
+          ⛔ 无法取得已验收文档类型清单：{{ documentTypesError }}
+        </p>
+
         <input
           type="file"
           accept=".pdf,application/pdf"
@@ -232,7 +295,12 @@ const allConfirmed = computed(
 
         <button
           type="button"
-          :disabled="!enabled || slot.state.file === null || slot.state.status === 'uploading'"
+          :disabled="
+            !enabled
+            || slot.state.file === null
+            || slot.state.status === 'uploading'
+            || documentTypeKey === ''
+          "
           :data-testid="`pdf-upload-${slot.role}`"
           @click="upload(slot.role)"
         >
@@ -407,6 +475,11 @@ const allConfirmed = computed(
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+}
+.pdf-import__doc-types {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .pdf-import__meta label,
 .pdf-import__source {

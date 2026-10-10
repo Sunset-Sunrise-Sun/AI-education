@@ -390,3 +390,20 @@
   权威代号（公必/专必/专选/公选）在实践教学附表里，跨表连接属于课程认定 ⇒ 交人工。
 - 报告：`docs/final_upgrade/PDF_IMPORT_REAL_ACCEPTANCE.md`（含逐页表、准确性数字、未识别清单、复现命令）。
 - 真实 PDF ⛔ 未提交进仓库；`verified=false` / `complete=false`，⛔ 未写目录、⛔ 未写锚点。
+
+### 2026-10-10（第 4 轮）统一 CLI 与 HTTP 的 profile 来源
+审核缺口：CLI 用真实 profile，HTTP 仍用 `_install_pdf_tables()` 里猜出来的旧默认声明 ⇒ 必然漂移。
+- **新增 `app/curriculum/pdf_profiles.py`**：已验收 profile 注册表 + 按内容结构判定文档类型。
+  删除 `_install_pdf_tables()` 与 CLI 的 `DEFAULT_TABLES`；两侧都走
+  `load_curriculum_pdf_verified()`（有结构断言防止再出现第二份副本）。
+- **文档类型只由内容结构判定**：新增 `GET /api/v1/curriculum-import/document-types`；
+  `document_type` 只是断言（不一致即 422）；HTTP 摄取签名里**没有** `tables` 参数；
+  `detect_document_type` 只接收 bytes（⛔ 不看专业名/文件名/角色）。
+- **真实 PDF 经 HTTP 端点验收**：遥感 84 行 / 2 待确认 / 0 问题；网络空间安全 89 行 / 6 待确认 / 0 问题；
+  错误类型与未知类型均 422；篡改专业名后 `source_id` 不变；⛔ 未写目录、⛔ 未写锚点。
+- 修正我自己写错的三处声明（10 列表用了 9 列表头、第 5 页表序号写错、合并"学时"两半未都声明）；
+  并修掉一个真实缺陷：未声明 requirement 列时 `UNKNOWN` 被误算成"未解析"，导致 84 行全进待确认。
+- 前端：文档类型清单来自后端，页面不暴露任何列位映射；新增浏览器用例 `L12`。
+- 许可证：标注"**正式公开部署前必须完成核查**"；⛔ 未改仓库 LICENSE。
+- 测试：后端 3493 passed（新增 40 例）/ 2 既有平台差异 / 2 skipped；前端 351 passed；
+  vue-tsc 0；build 0；浏览器 E2E 26 passed。

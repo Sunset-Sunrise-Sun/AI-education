@@ -27,6 +27,16 @@ import { CURRICULUM_IMPORT_ENDPOINTS } from '../config'
 /** 原专业 / 目标专业。 */
 export type CurriculumRole = 'origin' | 'target'
 
+/** 一个**已验收**的文档类型（由后端注册表给出，⛔ 前端不得自定义列位映射）。 */
+export interface CurriculumDocumentType {
+  key: string
+  major: string
+  cohort: string
+  label: string
+  verified_pages: number
+  declared_tables: number
+}
+
 /** 上传前的本地校验上限（与后端 `MAX_UPLOAD_BYTES` 一致：8 MiB）。 */
 export const MAX_PDF_UPLOAD_BYTES = 8 * 1024 * 1024
 
@@ -67,6 +77,53 @@ export const CURRICULUM_IMPORT_ERROR_LABEL: Record<CurriculumImportErrorKind, st
     + '或表格结构与预期不符。请转人工处理，⛔ 不会用演示数据替代。',
   network: '请求失败：无法连接后端。',
   contract: '后端响应不符合约定的契约。',
+}
+
+/**
+ * 拉取**已验收**的文档类型清单。
+ *
+ * ⛔ 前端只能从这个清单里选，⛔ 不能提交任何课程列位映射 ——
+ * profile 由后端注册表给出，调用方无法影响"哪一列是课程编码"。
+ */
+export async function fetchCurriculumDocumentTypes(
+  options: { enabled: boolean },
+): Promise<CurriculumDocumentType[]> {
+  if (!options.enabled) {
+    throw new CurriculumImportError('disabled')
+  }
+  let response: Response
+  try {
+    response = await fetch(CURRICULUM_IMPORT_ENDPOINTS.documentTypes, { method: 'GET' })
+  } catch {
+    throw new CurriculumImportError('network')
+  }
+  if (!response.ok) {
+    throw new CurriculumImportError('contract')
+  }
+  let payload: unknown
+  try {
+    payload = await response.json()
+  } catch {
+    throw new CurriculumImportError('contract')
+  }
+  const list = (payload as { document_types?: unknown })?.document_types
+  if (!Array.isArray(list)) {
+    throw new CurriculumImportError('contract')
+  }
+  return list.map((item) => {
+    const record = item as Record<string, unknown>
+    if (typeof record['key'] !== 'string' || typeof record['label'] !== 'string') {
+      throw new CurriculumImportError('contract')
+    }
+    return {
+      key: record['key'],
+      major: String(record['major'] ?? ''),
+      cohort: String(record['cohort'] ?? ''),
+      label: record['label'],
+      verified_pages: Number(record['verified_pages'] ?? 0),
+      declared_tables: Number(record['declared_tables'] ?? 0),
+    }
+  })
 }
 
 export class CurriculumImportError extends Error {
@@ -238,7 +295,19 @@ async function readBytes(file: File): Promise<Uint8Array> {
  */
 export async function parseCurriculumPdf(
   file: File,
-  options: { role: CurriculumRole; major: string; cohort: string; source: string; enabled: boolean },
+  options: {
+    role: CurriculumRole
+    major: string
+    cohort: string
+    source: string
+    enabled: boolean
+    /**
+     * ⚠️ 已验收文档类型的 key —— 它只是**断言**：
+     * 后端会与"按内容结构判定的结果"核对，不一致即 422。
+     * ⛔ 它**不是**列位映射，前端无法用它改变"哪一列是课程编码"。
+     */
+    documentType?: string | undefined
+  },
 ): Promise<CurriculumParseResult> {
   if (!options.enabled) {
     throw new CurriculumImportError('disabled')
@@ -257,6 +326,9 @@ export async function parseCurriculumPdf(
     cohort: options.cohort,
     source: options.source,
   })
+  if (options.documentType) {
+    query.set('document_type', options.documentType)
+  }
 
   let response: Response
   try {

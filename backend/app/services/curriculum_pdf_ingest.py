@@ -41,7 +41,8 @@ from dataclasses import dataclass, field
 from app.curriculum.catalog_draft import CatalogDraftInput
 from app.curriculum.docx_reader import DocxImportIssue, DocxImportResult
 from app.curriculum.errors import CurriculumNormalizationError
-from app.curriculum.pdf_reader import MAX_PDF_BYTES, load_curriculum_pdf
+from app.curriculum.pdf_profiles import load_curriculum_pdf_verified
+from app.curriculum.pdf_reader import MAX_PDF_BYTES
 from app.curriculum.requirements import RequirementKind
 
 __all__ = [
@@ -198,13 +199,22 @@ def _issue_payload(issue: DocxImportIssue) -> dict:
 
 
 def _is_resolved(row: object) -> bool:
-    return (
+    """这一行的**取值**是否完整（`requirement` 只在被声明时才参与判断）。
+
+    `row.raw_values` 只包含 profile **实际映射**的列，
+    因此 `"requirement" in raw_values` 就等于"profile 声明了 requirement 列"。
+    """
+
+    mapped = {key for key, _value in getattr(row, "raw_values", ())}
+    resolved = (
         not row.issues  # type: ignore[attr-defined]
         and row.course_id is not None  # type: ignore[attr-defined]
         and row.course_name is not None  # type: ignore[attr-defined]
         and row.credit is not None  # type: ignore[attr-defined]
-        and row.requirement != RequirementKind.UNKNOWN  # type: ignore[attr-defined]
     )
+    if "requirement" in mapped:
+        resolved = resolved and row.requirement != RequirementKind.UNKNOWN  # type: ignore[attr-defined]
+    return resolved
 
 
 def _duplicate_course_ids(result: DocxImportResult) -> dict[str, tuple[str, ...]]:
@@ -320,9 +330,16 @@ def ingest_pdf_upload(
     major: object,
     cohort: object,
     source: object,
-    tables: Sequence[Mapping[str, object]],
+    document_type: object = None,
 ) -> PdfUploadOutcome:
     """校验并解析一次 PDF 上传；⛔ 失败即抛错，⛔ 从不返回"猜测的结果"。
+
+    ⚠️ **profile 不再由调用方提供**：本函数从
+    `app/curriculum/pdf_profiles.py`（已验收注册表）取，
+    与 `tools/parse_curriculum_pdf.py` 共用同一份声明，⛔ 不会漂移。
+
+    `document_type` 只是**断言**：会与"按内容结构判定的结果"核对，
+    不一致即拒绝。⛔ 因此不可能仅凭专业名 / 文件名 / 角色决定数据真实性。
 
     ⛔ 不写文件、⛔ 不联网、⛔ 不把任何调用方字符串当作路径。
     """
@@ -347,7 +364,7 @@ def ingest_pdf_upload(
     if not body:
         raise PdfUploadError(ERROR_EMPTY_UPLOAD, "上传文件为空。")
     if len(body) > MAX_UPLOAD_BYTES:
-        raise PdfUploadError(ERROR_TOO_LARGE, "上传文件超过大小上限。")
+        raise PdfUploadError(ERROR_TOO_LARGE, "上传文件大小超过上限。")
 
     digest = hashlib.sha256(body).hexdigest()
     # ⛔ `source_id` 只由**内容摘要**决定：文件名与调用方字符串都不参与。
@@ -357,7 +374,12 @@ def ingest_pdf_upload(
     if role_text not in {"origin", "target"}:
         raise CurriculumNormalizationError("pdf upload: role must be origin or target")
 
-    result = load_curriculum_pdf(body, source_id=source_id, tables=tables)
+    # ⚠️ 已验收文档类型的解析入口（CLI 与 HTTP 共用）。
+    #    专业名 / 年级 / 角色都**不参与** profile 选择与真实性判定。
+    document, result = load_curriculum_pdf_verified(
+        body, source_id=source_id, document_key=document_type,
+    )
+
     draft = build_draft_from_result(
         result,
         role=role_text,
@@ -369,7 +391,7 @@ def ingest_pdf_upload(
         sha256=digest,
         file_name=_safe_file_name(file_name),
         role=role_text,
-        kind="tables",
+        kind=document.key,
         major=_require_text(major, "major"),
         cohort=_require_text(cohort, "cohort"),
         draft=draft,

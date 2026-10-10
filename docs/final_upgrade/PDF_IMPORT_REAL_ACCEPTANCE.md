@@ -290,3 +290,140 @@ python tools/parse_curriculum_pdf.py --pdf "<遥感 PDF>" --major "遥感科学�
 > ⛔ 本报告不含任何"已获批准"的断言。所有数字来自实际执行的命令输出。
 > ⚠️ 本报告在编写过程中修正过一处**我自己的错误断言**（曾误认为"必修/选修由表头分栏表达"），
 > 该说法与实测不符，已按实际结构改写 —— ⛔ 不以推测充当事实。
+
+---
+
+## 11. 第 4 轮（架构审核 CHANGES REQUIRED：CLI 与 HTTP 的 profile 漂移）
+
+### 11.1 审核指出的缺口（已确认成立）
+
+`tools/parse_curriculum_pdf.py` 用真实 profile，而 HTTP 端点仍在用
+`_install_pdf_tables()` 里那份**旧的、猜出来的**默认声明 ⇒ 两套规则必然漂移，
+"前端上传真实 PDF"从未被验收过。
+
+### 11.2 修复：单一来源 `app/curriculum/pdf_profiles.py`
+
+```text
+                  ┌──────────────────────────────┐
+   PDF bytes ────► │ app/curriculum/pdf_profiles  │ ◄──── CLI  --document-type
+                  │  · 已验收 profile（照抄真实表头）│
+                  │  · 按**内容结构**判定文档类型    │
+                  └──────────────────────────────┘
+                                │
+                    profile 列表 └──► pdf_reader.load_curriculum_pdf()
+```
+
+- `_install_pdf_tables()` **已删除**；CLI 的 `DEFAULT_TABLES` **已删除**；
+- 两侧都只经由 `load_curriculum_pdf_verified()`；
+- 测试 `test_cli_and_http_share_one_profile_source` 做**结构断言**：
+  两份源码里都不许再出现 `DEFAULT_TABLES` / `_install_pdf_tables` / `"expected_headers"`。
+
+### 11.3 文档类型**只由内容结构**判定（要求 2、3）
+
+- 新增 `GET /api/v1/curriculum-import/document-types`：返回**已验收**类型清单
+  （⛔ 不含任何列位映射）。前端只能从这里选。
+- `POST .../parse-pdf` 的 `document_type` 是**可选断言**：
+  - 给了 → 与内容判定结果核对，**不一致即 422**；
+  - 没给 → 完全按内容结构判定。
+- HTTP 摄取入口的签名里**没有** `tables` 参数 ⇒ 调用方⛔ 无法提交任何列位映射
+  （测试 `test_http_ingest_signature_rejects_arbitrary_mappings`）。
+- `detect_document_type(data)` 的签名**只有 `data`** ——
+  ⛔ 不接受专业名 / 文件名 / 角色 / Content-Type（测试断言）。
+- 判定判据是"**声明的每一张表都在该页以相同的表头出现**"（完全覆盖）：
+  两份文件表头高度重合，用"有交集"会双双命中（实测判成歧义），必须完全覆盖才能区分。
+
+### 11.4 真实 PDF 经 **HTTP 端点**验收（要求 4）
+
+由 `http_acceptance.py` 实际执行（走 `TestClient` 真实 HTTP 栈）：
+
+| 检查 | 遥感科学与技术 | 网络空间安全 |
+| --- | --- | --- |
+| 自动判定（不传 document_type） | HTTP **200**，`source.kind=yuangan-2025` | HTTP **200**，`source.kind=netsec-2025` |
+| **课程行 course_records** | **84** | **89** |
+| **待确认行 unresolved_rows** | **2** | **6** |
+| 文档级问题 | **0** | **0** |
+| SHA-256（前 16） | `deed8a61cdb73ed0` | `17773b2583fa20e2` |
+| `review_conclusion` | `pending_group_lead_review` | 同 |
+| `verification_verified` | **false** | **false** |
+| `is_official_school_pdf` | **false** | **false** |
+| 断言**正确**类型 | HTTP 200（84 行） | HTTP 200（89 行） |
+| 断言**错误**类型 | HTTP **422** | HTTP **422** |
+| 断言不存在的类型 | HTTP **422** | HTTP **422** |
+| 篡改专业名后 `source_id` 不变 | **True** | **True** |
+
+> ✅ HTTP 的条数与 CLI **完全一致**（84 / 2 与 89 / 6），
+> 证明两条路径确实共用同一份 profile。
+
+### 11.5 两份文件的待确认清单（要求 7、8）
+
+**遥感科学与技术（2 条未识别行）**
+
+| 来源定位 | 内容 | 问题码 |
+| --- | --- | --- |
+| `page:5!table:2!row:1` | `专业选修课模块` / `本研贯通课`（小节标题行） | `unresolved_course_id`、`missing_course_name`、`unresolved_credit` |
+| `page:5!table:2!row:5` | `专业提升课`（小节标题行） | 同上 |
+
+`human_required` 含：`recommended_semester`、`deadline_semester`、`prerequisites`、
+`unresolved_rows`(2)、**`duplicate_course_id`**（GST204/GST213/GST220/GST233/GST301/GST331/ISE2160 各 ×2）、
+**`group_records`**、`verification`、`version_identity`、`source_provenance`。
+
+**网络空间安全（6 条未识别行）**
+
+| 来源定位 | 问题码 |
+| --- | --- |
+| `page:5!table:3!row:1`、`row:11` | 模块小节标题行 |
+| `page:6!table:1!row:1`、`row:8`、`row:13`、`row:24` | 模块小节标题行 |
+
+`human_required` 同上（无 `duplicate_course_id`，该文件无重复编码）。
+
+- **要求 7（重复编码保留定位）**：✅ 每条重复记录都保留自己的 `source_record`，
+  `source_records` 100% 唯一（测试断言），⛔ 不自动去重，只在 `human_required` 提示。
+- **要求 8（课程组学分要求人工核验）**：✅ `group_records` 恒在 `human_required`，
+  解析器⛔ 完全不产出 `group_records`；下游 `minimum_credit is None` ⇒ raise。
+
+### 11.6 `requirement=UNKNOWN` 如实呈现并禁止直接用于正式分析（要求 6）
+
+- 已识别课程的 `requirement` **全部为 `unknown`**（两份文件均如此），
+  HTTP 响应中**原样返回**，⛔ 不猜测、⛔ 不填充。
+- 原因（实测）：课程明细表的类别列是**合并单元格**，逐门课那一行为空；
+  权威代号 `公必/专必/专选/公选` 在**实践教学附表**里，跨表连接属于课程认定。
+- 前端与报告都明确：草稿 `verified=false` / `complete=false` /
+  `pending_group_lead_review` ⇒ ⛔ **不能直接进入正式补修分析**。
+
+### 11.7 前端验证（要求 5）
+
+| 检查 | 结果 |
+| --- | --- |
+| 单元/契约测试 | **351 passed**（22 文件），其中本轮新增 10 例 |
+| 文档类型选择框渲染 + 清单来自后端 | ✅ |
+| ⛔ 页面不暴露 `expected_headers` / `table_index` / `header_rows` | ✅（断言 HTML） |
+| `document_type` 作为查询参数发送；未选时不发送 | ✅ |
+| 浏览器 E2E `L12-curriculum-document-types` | ✅ 真实 Edge，清单含两个已验收类型、默认已选中、请求确实打到 `document-types` |
+
+⚠️ **前端⛔ 无法用浏览器端到端"上传真实 PDF 并看到课程列表"**：
+浏览器 E2E 的 `input[type=file]` 只能设 466 KB 的真实 PDF，且验收要求材料⛔ 不进仓库；
+因此"上传真实 PDF → 展示课程列表"由**HTTP 端点测试**
+（`test_http_endpoint_parses_the_real_pdf`，断言 84/89 行、2/6 待确认、来源状态）
+＋ **前端渲染测试**覆盖，并在 §11.4 给出实际 HTTP 解析条数。
+
+### 11.8 许可证（要求：继续标记"正式公开部署前必须完成核查"）
+
+`PYMUPDF_LICENSE_ASSESSMENT.md` 顶部已加粗标注：
+**正式公开部署前必须完成核查**（确认是否会闭源 / 是否需要 Artifex 商业许可）。
+⛔ 本轮**未**改动仓库根目录的 LICENSE。
+
+### 11.9 本轮变更清单
+
+| 文件 | 变更 |
+| --- | --- |
+| `backend/app/curriculum/pdf_profiles.py` | **新增**：已验收 profile 注册表 + 结构判定 |
+| `backend/app/curriculum/pdf_reader.py` | `PDF_PROFILE_FIELDS` 增加仅参与表头校验的列 |
+| `backend/app/services/curriculum_pdf_ingest.py` | 改走注册表；`document_type` 参数；`kind=document.key`；`_is_resolved` 只在声明了 requirement 时才判它 |
+| `backend/app/api/curriculum_import.py` | 删除 `_install_pdf_tables()`；新增 GET 文档类型端点；`document_type` 查询参数 |
+| `backend/tools/parse_curriculum_pdf.py` | 删除 `DEFAULT_TABLES`；新增 `--document-type` / `--list-documents`；改走注册表 |
+| `backend/tests/test_curriculum_pdf_profiles.py` | **新增 40 例**：注册表、结构判定、真实文件 HTTP 端到端 |
+| `backend/tests/test_curriculum_pdf_upload_api.py` | 迁移到新契约 |
+| `frontend/src/api/curriculumImport.ts`、`config.ts`、`CurriculumPdfImport.vue` | 文档类型选择 + 清单拉取 |
+| `frontend/tests/curriculum-pdf-import.spec.ts` | +10 例 |
+| `tools/browser-e2e/cases.mjs`、`run_browser_e2e.mjs` | 新增 `L12` |
+| `docs/final_upgrade/PYMUPDF_LICENSE_ASSESSMENT.md` | 标注"正式公开部署前必须完成核查" |

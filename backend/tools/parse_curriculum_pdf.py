@@ -45,10 +45,14 @@ if str(_BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(_BACKEND_ROOT))
 
 from app.curriculum.errors import CurriculumNormalizationError  # noqa: E402
-from app.curriculum.pdf_reader import (  # noqa: E402
-    inspect_curriculum_pdf,
-    load_curriculum_pdf,
+from app.curriculum.pdf_profiles import (  # noqa: E402
+    DOCUMENT_TYPES,
+    detect_document_type,
+    list_document_types,
+    load_curriculum_pdf_verified,
+    profile_for,
 )
+from app.curriculum.pdf_reader import inspect_curriculum_pdf  # noqa: E402
 from app.services.curriculum_pdf_ingest import (  # noqa: E402
     build_draft_from_result,
     describe_outcome,
@@ -59,30 +63,6 @@ __all__ = ["main"]
 EXIT_OK = 0
 EXIT_ARGUMENTS = 2
 EXIT_INPUT = 4
-
-#: 默认表格声明。⚠️ 这是"从哪一列取值"的**声明**，⛔ 不是"猜哪一列是课程号"。
-#: 每个候选都必须与表头单元格文字**完全相等**；全部不匹配 ⇒ 整表拒绝。
-DEFAULT_TABLES: list[dict] = [{
-    "mode": "tables",
-    "table_index": 1,
-    "columns": {
-        "sequence": 1, "course_id": 2, "course_name": 3,
-        "credit": 4, "requirement": 5, "recommended_term_text": 6,
-    },
-    "expected_headers": {
-        "sequence": ["序号", "No.", "No", "Seq", "Sequence"],
-        "course_id": ["课程号", "课程编号", "Course Code", "Course No.", "Code"],
-        "course_name": ["课程名称", "课程名", "Course Name", "Course Title", "Title"],
-        "credit": ["学分", "Credit", "Credits"],
-        "requirement": ["课程类别", "课程性质", "必修/选修", "Category", "Type", "Kind"],
-        "recommended_term_text": ["建议学期", "开课学期", "修读学期", "Term", "Semester", "When"],
-    },
-    "requirement_values": {
-        "必修": "required", "选修": "elective",
-        "required": "required", "elective": "elective",
-    },
-}]
-
 
 class _ArgumentParser(argparse.ArgumentParser):
     def error(self, message: str) -> None:
@@ -135,17 +115,25 @@ def main(argv: list[str] | None = None) -> int:
             "⛔ 不批准、⛔ 不写目录 / 锚点、⛔ 不 OCR。"
         ),
     )
-    parser.add_argument("--pdf", required=True, help="仓库外的 PDF 路径（⛔ 不进 Git）")
-    parser.add_argument("--major", required=True, help="专业名（由人给出，⛔ 不从 PDF 推断）")
-    parser.add_argument("--cohort", required=True, help="年级（由人给出）")
+    parser.add_argument("--pdf", default=None, help="仓库外的 PDF 路径（⛔ 不进 Git）")
+    parser.add_argument("--major", default=None, help="专业名（由人给出，⛔ 不从 PDF 推断）")
+    parser.add_argument("--cohort", default=None, help="年级（由人给出）")
     parser.add_argument("--role", default="origin", choices=("origin", "target"))
     parser.add_argument("--source", default="未提供来源说明", help="来源说明（提交者提供）")
     # ⚠️ `--out` 只在**解析**模式下必需；`--inspect` 是只读检查，不需要输出目录。
     #    这里不能用 `required=True`，否则 `--inspect` 单独跑会被参数校验挡下。
     parser.add_argument("--out", default=None, help="输出目录（仓库外；解析模式必需）")
     parser.add_argument(
-        "--profile", default=None,
-        help="可选：覆盖默认表格声明的 JSON 文件（当真实表头与默认不同时由人提供）",
+        "--document-type", default=None,
+        help=(
+            "已验收文档类型的 key（例如 yuangan-2025 / netsec-2025）。"
+            "⚠️ 它只是**断言**：会与按内容结构判定的结果核对，不一致即拒绝。"
+            "省略时完全按内容结构自动判定。"
+        ),
+    )
+    parser.add_argument(
+        "--list-documents", action="store_true",
+        help="列出**已验收**的培养方案文档类型后退出（⛔ 不解析、⛔ 不联网）",
     )
     parser.add_argument(
         "--show-tables", action="store_true",
@@ -163,6 +151,13 @@ def main(argv: list[str] | None = None) -> int:
         help="可选：把 --inspect 的 JSON 写到该路径（便于归档为逐页解析检查记录）",
     )
     args = parser.parse_args(argv)
+
+    if args.list_documents:
+        # ⛔ 只读：列出已验收类型，不解析任何文件、不写任何文件。
+        print(json.dumps(
+            {"document_types": list(list_document_types())}, ensure_ascii=False, indent=2,
+        ))
+        return EXIT_OK
 
     pdf_path = Path(args.pdf)
     if not pdf_path.is_file():
@@ -192,29 +187,10 @@ def main(argv: list[str] | None = None) -> int:
         print(text)
         return EXIT_OK
 
-    tables = DEFAULT_TABLES
-    if args.profile:
-        try:
-            loaded = json.loads(Path(args.profile).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            print(json.dumps({"status": "failed", "reason": "profile_unreadable"},
-                             ensure_ascii=False), file=sys.stderr)
-            return EXIT_INPUT
-        # 允许两种形状：直接的 profile 列表，或带说明的包装对象（便于归档人读的注释）。
-        # ⚠️ 只有 `tables` 会进解析器；⛔ 包装里的说明文字不参与任何判断。
-        if isinstance(loaded, dict) and isinstance(loaded.get("tables"), list):
-            tables = loaded["tables"]
-        elif isinstance(loaded, list):
-            tables = loaded
-        else:
-            print(json.dumps({"status": "failed", "reason": "profile_must_be_a_list"},
-                             ensure_ascii=False), file=sys.stderr)
-            return EXIT_INPUT
-        # ⛔ 每个声明都必须是纯 profile：未知键会被 pdf_reader fail closed 拒绝。
-        if any(not isinstance(spec, dict) for spec in tables):
-            print(json.dumps({"status": "failed", "reason": "profile_entry_must_be_an_object"},
-                             ensure_ascii=False), file=sys.stderr)
-            return EXIT_INPUT
+    for label, value in (("--pdf", args.pdf), ("--major", args.major),
+                         ("--cohort", args.cohort), ("--out", args.out)):
+        if not value:
+            parser.error(f"{label} is required unless --inspect/--list-documents is used")
 
     data = pdf_path.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
@@ -244,7 +220,11 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_INPUT
 
     try:
-        result = load_curriculum_pdf(data, source_id=source_id, tables=tables)
+        # ⚠️ **CLI 与 HTTP 共用同一个注册表**（`app/curriculum/pdf_profiles.py`）：
+        #    profile 不再来自 CLI 本地的默认声明，⛔ 也不会与 HTTP 各留一份而漂移。
+        document, result = load_curriculum_pdf_verified(
+            data, source_id=source_id, document_key=args.document_type,
+        )
     except CurriculumNormalizationError as error:
         # ⛔ 固定前缀、⛔ 不回显路径；扫描件与损坏文件都在这里明确报告。
         print(json.dumps({

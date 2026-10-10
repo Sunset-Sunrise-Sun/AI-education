@@ -113,6 +113,11 @@ export const PERSONAL_PLANNING_API_ENABLED: boolean =
  */
 export const CURRICULUM_IMPORT_ENDPOINTS = {
   parsePdf: `${API_BASE_URL}/api/v1/curriculum-import/parse-pdf`,
+  /**
+   * ⚠️ **已验收文档类型清单**：前端只能从这里选择用哪份声明解析。
+   * ⛔ 前端⛔ 不能提交课程列位映射 —— profile 由后端注册表给出。
+   */
+  documentTypes: `${API_BASE_URL}/api/v1/curriculum-import/document-types`,
 } as const
 
 /**

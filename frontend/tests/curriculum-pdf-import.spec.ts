@@ -16,6 +16,7 @@ import {
   CURRICULUM_IMPORT_ERROR_LABEL,
   CurriculumImportError,
   MAX_PDF_UPLOAD_BYTES,
+  fetchCurriculumDocumentTypes,
   parseCurriculumParseResult,
   parseCurriculumPdf,
   validatePdfFile,
@@ -266,5 +267,185 @@ describe('CurriculumPdfImport（组件）', () => {
     const originInput = wrapper.find('[data-testid="pdf-file-origin"]')
     const targetInput = wrapper.find('[data-testid="pdf-file-target"]')
     expect(originInput.element).not.toBe(targetInput.element)
+  })
+})
+
+describe('fetchCurriculumDocumentTypes（已验收清单）', () => {
+  it('关闭开关时直接拒绝，⛔ 不发请求', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch')
+    await expect(fetchCurriculumDocumentTypes({ enabled: false })).rejects.toMatchObject({
+      kind: 'disabled',
+    })
+    expect(fetchSpy).not.toHaveBeenCalled()
+    fetchSpy.mockRestore()
+  })
+
+  it('解析清单并保留 key / label / 页数', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          document_types: [
+            {
+              key: 'yuangan-2025',
+              major: '遥感科学与技术',
+              cohort: '2025',
+              label: '遥感科学与技术 2025级 培养方案（8 页，已验收）',
+              verified_pages: 8,
+              declared_tables: 6,
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    )
+    const list = await fetchCurriculumDocumentTypes({ enabled: true })
+    expect(list).toHaveLength(1)
+    expect(list[0]!.key).toBe('yuangan-2025')
+    expect(list[0]!.verified_pages).toBe(8)
+    const [url] = fetchSpy.mock.calls[0] as [string]
+    expect(url).toContain('/api/v1/curriculum-import/document-types')
+    fetchSpy.mockRestore()
+  })
+
+  it('契约不符（缺 document_types）⇒ 契约错误，⛔ 不当成空清单', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify({}), { status: 200 }),
+    )
+    await expect(fetchCurriculumDocumentTypes({ enabled: true })).rejects.toMatchObject({
+      kind: 'contract',
+    })
+    fetchSpy.mockRestore()
+  })
+
+  it('⛔ 清单里不出现任何列位映射', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          document_types: [
+            {
+              key: 'k',
+              major: 'm',
+              cohort: '2025',
+              label: 'l',
+              verified_pages: 1,
+              declared_tables: 1,
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    )
+    const list = await fetchCurriculumDocumentTypes({ enabled: true })
+    const serialised = JSON.stringify(list)
+    expect(serialised).not.toContain('expected_headers')
+    expect(serialised).not.toContain('columns')
+    fetchSpy.mockRestore()
+  })
+})
+
+describe('parseCurriculumPdf：document_type 只是断言', () => {
+  const file = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'origin.pdf', {
+    type: 'application/pdf',
+  })
+
+  it('选定类型时作为 document_type 查询参数发送', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(_resultPayload()), { status: 200 }),
+    )
+    await parseCurriculumPdf(file, {
+      role: 'origin',
+      major: 'M',
+      cohort: '2025',
+      source: 's',
+      enabled: true,
+      documentType: 'yuangan-2025',
+    })
+    const [url] = fetchSpy.mock.calls[0] as [string]
+    expect(url).toContain('document_type=yuangan-2025')
+    fetchSpy.mockRestore()
+  })
+
+  it('未选类型时不发送 document_type（由后端按内容结构判定）', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(_resultPayload()), { status: 200 }),
+    )
+    await parseCurriculumPdf(file, {
+      role: 'origin',
+      major: 'M',
+      cohort: '2025',
+      source: 's',
+      enabled: true,
+    })
+    const [url] = fetchSpy.mock.calls[0] as [string]
+    expect(url).not.toContain('document_type')
+    fetchSpy.mockRestore()
+  })
+
+  it('⛔ 前端⛔ 不能提交列位映射（请求体里没有 columns / expected_headers）', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify(_resultPayload()), { status: 200 }),
+    )
+    await parseCurriculumPdf(file, {
+      role: 'origin',
+      major: 'M',
+      cohort: '2025',
+      source: 's',
+      enabled: true,
+      documentType: 'yuangan-2025',
+    })
+    const [, init] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    const headers = JSON.stringify(init.headers ?? {})
+    const url = fetchSpy.mock.calls[0]![0] as string
+    for (const forbidden of ['expected_headers', 'columns', 'table_index', 'header_rows']) {
+      expect(url).not.toContain(forbidden)
+      expect(headers).not.toContain(forbidden)
+    }
+    fetchSpy.mockRestore()
+  })
+})
+
+describe('CurriculumPdfImport：展示课程列表 / 待确认项 / 来源状态（要求 5、6）', () => {
+  it('渲染文档类型选择框，并说明它只是"选已验收声明"', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          document_types: [
+            {
+              key: 'yuangan-2025',
+              major: '遥感科学与技术',
+              cohort: '2025',
+              label: '遥感科学与技术 2025级 培养方案（8 页，已验收）',
+              verified_pages: 8,
+              declared_tables: 6,
+            },
+          ],
+        }),
+        { status: 200 },
+      ),
+    )
+    const wrapper = mount(CurriculumPdfImport)
+    await vi.waitFor(() => {
+      expect(wrapper.find('[data-testid="pdf-document-type"]').exists()).toBe(true)
+    })
+    const note = wrapper.find('[data-testid="pdf-document-type-note"]')
+    expect(note.exists()).toBe(true)
+    expect(note.text()).toContain('不能提交任何课程列位映射')
+    fetchSpy.mockRestore()
+  })
+
+  it('⛔ 模板里不存在任何列位映射输入', () => {
+    const wrapper = mount(CurriculumPdfImport)
+    const html = wrapper.html()
+    for (const forbidden of ['expected_headers', 'table_index', 'header_rows', 'course_id"']) {
+      expect(html).not.toContain(forbidden)
+    }
+  })
+
+  it('展示"不能直接进入正式补修分析"的限制说明', () => {
+    const wrapper = mount(CurriculumPdfImport)
+    const text = wrapper.text()
+    // 组件必须声明"批准权在组长、未核验不得用于真实规划"
+    expect(text).toContain('组长')
+    expect(text).not.toContain('来源已核验')
   })
 })

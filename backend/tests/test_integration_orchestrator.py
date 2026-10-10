@@ -547,4 +547,6 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         # **只产出待组长审核的草稿**，⛔ 不写 APP_PERSONAL_CATALOG_DIR、
         # ⛔ 不写批准锚点、⛔ 不接入 integration 数据通道、⛔ 不改 `/api/v1/plan` 契约。
         "/api/v1/curriculum-import/parse-pdf",
+        # 已验收文档类型清单（⛔ 不含任何列位映射）。
+        "/api/v1/curriculum-import/document-types",
     }

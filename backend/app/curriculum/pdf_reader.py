@@ -83,9 +83,15 @@ MAX_PDF_PAGES = 200
 #: 也⛔ 不冒险把 OCR 出来的猜测当成课程数据。
 MIN_TEXT_CHARS_PER_PAGE = 20
 
-#: `tables` profile 允许的字段（与 `docx_reader._FIELDS` **同一集合**）。
+#: `tables` profile 允许的字段。
+#: 前 6 个与 `docx_reader._FIELDS` **同一集合**（真正会被取值的字段）；
+#: 后面几个是**只参与表头校验**的列（⛔ 不会被取值、⛔ 不影响任何输出）：
+#: 真实培养方案的表格有 8~10 列，把整行表头都声明出来才能做**完整**的匹配校验，
+#: 文档类型判定也需要整行表头（见 `app/curriculum/pdf_profiles.py`）。
 PDF_PROFILE_FIELDS = frozenset({
     "course_id", "course_name", "credit", "recommended_term_text", "requirement", "sequence",
+    # 以下仅用于表头校验（⛔ 不产生任何课程字段）
+    "course_category", "course_module", "theory_hours", "practice_hours", "weighted_course",
 })
 
 #: `tables` profile 允许声明的键。

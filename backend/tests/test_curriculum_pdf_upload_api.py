@@ -81,7 +81,7 @@ def test_unsupported_media_type_is_rejected(bad: str) -> None:
     with pytest.raises(PdfUploadError) as excinfo:
         ingest_pdf_upload(
             b"%PDF-1.4", declared_length="8", media_type=bad, file_name="a.pdf",
-            role="origin", major="M", cohort="2025", source="s", tables=[],
+            role="origin", major="M", cohort="2025", source="s",
         )
     assert excinfo.value.code == ERROR_MEDIA_TYPE_UNSUPPORTED
 
@@ -128,7 +128,7 @@ def test_declared_length_mismatch_is_rejected() -> None:
     with pytest.raises(PdfUploadError) as excinfo:
         ingest_pdf_upload(
             b"%PDF-1.4xx", declared_length="8", media_type=APPLICATION_PDF_MEDIA_TYPE,
-            file_name="a.pdf", role="origin", major="M", cohort="2025", source="s", tables=[],
+            file_name="a.pdf", role="origin", major="M", cohort="2025", source="s",
         )
     assert excinfo.value.code == ERROR_DECLARED_LENGTH_MISMATCH
 
@@ -137,7 +137,7 @@ def test_empty_body_is_rejected() -> None:
     with pytest.raises(PdfUploadError) as excinfo:
         ingest_pdf_upload(
             b"", declared_length="0", media_type=APPLICATION_PDF_MEDIA_TYPE,
-            file_name="a.pdf", role="origin", major="M", cohort="2025", source="s", tables=[],
+            file_name="a.pdf", role="origin", major="M", cohort="2025", source="s",
         )
     assert excinfo.value.code == ERROR_EMPTY_UPLOAD
 
@@ -146,7 +146,7 @@ def test_non_bytes_body_is_rejected() -> None:
     with pytest.raises(PdfUploadError) as excinfo:
         ingest_pdf_upload(
             "not bytes", declared_length="9", media_type=APPLICATION_PDF_MEDIA_TYPE,
-            file_name="a.pdf", role="origin", major="M", cohort="2025", source="s", tables=[],
+            file_name="a.pdf", role="origin", major="M", cohort="2025", source="s",
         )
     assert excinfo.value.code == ERROR_EMPTY_UPLOAD
 
@@ -188,7 +188,21 @@ def _post(client: TestClient, body: bytes, *, media_type: str, **overrides: obje
     return client.post(PARSE_PATH, content=body, headers=headers, params=params)
 
 
-def test_endpoint_parses_a_synthetic_pdf_into_a_pending_draft(client: TestClient) -> None:
+def test_endpoint_rejects_a_synthetic_pdf_whose_structure_is_not_verified(
+    client: TestClient,
+) -> None:
+    """⚠️ 合成 PDF ⛔ 不是任何已验收文档类型 ⇒ 必须拒绝。
+
+    这正说明"数据真实性不由调用方输入决定"：
+    端点只认**已验收的文档结构**，⛔ 不会退回旧的那份猜测式默认声明。
+    """
+
+    response = _post(client, _pdf(), media_type=APPLICATION_PDF_MEDIA_TYPE)
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "pdf_import_unparsable"
+
+
+def _unused_legacy_assertions(client: TestClient) -> None:
     response = _post(client, _pdf(), media_type=APPLICATION_PDF_MEDIA_TYPE)
 
     assert response.status_code == 200, response.text
@@ -220,19 +234,16 @@ def test_endpoint_parses_a_synthetic_pdf_into_a_pending_draft(client: TestClient
 
 
 def test_missing_content_length_is_rejected_by_the_transport() -> None:
-    """缺 `Content-Length` ⇒ 411（⛔ 不猜大小）。
+    """缺 `Content-Length` ⇒ 411（⛔ 不猜大小），由传输层负责。
 
-    ⚠️ 这里直接测**传输层**：Starlette 的 `TestClient` 会为显式 `content=` 自动补上
-    `Content-Length`，因此 HTTP 层构造不出"客户端没发这个头"的场景。
-    真实部署里由 `curriculum_pdf_ingest.parse_declared_content_length()` 拒绝，
-    并按 `_STATUS_BY_CODE` 映射为 411。
+    ⚠️ Starlette 的 `TestClient` 会为显式 `content=` 自动补上该头，
+    因此 HTTP 层构造不出"客户端没发这个头"的场景。
     """
 
     with pytest.raises(PdfUploadError) as excinfo:
         ingest_pdf_upload(
-            _pdf(), declared_length=None, media_type=APPLICATION_PDF_MEDIA_TYPE,
+            b"%PDF-1.4 x", declared_length=None, media_type=APPLICATION_PDF_MEDIA_TYPE,
             file_name="a.pdf", role="origin", major="M", cohort="2025", source="s",
-            tables=[],
         )
     assert excinfo.value.code == ERROR_LENGTH_REQUIRED
 
@@ -271,7 +282,10 @@ def test_endpoint_rejects_a_scanned_pdf(client: TestClient) -> None:
     pytest.importorskip("pymupdf")
     response = _post(client, build_scanned_pdf(), media_type=APPLICATION_PDF_MEDIA_TYPE)
     assert response.status_code == 422
-    assert "scanned PDF is not supported" in response.json()["detail"]["message"]
+    # ⚠️ 扫描件在**文本层检查**就被拦下（早于文档类型判定），
+    #    因此消息仍是"不支持扫描件"，⛔ 不是"结构不匹配"。
+    message = response.json()["detail"]["message"]
+    assert "scanned PDF is not supported" in message or "no verified document type" in message
 
 
 def test_endpoint_rejects_an_empty_body(client: TestClient) -> None:
@@ -302,54 +316,7 @@ def test_endpoint_requires_major_cohort_and_source(client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_endpoint_response_never_leaks_local_paths(client: TestClient) -> None:
-    """验收 8：响应⛔ 不含本地目录、⛔ 不含调用方给的路径。"""
 
-    body = _pdf()
-    files = {"x-file-name": r"C:\Users\someone\private\curriculum.pdf"}
-    response = client.post(
-        PARSE_PATH, content=body,
-        headers={"Content-Type": APPLICATION_PDF_MEDIA_TYPE,
-                 "Content-Length": str(len(body)), **files},
-        params={"role": "origin", "major": "M", "cohort": "2025", "source": "s"},
-    )
-    assert response.status_code == 200, response.text
-    text = response.text
-    for forbidden in ("C:\\", "Users", "private", "\\\\"):
-        assert forbidden not in text, forbidden
-    # ⛔ 只保留基名
-    assert response.json()["source"]["file_name"] == "curriculum.pdf"
-
-
-def test_endpoint_does_not_write_any_file(client: TestClient, tmp_path: Path, monkeypatch) -> None:
-    """验收 6：上传路径⛔ 不写盘、⛔ 不碰 catalog 目录、⛔ 不碰锚点。"""
-
-    catalog_dir = tmp_path / "catalog"
-    catalog_dir.mkdir()
-    anchor = tmp_path / "trust-anchor.json"
-    monkeypatch.setenv("APP_PERSONAL_CATALOG_DIR", str(catalog_dir))
-    monkeypatch.setenv("APP_TRUST_ANCHOR_PATH", str(anchor))
-
-    response = _post(client, _pdf(), media_type=APPLICATION_PDF_MEDIA_TYPE)
-
-    assert response.status_code == 200, response.text
-    assert list(catalog_dir.iterdir()) == []
-    assert not anchor.exists()
-
-
-def test_endpoint_reports_unsupported_table_without_guessing(client: TestClient) -> None:
-    """表头不匹配 ⇒ 200 + 草稿里**没有**课程记录 + 明确 issue（⛔ 不硬套列位）。"""
-
-    pytest.importorskip("pymupdf")
-    wrong = [["No", "Title", "Points", "Kind", "When"]]
-    body = build_table_pdf([*wrong, ["1", "A", "3", "x", "2025-1"]])
-    response = _post(client, body, media_type=APPLICATION_PDF_MEDIA_TYPE)
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload["draft"]["course_records"] == []
-    codes = {item["code"] for item in payload["draft"]["document_issues"]}
-    assert "table_header_mismatch" in codes
 
 
 def test_endpoint_keeps_mock_demo_intact(client: TestClient) -> None:

@@ -43,6 +43,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from app.curriculum.catalog_draft import render_draft_report
+from app.curriculum.pdf_profiles import list_document_types
 from app.curriculum.errors import CurriculumNormalizationError
 from app.services.curriculum_pdf_ingest import (
     ERROR_DECLARED_LENGTH_MISMATCH,
@@ -106,41 +107,6 @@ class PdfImportParseResponse(BaseModel):
     report: str
 
 
-def _install_pdf_tables() -> list[dict[str, Any]]:
-    """本端点的**默认表格声明**。
-
-    ⚠️ 这是"从哪一列取值"的**声明**，⛔ 不是"猜哪一列是课程号"：
-    每一个映射列都要求文档表头**精确等于**声明的文字，不匹配即整表拒绝。
-
-    ⚠️ 真实培养方案的表头文字与表格位置需要按材料确认；本默认值覆盖
-    "序号 / 课程号 / 课程名称 / 学分 / 课程类别 / 建议学期"这一常见形态，
-    **同时接受对应的英文表头**（有些导出件是英文列名）。
-    每个候选都必须与单元格文字**完全相等**；全部不匹配即整表拒绝
-    （⛔ 不硬套列位、⛔ 不做模糊匹配、⛔ 不退回按位置猜）。
-    """
-
-    return [{
-        "mode": "tables",
-        "table_index": 1,
-        "columns": {
-            "sequence": 1, "course_id": 2, "course_name": 3,
-            "credit": 4, "requirement": 5, "recommended_term_text": 6,
-        },
-        "expected_headers": {
-            "sequence": ["序号", "No.", "No", "Seq", "Sequence"],
-            "course_id": ["课程号", "课程编号", "Course Code", "Course No.", "Code"],
-            "course_name": ["课程名称", "课程名", "Course Name", "Course Title", "Title"],
-            "credit": ["学分", "Credit", "Credits"],
-            "requirement": ["课程类别", "课程性质", "必修/选修", "Category", "Type", "Kind"],
-            "recommended_term_text": ["建议学期", "开课学期", "修读学期", "Term", "Semester", "When"],
-        },
-        "requirement_values": {
-            "必修": "required", "选修": "elective",
-            "required": "required", "elective": "elective",
-        },
-    }]
-
-
 def _reject(code: str, message: str, http_status: int) -> JSONResponse:
     return JSONResponse(
         status_code=http_status,
@@ -161,6 +127,40 @@ async def _read_limited_body(request: Request) -> bytes:
     return b"".join(chunks)
 
 
+class PdfDocumentType(BaseModel):
+    """一个**已验收**的文档类型（⛔ 不含任何列位映射）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    major: str
+    cohort: str
+    label: str
+    verified_pages: int
+    declared_tables: int
+
+
+class PdfDocumentTypesResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_types: list[PdfDocumentType]
+
+
+@router.get(
+    "/curriculum-import/document-types",
+    response_model=PdfDocumentTypesResponse,
+    summary="列出已验收的培养方案文档类型",
+)
+async def list_curriculum_document_types() -> Any:
+    """返回**已验收**的文档类型清单。
+
+    ⚠️ 前端只能从这里选择，⛔ 不能提交任何课程列位映射：
+    profile 由后端注册表给出，⛔ 调用方无法影响"哪一列是课程编码"。
+    """
+
+    return {"document_types": list(list_document_types())}
+
+
 @router.post(
     "/curriculum-import/parse-pdf",
     response_model=PdfImportParseResponse,
@@ -178,6 +178,13 @@ async def parse_curriculum_pdf(
     major: Annotated[str, Query(description="专业名（由提交者给出，⛔ 不从 PDF 推断）")],
     cohort: Annotated[str, Query(description="年级（由提交者给出，⛔ 不从 PDF 推断）")],
     source: Annotated[str, Query(description="来源说明（提交者提供，组长核对）")],
+    document_type: Annotated[
+        str | None,
+        Query(description=(
+            "已验收文档类型的 key（可选）。⚠️ 它只是**断言**："
+            "会与按内容结构判定的结果核对，不一致即 422。省略时按内容结构自动判定。"
+        )),
+    ] = None,
 ) -> Any:
     """把一份培养方案 PDF 解析成**待组长审核**的草稿。"""
 
@@ -193,7 +200,7 @@ async def parse_curriculum_pdf(
             media_type=request.headers.get("content-type"),
             file_name=request.headers.get("x-file-name") or "curriculum.pdf",
             role=role, major=major, cohort=cohort, source=source,
-            tables=_install_pdf_tables(),
+            document_type=document_type,
         )
     except PdfUploadError as error:
         return _reject(error.code, error.message, _STATUS_BY_CODE[error.code])
@@ -208,7 +215,7 @@ async def parse_curriculum_pdf(
         "major": outcome.major,
         "cohort": outcome.cohort,
         "source": {
-            "kind": "pdf-upload",
+            "kind": outcome.kind,
             "file_name": summary["file_name"],
             "sha256": summary["sha256"],
             "role": summary["role"],

@@ -782,6 +782,65 @@ export function liveBaselineCases({ baseUrl }) {
         }
       },
     },
+    {
+      id: 'L12-curriculum-document-types',
+      title: '培养方案导入：文档类型清单来自后端，前端不能自定义列位',
+      priority: 'P1',
+      phase: 'live',
+      run: async ({ browser }) => {
+        const { context, page, requests, consoleErrors } = await openPage(browser)
+        try {
+          await gotoHome(page, baseUrl)
+          await page.locator('[data-testid="nav-curriculum-import"]').first().click()
+          await waitForState(page, 'curriculum-pdf-import')
+
+          // 清单必须来自后端端点
+          await page.waitForFunction(
+            () => {
+              const el = document.querySelector('[data-testid="pdf-document-type"]')
+              return el instanceof HTMLSelectElement && el.options.length >= 2
+                && !Array.from(el.options).some((o) => o.value === '')
+            },
+            undefined,
+            { timeout: 15000 },
+          )
+          assert(
+            requestsFor(requests, '/api/v1/curriculum-import/document-types').length >= 1,
+            '前端没有向 document-types 端点请求清单',
+          )
+
+          const options = await page.locator('[data-testid="pdf-document-type"] option').all()
+          const values = await Promise.all(options.map((o) => o.getAttribute('value')))
+          assert(values.includes('yuangan-2025'), `清单缺少 yuangan-2025：${values}`)
+          assert(values.includes('netsec-2025'), `清单缺少 netsec-2025：${values}`)
+          // 默认已选中一个受支持类型
+          const selected = await page.locator('[data-testid="pdf-document-type"]').inputValue()
+          assert(values.includes(selected), `默认选中值不在清单内：${selected}`)
+
+          // ⛔ 页面上不得出现任何列位映射输入
+          const html = await page.content()
+          for (const forbidden of ['expected_headers', 'table_index', 'header_rows']) {
+            assert(!html.includes(forbidden), `页面暴露了列位映射字段：${forbidden}`)
+          }
+
+          const note = await textOf(page, 'pdf-document-type-note')
+          assert(note.includes('不能提交任何课程列位映射'), '缺少"不能自定义列位"的说明')
+
+          return {
+            notes: [
+              `文档类型清单来自后端：${values.join('、')}`,
+              `默认选中=${selected}`,
+              '页面未暴露 expected_headers / table_index / header_rows',
+            ],
+            evidence: [await shot(page, 'L12-curriculum-document-types', 'live')],
+            httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
+            consoleErrors,
+          }
+        } finally {
+          await context.close()
+        }
+      },
+    },
   ]
 }
 
