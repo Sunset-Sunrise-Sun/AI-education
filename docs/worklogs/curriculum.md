@@ -340,3 +340,13 @@
 - 需要人工确认：锚点文件位置与权限、approver 身份口径、authorization 依据形式、是否签名。
 - 仍未完成：`_build_curriculum_provenance` 里残留的 `"synthetic": False` 字面量等 5 条，
   见 `PROVENANCE_GATE_CLOSURE.md` §5。
+
+### 2026-10-10 - 培养方案 PDF 上传与解析（`feature/pdf-curriculum-import`）
+- 先交付复用面报告（PDF_IMPORT_REUSE_REPORT.md），再实现最小闭环。
+- 新增 pdf_reader（PDF → 既有 DocxImportResult，下游零改动复用）、
+  curriculum_pdf_ingest（传输与安全）、curriculum_import API（私有包络）、
+  parse_curriculum_pdf CLI（解析准确性报告 + 未识别课程清单）、前端导入视图。
+- 依赖：requirements.txt 新增 pymupdf（已获负责人许可）。
+- 测试：后端 2 个新文件（含自建最小 PDF 生成器）、前端 1 个新文件、E2E L11。
+- 使用数据：**合成 PDF**；真实两份 PDF 不在本机 ⇒ 真实验收保持 BLOCKED。
+- 需要人工确认：真实 PDF 的表头与表格位置（用于调整声明式 profile，⛔ 不让 Agent 猜列位）。

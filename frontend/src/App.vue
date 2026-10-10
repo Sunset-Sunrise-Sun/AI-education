@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import E2EDebugPanel from './components/E2EDebugPanel.vue'
 import type { E2EDebugInfo } from './components/E2EDebugPanel.vue'
 import TopStatusBar from './components/TopStatusBar.vue'
+import CurriculumPdfImport from './components/CurriculumPdfImport.vue'
 import AiAdjustDrawer from './components/ai/AiAdjustDrawer.vue'
 import AiAdjustView from './components/views/AiAdjustView.vue'
 import MakeupPathView from './components/views/MakeupPathView.vue'
@@ -41,12 +42,13 @@ import type { MakeupTask, PlanResult } from './types/contracts'
  * 本轮把旧的"0–5 区块"整体搬进 `补修路径` 视图，保留原有 data-testid 与行为，
  * 因此旧 Case A 演示与既有测试继续可用。
  */
-type ViewKey = 'transfer-analysis' | 'makeup-path' | 'ai-adjust'
+type ViewKey = 'transfer-analysis' | 'makeup-path' | 'ai-adjust' | 'curriculum-import'
 
 const VIEWS: { key: ViewKey; label: string; hint: string }[] = [
   { key: 'transfer-analysis', label: '转专业分析', hint: '培养方案版本与缺口认定' },
   { key: 'makeup-path', label: '补修路径', hint: '当前学期课表与后续学期路径' },
   { key: 'ai-adjust', label: 'AI 调整', hint: '对话式调整当前方案（两次确认）' },
+  { key: 'curriculum-import', label: '培养方案导入', hint: '上传 PDF → 解析 → 待组长审核' },
 ]
 
 const activeView = ref<ViewKey>('makeup-path')
@@ -448,6 +450,17 @@ onMounted(() => {
         @open-explanation="openExplanation"
         @close-explanation="closeExplanation"
         @open-ai-drawer="openAiDrawer"
+      />
+
+      <!--
+        培养方案 PDF 导入（本轮新增）：
+        ⛔ 只产出**待组长审核**的草稿；⛔ 不写目录、⛔ 不写批准锚点、⛔ 不标已核验。
+      -->
+      <CurriculumPdfImport
+        v-else-if="activeView === 'curriculum-import'"
+        :default-origin-major="userInput.studentContext.originMajor"
+        :default-target-major="userInput.studentContext.targetMajor"
+        default-cohort="2025"
       />
 
       <AiAdjustView

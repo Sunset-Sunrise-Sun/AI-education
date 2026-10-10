@@ -722,6 +722,66 @@ export function liveBaselineCases({ baseUrl }) {
         }
       },
     },
+    {
+      id: 'L11-curriculum-pdf-import-entry',
+      title: '培养方案导入入口：可见、可切换、声明来源审核边界',
+      priority: 'P1',
+      phase: 'live',
+      run: async ({ browser }) => {
+        const { context, page, requests, consoleErrors } = await openPage(browser)
+        try {
+          await gotoHome(page, baseUrl)
+
+          const tab = page.locator('[data-testid="nav-curriculum-import"]').first()
+          assert((await tab.count()) === 1, '找不到"培养方案导入"入口')
+          await tab.click()
+          await waitForState(page, 'curriculum-pdf-import')
+
+          for (const role of ['origin', 'target']) {
+            assert(
+              (await page.locator(`[data-testid="pdf-slot-${role}"]`).count()) === 1,
+              `缺少 ${role} 的 PDF 上传位置`,
+            )
+            assert(
+              (await page.locator(`[data-testid="pdf-file-${role}"]`).count()) === 1,
+              `缺少 ${role} 的文件选择控件`,
+            )
+            const status = await textOf(page, `pdf-status-${role}`)
+            assert(status === 'idle', `${role} 初始状态应为 idle，实际 ${status}`)
+          }
+
+          const boundaryCount = await page
+            .locator('[data-testid="pdf-import-boundary"], [data-testid="pdf-import-role-boundary"]')
+            .count()
+          assert(boundaryCount >= 1, '缺少来源审核边界说明')
+          const body = await textOf(page, 'curriculum-pdf-import')
+          assert(
+            body.includes('不代表') || body.includes('不是学校正式签发'),
+            '边界文案没有说明"上传/确认 ≠ 来源核验"',
+          )
+          assert(!body.includes('来源已核验'), '页面出现了"来源已核验"这种未经证明的断言')
+          assert(body.includes('组长'), '页面没有把批准权归属到组长')
+
+          assert(
+            requestsFor(requests, '/api/v1/curriculum-import/parse-pdf').length === 0,
+            '仅切换视图就发出了 PDF 解析请求',
+          )
+
+          return {
+            notes: [
+              '入口可见且可切换；两个独立上传位置状态均为 idle',
+              '边界文案明确"上传/解析/确认 ≠ 来源核验"，批准权归属组长',
+              '未上传时未发出任何 parse-pdf 请求',
+            ],
+            evidence: [await shot(page, 'L11-curriculum-pdf-import', 'live')],
+            httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
+            consoleErrors,
+          }
+        } finally {
+          await context.close()
+        }
+      },
+    },
   ]
 }
 
