@@ -935,7 +935,31 @@ export function responsiveCases({ baseUrl }) {
           `阅读顺序条宽于视口（${Math.round(orderBox.box.width)} / ${viewport.width}）`,
         )
         const orderSteps = await page.locator('[data-testid="path-reading-order"] li').count()
-        assertEqual(orderSteps, 5, `阅读顺序条步数不是 5：${orderSteps}`)
+        // ⚠️ 第 2 轮裁定：旧版输入 / 概览 / 补修工作区前置 ⇒ 阅读顺序为 7 步。
+        //    同时校验步骤文案，⛔ 不只数个数（否则改文案会漏报）。
+        const EXPECTED_ORDER = [
+            '学生信息与当前课表',
+            '我的学业概览',
+            '历史培养要求评估',
+            '教学班与偏好',
+            '当前学期课表',
+            '后续学期路径与风险',
+            '规划结果与解释',
+        ]
+        assertEqual(
+          orderSteps,
+          EXPECTED_ORDER.length,
+          `阅读顺序条步数不是 ${EXPECTED_ORDER.length}：${orderSteps}`,
+        )
+        const orderLabels = await page
+          .locator('[data-testid="path-reading-order"] li strong')
+          .allTextContents()
+        for (let i = 0; i < EXPECTED_ORDER.length; i += 1) {
+          assert(
+            (orderLabels[i] || '').includes(EXPECTED_ORDER[i]),
+            `阅读顺序第 ${i + 1} 步不是「${EXPECTED_ORDER[i]}」：${orderLabels[i]}`,
+          )
+        }
         const explanationEntry = page.locator('[data-testid="explanation-open"]').first()
         assertEqual(await explanationEntry.count(), 1, '解释入口在重排后不存在')
         await explanationEntry.scrollIntoViewIfNeeded()
@@ -945,7 +969,7 @@ export function responsiveCases({ baseUrl }) {
           entryBox.x >= -1 && entryBox.x + entryBox.width <= viewport.width + 1,
           `解释入口横向超出视口（x=${Math.round(entryBox.x)} 宽=${Math.round(entryBox.width)}）`,
         )
-        notes.push(`阅读顺序 5 步可读；解释入口可滚动到视口内（${Math.round(entryBox.width)}px 宽）`)
+        notes.push(`阅读顺序 7 步可读；解释入口可滚动到视口内（${Math.round(entryBox.width)}px 宽）`)
 
         await openDrawer(page)
         const drawerBox = await visibleBox(page, 'ai-drawer')
@@ -1374,14 +1398,23 @@ export function explanationCases({ baseUrl }) {
           await waitForState(page, 'path-reading-order')
           const orderText = await textOf(page, 'path-reading-order')
           assertIncludes(orderText, '①', '阅读顺序条缺少 ①')
-          assertIncludes(orderText, '⑤', '阅读顺序条缺少 ⑤（解释与依据）')
+          assertIncludes(orderText, '⑤', '阅读顺序条缺少 ⑤（当前学期课表）')
+        assertIncludes(orderText, '⑦', '阅读顺序条缺少 ⑦（规划结果与解释）')
           const orderTitles = await page.evaluate(() =>
             [...document.querySelectorAll('[data-testid="path-reading-order"] strong')].map((n) =>
               (n.textContent ?? '').trim(),
             ),
           )
-          assertEqual(orderTitles.length, 5, `阅读顺序条不是 5 步：${orderTitles.join(' / ')}`)
-          assert(orderTitles[4].includes('解释'), `第 5 步不是解释与依据：${orderTitles[4]}`)
+          // ⚠️ 第 2 轮裁定：7 步；末步仍是「规划结果与解释」。
+          assertEqual(
+            orderTitles.length,
+            7,
+            `阅读顺序条不是 7 步：${orderTitles.join(' / ')}`,
+          )
+          assert(
+            orderTitles[6].includes('规划结果与解释'),
+            `第 7 步不是规划结果与解释：${orderTitles[6]}`,
+          )
 
           // ② 解释入口存在且可见（区块上移后仍可访问）
           const entry = page.locator('[data-testid="explanation-open"]').first()
@@ -1682,7 +1715,7 @@ export function uxStructureCases({ baseUrl }) {
  * | 1 | 进入项目（默认停在补修路径） | 三入口可见、默认视图存在 |
  * | 2 | 转专业背景 | 转专业分析如实显示目录就绪度（⛔ 不伪造缺口数字） |
  * | 3 | 补修缺口 | 缺口/任务状态与来源标记可见 |
- * | 4 | 当前与后续学期规划 | 阅读顺序 5 步 + 当前学期课表 |
+ * | 4 | 当前与后续学期规划 | 阅读顺序 7 步 + 当前学期课表 |
  * | 5 | 课程依据与风险 | 解释入口可点、规则模板标注、风险/未决区存在 |
  * | 6 | 自然语言提出调整 | AI 调整入口 + 示例 + 当前调整对象卡片 |
  * | 7 | 确认硬约束 / 软偏好 | 硬约束不可协商、软偏好可协商 |
@@ -1735,9 +1768,10 @@ export function demoRehearsalCases({ baseUrl }) {
           await waitForState(page, 'path-reading-order', { timeout: 20000 })
           steps.push('3 补修缺口：补修任务与状态来源标记已渲染')
           const orderSteps = await page.locator('[data-testid="path-reading-order"] li').count()
-          assertEqual(orderSteps, 5, `阅读顺序不是 5 步：${orderSteps}`)
+          // ⚠️ 第 2 轮裁定：旧版支撑数据前置 ⇒ 阅读顺序为 7 步。
+          assertEqual(orderSteps, 7, `阅读顺序不是 7 步：${orderSteps}`)
           await waitForState(page, 'path-current-classes', { timeout: 20000 })
-          steps.push('4 当前与后续学期规划：阅读顺序 5 步 + 当前学期课表可见')
+          steps.push('4 当前与后续学期规划：阅读顺序 7 步 + 当前学期课表可见')
 
           const explainEntry = page.locator('[data-testid="explanation-open"]').first()
           assertEqual(await explainEntry.count(), 1, '解释入口不存在')

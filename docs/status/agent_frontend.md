@@ -1216,3 +1216,17 @@ frontend: npm test（9 文件 134 用例）· npm run typecheck（vue-tsc --noEm
   `DEMO_SCRIPT.md` 追加 §7 彩排记录与"哪一步是什么数据"对照表。
 - 修改文件与未验证项详见 `docs/final_upgrade/reports/FINAL_DELIVERY_READINESS_REPORT.md`。
 - ⛔ 未改 `main`、公共 Schema、`docs/interfaces/`、Planner 核心算法；⛔ 未自动合并。
+
+### 第 6 轮（旧版 UI 增量整合 · Phase 2 第一轮）
+- **区块顺序恢复**（`MakeupPathView.vue`）：旧版优先 —— 概览 → 用户输入 → 历史培养要求评估 →
+  教学班 → 偏好 → 规划工作区（当前学期 → 后续学期 → 风险 → 结果 → 解释）→ 支撑数据。
+- **恢复旧版四步流程引导** `pipeline-guide`（放规划工作区内，⛔ 非功能导航）；
+  复用既有 CSS（base.css:301-366），⛔ 未新增样式。
+- **修复 `PlanResultPanel` 视觉回归**：wrapper 也绑定 `evidenceEnabled`，
+  关闭时 DOM 与旧版一致（`<span>` 直接是 `.selected-card` 的子元素）。
+- **修复 `E2EDebugPanel` 重复渲染**：⛔ 不再向下传 `debug-info`，只保留 shell 层一个
+  （实测 `[data-testid="e2e-debug"]` 由 2 → 1）。
+- 阅读顺序提示由 5 步更新为 7 步（与真实 DOM 顺序一致）。
+- 测试：前端 **372 passed**（+1）；`vue-tsc` 0；`build` 0；浏览器 E2E **27/27**。
+- 页面高度：旧版 6635px → 新版 8440px（+1805px，含 5 个新增区块）。
+- ⚠️ 「成绩截图样本导入」样本未提供 ⇒ ⛔ 未实现，也⛔ 不假装已实现识别。

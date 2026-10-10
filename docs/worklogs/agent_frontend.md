@@ -2115,3 +2115,22 @@
 - 对其他模块影响：无业务规则改动；前端仅展示层，另有依赖版本升级（vitest major）。
 - 下一步：拿到新密钥后执行 `DEEPSEEK_LIVE_VERIFICATION.md`；拿到已核验数据后执行
   `python -m tests.verify_real_data_e2e --mode verified`；合并后复跑 24 项浏览器回归。
+
+### 第 6 轮（旧版 UI 增量整合）工作记录
+对比结论（`docs/final_upgrade/UI_INCREMENTAL_BASELINE.md`）：
+- `base.css` 是"旧版文件 + 末尾追加 1382 行"，**零删除**（`splitlines()[:2006]` 逐行相等）；
+  旧版 274 个选择器**一个不少** ⇒ 旧视觉未被覆盖。
+- 12 个共用组件里 **10 个 blob 完全相同**；3 个视图组件**无 `<style>`**，完全复用旧 base.css。
+- "看起来变了"的机制 = **标记重新挂载 + 区块顺序改变**（不是样式覆盖）。
+本轮改动（最小增量，⛔ 未整体替换 frontend）：
+1. `MakeupPathView.vue`：区块重排 + 恢复 `pipeline-guide` + 阅读顺序 5→7 步；
+2. `PlanResultPanel.vue`：wrapper 绑定 `evidenceEnabled`，修旧版视觉回归；
+3. `MakeupPathView.vue`：⛔ 不再传 `debug-info`（修 `E2EDebugPanel` 重复渲染）；
+4. `ux-polish.spec.ts`：2 个顺序断言按新顺序重写 + 1 个新断言（流程引导）；
+5. `tools/browser-e2e/cases.mjs`：4 处"阅读顺序 5 步"更新为 7 步，并**校验步骤文案**。
+实测：前端 372 passed / vue-tsc 0 / build 0 / E2E 27 passed；
+`e2e-debug` 由 2 → 1；`pipeline-step` = 4；页面高度 6635px → 8440px。
+⚠️ 迭代教训：多次因**锚点/守卫串与实测不符**而失败（切片差一、注释文案、
+单引号 vs 双引号、`</template>` 与 `</SectionCard>` 计数、`<pipeline-step` 实际不存在、
+`section-offerings` 尾部包含 `section-preference` 前缀导致 `indexOf` 取错位置）。
+全部靠"先断言、后写盘"拦住，⛔ 未产生半成品文件。
