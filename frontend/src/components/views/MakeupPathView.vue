@@ -149,13 +149,15 @@ const explanationEntryVisible = computed(() => props.displayedPlanResult !== nul
       </p>
     </header>
 
-    <!-- 阅读顺序提示：让用户知道先看什么 -->
+    <!-- 阅读顺序提示：让用户知道先看什么（⚠️ 必须与实际区块顺序一致） -->
     <ol class="path-order" data-testid="path-reading-order">
-      <li><strong>① 当前学期课表</strong><span>现在实际排了哪些班</span></li>
-      <li><strong>② 后续学期路径</strong><span>后面几学期还要补什么</span></li>
-      <li><strong>③ 优先级 / 风险 / 待确认</strong><span>哪里可能出问题</span></li>
-      <li><strong>④ 规划结果明细</strong><span>后端给出的完整方案</span></li>
-      <li><strong>⑤ 解释与依据</strong><span>每条判定的来源</span></li>
+      <li><strong>① 学生信息与当前课表</strong><span>先填对上下文</span></li>
+      <li><strong>② 我的学业概览</strong><span>缺口 / 教学班 / 学分上限</span></li>
+      <li><strong>③ 历史培养要求评估</strong><span>逐条缺什么课</span></li>
+      <li><strong>④ 教学班与偏好</strong><span>开了哪些班、有什么约束</span></li>
+      <li><strong>⑤ 当前学期课表</strong><span>现在实际排了哪些班</span></li>
+      <li><strong>⑥ 后续学期路径与风险</strong><span>后面补什么、哪里会出问题</span></li>
+      <li><strong>⑦ 规划结果与解释</strong><span>后端方案的明细与依据</span></li>
     </ol>
 
     <p v-if="personalPlanNotice" class="ai-preview" data-testid="path-personal-notice">
@@ -212,6 +214,140 @@ const explanationEntryVisible = computed(() => props.displayedPlanResult !== nul
     </SectionCard>
 
     <template v-else-if="data">
+      <!-- 概览 -->
+      <div class="overview-bar">
+        <div class="overview-metric">
+          <span class="overview-metric__label">历史培养要求评估项</span>
+          <span class="overview-metric__val num">{{ data.makeup_tasks.length }} <small>条</small></span>
+        </div>
+        <div class="overview-metric">
+          <span class="overview-metric__label">教学班记录</span>
+          <span class="overview-metric__val num">{{ data.course_offerings.length }} <small>个</small></span>
+        </div>
+        <div class="overview-metric">
+          <span class="overview-metric__label">单学期学分上限</span>
+          <span class="overview-metric__val num">{{ data.preference.max_credit ?? '—' }} <small>学分</small></span>
+        </div>
+        <div class="overview-metric">
+          <span class="overview-metric__label">规划结果状态</span>
+          <span
+            v-if="displayedPlanResult"
+            class="tag tag--plan"
+            :class="`tag--plan-${displayedPlanResult.status}`"
+          >
+            {{ PLAN_STATUS_LABEL[displayedPlanResult.status] }}
+          </span>
+          <span v-else class="text-muted">—</span>
+        </div>
+      </div>
+
+      <!-- 用户输入区（保留旧 Case A 输入体验） -->
+      <SectionCard
+        section-id="section-user-input"
+        title="0. 用户输入（目标学期、转专业上下文、当前课表与偏好）"
+        subtitle="收集生成规划所需的用户输入：目标学期、学生转专业上下文、当前课表与个性化偏好，以及成绩单文件选择。本区块只组织输入，不做冲突检测、不生成补修任务。"
+      >
+        <!--
+          ⚠️ 刻意**不再**向下传 `debug-info` / `dev`：
+          `UserInputPanel` 一旦收到 `debugInfo` 就会自己再渲染一个 `E2EDebugPanel`，
+          而 `App.vue` 已在 shell 层渲染了一个 ⇒ 开发环境下会出现两个
+          `data-testid="e2e-debug"`。现在只保留 shell 层那一个（4 个标签下都存在，是唯一入口）。
+          `UserInputPanel` 的 `debugInfo` prop 保留不动（直接挂载它的单元测试仍在使用）。
+        -->
+        <UserInputPanel
+          :form="userInput"
+          :offerings="data?.course_offerings ?? []"
+          :plan-api-enabled="planApiEnabled"
+          :submitting="planSubmitting"
+          :mode="dataMode"
+          :data-source-label="dataSource"
+          :plan-error-message="planErrorMessage"
+          :plan-error-kind="planErrorKind"
+          :plan-error-status="planErrorStatus"
+          :plan-error-code="planErrorCode"
+          :plan-error-detail="planErrorDetail"
+          :schedule-block-reason="scheduleBlockReason"
+          @update:form="emit('update:form', $event)"
+          @submit-real="emit('submit-real-plan')"
+        />
+      </SectionCard>
+
+      <!-- 1. 历史培养要求评估 -->
+      <SectionCard
+        mock
+        section-id="section-makeup"
+        title="1. 历史培养要求评估（MakeupTask）"
+        subtitle="Curriculum 模块依据目标培养方案要求与学生已修记录逐条评估后的结果，含“已满足 / 待课程认定 / 已确认需补修”等不同状态。逐条状态以每行的判定列与认定说明为准，前端不作汇总改写。"
+        :badge-count="data.makeup_tasks.length"
+      >
+        <MakeupTaskList
+          :tasks="data.makeup_tasks"
+          :evidence-enabled="explanationApiEnabled"
+          @explain-course="emit('open-explanation', $event)"
+        />
+      </SectionCard>
+
+      <!-- 2. 开课教学班 -->
+      <SectionCard
+        mock
+        section-id="section-offerings"
+        title="2. 开课教学班供给 (CourseOffering)"
+        subtitle="Course Data 模块从教务系统中抓取并标准化的目标学期开课清单：支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
+        :badge-count="data.course_offerings.length"
+      >
+        <CourseOfferingList :offerings="data.course_offerings" />
+      </SectionCard>
+
+      <!-- 3. 用户偏好 -->
+      <SectionCard
+        mock
+        section-id="section-preference"
+        title="3. 学生个性化偏好 (Preference)"
+        subtitle="Agent 模块解析学生自然语言输入所形成的约束条件：包含学分上限控制、避免跨校区、回避特定时段及意向课程。"
+      >
+        <PreferencePanel :preference="data.preference" :course-name-by-id="courseNameById" />
+      </SectionCard>
+
+      <!--
+        四步流程引导：复用旧版 main 的 .pipeline-guide 标记与**既有 CSS**（⛔ 不新增样式）。
+        ⚠️ 它只说明**数据流水线**走到哪一步，⛔ 不是功能导航；
+        一级功能导航仍由 App.vue 的四标签负责（组长裁定：A + B，层级不同）。
+      -->
+      <div class="pipeline-guide" data-testid="path-pipeline-guide">
+        <div class="pipeline-step">
+          <div class="pipeline-step__num">1</div>
+          <div class="pipeline-step__content">
+            <strong>培养方案对比</strong>
+            <span>Curriculum 缺什么课</span>
+          </div>
+        </div>
+        <div class="pipeline-arrow">➔</div>
+        <div class="pipeline-step">
+          <div class="pipeline-step__num">2</div>
+          <div class="pipeline-step__content">
+            <strong>教学班供给获取</strong>
+            <span>Course Data 开了哪些班</span>
+          </div>
+        </div>
+        <div class="pipeline-arrow">➔</div>
+        <div class="pipeline-step">
+          <div class="pipeline-step__num">3</div>
+          <div class="pipeline-step__content">
+            <strong>偏好约束注入</strong>
+            <span>Agent 用户意图解析</span>
+          </div>
+        </div>
+        <div class="pipeline-arrow">➔</div>
+        <div class="pipeline-step pipeline-step--accent">
+          <div class="pipeline-step__num">4</div>
+          <div class="pipeline-step__content">
+            <strong>课表求解与调班</strong>
+            <span>Planner Path Repair</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 规划工作区开始：当前学期精确课表 -->
       <!-- 当前学期精确课表 -->
       <SectionCard
         section-id="section-current-semester"
@@ -432,96 +568,6 @@ const explanationEntryVisible = computed(() => props.displayedPlanResult !== nul
           它们本身<strong>不产生</strong>新的结论，也不改上面的方案。
         </p>
       </div>
-
-      <!-- 用户输入区（保留旧 Case A 输入体验） -->
-      <SectionCard
-        section-id="section-user-input"
-        title="0. 用户输入（目标学期、转专业上下文、当前课表与偏好）"
-        subtitle="收集生成规划所需的用户输入：目标学期、学生转专业上下文、当前课表与个性化偏好，以及成绩单文件选择。本区块只组织输入，不做冲突检测、不生成补修任务。"
-      >
-        <UserInputPanel
-          :form="userInput"
-          :offerings="data?.course_offerings ?? []"
-          :plan-api-enabled="planApiEnabled"
-          :submitting="planSubmitting"
-          :mode="dataMode"
-          :data-source-label="dataSource"
-          :plan-error-message="planErrorMessage"
-          :plan-error-kind="planErrorKind"
-          :plan-error-status="planErrorStatus"
-          :plan-error-code="planErrorCode"
-          :plan-error-detail="planErrorDetail"
-          :debug-info="debugInfo"
-          :dev="dev"
-          :schedule-block-reason="scheduleBlockReason"
-          @update:form="emit('update:form', $event)"
-          @submit-real="emit('submit-real-plan')"
-        />
-      </SectionCard>
-
-      <!-- 概览 -->
-      <div class="overview-bar">
-        <div class="overview-metric">
-          <span class="overview-metric__label">历史培养要求评估项</span>
-          <span class="overview-metric__val num">{{ data.makeup_tasks.length }} <small>条</small></span>
-        </div>
-        <div class="overview-metric">
-          <span class="overview-metric__label">教学班记录</span>
-          <span class="overview-metric__val num">{{ data.course_offerings.length }} <small>个</small></span>
-        </div>
-        <div class="overview-metric">
-          <span class="overview-metric__label">单学期学分上限</span>
-          <span class="overview-metric__val num">{{ data.preference.max_credit ?? '—' }} <small>学分</small></span>
-        </div>
-        <div class="overview-metric">
-          <span class="overview-metric__label">规划结果状态</span>
-          <span
-            v-if="displayedPlanResult"
-            class="tag tag--plan"
-            :class="`tag--plan-${displayedPlanResult.status}`"
-          >
-            {{ PLAN_STATUS_LABEL[displayedPlanResult.status] }}
-          </span>
-          <span v-else class="text-muted">—</span>
-        </div>
-      </div>
-
-      <!-- 1. 历史培养要求评估 -->
-      <SectionCard
-        mock
-        section-id="section-makeup"
-        title="1. 历史培养要求评估（MakeupTask）"
-        subtitle="Curriculum 模块依据目标培养方案要求与学生已修记录逐条评估后的结果，含“已满足 / 待课程认定 / 已确认需补修”等不同状态。逐条状态以每行的判定列与认定说明为准，前端不作汇总改写。"
-        :badge-count="data.makeup_tasks.length"
-      >
-        <MakeupTaskList
-          :tasks="data.makeup_tasks"
-          :evidence-enabled="explanationApiEnabled"
-          @explain-course="emit('open-explanation', $event)"
-        />
-      </SectionCard>
-
-      <!-- 2. 开课教学班 -->
-      <SectionCard
-        mock
-        section-id="section-offerings"
-        title="2. 开课教学班供给 (CourseOffering)"
-        subtitle="Course Data 模块从教务系统中抓取并标准化的目标学期开课清单：支持多段排课及中性无排课数据状态（DG-01 / DG-07D）。"
-        :badge-count="data.course_offerings.length"
-      >
-        <CourseOfferingList :offerings="data.course_offerings" />
-      </SectionCard>
-
-      <!-- 3. 用户偏好 -->
-      <SectionCard
-        mock
-        section-id="section-preference"
-        title="3. 学生个性化偏好 (Preference)"
-        subtitle="Agent 模块解析学生自然语言输入所形成的约束条件：包含学分上限控制、避免跨校区、回避特定时段及意向课程。"
-      >
-        <PreferencePanel :preference="data.preference" :course-name-by-id="courseNameById" />
-      </SectionCard>
-
     </template>
   </section>
 </template>

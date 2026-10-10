@@ -1,0 +1,46 @@
+feat(ui): restore the legacy-first page order and the four-step pipeline guide
+
+Phase 2, first round: layout restoration and the visual regressions only. No component was
+rewritten, no state or API code was touched.
+
+MakeupPathView section order
+
+  The legacy blocks now come first, as on main: overview bar, user input, historical
+  requirement assessment, course offerings, preference, and only then the planning
+  workspace, with the supporting-data note last. The five blocks added by the integration
+  are kept and repositioned rather than deleted. The reading-order list was updated from
+  five steps to seven so it still matches the real DOM order.
+
+The four-step pipeline guide
+
+  Restored inside the planning workspace, not in the App shell, using main's markup and the
+  CSS that was already present, so no new styles were added. It describes the data pipeline
+  only and does not replace the functional navigation.
+
+Two visual regressions fixed
+
+  PlanResultPanel: the wrapper around the 建议纳入 badge was applied unconditionally, so
+  even with the evidence feature off the badge gained a nested flex box and extra gap,
+  unlike main where the span was a direct child. The wrapper now carries the same
+  v-if as the feature, making the DOM identical to main when disabled.
+
+  E2EDebugPanel rendered twice in dev: once at shell level and again inside UserInputPanel
+  because debug-info was still forwarded down the tree. The prop is no longer forwarded, so
+  the shell panel is the single entry. Verified in the browser: the e2e-debug testid count
+  went from 2 to 1. UserInputPanel keeps its debugInfo prop, which its own unit tests use.
+
+Tests
+
+  Two ux-polish assertions encoded the old order and were rewritten for the authorised
+  order; one new assertion covers the restored guide. The browser E2E had the five-step
+  count hard-coded in four places; those now assert seven steps and additionally verify the
+  step labels, so a future wording change cannot silently pass.
+
+Verified: frontend 372 passed (was 371), vue-tsc exit 0, build exit 0, browser E2E 27/27
+with no leftover processes. Live browser check: pipeline-step 4, overview-metric 4,
+e2e-debug 1, and the block order matches the intended sequence exactly. Page height went
+from 6635px on main to 8440px, the difference being the five added blocks now positioned
+after the legacy ones.
+
+Not done and not claimed: the transcript-screenshot import entry point, because no sample
+transcripts have been provided, so no recognition behaviour exists to show.

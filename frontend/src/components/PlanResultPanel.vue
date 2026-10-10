@@ -117,10 +117,17 @@ function courseLabel(courseId: string): string {
             <span class="selected-card__course">{{ courseLabel(item.course_id) }}</span>
             <span class="mono selected-card__class">班号：{{ item.class_id }}</span>
           </div>
-          <div class="selected-card__actions">
+          <!--
+            ⚠️ 旧版视觉回归修复：`main` 里「建议纳入」是 `.selected-card` 的**直接子元素**
+            （`.selected-card` 本身已是 `display:flex; align-items:center`）。
+            之前无条件套了一层 `.selected-card__actions`（`display:flex; gap:8px`），
+            使它在**功能关闭时也**多出一层盒子与额外间距。
+            现在把 wrapper 也绑定到同一个开关：不启用时 DOM 与旧版**完全一致**。
+          -->
+          <span v-if="!evidenceEnabled" class="tag tag--selected">建议纳入</span>
+          <div v-else class="selected-card__actions">
             <span class="tag tag--selected">建议纳入</span>
             <button
-              v-if="evidenceEnabled"
               type="button"
               class="button button--ghost button--small"
               :data-testid="`plan-explain-selected-${item.course_id}-${item.class_id}`"
