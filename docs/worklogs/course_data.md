@@ -3235,3 +3235,15 @@
 - 需要人工确认：锚点目录位置与访问控制、approver 身份口径、authorization 依据形式、
   是否设 expires_at、保管者是否另有其人。
 - 真实数据验收：保持 **BLOCKED**。
+
+### 2026-10-10 - PR #74 复审修复：批准对象唯一性（`feature/approval-workflow`）
+- 复审问题：同 (kind, identity, artifact_sha256) 下"已撤销 + 有效"共存时，
+  旧实现筛未撤销记录放行 ⇒ 撤销可被遗留记录绕过。
+- 修复：同一批准对象只允许一条记录；≥2 条 ⇒ 拒绝整个锚点，新错误码 `approval_conflict`；
+  两层纵深防御（装载期 `_require_unique_objects` + 校验期拒绝挑一条）。
+- 撤销后重新批准：必须改**同一条**记录（清空撤销字段 + 更新 approved_at/authorization +
+  撤销历史写进 note）；内容变化才是不同对象、才允许新增记录。
+- 测试：`tests/test_approval_workflow.py` 新增 10 项（复审必测 5 类 + 纵深防御 + 运行时映射）。
+- 文档：APPROVAL_WORKFLOW_DESIGN.md §2.2/§2.3/§6.2/§6.3、
+  APPROVAL_OPERATING_PROCEDURE.md §4.2/§5.2/§5.3/§6、TRUST_ANCHOR_DESIGN.md §2.2。
+- 使用数据：全合成夹具（⛔ 无真实材料）。真实数据验收保持 BLOCKED。

@@ -19,6 +19,7 @@ import pytest
 from app.provenance import (
     APPROVAL_KIND_CURRICULUM_CASE,
     TRUST_ANCHOR_ENV,
+    ProvenanceDenied,
     ProvenanceReason,
     TrustAnchorUnavailable,
     load_trust_anchor,
@@ -397,6 +398,291 @@ def test_re_review_adds_a_new_record_for_new_content(tmp_path: Path) -> None:
     assert _check(anchor, new_digest).verified is True
     # 旧内容仍然被撤销（⛔ 不会因为"新记录存在"而复活）
     assert _check(anchor, old_digest).reason == ProvenanceReason.APPROVAL_REVOKED
+
+
+# --------------------------------------------------------------------------- #
+# ⑥ 批准对象的唯一性（Architecture Review 修复）
+#
+# 修复前：`verify_approval` 筛出所有**未撤销**记录，只要有一条有效就放行 ⇒
+# "已撤销 + 有效"共存时撤销被静默忽略，用遗留记录即可绕过撤销。
+# 修复后：同一批准对象只允许**一条**记录；任何冲突 ⇒ 拒绝整个锚点
+# （错误码 `approval_conflict`），⛔ 不挑一条放行，⛔ 不引入审批版本系统。
+# --------------------------------------------------------------------------- #
+
+
+def _write_anchor_or_reject(tmp_path: Path, records: list[dict], *, name: str) -> str:
+    """装载锚点并返回结果：`"loaded"` 或拒绝原因码。"""
+
+    anchor = _write_anchor(tmp_path, records, name=name)
+    try:
+        load_trust_anchor({TRUST_ANCHOR_ENV: str(anchor)})
+    except TrustAnchorUnavailable as exc:
+        return exc.reason
+    return "loaded"
+
+
+def test_review_1_revoked_and_valid_for_the_same_object_is_rejected(tmp_path: Path) -> None:
+    """复审必测 ①：同一对象**同时**存在已撤销与有效批准 ⇒ 拒绝整个批准集合。
+
+    ⛔ 关键：**不允许**挑出未撤销的那条放行（那正是被修掉的绕过）。
+    """
+
+    artifact = _write_case(tmp_path)
+    digest = sha256_file(artifact)
+    anchor = _write_anchor(tmp_path, [
+        _record(digest, **{
+            "revoked": True,
+            "revoked_at": "2026-10-11T00:00:00Z",
+            "revoked_by": FIXTURE_APPROVER,
+            "revocation_reason": "材料被替换",
+        }),
+        _record(digest),  # 遗留的有效记录
+    ], name="conflict-revoked-live.json")
+
+    with pytest.raises(TrustAnchorUnavailable) as excinfo:
+        load_trust_anchor({TRUST_ANCHOR_ENV: str(anchor)})
+    assert excinfo.value.reason == ProvenanceReason.APPROVAL_CONFLICT
+    assert "同一条" in excinfo.value.message
+
+
+def test_review_2_duplicate_valid_records_are_rejected(tmp_path: Path) -> None:
+    """复审必测 ②：同一对象两条**重复有效**批准 ⇒ 拒绝（语义不唯一）。"""
+
+    artifact = _write_case(tmp_path)
+    digest = sha256_file(artifact)
+
+    assert _write_anchor_or_reject(
+        tmp_path, [_record(digest), _record(digest)], name="dup-live.json",
+    ) == ProvenanceReason.APPROVAL_CONFLICT
+
+
+def test_review_3_expired_and_valid_for_the_same_object_is_rejected(tmp_path: Path) -> None:
+    """复审必测 ③：同一对象**同时**存在过期与有效批准 ⇒ 拒绝整个批准集合。"""
+
+    artifact = _write_case(tmp_path)
+    digest = sha256_file(artifact)
+
+    assert _write_anchor_or_reject(
+        tmp_path,
+        [_record(digest, expires_at="2020-01-01T00:00:00Z"), _record(digest)],
+        name="expired-live.json",
+    ) == ProvenanceReason.APPROVAL_CONFLICT
+
+
+def test_review_3b_single_expired_record_is_not_a_conflict(tmp_path: Path) -> None:
+    """只有一条、且已过期 ⇒ 报 `approval_expired`（**不是**冲突），便于续期。"""
+
+    artifact = _write_case(tmp_path)
+    digest = sha256_file(artifact)
+    anchor = _write_anchor(
+        tmp_path, [_record(digest, expires_at="2020-01-01T00:00:00Z")], name="one-expired.json",
+    )
+
+    result = _check(anchor, digest)
+    assert result.verified is False
+    assert result.reason == ProvenanceReason.APPROVAL_EXPIRED
+
+
+def test_review_4_revoked_object_cannot_auto_recover(tmp_path: Path) -> None:
+    """复审必测 ④：已撤销对象**不得**未经明确重新审核就恢复有效。
+
+    两种"自动恢复"的尝试都必须失败：
+    ① 再加一条有效记录（遗留/新增）⇒ 冲突；
+    ② 原撤销记录本身仍然被识别为已撤销（⛔ 不会自行复活）。
+    """
+
+    artifact = _write_case(tmp_path)
+    digest = sha256_file(artifact)
+    revoked = _record(digest, **{
+        "revoked": True,
+        "revoked_at": "2026-10-11T00:00:00Z",
+        "revoked_by": FIXTURE_APPROVER,
+        "revocation_reason": "材料被替换",
+    })
+
+    # ① 试图用"再加一条有效记录"自动恢复 ⇒ 冲突
+    assert _write_anchor_or_reject(
+        tmp_path, [revoked, _record(digest)], name="auto-recover.json",
+    ) == ProvenanceReason.APPROVAL_CONFLICT
+
+    # ② 只有撤销记录时，仍然明确是"已撤销"，⛔ 不会因为时间过去而复活
+    anchor = _write_anchor(tmp_path, [revoked], name="still-revoked.json")
+    result = _check(anchor, digest)
+    assert result.verified is False
+    assert result.reason == ProvenanceReason.APPROVAL_REVOKED
+
+    # ③ 同一对象再写一条同样的撤销记录也算重复 ⇒ 冲突
+    assert _write_anchor_or_reject(
+        tmp_path, [revoked, dict(revoked)], name="dup-revoked.json",
+    ) == ProvenanceReason.APPROVAL_CONFLICT
+
+
+def test_review_4b_explicit_re_review_on_the_same_record_restores_it(tmp_path: Path) -> None:
+    """**明确**重新审核（改同一条记录 + 新审核决定）⇒ 可以恢复，且历史可追溯。
+
+    ⛔ 与上一条的区别：这里必须**修改同一条记录**（`revoked` 改回 `false`、
+    更新 `approved_at` / `authorization`、把撤销历史留在 `note`），
+    而不是新增一条记录来"顶掉"撤销。
+    """
+
+    artifact = _write_case(tmp_path)
+    digest = sha256_file(artifact)
+    anchor = _write_anchor(tmp_path, [_record(digest, **{
+        "revoked": False,
+        "approved_at": "2026-10-12T09:00:00Z",
+        "authorization": "重新审核纪要 2026-10-12（组长）",
+        "note": "2026-10-11 曾因『材料被替换』撤销；重新提交同一份材料后恢复。",
+    })], name="re-reviewed.json")
+
+    assert _check(anchor, digest).verified is True
+    record = load_trust_anchor({TRUST_ANCHOR_ENV: str(anchor)}).approvals[0]
+    # 重新审核的决定必须可追溯
+    assert record.approved_at == "2026-10-12T09:00:00Z"
+    assert "重新审核" in record.authorization
+    assert "撤销" in (record.note or "")
+
+
+def test_review_5_independent_approvals_are_unaffected(tmp_path: Path) -> None:
+    """复审必测 ⑤：不同数据身份或不同摘要的独立批准**不受影响**。"""
+
+    artifact = _write_case(tmp_path)
+    digest = sha256_file(artifact)
+
+    # ① 不同 identity 的撤销记录，不影响本对象的有效批准
+    assert _write_anchor_or_reject(tmp_path, [
+        _record(digest),
+        _record(digest, identity={"target_version_id": "other-2025", "as_of_term": "2025-2"},
+                **{
+                    "revoked": True,
+                    "revoked_at": "2026-10-11T00:00:00Z",
+                    "revoked_by": FIXTURE_APPROVER,
+                    "revocation_reason": "另一个版本来源存疑",
+                }),
+    ], name="different-identity.json") == "loaded"
+
+    # ② 不同 artifact_sha256 的撤销记录，同样不影响
+    assert _write_anchor_or_reject(tmp_path, [
+        _record(digest),
+        _record("b" * 64, **{
+            "revoked": True,
+            "revoked_at": "2026-10-11T00:00:00Z",
+            "revoked_by": FIXTURE_APPROVER,
+            "revocation_reason": "旧一版材料被替换",
+        }),
+    ], name="different-digest.json") == "loaded"
+
+    # ③ 不同 kind 的独立批准互不干扰
+    assert _write_anchor_or_reject(tmp_path, [
+        _record(digest),
+        {
+            "kind": "curriculum_catalog",
+            "identity": {"version_id": "net-2025"},
+            "artifact_sha256": "c" * 64,
+            "approver": FIXTURE_APPROVER,
+            "authorization": FIXTURE_AUTHORIZATION,
+            "approved_at": "2026-10-10T00:00:00Z",
+        },
+    ], name="different-kind.json") == "loaded"
+
+
+def test_review_5b_independent_objects_verify_independently(tmp_path: Path) -> None:
+    """两个不同对象各有一条有效批准 ⇒ 各自都能通过（唯一性规则没有误伤）。"""
+
+    artifact = _write_case(tmp_path)
+    digest = sha256_file(artifact)
+    other_identity = {"target_version_id": "other-2025", "as_of_term": "2025-2"}
+    anchor = _write_anchor(tmp_path, [
+        _record(digest),
+        _record("d" * 64, identity=other_identity),
+    ], name="two-objects.json")
+
+    assert _check(anchor, digest).verified is True
+    other = verify_approval(
+        kind=APPROVAL_KIND_CURRICULUM_CASE,
+        identity=other_identity,
+        artifact_sha256="d" * 64,
+        environment={TRUST_ANCHOR_ENV: str(anchor)},
+    )
+    assert other.verified is True
+
+
+def test_review_conflict_is_also_caught_on_a_hand_built_anchor(tmp_path: Path) -> None:
+    """纵深防御：即使调用方**手工构造** `TrustAnchor` 绕过装载期检查，
+
+    `verify_approval` 也绝不挑一条放行 —— 撤销优先、冲突即拒绝。
+    （装载期已拦下这类锚点；这里锁定第二层行为，避免以后被"优化"掉。）
+    """
+
+    from app.provenance import ApprovalRecord, TrustAnchor
+
+    def _record_obj(**overrides: object) -> ApprovalRecord:
+        base: dict = {
+            "kind": APPROVAL_KIND_CURRICULUM_CASE,
+            "identity": tuple(sorted(IDENTITY.items())),
+            "artifact_sha256": "e" * 64,
+            "approver": FIXTURE_APPROVER,
+            "authorization": FIXTURE_AUTHORIZATION,
+            "approved_at": "2026-10-10T00:00:00Z",
+        }
+        base.update(overrides)
+        return ApprovalRecord(**base)  # type: ignore[arg-type]
+
+    revoked = _record_obj(revoked=True, revoked_at="2026-10-11T00:00:00Z",
+                          revoked_by=FIXTURE_APPROVER, revocation_reason="材料被替换")
+
+    # ① 撤销 + 有效（手工构造）
+    conflict = verify_approval(
+        kind=APPROVAL_KIND_CURRICULUM_CASE, identity=dict(IDENTITY),
+        artifact_sha256="e" * 64,
+        anchor=TrustAnchor(path="<hand-built>", approvals=(revoked, _record_obj())),
+    )
+    assert conflict.verified is False
+    assert conflict.reason == ProvenanceReason.APPROVAL_CONFLICT
+
+    # ② 两条有效（手工构造）
+    duplicate = verify_approval(
+        kind=APPROVAL_KIND_CURRICULUM_CASE, identity=dict(IDENTITY),
+        artifact_sha256="e" * 64,
+        anchor=TrustAnchor(path="<hand-built>", approvals=(_record_obj(), _record_obj())),
+    )
+    assert duplicate.reason == ProvenanceReason.APPROVAL_CONFLICT
+
+    # ③ 过期 + 有效（手工构造）
+    expired = verify_approval(
+        kind=APPROVAL_KIND_CURRICULUM_CASE, identity=dict(IDENTITY),
+        artifact_sha256="e" * 64,
+        anchor=TrustAnchor(path="<hand-built>", approvals=(
+            _record_obj(expires_at="2020-01-01T00:00:00Z"), _record_obj(),
+        )),
+    )
+    assert expired.reason == ProvenanceReason.APPROVAL_CONFLICT
+
+
+def test_review_conflict_reason_code_is_registered() -> None:
+    """新错误码必须登记在 `ProvenanceReason.ALL` 里（否则会被当成非法码）。"""
+
+    assert ProvenanceReason.APPROVAL_CONFLICT in ProvenanceReason.ALL
+    denied = ProvenanceDenied(ProvenanceReason.APPROVAL_CONFLICT, "x")
+    assert denied.reason == ProvenanceReason.APPROVAL_CONFLICT
+
+
+def test_review_runtime_maps_conflict_to_provenance_not_verified(tmp_path: Path) -> None:
+    """运行时行为：冲突锚点 ⇒ 装配失败（503），⛔ 不会"部分放行"。"""
+
+    from app.services import planning_runtime
+
+    artifact = _write_case(tmp_path)
+    digest = sha256_file(artifact)
+    anchor = _write_anchor(tmp_path, [_record(digest), _record(digest)], name="runtime-conflict.json")
+
+    inspection = planning_runtime.build_planning_runtime({
+        "APP_REAL_CASE_A_ENABLED": "1",
+        TRUST_ANCHOR_ENV: str(anchor),
+    })
+
+    assert inspection.orchestrator is None
+    assert inspection.ready is False
+    assert inspection.reason == "provenance_not_verified"
 
 
 # --------------------------------------------------------------------------- #

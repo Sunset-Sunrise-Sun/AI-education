@@ -85,6 +85,57 @@ revoked == false ⇒  revoked_at / revoked_by / revocation_reason 必须为 null
 > 因为删除会让"这份数据曾经被批准过"这一事实消失，审计链断裂。
 > 保留 + 标记撤销，才能回答"它是什么时候、被谁、因为什么不再有效"。
 
+### 2.2 ⚠️ 批准对象的唯一性（Architecture Review 修复：`approval_conflict`）
+
+**批准对象** = `(kind, identity, artifact_sha256)` 三元组。
+
+```text
+同一批准对象**只允许一条记录**。
+出现第二条 ⇒ 拒绝**整个锚点**，错误码 `approval_conflict`（fail closed）。
+```
+
+**修复的漏洞**：修复前 `verify_approval()` 先筛出所有"未撤销"记录，只要其中一条有效
+就放行。于是"已撤销 + 有效"共存时，**撤销被静默忽略** —— 用一条遗留记录即可绕过撤销。
+
+**修复后的判定表**（⛔ 任何一档都不会"挑一条放行"）：
+
+| 同一对象的记录情况 | 结果 | 错误码 |
+| --- | --- | --- |
+| 恰好 1 条、未撤销、未过期 | ✅ 放行 | `approved` |
+| 恰好 1 条、已撤销 | ⛔ 拒绝 | `approval_revoked` |
+| 恰好 1 条、未撤销、已过期 | ⛔ 拒绝（可续期） | `approval_expired` |
+| **≥2 条**（含"撤销+有效"、"两条有效"、"过期+有效"、"两条撤销"） | ⛔ 拒绝整个锚点 | **`approval_conflict`** |
+| 0 条（身份匹配但摘要不符） | ⛔ 拒绝 | `approval_digest_mismatch` |
+
+**为什么要求"唯一"而不是"未撤销的恰好一条"**：
+
+1. 不留任何"挑一条"的空间，语义没有歧义；
+2. **撤销与重新审核都改同一条记录**，所以审计链天然完整（不需要多条记录）；
+3. 重新审核改了内容时，`artifact_sha256` 已经不同 ⇒ 属于**不同对象**，不会误伤；
+4. ⛔ **不引入审批版本系统**——只有"同一对象唯一记录"这一条最小规则。
+
+**两层 fail-closed**（纵深防御）：
+
+| 层 | 位置 | 作用 |
+| --- | --- | --- |
+| ① 装载期 | `load_trust_anchor()` → `_require_unique_objects()` | 同一对象 ≥2 条 ⇒ **整个锚点**拒绝（运维立刻看到） |
+| ② 校验期 | `verify_approval()` | 即使调用方手工构造 `TrustAnchor` 绕过①，也绝不挑一条放行 |
+
+### 2.3 撤销后如何重新批准（⛔ 不允许自动恢复）
+
+```text
+⛔ 错误做法：为同一对象**新增**一条有效记录去"顶掉"撤销
+           ⇒ 触发 approval_conflict，整个锚点被拒
+✅ 正确做法：修改**同一条**记录：
+             revoked 改回 false
+             清空 revoked_at / revoked_by / revocation_reason
+             更新 approved_at 与 authorization（写明是新的审核决定）
+             把撤销历史留在 note 里
+```
+
+因此"恢复有效"必须是**明确的、可追溯的新审核决定**，
+⛔ 不能靠遗留记录、⛔ 不能靠时间过去、⛔ 不能靠"再补一条"。
+
 ---
 
 ## 3. 待审核清单（可复制、可归档、可绑定）
@@ -204,11 +255,15 @@ revoked == false ⇒  revoked_at / revoked_by / revocation_reason 必须为 null
      "revoked_at": "<ISO-8601>",
      "revoked_by": "<组长或保管者标识>",
      "revocation_reason": "<必填理由>"
-        ↓  ⛔ 不删除该记录（保留审计链）
+        ↓  ⛔ **不新增记录**、⛔ 不删除该记录
+        ↓  ⛔ 同一对象出现第二条记录 ⇒ 整个锚点被拒（approval_conflict）
 ③ 后端**每次装配都重新读**锚点 ⇒ 下一个请求立即 fail closed（503）
         ↓  ⛔ 无需重启服务
 ④ 记录到 worklog：撤销了什么、为什么、何时
 ```
+
+> ⚠️ **撤销是原地标记**：`_require_unique_objects` 要求同一批准对象只有一条记录，
+> 所以撤销**不能**用"再写一条撤销记录"的方式，必须是改原记录。
 
 ### 6.3 重新审核流程
 
@@ -216,13 +271,17 @@ revoked == false ⇒  revoked_at / revoked_by / revocation_reason 必须为 null
 ① 重新跑 evidence 工具（同一 artifact 或新材料）⇒ 新清单、新摘要
 ② 组长重新逐项核对（§3.2 的七个问题）
 ③ 若批准：
-     - 内容未变 ⇒ 把原记录的 revoked 改回 false 并**更新 approved_at / authorization**（保留撤销历史到 note）
-     - 内容已变 ⇒ **新增一条**记录（新 artifact_sha256），旧记录保持 revoked
+     - 内容未变（同一对象）⇒ 改**同一条**记录：
+         revoked 改回 false，清空三个撤销字段，
+         更新 approved_at / authorization，把撤销历史写进 note
+       ⛔ 不允许"新增一条有效记录"来顶掉撤销（会触发 approval_conflict）
+     - 内容已变 ⇒ `artifact_sha256` 不同 = **不同对象** ⇒ 正常**新增**一条记录；
+       旧对象的那条记录保持 revoked（⛔ 不会因新记录而复活）
 ④ 若拒绝 ⇒ 不写记录；把拒绝理由写进 worklog
 ```
 
 ⛔ **绝不允许**为了"让流程跑通"而：删除记录、放宽自签检测、把 Agent 名字写进 `approver`、
-或把锚点路径指向仓库内文件。
+把锚点路径指向仓库内文件、或为同一对象堆叠多条记录。
 
 ---
 

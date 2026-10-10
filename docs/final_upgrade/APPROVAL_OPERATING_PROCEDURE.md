@@ -146,16 +146,35 @@ artifact SHA-256：<artifact_sha256>
 }
 ```
 
-### 4.2 ⛔ 三条硬性要求
+### 4.2 ⛔ 四条硬性要求
 
 | # | 要求 | 违反后果 |
 | --- | --- | --- |
 | 1 | `approver` **不得**含工具名（`generator`/`importer`/`parser`/`mock`/`test`/`tool`/`collector` 等子串） | 锚点**整体**非法（`trust_anchor_invalid`） |
 | 2 | `approver` 与 `generator` **不得**相同 | 锚点**整体**非法 |
 | 3 | `review_evidence_sha256` 必须是**这次审核那份清单**的摘要（64 位小写十六进制） | 锚点非法 |
+| 4 | ⚠️ **同一批准对象只能有一条记录** | 锚点**整体**拒绝（**`approval_conflict`**） |
 
 > 第 1、2 条由 `backend/app/provenance/__init__.py` 强制；第 3 条只做格式校验
 > （⚠️ 它是**审计字段**，⛔ 不参与放行判定，见设计 §3.3）。
+
+#### 批准对象是什么
+
+```text
+批准对象 = (kind, identity, artifact_sha256)
+```
+
+**同一对象只能有一条记录。** ⛔ 出现第二条（不管是重复有效、撤销+有效、
+还是过期+有效）⇒ 后端拒绝**整个锚点**，错误码 **`approval_conflict`**。
+
+为什么这么严：如果允许同一对象有多条记录，就必须"挑一条算数"；
+而"挑一条"正是**可以用遗留记录绕过撤销**的根源。
+
+| 你想要的 | ✅ 正确做法 | ⛔ 错误做法 |
+| --- | --- | --- |
+| 撤销 | 把**那条**记录改成 `revoked: true` + 三个撤销字段 | 再写一条撤销记录 |
+| 撤销后重新批准（内容没变） | 改**同一条**：`revoked` 改回 `false`、清空撤销字段、更新 `approved_at` / `authorization`、把撤销历史写进 `note` | 新增一条有效记录 |
+| 重新审核（内容变了） | 摘要不同 = **不同对象** ⇒ 正常新增记录；旧记录保持 `revoked` | 改旧记录的摘要 |
 
 ### 4.3 写完自检（只读，不批准）
 
@@ -182,7 +201,7 @@ $env:APP_TRUST_ANCHOR_PATH = "<仓库外的锚点路径>"
 
 ### 5.2 撤销（组长指示 → 保管者执行）
 
-把对应记录改为：
+把**对应那一条**记录改为：
 
 ```json
 {
@@ -194,6 +213,8 @@ $env:APP_TRUST_ANCHOR_PATH = "<仓库外的锚点路径>"
 ```
 
 - ⛔ **不要删除记录**：删除会让"曾经批准过"的事实消失，审计链断裂；
+- ⛔ **不要新增一条撤销记录**：同一批准对象出现第二条记录 ⇒ **整个锚点被拒**
+  （`approval_conflict`）。撤销是**原地标记**；
 - ⛔ 三个撤销字段**缺一不可**（缺任一 ⇒ 锚点整体非法）；
 - ✅ 撤销**优先于**过期被报告（主动决定比被动过期更需要人看到理由）。
 
@@ -201,9 +222,12 @@ $env:APP_TRUST_ANCHOR_PATH = "<仓库外的锚点路径>"
 
 | 情况 | 做法 |
 | --- | --- |
-| 内容**没变**，只是要恢复 | 把原记录 `revoked` 改回 `false`，并**更新** `approved_at` / `authorization`；把撤销历史写进 `note` |
-| 内容**已变** | **新增**一条记录（新 `artifact_sha256`），旧记录**保持** `revoked: true` |
+| 内容**没变**，只是要恢复 | 改**同一条**记录：`revoked` 改回 `false`、**清空** `revoked_at` / `revoked_by` / `revocation_reason`、更新 `approved_at` 与 `authorization`（写明这是新的审核决定）、把撤销历史写进 `note` |
+| 内容**已变** | 摘要不同 = **不同对象** ⇒ 正常**新增**一条记录；旧对象的那条记录**保持** `revoked: true` |
 | 仍然拒绝 | ⛔ 不写记录；把拒绝理由写进 worklog |
+
+⛔ **撤销后不会自动恢复**：不允许靠遗留记录、不允许靠时间过去、不允许靠"再补一条"。
+恢复有效**必须**是一次明确的、可追溯的新审核决定。
 
 ---
 
@@ -212,12 +236,13 @@ $env:APP_TRUST_ANCHOR_PATH = "<仓库外的锚点路径>"
 | 现象 | 诊断码 | 处置 |
 | --- | --- | --- |
 | 503，`real_pipeline_not_configured` + 日志 `provenance_not_verified` | `trust_anchor_not_configured` | `APP_TRUST_ANCHOR_PATH` 没注入到**后端进程** |
-| 同上 | `trust_anchor_unreadable` / `trust_anchor_invalid` | 锚点路径错 / JSON 格式错 / 自签被拦 |
+| 同上 | `trust_anchor_unreadable` / `trust_anchor_invalid` | 锚点路径错 / JSON 格式错 / 自签被拦 / `approver==generator` / 撤销字段不全 |
+| 同上 | **`approval_conflict`** | ⚠️ **同一批准对象出现了多条记录**（重复有效 / 撤销+有效 / 过期+有效）。请只保留**一条**：撤销与重新审核都改这同一条 |
 | 同上 | `approval_missing` | 锚点里没有与该身份匹配的记录（版本 / 学期写错？） |
 | 同上 | `approval_digest_mismatch` | **内容被改过**：重跑证据并重新审核 |
 | 同上 | `approval_expired` | 续期：重新审核并更新 `expires_at` |
-| 同上 | `approval_revoked` | 记录已被撤销：查 `revocation_reason`，需要则重新审核 |
-| `check-anchor` 报 `trust_anchor_invalid` | —— | `approver` 含工具名 / `approver==generator` / 撤销字段不全 |
+| 同上 | `approval_revoked` | 记录已被撤销：查 `revocation_reason`，需要则走"重新审核"（改同一条记录） |
+| `check-anchor` 报 `approval_conflict` | —— | 同一对象有多条记录，见上 |
 
 ---
 

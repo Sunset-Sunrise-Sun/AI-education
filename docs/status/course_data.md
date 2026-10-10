@@ -1890,3 +1890,33 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
   "工具无批准路径 / provenance 模块无写路径"的结构性断言。
 - **`.gitignore`**：新增锚点、证据、真实材料、bundle、manifest 的忽略模式（⛔ 绝不提交）。
 - **真实数据验收：保持 BLOCKED**（无真实材料；锚点目录与访问控制待组长确认）。
+
+## Architecture Review 修复：批准对象唯一性（2026-10-10）
+
+**复审结论 CHANGES REQUIRED 的修复**：`verify_approval()` 此前筛出所有"未撤销"记录，
+只要其中一条有效就放行 ⇒ "已撤销 + 有效"共存时**撤销被静默忽略**，
+可用遗留记录绕过撤销。
+
+**最小 fail-closed 修复**（⛔ 未引入审批版本系统）：
+
+- **批准对象** = `(kind, identity, artifact_sha256)`；**同一对象只允许一条记录**；
+- 出现第二条（重复有效 / 撤销+有效 / 过期+有效 / 重复撤销）⇒
+  **拒绝整个锚点**，新错误码 **`approval_conflict`**；
+- 两层纵深防御：① `load_trust_anchor()` 的 `_require_unique_objects()`（装载期整体拒绝）；
+  ② `verify_approval()` 即使收到手工构造的 `TrustAnchor` 也绝不挑一条放行；
+- 判定表：唯一未撤销未过期 ⇒ `approved`；唯一已撤销 ⇒ `approval_revoked`；
+  唯一已过期 ⇒ `approval_expired`；≥2 条 ⇒ `approval_conflict`。
+- 判定表见 `APPROVAL_WORKFLOW_DESIGN.md` §2.2–§2.3。
+
+**撤销后重新批准必须明确、可追溯**：
+
+- ⛔ 不允许为同一对象**新增**有效记录（会触发 `approval_conflict`）；
+- ✅ 必须改**同一条**记录：`revoked` 改回 `false`、清空三个撤销字段、
+  更新 `approved_at` / `authorization`，把撤销历史留在 `note`；
+- 内容变化时摘要不同 = **不同对象** ⇒ 才允许新增记录（旧记录保持 revoked）。
+
+**新增测试**（`tests/test_approval_workflow.py`，+10 项 ⇒ 共 38 项）：
+① 撤销+有效 ② 重复有效 ③ 过期+有效（+ 单条过期仍报 expired）
+④ 撤销不可自动恢复（含"再补一条"与"重复撤销"两种尝试）
+④b 明确重审改同一条记录可恢复 ⑤ 不同 identity / 摘要 / kind 的独立批准不受影响
++ 手工构造锚点的纵深防御 + 错误码登记 + 运行时映射。

@@ -170,10 +170,16 @@ class ProvenanceReason:
     #: 因为两者的处置完全不同：前者要查撤销理由，后者要去补齐批准。
     APPROVAL_REVOKED: Final[str] = "approval_revoked"
 
+    #: ⚠️ 本轮新增：**同一批准对象存在语义冲突或重复记录**。
+    #: 例如"已撤销 + 有效"、"两条重复有效"、"已过期 + 有效"同时存在。
+    #: ⛔ 一律拒绝该对象，⛔ 不挑一条有效的放行（防止用遗留记录绕过撤销）。
+    APPROVAL_CONFLICT: Final[str] = "approval_conflict"
+
     ALL: Final[tuple[str, ...]] = (
         ANCHOR_NOT_CONFIGURED, ANCHOR_UNREADABLE, ANCHOR_FORMAT_UNSUPPORTED,
         ANCHOR_INVALID, APPROVAL_MISSING, APPROVAL_INVALID, DIGEST_MISMATCH,
         IDENTITY_MISMATCH, SELF_ISSUED, APPROVAL_EXPIRED, APPROVAL_REVOKED,
+        APPROVAL_CONFLICT,
     )
 
 
@@ -225,6 +231,15 @@ class ApprovalRecord:
 
     def identity_map(self) -> dict[str, str]:
         return dict(self.identity)
+
+    def object_key(self) -> tuple[str, tuple[tuple[str, str], ...], str]:
+        """**批准对象**：同一 `(kind, identity, artifact_sha256)` 只允许一条有效记录。
+
+        ⚠️ 撤销记录与有效记录**共存**即视为冲突（见 `approval_conflict`），
+        因为那正是"用遗留记录绕过撤销"的形状。
+        """
+
+        return (self.kind, self.identity, self.artifact_sha256)
 
     def is_self_issued(self) -> bool:
         lowered = self.approver.strip().lower()
@@ -343,10 +358,39 @@ def load_trust_anchor(environment: Mapping[str, str] | None = None) -> TrustAnch
         raise TrustAnchorUnavailable(
             ProvenanceReason.ANCHOR_INVALID, "批准锚点的 approvals 必须是数组。",
         )
-    return TrustAnchor(
-        path=str(path),
-        approvals=tuple(_record(item) for item in raw_approvals),
-    )
+    records = tuple(_record(item) for item in raw_approvals)
+    _require_unique_objects(records)
+    return TrustAnchor(path=str(path), approvals=records)
+
+
+def _require_unique_objects(records: tuple[ApprovalRecord, ...]) -> None:
+    """⛔ **同一批准对象只允许一条记录**（`kind` + `identity` + `artifact_sha256`）。
+
+    为什么必须在装载期就拒绝：两条记录同时描述同一个对象时，**哪一条算数是不确定的**。
+    修复前的实现会挑出"未撤销"的那些，只要有一条有效就放行 —— 于是
+    "已撤销 + 有效"共存时撤销被静默忽略，用一条遗留记录即可绕过撤销。
+
+    这里直接要求**唯一**，而不是"未撤销的恰好一条"，理由有三：
+
+    1. 不留任何"挑一条"的空间，语义没有歧义；
+    2. 撤销记录是**同一条**记录的字段（不是新增记录），因此审计链完整保留；
+    3. 重新审核改内容时对象本来就不同（摘要变了），不会误伤。
+
+    ⛔ 不引入审批版本系统：只做"同一对象唯一记录"这一条最小规则。
+    错误码用 `approval_conflict`（语义精确：这是**批准冲突**，不是格式错误）。
+    """
+
+    seen: set[tuple[str, tuple[tuple[str, str], ...], str]] = set()
+    for record in records:
+        key = record.object_key()
+        if key in seen:
+            raise TrustAnchorUnavailable(
+                ProvenanceReason.APPROVAL_CONFLICT,
+                "批准锚点里同一批准对象（kind + identity + artifact_sha256）出现多条记录；"
+                "⛔ 语义不唯一，拒绝整个锚点。请只保留**一条**记录："
+                "撤销与重新审核都应改这**同一条**记录，⛔ 不要新增重复记录。",
+            )
+        seen.add(key)
 
 
 def _record(item: object) -> ApprovalRecord:
@@ -535,26 +579,64 @@ def verify_approval(
             message="批准记录存在，但其摘要与当前内容不符（内容可能已被修改）。",
         )
 
-    # ⚠️ 撤销优先于到期：撤销是**主动**决定，需要让人看到"被谁、因为什么撤销"，
-    #    而不是含糊地报"过期"。若全部匹配记录都已撤销 ⇒ 明确报 `approval_revoked`。
-    live = [item for item in matching_digest if not item.revoked]
-    if not live:
-        revoked = matching_digest[0]
-        detail = revoked.revocation_reason or "未给出理由"
-        return ProvenanceCheck(
-            verified=False, reason=ProvenanceReason.APPROVAL_REVOKED,
-            message=f"该批准已被撤销（{detail}）；⛔ 不再作为来源依据。",
-        )
-
+    # ------------------------------------------------------------------ #
+    # ⚠️ **批准对象的唯一性（Architecture Review 修复）**
+    #
+    # 修复前：这里筛出所有**未撤销**记录，只要其中一条有效就放行。
+    # 于是"已撤销 + 有效"共存时，撤销被**静默忽略** —— 用一条遗留记录
+    # 就能绕过撤销。这正是复审指出的问题。
+    #
+    # 修复后（两层，都是 fail closed，⛔ 不引入审批版本系统）：
+    #   ① 装载期 `_require_unique_objects`：同一对象出现多条记录 ⇒ 整个锚点拒绝
+    #      （错误码 `approval_conflict`）——从根上消除"挑一条"的可能；
+    #   ② 本函数：即使调用方**手工构造** `TrustAnchor` 绕过①，
+    #      也绝不挑一条放行：任何"撤销 + 其它"或"多条有效"都返回 `approval_conflict`。
+    # ------------------------------------------------------------------ #
     reference = now
     if reference is None:
         import datetime
 
         reference = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for item in live:
-        if item.expires_at is not None and item.expires_at < reference:
-            continue
+
+    def _expired(item: ApprovalRecord) -> bool:
+        return item.expires_at is not None and item.expires_at < reference
+
+    revoked = [item for item in matching_digest if item.revoked]
+    live = [item for item in matching_digest if not item.revoked]
+    usable = [item for item in live if not _expired(item)]
+
+    # ① "已撤销 + 其它"共存：⛔ 不允许靠遗留记录自动恢复有效。
+    if revoked and live:
+        return ProvenanceCheck(
+            verified=False, reason=ProvenanceReason.APPROVAL_CONFLICT,
+            message=(
+                "批准对象同时存在已撤销记录与其它记录；⛔ 不再采信任何一条。"
+                "撤销后重新批准必须改**同一条**记录并留下明确的新审核决定。"
+            ),
+        )
+    # ② 全部已撤销：保留"曾批准、现撤销"的准确语义。
+    if revoked and not live:
+        detail = revoked[0].revocation_reason or "未给出理由"
+        return ProvenanceCheck(
+            verified=False, reason=ProvenanceReason.APPROVAL_REVOKED,
+            message=f"该批准已被撤销（{detail}）；⛔ 不再作为来源依据。",
+        )
+    # ③ 多条有效记录：语义不唯一 ⇒ 拒绝整个集合（⛔ 不挑一条）。
+    if len(live) > 1:
+        return ProvenanceCheck(
+            verified=False, reason=ProvenanceReason.APPROVAL_CONFLICT,
+            message="批准对象存在多条有效批准记录；⛔ 语义不唯一，拒绝整个相关批准集合。",
+        )
+    # ④ "已过期 + 有效"并存：⛔ 不允许挑未过期的那条放行。
+    if usable and len(live) > len(usable):
+        return ProvenanceCheck(
+            verified=False, reason=ProvenanceReason.APPROVAL_CONFLICT,
+            message="批准对象同时存在已过期记录与未过期记录；⛔ 语义冲突，拒绝整个相关批准集合。",
+        )
+    # ⑤ 唯一可信记录。
+    if usable:
         return ProvenanceCheck(verified=True, reason="approved")
+    # ⑥ 有效记录都已过期（不是冲突，而是需要续期）。
     return ProvenanceCheck(
         verified=False, reason=ProvenanceReason.APPROVAL_EXPIRED,
         message="批准记录已过期。",

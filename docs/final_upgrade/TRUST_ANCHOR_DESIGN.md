@@ -98,6 +98,23 @@
 **新增拒绝原因码**：`approval_revoked`（与 `approval_missing` 区分：
 前者"曾批准、现已撤销"，后者"从未批准"）。撤销**优先于**过期被报告。
 
+### 2.2 ⚠️ 批准对象的唯一性（`approval_conflict`）
+
+**批准对象** = `(kind, identity, artifact_sha256)`。**同一对象只允许一条记录**；
+出现第二条 ⇒ **拒绝整个锚点**（错误码 `approval_conflict`）。
+
+| 同一对象的记录情况 | 结果 | 错误码 |
+| --- | --- | --- |
+| 恰好 1 条、未撤销、未过期 | ✅ 放行 | `approved` |
+| 恰好 1 条、已撤销 | ⛔ 拒绝 | `approval_revoked` |
+| 恰好 1 条、未撤销、已过期 | ⛔ 拒绝（可续期） | `approval_expired` |
+| **≥2 条**（撤销+有效 / 重复有效 / 过期+有效 / 重复撤销） | ⛔ 拒绝整个锚点 | **`approval_conflict`** |
+
+⛔ 修复前的实现会"挑出未撤销的那条放行"，因此撤销可被遗留记录绕过；
+修复后不留任何"挑一条"的空间。**撤销与重新审核都改同一条记录**，
+所以审计链天然完整，⛔ 不需要、也⛔ 不允许审批版本系统。
+详见 `APPROVAL_WORKFLOW_DESIGN.md` §2.2–§2.3 与 `APPROVAL_OPERATING_PROCEDURE.md` §4.2。
+
 **受支持的 kind 与身份字段**
 
 | kind | 绑定的 artifact | identity 字段 |
