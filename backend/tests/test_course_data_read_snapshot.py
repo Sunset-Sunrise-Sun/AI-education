@@ -384,13 +384,13 @@ def _run_probe(
 
 
 def _probe_reader(store: Path, digest: str) -> object:
-    dataset = load_accepted_offerings(store, semester=SEMESTER, acceptance_sha256=digest)
+    dataset = load_accepted_offerings(store, semester=SEMESTER, acceptance_sha256=digest, require_approval=False)
     return list(dataset.offerings)
 
 
 def _provider_reader(store: Path, digest: str) -> object:
     provider = StoreBackedCourseDataProvider(
-        sqlite_path=store, semester=SEMESTER, acceptance_sha256=digest
+        sqlite_path=store, semester=SEMESTER, acceptance_sha256=digest, require_approval=False
     )
     return provider.get_course_offerings(SEMESTER)
 
@@ -498,7 +498,7 @@ def test_reader_holds_a_read_transaction_across_the_whole_verification(
     thread = threading.Thread(target=_writer)
     thread.start()
     try:
-        load_accepted_offerings(store, semester=SEMESTER, acceptance_sha256=digest)
+        load_accepted_offerings(store, semester=SEMESTER, acceptance_sha256=digest, require_approval=False)
     finally:
         resume.set()
     thread.join(timeout=20)
@@ -584,7 +584,7 @@ def test_without_the_explicit_transaction_the_same_probe_is_not_atomic(
     error: BaseException | None = None
     try:
         result = load_accepted_offerings(
-            store, semester=SEMESTER, acceptance_sha256=digest
+            store, semester=SEMESTER, acceptance_sha256=digest, require_approval=False
         )
     except CourseDataStoreError as exc:
         error = exc

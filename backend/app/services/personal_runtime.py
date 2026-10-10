@@ -2,6 +2,7 @@
 
 ```text
 APP_PERSONAL_CATALOG_DIR=<显式给出的本地已核验目录>
+APP_TRUST_ANCHOR_PATH=<带外批准锚点：哪些 version_id 真的被人工批准>
         ↓  load_personal_catalog(environment)
 CurriculumCatalog（可选版本目录；目录缺失 = 没有可选版本，⛔ 不猜默认值）
 ```
@@ -14,6 +15,12 @@ CurriculumCatalog（可选版本目录；目录缺失 = 没有可选版本，⛔
 - ⛔ **不联网**、⛔ **不读 `mock_data`**、⛔ **不扫描文件系统猜输入**；
 - ⛔ **没有 Mock fallback**：目录未配置就是"当前没有可选版本"，
   API 明确回答"无可用版本"，⛔ 不回退到 Case A 或任何演示方案。
+
+## 来源可信性（本轮新增）
+
+`catalog.json` 的 `verification.verified=true` 是**自述布尔**，
+因此本模块额外要求 `APP_TRUST_ANCHOR_PATH` 指向的**带外批准锚点**里
+存在对应的 `curriculum_catalog` 批准记录。⛔ 缺锚点 ⇒ 不放出任何版本。
 
 ## 诊断边界
 
@@ -29,6 +36,11 @@ from dataclasses import dataclass
 
 from app.curriculum.catalog import CurriculumCatalog, load_curriculum_catalog
 from app.curriculum.errors import CurriculumNormalizationError
+from app.provenance import (
+    APPROVAL_KIND_CURRICULUM_CATALOG,
+    TrustAnchorUnavailable,
+    load_trust_anchor,
+)
 
 __all__ = [
     "PERSONAL_CATALOG_DIR",
@@ -54,15 +66,40 @@ class PersonalCatalogInspection:
 
 
 def load_personal_catalog(environment: Mapping[str, str]) -> PersonalCatalogInspection:
-    """按**显式**环境配置装载已核验目录；未配置 / 不可用即 fail closed。"""
+    """按**显式**环境配置装载已核验目录；未配置 / 不可用即 fail closed。
+
+    ⚠️ **本轮修复（F-03）**：`catalog.json` 里的 `verification.verified=true`
+    只是自述布尔。因此这里额外要求**带外批准锚点**
+    （`APP_TRUST_ANCHOR_PATH`，见 `app.provenance`）里存在对应的
+    `curriculum_catalog` 批准记录：
+
+    - 锚点缺失 / 不可读 / 非法 ⇒ `provenance_not_verified`（⛔ 不退回只按自述）；
+    - 锚点里没有已批准的 `version_id` ⇒ 该目录装载结果**没有可选版本**
+      （`catalog_provenance_empty`），⛔ 不放出任何自述版本。
+    """
 
     if not isinstance(environment, Mapping):
         raise CurriculumNormalizationError("runtime: expected an environment mapping")
     directory = environment.get(PERSONAL_CATALOG_DIR)
     if directory is None or not str(directory).strip():
         return PersonalCatalogInspection(None, "catalog_not_configured")
+
+    # ---- 独立批准锚点（F-03）--------------------------------------------
     try:
-        catalog = load_curriculum_catalog(str(directory).strip())
+        anchor = load_trust_anchor(environment)
+    except TrustAnchorUnavailable:
+        return PersonalCatalogInspection(None, "provenance_not_verified")
+    approved = frozenset(
+        record.identity_map()["version_id"]
+        for record in anchor.matching(APPROVAL_KIND_CURRICULUM_CATALOG)
+    )
+    if not approved:
+        return PersonalCatalogInspection(None, "catalog_provenance_empty")
+
+    try:
+        catalog = load_curriculum_catalog(
+            str(directory).strip(), approved_versions=approved,
+        )
     except CurriculumNormalizationError:
         return PersonalCatalogInspection(None, "catalog_not_ready")
     if not catalog.inspection.format_supported:

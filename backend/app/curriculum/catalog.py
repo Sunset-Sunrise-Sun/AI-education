@@ -68,7 +68,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -99,6 +99,11 @@ CATALOG_REJECTED_CODES = (
     "artifact_format_unsupported",
     "entry_invalid",
     "not_verified",
+    #: ⚠️ **本轮新增**：条目自称 `verified=true`，但**带外批准锚点**里没有
+    #: 与之匹配的 `curriculum_catalog` 批准记录（或 artifact 摘要不符）。
+    #: 与 `not_verified` 分开的原因：`not_verified` 是"文件自己说没核验"，
+    #: 这里是"文件自己说核验了，但拿不出独立依据"——后者才是安全事件。
+    "provenance_not_verified",
     "unsupported_by_source",
     "version_identity_conflict",
 )
@@ -336,9 +341,21 @@ def _reject(version_id: str, code: str, detail: str) -> CatalogRejection:
 
 
 def _entry(
-    record: object, *, row: int,
+    record: object, *, row: int, approved_versions: frozenset[str] | None = None,
 ) -> tuple[CatalogEntry, CurriculumVersion] | CatalogRejection:
-    """解析一个目录条目；任何不满足条件的条目都变成 reject，而不是被跳过。"""
+    """解析一个目录条目；任何不满足条件的条目都变成 reject，而不是被跳过。
+
+    `approved_versions`：**带外批准锚点**里 `curriculum_catalog` 已批准的
+    `version_id` 集合。
+
+    - `None` ⇒ 不启用批准门（仅供**单元测试**与显式声明"我不需要这道门"的
+      内部调用；production 路径必须传入集合，见 `load_curriculum_catalog`）；
+    - `frozenset()` ⇒ 空集合 ⇒ 任何条目都拿不到批准 ⇒ 全部以
+      `provenance_not_verified` 拒绝（fail closed）。
+
+    ⚠️ 无论哪种情况，本函数都**不**认为 `verification.verified=true` 足以让条目
+    进入可选列表——证据由锚点提供，⛔ 不由 artifact 自述提供。
+    """
 
     try:
         item = _object(
@@ -364,6 +381,12 @@ def _entry(
     except CurriculumNormalizationError:
         return _reject(version_id, "entry_invalid", "entry metadata is not usable")
 
+    if approved_versions is not None and version_id not in approved_versions:
+        # ⛔ 自述 `verified=true` ≠ 已核验。拿不出带外批准依据 ⇒ 拒绝。
+        return _reject(
+            version_id, "provenance_not_verified",
+            "the version is not listed in the approved provenance anchor",
+        )
     if not verified or evidence is None:
         # ⛔ 未核验的方案不进入可选择列表；也⛔ 不用 source_id 冒充核验依据。
         return _reject(version_id, "not_verified", "the version carries no verification evidence")
@@ -415,11 +438,27 @@ def _entry(
     return entry, version
 
 
-def load_curriculum_catalog(directory: str | Path, *, file_name: str = "catalog.json") -> CurriculumCatalog:
+def load_curriculum_catalog(
+    directory: str | Path,
+    *,
+    file_name: str = "catalog.json",
+    approved_versions: Collection[str] | None = None,
+) -> CurriculumCatalog:
     """从**调用方显式给出**的本地目录装载已核验版本目录。
 
     `file_name` 的相对值只在 `directory` **之内**解析（⛔ 不接受路径分隔符，
     避免用名字跳出调用方显式指定的目录）；绝对路径则按原样使用。
+
+    `approved_versions`：**带外批准锚点**（`app.provenance`，
+    `APP_TRUST_ANCHOR_PATH`）里 `curriculum_catalog` 已批准的 `version_id` 集合。
+
+    ⚠️ **本轮修复（F-03）**：`verification.verified` 只是 artifact 里的自述布尔，
+    任意非空 `evidence` 文本即可通过。因此：
+
+    - `approved_versions=None` ⇒ 保留旧的"只按自述"行为，**仅供单元测试**；
+      production 路径（`services/personal_runtime.py`）**必须**传集合；
+    - `approved_versions=空集合` ⇒ 所有条目以 `provenance_not_verified` 拒绝
+      （fail closed：没有批准 ⇒ 没有可选版本）。
 
     - 目录 / artifact 缺失或不可读 → 空目录（`format_supported=True`, 无条目），
       **不是**异常：调用方据此明确回答"当前没有可选版本"，
@@ -498,8 +537,12 @@ def load_curriculum_catalog(directory: str | Path, *, file_name: str = "catalog.
     versions: list[tuple[str, CurriculumVersion]] = []
     rejections: list[CatalogRejection] = []
     seen: set[str] = set()
+    approved: frozenset[str] | None = (
+        None if approved_versions is None
+        else frozenset(str(item).strip() for item in approved_versions)
+    )
     for row, record in enumerate(rows, start=1):
-        outcome = _entry(record, row=row)
+        outcome = _entry(record, row=row, approved_versions=approved)
         if isinstance(outcome, CatalogRejection):
             rejections.append(outcome)
             continue

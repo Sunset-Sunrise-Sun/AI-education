@@ -251,9 +251,24 @@ def _build_response(result: PersonalPlanResult) -> PersonalPlanResponse:
 def _require_catalog(
     inspection: Annotated[PersonalCatalogInspection, Depends(_catalog_dependency)],
 ) -> CurriculumCatalog:
-    """未配置 / 不可用的目录 → 明确 503，⛔ 不回退任何默认版本。"""
+    """未配置 / 不可用的目录 → 明确 503，⛔ 不回退任何默认版本。
+
+    ⚠️ **本轮（F-03）**：来源可信性失败使用**独立**错误码，
+    与"根本没配置目录"区分开——前者是"有目录但拿不出独立批准依据"，
+    属于需要立刻察觉的安全事件，不是运维遗漏。
+    """
 
     if inspection.catalog is None:
+        if inspection.reason in {
+            "provenance_not_verified",
+            "catalog_provenance_empty",
+        }:
+            _reject(
+                "personal_catalog_provenance_not_verified",
+                "培养方案目录存在，但**没有**带外批准锚点提供的独立核验依据；"
+                "⛔ 拒绝把自述『已核验』的目录当作可信来源，也不回退到固定 Case A。",
+                http_status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         _reject(
             "personal_catalog_not_configured",
             "当前没有已核验的培养方案版本目录（未配置或不可用）；"

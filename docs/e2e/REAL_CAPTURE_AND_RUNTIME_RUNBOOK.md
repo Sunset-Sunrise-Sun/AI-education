@@ -211,8 +211,30 @@ level2_eligible == true   （仅当 Course Data 门 AND Curriculum 门都通过�
 | `APP_COURSE_DATA_SQLITE_PATH` | 上面产出的 **Course Data SQLite**（建议绝对路径） | 该库必须包含本次 full-semester acceptance |
 | `APP_COURSE_DATA_SEMESTER` | 例如 `2026-1` | 必须**精确等于** acceptance 绑定的学期 |
 | `APP_COURSE_DATA_ACCEPTANCE_SHA256` | 64 位十六进制 | **full-semester manifest / acceptance digest**（见 §3.2） |
+| `APP_TRUST_ANCHOR_PATH` | **带外批准锚点**文件的本地路径 | ⚠️ **本轮新增**。缺它 ⇒ `provenance_not_verified`（503）。该文件由**负责人**在带外写入，⛔ 生成工具不得签发；格式与失效规则见 `docs/final_upgrade/TRUST_ANCHOR_DESIGN.md` |
 
 **可选**：无其它 runtime 变量；`VITE_*` 属前端侧（见 §4）。
+
+### 3.1.1 来源可信性门（⚠️ 本轮新增，F-01/F-02/F-03）
+
+`data_source=real` 与 `catalog.json` 的 `verification.verified=true` 都只是**自述**。
+装配期必须同时满足：
+
+```text
+① APP_TRUST_ANCHOR_PATH 可读且格式合法（trust_anchor_version: 1）
+② curriculum_case 记录：身份（target_version_id / as_of_term）匹配
+   AND artifact_sha256 == SHA256(case 文件字节)
+③ course_data_semester_manifest 记录：身份（semester / acceptance_sha256）匹配
+   AND artifact_sha256 == SHA256(库内 canonical manifest)   ← 每次读取重算
+④ 批准人是人 / 授权流程（⛔ 不是生成工具；自签会被拒绝）
+⑤ 若声明了 expires_at，则未过期
+```
+
+任一条不满足 ⇒ **fail closed**（503，`real_pipeline_not_configured`）。
+
+⚠️ **SHA-256 只证明"输入与摘要一致"，不单独证明来源真实**；
+本门的作用是让"批准必须存在且与内容绑定"成为硬条件，⛔ 它**不是**签名方案
+（详见 `TRUST_ANCHOR_DESIGN.md` §6）。
 
 ### 3.2 三种 digest 的**明确**命名（⛔ 不要再笼统说 "SHA"）
 

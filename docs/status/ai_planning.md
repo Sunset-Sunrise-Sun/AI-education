@@ -129,3 +129,19 @@ cd backend && $env:PYTHONUTF8="1"; python -m pytest -q
   `--live`（无密钥）返回退出码 3 并打印 `BLOCKED — NEW DEEPSEEK_API_KEY NOT AVAILABLE`。
   ⛔ 未使用历史旧密钥、⛔ 未伪造成功、⛔ 未用测试替身冒充在线调用。
 - 详见 `docs/final_upgrade/REAL_CAPABILITY_PHASE1.md`。
+
+## 来源可信性门：AI 上下文来源不再由请求体决定（2026-10-10）
+
+- 新取值 **`real_unverified`**：教学班自称 `real` 但**服务端没有独立批准依据**。
+  `PlanningContext.__post_init__` 里的不变量保证：`real` + `source_verified=False`
+  ⇒ 一律降级为 `real_unverified`（⛔ 任何构造路径都绕不过）。
+- `api/ai_planning.py` 的 `_context_of()` **硬编码** `source_verified=False`：
+  AI 接口的教学班全部来自请求体，服务端⛔ 永远不能声称"来源已核验"；
+  请求模型是 `extra="forbid"`，⛔ 无法通过请求体打开这一档。
+- 响应新增 **`context_source_verified`**（恒 `false`），供前端区分
+  "HTTP 请求成功"与"使用了已核验真实教务数据"。
+- 风险提示判据从 `data_source != "real"` 改为 **`not context.source_verified`**：
+  ⛔ 自述 real 再也不能抑制"不代表真实教务开课"的提示。
+- 前端同步：`DATA_SOURCES` 增加 `real_unverified`；`dataSourceLabel()` 明确写出
+  "未经服务端独立核验"，⛔ 不显示成"已核验"。
+- ⛔ 未改 `PlanResult` 等公共 Schema；`context_source_verified` 属本模块私有包络字段。

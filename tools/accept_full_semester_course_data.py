@@ -645,6 +645,11 @@ def accept_full_semester(args: argparse.Namespace) -> dict[str, object]:
             sqlite_path,
             semester=semester,
             acceptance_sha256=acceptance.manifest_sha256,
+            # ⚠️ 这是**验收工具自身**在批准之前的自洽回读：manifest 刚生成，
+            #    还没有人工批准可引用。⛔ 不伪造批准摘要；
+            #    ⛔ production 读取路径（planning_runtime → Planner）保持
+            #    require_approval=True，因此"未经批准的数据不进 Planner"。
+            require_approval=False,
         )
         record = dataset.acceptance
 

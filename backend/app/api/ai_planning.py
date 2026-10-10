@@ -116,6 +116,12 @@ class InterpretResponse(BaseModel):
     parsed_intent: dict[str, Any]
     ambiguities: list[dict[str, Any]]
     data_source: str
+    #: ⚠️ **新增**：服务端是否有**独立批准依据**证明上下文教学班确已核验。
+    #:
+    #: AI 接口的教学班来自请求体，因此这里**永远是 `False`**：
+    #: 请求方自述 `data_source=real` ⛔ 不能换来"已核验"的说法。
+    #: 前端凭此区分"HTTP 请求成功"与"使用了已核验真实教务数据"。
+    context_source_verified: bool
     generator_kind: str
     generator_note: str
     model_id: str
@@ -201,6 +207,11 @@ def _context_of(body: PlanContextBody) -> PlanningContext:
             makeup_tasks=body.makeup_tasks,
             offerings=body.course_offerings,
             preference=body.preference,
+            # ⚠️ **硬编码 False**：AI 接口的教学班**全部来自请求体**，
+            # 服务端没有任何独立批准依据，因此这里永远不能声称"来源已核验"。
+            # ⛔ 请求方无法通过任何字段把这一档打开（`source_verified` 不在请求模型里，
+            # 且请求模型是 `extra="forbid"`）。
+            source_verified=False,
         )
     except PlanContextInvalidError as exc:
         _translate(exc)
@@ -295,6 +306,8 @@ def interpret(body: InterpretRequestBody, service: ServiceDep) -> InterpretRespo
             for item in record.ambiguities
         ],
         data_source=record.context.data_source,
+        # ⚠️ 如实报告：AI 接口的来源**从未**经过服务端独立核验。
+        context_source_verified=record.context.source_verified,
         generator_kind=record.generator_kind,
         generator_note=record.generator_note,
         model_id=answer.model_id,

@@ -90,6 +90,12 @@ const planScheduleBlocked = computed(() => scheduleProvenanceBlockReason(userInp
  * - `real`：`POST /api/v1/plan` 成功返回；
  * - `ai_candidate`：AI 调整第二次确认被后端接受；
  * - `mock`：都还没有成功，展示的是 Mock 演示方案。
+ *
+ * ⚠️ **本轮澄清（F-07）**：这里的 `real` 只表示"**真实 HTTP 请求成功**"，
+ * ⛔ **不**表示"使用了已核验的真实教务数据"。后端的来源可信性由
+ * `APP_TRUST_ANCHOR_PATH` 批准锚点决定，缺锚点时会直接 503。
+ * 虽然 503 时这里回落到 `mock`，界面仍必须区分这两件事，
+ * 因此下面额外给出 `usesVerifiedSource` 与对应文案。
  */
 const planResultMode = computed<'mock' | 'real' | 'ai_candidate'>(() => {
   if (aiAdoptedPlan.value !== null) {
@@ -100,6 +106,15 @@ const planResultMode = computed<'mock' | 'real' | 'ai_candidate'>(() => {
   }
   return 'mock'
 })
+
+/**
+ * 这次真实响应是否**同时**有服务端独立核验标记。
+ *
+ * ⚠️ 当前 `POST /api/v1/plan` 的响应里**没有**来源核验字段
+ * （见 `docs/e2e/READINESS_DECISION_NOTES.md`：真实响应不带 `X-Data-Source`），
+ * 因此这里恒为 `false`。界面据此⛔ 不得宣称"已核验真实教务数据"。
+ */
+const usesVerifiedSource = computed<boolean>(() => false)
 
 /** 解释入口用的二分模式（解释面板目前只区分 Mock / Real）。 */
 const explanationPlanMode = computed<'mock' | 'real'>(() =>
@@ -119,10 +134,25 @@ const planResultLabel = computed(() => {
     case 'ai_candidate':
       return 'AI 候选方案（后端确认采用）'
     case 'real':
-      return 'Real Planning 结果'
+      return usesVerifiedSource.value ? 'Real Planning 结果（已核验来源）' : 'Real Planning 结果'
     default:
       return 'Mock 演示方案'
   }
+})
+
+/**
+ * "真实 HTTP 请求成功"与"使用了已核验真实教务数据"的区分说明。
+ *
+ * ⛔ 只要没有服务端核验标记，就必须把这句话显示出来。
+ */
+const planResultProvenanceNote = computed(() => {
+  if (planResultMode.value !== 'real') {
+    return null
+  }
+  return usesVerifiedSource.value
+    ? '本次真实规划请求所依据的课程数据来源已由服务端独立核验。'
+    : '本次真实规划请求**成功**，但这只说明后端可用；当前没有任何服务端核验标记，'
+      + '⛔ 不能据此认为使用的是已核验真实教务数据。'
 })
 
 const courseNameById = computed<Record<string, string>>(() => {
@@ -481,6 +511,9 @@ onMounted(() => {
           </template>
           <template v-else-if="planResultMode === 'real'">
             <strong>规划结果</strong>由 <code class="mono">POST /api/v1/plan</code> 返回（Real）；
+            <template v-if="planResultProvenanceNote">
+              <strong>{{ planResultProvenanceNote }}</strong>
+            </template>
           </template>
           <template v-else>
             <strong>规划结果</strong>当前同样来自上述 Mock 演示通道；尚未提交 Real Planning。

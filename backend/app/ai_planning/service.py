@@ -831,8 +831,14 @@ def _risks_for(
         change.from_class is None for change in candidate.changes
     ):
         risks.append("候选只包含新增教学班，未改动任何已选班次。")
-    if context.data_source != "real":
-        risks.append(f"本次上下文的教学班数据来源为 {context.data_source}，不代表真实教务开课。")
+    if not context.source_verified:
+        # ⚠️ 只要**没有**服务端独立批准依据，就**必须**带这条风险提示。
+        # 判据是 `source_verified`，⛔ 不是 `data_source == "real"`：
+        # 后者是数据里的自述字段，请求方可以自己写（这正是被修掉的缺口 F-05）。
+        risks.append(
+            f"本次上下文的教学班数据来源为 {context.data_source}，"
+            "且**未经服务端独立核验**，不代表真实教务开课。"
+        )
     return tuple(risks)
 
 

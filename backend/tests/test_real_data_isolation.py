@@ -75,39 +75,110 @@ def test_catalog_without_verification_evidence_is_rejected(tmp_path: Path) -> No
     assert "not_verified" in {item.code for item in inspection.rejections}
 
 
-def test_catalog_verification_is_a_self_declared_boolean(tmp_path: Path) -> None:
-    """**已确认**：`verification.verified` 只做类型检查，不由证据推导。
+def test_self_declared_verified_catalog_is_rejected_without_anchor(tmp_path: Path) -> None:
+    """**F-03 修复后的回归**：自述 `verified=true` ≠ 已核验。
 
-    ⛔ 这不是本测试要修的东西，而是要把"它是自述布尔"写成可执行事实：
-    任意非空文本都能通过，因此**不能**把 `verified=true` 当作技术证明。
+    修复前：任意非空 `evidence` 文本就能让版本进入可选列表。
+    修复后：**没有带外批准锚点**时，条目一律以 `provenance_not_verified` 拒绝。
+
+    ⛔ 本测试**必须**断言"拒绝"——它曾经是 `test_KNOWN_GAP_...` 式的
+    "断言不安全行为是正确的"，本轮已按要求改写为**必须拒绝绕过**的回归测试。
     """
 
     from app.curriculum.catalog import load_curriculum_catalog
 
     payload = catalog_payload()
     for entry in payload["versions"]:
-        entry["verification"] = {"verified": True, "evidence": " " * 0 or "任意非空文本即可"}
+        entry["verification"] = {"verified": True, "evidence": "任意非空文本即可"}
     write_catalog(tmp_path, payload, name="catalog.json")
 
-    inspection = load_curriculum_catalog(tmp_path).inspection
-    assert len(inspection.selectable) == 2, (
-        "现状：任意非空 evidence 即可让版本进入可选列表 —— "
-        "这正是已知缺口 F-03，修复需要带摘要的核验记录模型（需人工批准）"
-    )
+    inspection = load_curriculum_catalog(tmp_path, approved_versions=frozenset()).inspection
+
+    assert inspection.selectable == (), "⛔ 没有独立批准依据的版本不得进入可选列表"
+    assert inspection.entries == ()
+    assert "provenance_not_verified" in {item.code for item in inspection.rejections}
+
+
+def test_declared_verified_catalog_is_rejected_when_anchor_lacks_the_version(
+    tmp_path: Path,
+) -> None:
+    """锚点里批准的是**另一个** version_id ⇒ 本版本仍不可选（身份绑定）。"""
+
+    from app.curriculum.catalog import load_curriculum_catalog
+
+    payload = catalog_payload()
+    for entry in payload["versions"]:
+        entry["verification"] = {"verified": True, "evidence": "自述依据"}
+    write_catalog(tmp_path, payload, name="catalog.json")
+
+    inspection = load_curriculum_catalog(
+        tmp_path, approved_versions=frozenset({"some-other-version"}),
+    ).inspection
+
+    assert inspection.selectable == ()
+    assert "provenance_not_verified" in {item.code for item in inspection.rejections}
+
+
+def test_anchor_approved_version_becomes_selectable(tmp_path: Path) -> None:
+    """锚点批准了该 version_id ⇒ 才可能可选（证明这道门不是"一律拒绝"）。"""
+
+    from app.curriculum.catalog import load_curriculum_catalog
+
+    payload = catalog_payload()
+    for entry in payload["versions"]:
+        entry["verification"] = {"verified": True, "evidence": "自述依据"}
+    write_catalog(tmp_path, payload, name="catalog.json")
+
+    ids = {entry["version_id"] for entry in payload["versions"]}
+    inspection = load_curriculum_catalog(tmp_path, approved_versions=ids).inspection
+
+    assert len(inspection.selectable) == len(ids)
+    assert inspection.rejections == ()
+
+
+def test_personal_catalog_runtime_requires_an_anchor(tmp_path: Path) -> None:
+    """production 目录装载路径（F-03）没有锚点 ⇒ fail closed。"""
+
+    from app.services.personal_runtime import load_personal_catalog
+
+    payload = catalog_payload()
+    for entry in payload["versions"]:
+        entry["verification"] = {"verified": True, "evidence": "自述依据"}
+    write_catalog(tmp_path, payload, name="catalog.json")
+
+    # 有目录、没有锚点 ⇒ 不放出任何版本
+    without_anchor = load_personal_catalog({"APP_PERSONAL_CATALOG_DIR": str(tmp_path)})
+    assert without_anchor.catalog is None
+    assert without_anchor.reason == "provenance_not_verified"
+
+    # 有锚点但没有 curriculum_catalog 批准记录 ⇒ 同样拒绝
+    anchor_path = _write_anchor(tmp_path / "anchor.json", approvals=[])
+    still_none = load_personal_catalog({
+        "APP_PERSONAL_CATALOG_DIR": str(tmp_path),
+        "APP_TRUST_ANCHOR_PATH": str(anchor_path),
+    })
+    assert still_none.catalog is None
+    assert still_none.reason == "catalog_provenance_empty"
 
 
 # --------------------------------------------------------------------------- #
-# 已确认的绕过路径：显式写成断言，⛔ 不掩盖
+# 已确认的绕过路径：**修复后必须被拒绝**（不再是"断言缺口存在"）
 # --------------------------------------------------------------------------- #
 
 
-def test_KNOWN_GAP_real_label_survives_without_mock_marker(tmp_path: Path) -> None:
-    """**已知缺口 F-02**：只避开字面量 `mock://`，合成数据就能被标成 real。
+def test_synthetic_case_cannot_be_labelled_real_by_avoiding_mock_marker(
+    tmp_path: Path,
+) -> None:
+    """**F-02 修复后的回归**：只避开字面量 `mock://` 不再够用。
 
-    守卫只做子串扫描；文档使用的来源标签（如 `verified-source://…`）
-    不含 `mock://`，因此整份**合成** case 会被接受为 `data_source=real`。
-    ⛔ 本测试断言**当前行为**，用于证明缺口真实存在，**不代表它是可接受的**。
+    ⚠️ 说明本测试覆盖的范围：`load_curriculum_case` **本身**仍然只做
+    `mock://` 子串扫描（那是 loader 的声明侧守卫，⛔ 本轮未改它的契约）。
+    **真正的拒绝发生在运行时装配门**：`build_curriculum_provider` 现在要求
+    case 文件的 SHA-256 出现在带外批准锚点里。因此这里断言的是
+    **装配门必须拒绝**——那才是数据进入生产链路的入口。
     """
+
+    from app.services import planning_runtime
 
     case = _minimal_case(
         sources=("verified-source://example/old", "verified-source://example/new",
@@ -117,24 +188,39 @@ def test_KNOWN_GAP_real_label_survives_without_mock_marker(tmp_path: Path) -> No
     path = tmp_path / "case.json"
     path.write_text(json.dumps(case, ensure_ascii=False), encoding="utf-8")
 
-    loaded = load_curriculum_case(path)
+    # ① 没有锚点 ⇒ 拒绝装配（⛔ 不再"因为没写 mock:// 就放行"）
+    with pytest.raises(planning_runtime._RuntimeSourceUnavailable):
+        planning_runtime.build_curriculum_provider(str(path))
 
-    assert loaded.data_source is DataSource.REAL, (
-        "现状：不含 `mock://` 的合成来源被接受为 real（缺口 F-02）。"
-        "修复方向：用「来源等价性 / 摘要绑定」替代子串启发式（需人工批准）。"
-    )
-    # ⛔ 但它仍然是**合成**数据：内容里没有任何学校核验痕迹
-    assert "verified-source://" in loaded.new.source_id
+    # ② 有锚点但摘要不符（内容被改过）⇒ 仍然拒绝。
+    #    ⚠️ 锚点身份必须与该 case 自身声明一致（否则会先在 "not Case A" 处失败，
+    #    那样就**没有**覆盖到摘要门）。
+    from app.provenance import load_trust_anchor
+
+    anchor_path = _write_anchor(tmp_path / "anchor", approvals=[{
+        "kind": "curriculum_case",
+        "identity": {"target_version_id": "demo-new-2025", "as_of_term": "2025-2"},
+        "artifact_sha256": "f" * 64,  # 与真实文件摘要不符
+        "approver": "教务数据负责人 张三",
+        "authorization": "教务数据交接会议纪要 2026-10-01",
+        "approved_at": "2026-10-01T00:00:00Z",
+    }])
+    anchor = load_trust_anchor({"APP_TRUST_ANCHOR_PATH": str(anchor_path)})
+    # 该 case 不是 Case A ⇒ 会在版本号检查处被拒（同样是 fail closed）。
+    with pytest.raises(planning_runtime._RuntimeSourceUnavailable):
+        planning_runtime.build_curriculum_provider(str(path), anchor=anchor)
 
 
-def test_KNOWN_GAP_ai_context_source_is_caller_declared() -> None:
-    """**已知缺口 F-05**：AI 上下文的 `data_source` 由请求体推导并回显。
+def test_caller_declared_real_ai_context_is_downgraded_not_trusted() -> None:
+    """**F-05 修复后的回归**：请求体自述 real 被降级为 `real_unverified`。
 
-    `unknown`（无教学班）是正确行为；但客户端只要在请求里放教学班，
-    上下文就会按教学班自身的 `data_source` 报 real/ mock —— 这是**声明**而不是证明。
+    ⛔ 本测试**必须**断言降级——它曾经断言"声明即结果"。
     """
 
-    from app.ai_planning.context import build_context
+    from app.ai_planning.context import (
+        CONTEXT_SOURCE_REAL_UNVERIFIED,
+        build_context,
+    )
     from app.models.contracts import CourseOffering, PlanResult, Preference
 
     def offering(source: DataSource) -> CourseOffering:
@@ -166,17 +252,29 @@ def test_KNOWN_GAP_ai_context_source_is_caller_declared() -> None:
     )
     assert mock_only.data_source == "mock"
 
-    # 声明为 real 的教学班 ⇒ 上下文报 real（**声明即结果**，这就是缺口 F-05）
+    # 声明为 real 的教学班 ⇒ **降级**为 real_unverified（F-05 已修）
     declared_real = build_context(
         semester="2026-1", base_plan=plan, makeup_tasks=[],
         offerings=[offering(DataSource.REAL)], preference=Preference(),
     )
-    assert declared_real.data_source == "real"
+    assert declared_real.data_source == CONTEXT_SOURCE_REAL_UNVERIFIED
+    assert declared_real.source_verified is False
 
 
 # --------------------------------------------------------------------------- #
 # 夹具
 # --------------------------------------------------------------------------- #
+
+
+def _write_anchor(path: Path, *, approvals: list[dict]) -> Path:
+    """写一份**测试专用**批准锚点（⛔ 不代表任何真实批准）。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"trust_anchor_version": 1, "approvals": approvals}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _minimal_case(*, sources: tuple[str, str, str], real: bool) -> dict:

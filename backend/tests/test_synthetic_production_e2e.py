@@ -380,7 +380,56 @@ ENVIRONMENT_NAMES = (
     "APP_COURSE_DATA_SQLITE_PATH",
     "APP_COURSE_DATA_SEMESTER",
     "APP_COURSE_DATA_ACCEPTANCE_SHA256",
+    "APP_TRUST_ANCHOR_PATH",
 )
+
+#: 合成夹具的"批准人"标识。
+#:
+#: ⚠️ **必须**避开 `app.provenance` 的自签启发式（`generator`/`mock`/`fixture`/
+#: `test`/`tool` 等子串），否则锚点会被判为"生成工具自签"而整体拒绝。
+#: ⚠️ 这也**不**声称任何真实批准：它只是一个本地夹具标识，
+#: 用来让"合成 production wiring"这条链路能走到**批准门之后**的代码。
+_SYNTHETIC_APPROVER = "本地合成夹具负责人（非真实批准）"
+
+
+def _synthetic_anchor(tmp_path: Path, *, case_path: Path, digest: str) -> Path:
+    """为本测试的合成 artifact 写一份**测试专用**批准锚点。
+
+    ⚠️ 这份锚点**只**用于让"合成 production wiring（LEVEL1）"这条既有链路
+    继续可达：它明确记录自己是合成夹具，⛔ 不代表任何真实人工批准，
+    ⛔ 也不会被任何 production 环境引用（路径只在 monkeypatch 里出现）。
+
+    这同时**证明**新的批准门确实生效：若 `APP_TRUST_ANCHOR_PATH` 不指向
+    一份覆盖这些 artifact 的锚点，runtime 会以 `provenance_not_verified` 拒绝装配。
+    """
+
+    payload = {
+        "trust_anchor_version": 1,
+        "approvals": [
+            {
+                "kind": "curriculum_case",
+                "identity": {
+                    "target_version_id": CASE_TARGET_VERSION_ID,
+                    "as_of_term": AS_OF_TERM,
+                },
+                "artifact_sha256": hashlib.sha256(case_path.read_bytes()).hexdigest(),
+                "approver": _SYNTHETIC_APPROVER,
+                "authorization": "synthetic production wiring test fixture",
+                "approved_at": "2026-10-09T00:00:00Z",
+            },
+            {
+                "kind": "course_data_semester_manifest",
+                "identity": {"semester": SEMESTER, "acceptance_sha256": digest},
+                "artifact_sha256": digest,
+                "approver": _SYNTHETIC_APPROVER,
+                "authorization": "synthetic production wiring test fixture",
+                "approved_at": "2026-10-09T00:00:00Z",
+            },
+        ],
+    }
+    path = tmp_path / "trust-anchor.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 def _configure(
@@ -395,14 +444,18 @@ def _configure(
 
 def _configured(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, str]:
     sqlite_path, digest = _accepted_store(tmp_path)
+    case_path = _write_case(tmp_path)
     _configure(
         monkeypatch,
         {
             "APP_REAL_CASE_A_ENABLED": "1",
-            "APP_CASE_A_CURRICULUM_CASE_PATH": str(_write_case(tmp_path)),
+            "APP_CASE_A_CURRICULUM_CASE_PATH": str(case_path),
             "APP_COURSE_DATA_SQLITE_PATH": str(sqlite_path),
             "APP_COURSE_DATA_SEMESTER": SEMESTER,
             "APP_COURSE_DATA_ACCEPTANCE_SHA256": digest,
+            "APP_TRUST_ANCHOR_PATH": str(
+                _synthetic_anchor(tmp_path, case_path=case_path, digest=digest)
+            ),
         },
     )
     return sqlite_path, digest
@@ -794,14 +847,26 @@ def _configure_with_store(
     sqlite_path: Path,
     digest: str,
 ) -> None:
+    """配置 runtime，并给出覆盖这些合成 artifact 的**测试专用**批准锚点。
+
+    ⚠️ 锚点的目的是让"批准门之后的校验"（计数 / membership / 逐行指纹 /
+    整批 digest）仍然是被测对象：若这里不提供锚点，所有负向用例都会因为
+    `provenance_not_verified` 而在**第一道门**就返回 503，
+    那些更深的防篡改校验就再也不被覆盖了。
+    """
+
+    case_path = _write_case(tmp_path)
     _configure(
         monkeypatch,
         {
             "APP_REAL_CASE_A_ENABLED": "1",
-            "APP_CASE_A_CURRICULUM_CASE_PATH": str(_write_case(tmp_path)),
+            "APP_CASE_A_CURRICULUM_CASE_PATH": str(case_path),
             "APP_COURSE_DATA_SQLITE_PATH": str(sqlite_path),
             "APP_COURSE_DATA_SEMESTER": SEMESTER,
             "APP_COURSE_DATA_ACCEPTANCE_SHA256": digest,
+            "APP_TRUST_ANCHOR_PATH": str(
+                _synthetic_anchor(tmp_path, case_path=case_path, digest=digest)
+            ),
         },
     )
 

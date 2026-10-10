@@ -1186,8 +1186,9 @@ def test_import_writes_the_content_bound_acceptance_plane(store_path: Path) -> N
     assert records[0].canonical_manifest_sha256 == digest
 
     dataset = load_accepted_offerings(
-        store_path, semester=SEMESTER, acceptance_sha256=digest
-    )
+        store_path, semester=SEMESTER, acceptance_sha256=digest,
+            require_approval=False,
+        )
     assert dataset.member_count == 2
     assert [offering.course_id for offering in dataset.offerings] == ["SYN-A", "SYN-B"]
     assert dataset.acceptance.offering_set_sha256 == records[0].offering_set_sha256
@@ -1205,8 +1206,9 @@ def test_accepted_read_requires_both_planes(store_path: Path) -> None:
 
     with pytest.raises(CourseDataStoreError) as missing_provenance:
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=digest
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=digest,
+                require_approval=False,
+            )
     assert "两个平面" in str(missing_provenance.value) or "导入记录" in str(
         missing_provenance.value
     )
@@ -1228,8 +1230,9 @@ def test_accepted_read_requires_the_acceptance_record(store_path: Path) -> None:
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=digest
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=digest,
+                require_approval=False,
+            )
 
 
 @pytest.mark.parametrize(
@@ -1259,8 +1262,9 @@ def test_same_count_content_substitution_is_detected(
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=digest
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=digest,
+                require_approval=False,
+            )
 
 
 def test_deleted_or_extra_member_is_detected(store_path: Path) -> None:
@@ -1277,8 +1281,9 @@ def test_deleted_or_extra_member_is_detected(store_path: Path) -> None:
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=digest
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=digest,
+                require_approval=False,
+            )
 
 
 def test_stale_rows_and_other_semesters_are_never_returned(store_path: Path) -> None:
@@ -1302,8 +1307,9 @@ def test_stale_rows_and_other_semesters_are_never_returned(store_path: Path) -> 
     )
 
     dataset = load_accepted_offerings(
-        store_path, semester=SEMESTER, acceptance_sha256=digest
-    )
+        store_path, semester=SEMESTER, acceptance_sha256=digest,
+            require_approval=False,
+        )
     assert [offering.course_id for offering in dataset.offerings] == ["SYN-A"]
     # 整学期查询仍然能看到陈旧行 ⇒ 两者语义确实不同。
     assert len(load_course_offerings(store_path, SEMESTER)) == 2
@@ -1323,8 +1329,9 @@ def test_later_campus_overwrite_invalidates_the_full_acceptance(store_path: Path
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=digest
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=digest,
+                require_approval=False,
+            )
 
 
 def test_accepted_read_is_scope_parameterized(store_path: Path) -> None:
@@ -1340,14 +1347,16 @@ def test_accepted_read_is_scope_parameterized(store_path: Path) -> None:
         semester=SEMESTER,
         acceptance_sha256=ARTIFACT,
         scope=CAMPUS_SCOPE,
+        require_approval=False,
     )
     assert [offering.course_id for offering in campus_dataset.offerings] == ["SYN-C"]
 
     # ⛔ 同一批字节不能以 full_semester 语义读回。
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=ARTIFACT
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=ARTIFACT,
+                require_approval=False,
+            )
 
 
 def test_reimport_with_different_content_under_one_identity_fails_closed(
@@ -1379,8 +1388,9 @@ def test_reimport_with_different_content_under_one_identity_fails_closed(
     )
 
     first = load_accepted_offerings(
-        store_path, semester=SEMESTER, acceptance_sha256=digest
-    )
+        store_path, semester=SEMESTER, acceptance_sha256=digest,
+            require_approval=False,
+        )
     assert first.member_count == 1
 
     snapshot_b = _full_snapshot(
@@ -1413,8 +1423,9 @@ def test_reimport_with_different_content_under_one_identity_fails_closed(
 
     # 旧 acceptance 仍然是 A 的内容（⛔ 没有被 B 改写）。
     after = load_accepted_offerings(
-        store_path, semester=SEMESTER, acceptance_sha256=digest
-    )
+        store_path, semester=SEMESTER, acceptance_sha256=digest,
+            require_approval=False,
+        )
     assert [offering.course_id for offering in after.offerings] == ["SYN-A"]
     assert after.acceptance.offering_set_sha256 == offering_set_sha256(
         snapshot_a.offerings
@@ -1440,20 +1451,23 @@ def test_identical_reimport_keeps_the_acceptance_readable(store_path: Path) -> N
         )
 
     dataset = load_accepted_offerings(
-        store_path, semester=SEMESTER, acceptance_sha256=digest
-    )
+        store_path, semester=SEMESTER, acceptance_sha256=digest,
+            require_approval=False,
+        )
     assert dataset.member_count == 2
     assert len(load_course_data_provenance(store_path, semester=SEMESTER)) == 1
 
 
 def test_accepted_read_rejects_unreadable_store(store_path: Path) -> None:
     with pytest.raises(CourseDataStoreError):        load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256="not-a-digest"
-        )
+            store_path, semester=SEMESTER, acceptance_sha256="not-a-digest",
+                require_approval=False,
+            )
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester="   ", acceptance_sha256=OTHER_ARTIFACT
+            store_path, semester="   ", acceptance_sha256=OTHER_ARTIFACT,
+            require_approval=False,
         )
 
 
@@ -1469,8 +1483,9 @@ def test_empty_acceptance_is_rejected_by_the_read_path(store_path: Path) -> None
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT,
+                require_approval=False,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1772,8 +1787,9 @@ def test_stored_canonical_manifest_mutation_is_detected_on_read(store_path: Path
 
     with pytest.raises(CourseDataStoreError) as error:
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=digest
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=digest,
+                require_approval=False,
+            )
 
     assert "重算" in str(error.value) or "rewrite" in str(error.value)
 
@@ -1803,8 +1819,9 @@ def test_stored_acceptance_metadata_mutation_is_detected_on_read(store_path: Pat
 
     with pytest.raises(CourseDataStoreError):
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=digest
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=digest,
+                require_approval=False,
+            )
 
 
 def test_stored_manifest_must_be_canonical(store_path: Path) -> None:
@@ -1836,8 +1853,9 @@ def test_stored_manifest_must_be_canonical(store_path: Path) -> None:
     assert pretty != canon
     with pytest.raises(CourseDataStoreError) as error:
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=digest
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=digest,
+                require_approval=False,
+            )
 
     assert "canonical" in str(error.value)
 
@@ -1939,8 +1957,9 @@ def test_full_semester_acceptance_without_manifest_is_not_servable(store_path: P
 
     with pytest.raises(CourseDataStoreError) as error:
         load_accepted_offerings(
-            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT
-        )
+            store_path, semester=SEMESTER, acceptance_sha256=OTHER_ARTIFACT,
+                require_approval=False,
+            )
 
     assert "canonical manifest" in str(error.value)
 
@@ -1954,8 +1973,9 @@ def test_campus_acceptance_is_servable_without_a_manifest(store_path: Path) -> N
     )
 
     dataset = load_accepted_offerings(
-        store_path, semester=SEMESTER, acceptance_sha256=ARTIFACT, scope=CAMPUS_SCOPE
-    )
+        store_path, semester=SEMESTER, acceptance_sha256=ARTIFACT, scope=CAMPUS_SCOPE,
+            require_approval=False,
+        )
 
     assert [offering.course_id for offering in dataset.offerings] == ["SYN-C"]
     assert dataset.acceptance.canonical_manifest_sha256 is None
