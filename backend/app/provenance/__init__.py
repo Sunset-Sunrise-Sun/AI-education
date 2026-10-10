@@ -229,6 +229,31 @@ class ApprovalRecord:
     revoked_by: str | None = None
     revocation_reason: str | None = None
 
+    def __post_init__(self) -> None:
+        """⛔ 规范化 `identity`，保证**手工构造**的记录与文件装载的记录形状一致。
+
+        为什么需要：`verify_approval` 的重复检测依赖 `identity` 是**可哈希**的
+        `tuple[tuple[str, str], ...]`。若允许它保持 `dict`，重复检测会直接抛
+        `TypeError`（而不是给出明确错误码），且"同一对象"的判定会失真。
+        这里把两种入口统一成同一种形状：dict 会被按该 `kind` 的字段顺序规范化。
+        """
+
+        raw = self.identity
+        if isinstance(raw, Mapping):
+            if self.kind not in APPROVAL_KINDS:
+                raise ValueError("provenance: unexpected approval kind")
+            missing = [name for name in _IDENTITY_FIELDS[self.kind] if name not in raw]
+            if missing or set(raw) != set(_IDENTITY_FIELDS[self.kind]):
+                raise ValueError("provenance: identity 字段与该 kind 不符")
+            normalized = tuple(
+                (name, str(raw[name]).strip()) for name in _IDENTITY_FIELDS[self.kind]
+            )
+        elif isinstance(raw, (str, bytes, bytearray)) or not isinstance(raw, Sequence):
+            raise ValueError("provenance: identity 必须是映射或键值序列")
+        else:
+            normalized = tuple((str(name), str(value)) for name, value in raw)
+        object.__setattr__(self, "identity", normalized)
+
     def identity_map(self) -> dict[str, str]:
         return dict(self.identity)
 
@@ -363,6 +388,38 @@ def load_trust_anchor(environment: Mapping[str, str] | None = None) -> TrustAnch
     return TrustAnchor(path=str(path), approvals=records)
 
 
+#: 重复批准对象的**统一**说明与**统一**检查。
+#:
+#: ⚠️ 装载期（`_require_unique_objects`）与校验期（`verify_approval`）使用
+#: **同一个**函数与**同一句话**，因此"任何重复记录 ⇒ `approval_conflict`"
+#: 在两个入口上口径完全一致，⛔ 不依赖调用方走了哪条路径。
+_APPROVAL_OBJECT_KEY = tuple[str, tuple[tuple[str, str], ...], str]
+
+_DUPLICATE_OBJECT_MESSAGE: Final[str] = (
+    "批准对象（kind + identity + artifact_sha256）出现多条记录；"
+    "⛔ 语义不唯一，拒绝整个相关批准集合。请只保留**一条**记录："
+    "撤销与重新审核都应改这**同一条**记录，⛔ 不要新增重复记录。"
+)
+
+
+def first_duplicate_object(
+    records: Sequence[ApprovalRecord],
+) -> _APPROVAL_OBJECT_KEY | None:
+    """返回**第一个**重复出现的批准对象键；没有重复则返回 `None`。
+
+    ⛔ 不检测"哪一条更可信"：只要同一对象出现两次，就说明**语义不唯一**，
+    必须整体拒绝，而不是挑一条。
+    """
+
+    seen: set[_APPROVAL_OBJECT_KEY] = set()
+    for record in records:
+        key = record.object_key()
+        if key in seen:
+            return key
+        seen.add(key)
+    return None
+
+
 def _require_unique_objects(records: tuple[ApprovalRecord, ...]) -> None:
     """⛔ **同一批准对象只允许一条记录**（`kind` + `identity` + `artifact_sha256`）。
 
@@ -380,17 +437,10 @@ def _require_unique_objects(records: tuple[ApprovalRecord, ...]) -> None:
     错误码用 `approval_conflict`（语义精确：这是**批准冲突**，不是格式错误）。
     """
 
-    seen: set[tuple[str, tuple[tuple[str, str], ...], str]] = set()
-    for record in records:
-        key = record.object_key()
-        if key in seen:
-            raise TrustAnchorUnavailable(
-                ProvenanceReason.APPROVAL_CONFLICT,
-                "批准锚点里同一批准对象（kind + identity + artifact_sha256）出现多条记录；"
-                "⛔ 语义不唯一，拒绝整个锚点。请只保留**一条**记录："
-                "撤销与重新审核都应改这**同一条**记录，⛔ 不要新增重复记录。",
-            )
-        seen.add(key)
+    if first_duplicate_object(records) is not None:
+        raise TrustAnchorUnavailable(
+            ProvenanceReason.APPROVAL_CONFLICT, _DUPLICATE_OBJECT_MESSAGE,
+        )
 
 
 def _record(item: object) -> ApprovalRecord:
@@ -530,6 +580,16 @@ def verify_approval(
 ) -> ProvenanceCheck:
     """按 kind + identity + 摘要校验是否已获独立批准。
 
+    ⚠️ **统一检查重复批准对象**：本函数第一步就检查**整个** `anchor.approvals`
+    里是否有重复的 `(kind, identity, artifact_sha256)`。只要发现重复，
+    ⛔ 立即返回 `approval_conflict`，⛔ 不进入任何"按身份/摘要筛选"的逻辑。
+
+    为什么必须在最前面：修复前本函数先筛出"未撤销"的记录再挑一条放行，
+    因此"同一对象有两条记录"是**可以被绕过**的。现在重复检测与
+    `load_trust_anchor()` 使用**同一个** `first_duplicate_object()`，
+    所以无论调用方是把锚点从文件装载、还是**手工构造** `TrustAnchor` 传进来，
+    任何重复记录都得到同一个错误码，⛔ 没有"走哪条路径就宽松一点"的余地。
+
     ⛔ 只返回结果、不抛异常（除锚点本身不可用）；调用方决定是 raise 还是记录。
     ⛔ `now` 仅用于测试注入（ISO-8601 字符串，字典序比较）。
     """
@@ -540,6 +600,13 @@ def verify_approval(
         loaded = anchor if anchor is not None else load_trust_anchor(environment)
     except TrustAnchorUnavailable as exc:
         return ProvenanceCheck(verified=False, reason=exc.reason, message=exc.message)
+
+    # ---- 统一重复检查（必须先于任何筛选）------------------------------ #
+    if first_duplicate_object(loaded.approvals) is not None:
+        return ProvenanceCheck(
+            verified=False, reason=ProvenanceReason.APPROVAL_CONFLICT,
+            message=_DUPLICATE_OBJECT_MESSAGE,
+        )
 
     if kind not in APPROVAL_KINDS:
         return ProvenanceCheck(

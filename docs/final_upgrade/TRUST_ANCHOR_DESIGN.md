@@ -113,6 +113,11 @@
 ⛔ 修复前的实现会"挑出未撤销的那条放行"，因此撤销可被遗留记录绕过；
 修复后不留任何"挑一条"的空间。**撤销与重新审核都改同一条记录**，
 所以审计链天然完整，⛔ 不需要、也⛔ 不允许审批版本系统。
+
+**重复检查是统一的**：`load_trust_anchor()` 与 `verify_approval()` **第一步**
+都调用同一个 `first_duplicate_object()`，因此"任何重复记录 ⇒ `approval_conflict`"
+在两个入口上口径一致，⛔ 不依赖调用方走了哪条路径；
+且重复检查覆盖**整个批准集合**（重复发生在别的对象上也一样拒绝）。
 详见 `APPROVAL_WORKFLOW_DESIGN.md` §2.2–§2.3 与 `APPROVAL_OPERATING_PROCEDURE.md` §4.2。
 
 **受支持的 kind 与身份字段**

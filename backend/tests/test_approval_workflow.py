@@ -606,56 +606,227 @@ def test_review_5b_independent_objects_verify_independently(tmp_path: Path) -> N
     assert other.verified is True
 
 
-def test_review_conflict_is_also_caught_on_a_hand_built_anchor(tmp_path: Path) -> None:
-    """纵深防御：即使调用方**手工构造** `TrustAnchor` 绕过装载期检查，
+REVOCATION_FIELDS = {
+    "revoked": True,
+    "revoked_at": "2026-10-11T00:00:00Z",
+    "revoked_by": FIXTURE_APPROVER,
+    "revocation_reason": "材料被替换",
+}
+EXPIRY_FIELDS = {"expires_at": "2020-01-01T00:00:00Z"}
 
-    `verify_approval` 也绝不挑一条放行 —— 撤销优先、冲突即拒绝。
-    （装载期已拦下这类锚点；这里锁定第二层行为，避免以后被"优化"掉。）
-    """
+#: 每种"同一对象出现两条记录"的形状，都应得到 `approval_conflict`。
+_DUPLICATE_SHAPES: list[tuple[str, list[dict]]] = [
+    ("live+live", [{}, {}]),
+    ("revoked+revoked", [REVOCATION_FIELDS, REVOCATION_FIELDS]),
+    ("expired+expired", [EXPIRY_FIELDS, EXPIRY_FIELDS]),
+    ("revoked+live", [REVOCATION_FIELDS, {}]),
+    ("expired+live", [EXPIRY_FIELDS, {}]),
+    ("revoked+expired", [REVOCATION_FIELDS, EXPIRY_FIELDS]),
+]
+
+
+def _clone(overrides: dict) -> dict:
+    """把撤销 / 过期字段展开成一份独立的 overrides（避免共享同一 dict）。"""
+
+    return dict(overrides)
+
+
+def _build_records(*, digest: str, shapes: list[dict], identity: dict | None = None) -> list[dict]:
+    """按形状列表构造多条**同一对象**的记录。"""
+
+    base_identity = dict(IDENTITY if identity is None else identity)
+    records: list[dict] = []
+    for shape in shapes:
+        overrides: dict = {"identity": dict(base_identity)}
+        overrides.update(_clone(shape))
+        records.append(_record(digest, **overrides))
+    return records
+
+
+def _hand_built_anchor(records: list[dict]):
+    """手工构造 `TrustAnchor`，用于**绕过装载期**单独验证 `verify_approval`。"""
 
     from app.provenance import ApprovalRecord, TrustAnchor
 
-    def _record_obj(**overrides: object) -> ApprovalRecord:
-        base: dict = {
-            "kind": APPROVAL_KIND_CURRICULUM_CASE,
-            "identity": tuple(sorted(IDENTITY.items())),
-            "artifact_sha256": "e" * 64,
-            "approver": FIXTURE_APPROVER,
-            "authorization": FIXTURE_AUTHORIZATION,
-            "approved_at": "2026-10-10T00:00:00Z",
-        }
-        base.update(overrides)
-        return ApprovalRecord(**base)  # type: ignore[arg-type]
-
-    revoked = _record_obj(revoked=True, revoked_at="2026-10-11T00:00:00Z",
-                          revoked_by=FIXTURE_APPROVER, revocation_reason="材料被替换")
-
-    # ① 撤销 + 有效（手工构造）
-    conflict = verify_approval(
-        kind=APPROVAL_KIND_CURRICULUM_CASE, identity=dict(IDENTITY),
-        artifact_sha256="e" * 64,
-        anchor=TrustAnchor(path="<hand-built>", approvals=(revoked, _record_obj())),
+    return TrustAnchor(
+        path="<hand-built>",
+        approvals=tuple(
+            ApprovalRecord(
+                kind=item["kind"],
+                identity=item["identity"],
+                artifact_sha256=item["artifact_sha256"],
+                approver=item["approver"],
+                authorization=item["authorization"],
+                approved_at=item["approved_at"],
+                expires_at=item.get("expires_at"),
+                note=item.get("note"),
+                submitter=item.get("submitter"),
+                generator=item.get("generator"),
+                review_evidence_sha256=item.get("review_evidence_sha256"),
+                revoked=item.get("revoked", False),
+                revoked_at=item.get("revoked_at"),
+                revoked_by=item.get("revoked_by"),
+                revocation_reason=item.get("revocation_reason"),
+            )
+            for item in records
+        ),
     )
-    assert conflict.verified is False
-    assert conflict.reason == ProvenanceReason.APPROVAL_CONFLICT
 
-    # ② 两条有效（手工构造）
-    duplicate = verify_approval(
-        kind=APPROVAL_KIND_CURRICULUM_CASE, identity=dict(IDENTITY),
-        artifact_sha256="e" * 64,
-        anchor=TrustAnchor(path="<hand-built>", approvals=(_record_obj(), _record_obj())),
-    )
-    assert duplicate.reason == ProvenanceReason.APPROVAL_CONFLICT
 
-    # ③ 过期 + 有效（手工构造）
-    expired = verify_approval(
-        kind=APPROVAL_KIND_CURRICULUM_CASE, identity=dict(IDENTITY),
-        artifact_sha256="e" * 64,
-        anchor=TrustAnchor(path="<hand-built>", approvals=(
-            _record_obj(expires_at="2020-01-01T00:00:00Z"), _record_obj(),
-        )),
+@pytest.mark.parametrize(("label", "shapes"), _DUPLICATE_SHAPES, ids=[
+    shape[0] for shape in _DUPLICATE_SHAPES
+])
+def test_review_duplicate_objects_are_rejected_at_load(
+    tmp_path: Path, label: str, shapes: list[dict],
+) -> None:
+    """**任何**重复批准对象 ⇒ 装载期即拒绝（`approval_conflict`）。
+
+    覆盖复审要求补充的 **"重复撤销"** 与 **"重复过期"**，
+    以及重复有效、撤销+有效、过期+有效、撤销+过期。
+    """
+
+    artifact = _write_case(tmp_path)
+    digest = sha256_file(artifact)
+
+    assert _write_anchor_or_reject(
+        tmp_path, _build_records(digest=digest, shapes=shapes), name=f"dup-{label}.json",
+    ) == ProvenanceReason.APPROVAL_CONFLICT
+
+
+@pytest.mark.parametrize(("label", "shapes"), _DUPLICATE_SHAPES, ids=[
+    shape[0] for shape in _DUPLICATE_SHAPES
+])
+def test_review_duplicate_objects_are_rejected_by_verify_approval(
+    label: str, shapes: list[dict],
+) -> None:
+    """**统一检查**：`verify_approval()` 自身也拒绝任何重复对象。
+
+    ⚠️ 这是复审要求 ①：重复检测必须在 `verify_approval()` 里**统一**生效，
+    而不是只依赖装载期 —— 否则手工构造（或绕过装载）的 `TrustAnchor` 仍可能被放行。
+    """
+
+    digest = "e" * 64
+    records = _build_records(digest=digest, shapes=shapes)
+
+    result = verify_approval(
+        kind=APPROVAL_KIND_CURRICULUM_CASE,
+        identity=dict(IDENTITY),
+        artifact_sha256=digest,
+        anchor=_hand_built_anchor(records),
     )
-    assert expired.reason == ProvenanceReason.APPROVAL_CONFLICT
+
+    assert result.verified is False, label
+    assert result.reason == ProvenanceReason.APPROVAL_CONFLICT, label
+
+
+@pytest.mark.parametrize(("label", "shapes"), [
+    ("live+live", [{}, {}]),
+    ("revoked+revoked", [REVOCATION_FIELDS, REVOCATION_FIELDS]),
+    ("expired+expired", [EXPIRY_FIELDS, EXPIRY_FIELDS]),
+])
+def test_review_duplicate_on_an_unrelated_object_still_conflicts(
+    label: str, shapes: list[dict],
+) -> None:
+    """重复对象**不在**本次校验的身份上也一样拒绝（检查覆盖整个批准集合）。"""
+
+    other_identity = {"target_version_id": "other-2025", "as_of_term": "2025-2"}
+    digest = "e" * 64
+    records = [
+        _record(digest),  # 本次要校验的对象：唯一、有效
+        *_build_records(digest=digest, shapes=shapes, identity=other_identity),
+    ]
+
+    result = verify_approval(
+        kind=APPROVAL_KIND_CURRICULUM_CASE,
+        identity=dict(IDENTITY),
+        artifact_sha256=digest,
+        anchor=_hand_built_anchor(records),
+    )
+
+    assert result.verified is False, label
+    assert result.reason == ProvenanceReason.APPROVAL_CONFLICT, label
+
+
+def test_review_single_records_of_each_state_are_not_conflicts() -> None:
+    """对照用例：每种状态**各一条**时都不是冲突，且语义各自准确。"""
+
+    digest = "e" * 64
+    expected = [
+        ({}, True, "approved"),
+        (REVOCATION_FIELDS, False, ProvenanceReason.APPROVAL_REVOKED),
+        (EXPIRY_FIELDS, False, ProvenanceReason.APPROVAL_EXPIRED),
+    ]
+    for overrides, verified, reason in expected:
+        anchor = _hand_built_anchor(_build_records(digest=digest, shapes=[overrides]))
+        result = verify_approval(
+            kind=APPROVAL_KIND_CURRICULUM_CASE, identity=dict(IDENTITY),
+            artifact_sha256=digest, anchor=anchor,
+        )
+        assert result.verified is verified, overrides
+        assert result.reason == reason, overrides
+
+
+def test_review_distinct_objects_are_never_conflicts() -> None:
+    """对照用例：不同 identity / 摘要 / kind 的多条记录**不**算重复。"""
+
+    digest = "e" * 64
+    other_identity = {"target_version_id": "other-2025", "as_of_term": "2025-2"}
+    catalog = {
+        "kind": "curriculum_catalog",
+        "identity": {"version_id": "net-2025"},
+        "artifact_sha256": "c" * 64,
+        "approver": FIXTURE_APPROVER,
+        "authorization": FIXTURE_AUTHORIZATION,
+        "approved_at": "2026-10-10T00:00:00Z",
+    }
+    records = [
+        _record(digest),
+        _record(digest, identity=other_identity),
+        _record("d" * 64),
+        catalog,
+        _record("d" * 64, identity=other_identity, **REVOCATION_FIELDS),
+    ]
+
+    result = verify_approval(
+        kind=APPROVAL_KIND_CURRICULUM_CASE, identity=dict(IDENTITY),
+        artifact_sha256=digest, anchor=_hand_built_anchor(records),
+    )
+
+    assert result.verified is True
+    assert result.reason == "approved"
+
+
+def test_review_approval_record_normalizes_a_dict_identity() -> None:
+    """`ApprovalRecord` 必须把 dict 形式的 identity 规范化成可哈希元组。
+
+    ⚠️ 这是统一重复检查的前提：若 identity 保持 dict，
+    重复检测会抛 `TypeError` 而不是给出 `approval_conflict`。
+    """
+
+    from app.provenance import ApprovalRecord
+
+    record = ApprovalRecord(
+        kind=APPROVAL_KIND_CURRICULUM_CASE,
+        identity={"as_of_term": "2025-2", "target_version_id": "net-2025"},
+        artifact_sha256="e" * 64,
+        approver=FIXTURE_APPROVER,
+        authorization=FIXTURE_AUTHORIZATION,
+        approved_at="2026-10-10T00:00:00Z",
+    )
+
+    assert record.identity == (("target_version_id", "net-2025"), ("as_of_term", "2025-2"))
+    assert record.object_key()  # 可哈希
+    assert hash(record.object_key())
+
+    with pytest.raises(ValueError):
+        ApprovalRecord(
+            kind=APPROVAL_KIND_CURRICULUM_CASE,
+            identity={"target_version_id": "net-2025"},  # 缺 as_of_term
+            artifact_sha256="e" * 64,
+            approver=FIXTURE_APPROVER,
+            authorization=FIXTURE_AUTHORIZATION,
+            approved_at="2026-10-10T00:00:00Z",
+        )
 
 
 def test_review_conflict_reason_code_is_registered() -> None:

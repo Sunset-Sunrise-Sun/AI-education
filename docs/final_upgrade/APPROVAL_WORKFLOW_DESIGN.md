@@ -114,12 +114,28 @@ revoked == false ⇒  revoked_at / revoked_by / revocation_reason 必须为 null
 3. 重新审核改了内容时，`artifact_sha256` 已经不同 ⇒ 属于**不同对象**，不会误伤；
 4. ⛔ **不引入审批版本系统**——只有"同一对象唯一记录"这一条最小规则。
 
-**两层 fail-closed**（纵深防御）：
+**两层 fail-closed**（纵深防御，**使用同一个检查函数**）：
 
 | 层 | 位置 | 作用 |
 | --- | --- | --- |
 | ① 装载期 | `load_trust_anchor()` → `_require_unique_objects()` | 同一对象 ≥2 条 ⇒ **整个锚点**拒绝（运维立刻看到） |
-| ② 校验期 | `verify_approval()` | 即使调用方手工构造 `TrustAnchor` 绕过①，也绝不挑一条放行 |
+| ② 校验期 | `verify_approval()` **第一步** | 对**整个** `anchor.approvals` 做同样的重复检查：只要发现重复 ⇒ `approval_conflict`，⛔ **不进入**任何按身份 / 摘要筛选的逻辑 |
+
+**为什么校验期必须也查、而且要放在最前面**：
+
+修复前 `verify_approval()` 是"先按身份和摘要筛出候选，再挑一条有效的"。
+只要还存在"筛选后挑一条"的步骤，重复记录就有被绕过的空间。
+现在两层调用**同一个** `first_duplicate_object()`，因此：
+
+- 无论调用方是把锚点从文件装载，还是**手工构造** `TrustAnchor` 传进来，
+  任何重复记录都得到同一个错误码；
+- 重复检查覆盖**整个批准集合**，因此重复出现在**别的对象**上时也照样拒绝；
+- ⛔ 没有"走哪条路径就宽松一点"的余地。
+
+⚠️ 前提：`ApprovalRecord.identity` 必须是**可哈希**的 `tuple[tuple[str, str], ...]`。
+`ApprovalRecord.__post_init__` 会把 `dict` 形式的 identity 按该 `kind` 的字段顺序
+规范化成元组，保证手工构造与文件装载两种入口形状一致
+（否则重复检测会抛 `TypeError` 而不是给出明确错误码）。
 
 ### 2.3 撤销后如何重新批准（⛔ 不允许自动恢复）
 

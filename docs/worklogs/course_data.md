@@ -3247,3 +3247,15 @@
 - 文档：APPROVAL_WORKFLOW_DESIGN.md §2.2/§2.3/§6.2/§6.3、
   APPROVAL_OPERATING_PROCEDURE.md §4.2/§5.2/§5.3/§6、TRUST_ANCHOR_DESIGN.md §2.2。
 - 使用数据：全合成夹具（⛔ 无真实材料）。真实数据验收保持 BLOCKED。
+
+### 2026-10-10 - PR #74 复审收尾：重复批准对象统一检查（`feature/approval-workflow`）
+- 要求 ①：`verify_approval()` 第一步统一检查重复对象 ⇒ 任何重复返回 `approval_conflict`。
+  实现：新增共用 `first_duplicate_object()`，装载期 `_require_unique_objects()` 与
+  校验期都调用它；`ApprovalRecord.__post_init__` 规范化 identity 为可哈希元组。
+- 要求 ②：补充"重复撤销""重复过期"测试；六种重复形状 × 两个入口参数化断言；
+  另加"重复在无关对象上也拒绝"与三类对照用例。
+- 测试：`tests/test_approval_workflow.py` 56 个参数化实例全绿；
+  后端整体 3319 passed / 2 failed（既有平台差异）/ 2 skipped。
+- 文档：APPROVAL_WORKFLOW_DESIGN.md §2.2（统一检查与前提）、
+  APPROVAL_OPERATING_PROCEDURE.md §4.2、TRUST_ANCHOR_DESIGN.md §2.2。
+- 使用数据：全合成夹具。真实数据验收保持 BLOCKED。
