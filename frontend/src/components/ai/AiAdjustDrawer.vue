@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import CandidateComparePanel from './CandidateComparePanel.vue'
 import IntentConfirmPanel from './IntentConfirmPanel.vue'
+import { describeCapability } from './drawerCapability'
 import type { AiLockedCourse, AiSolveResponse } from '../../api/aiPlanningContract'
 import {
   SOLVE_STATUS_TEXT,
@@ -114,6 +115,21 @@ const statusLine = computed(() => {
     status.api_key_configured,
   )} · live_model_available=${String(status.live_model_available)} · model=${status.model}`
 })
+
+/**
+ * 面向普通用户的**一句话能力状态** + 技术详情（见 `drawerCapability.ts`）。
+ *
+ * ⛔ 只读 `status` 上的布尔与模型名；⛔ 不读取、不拼接、不展示任何密钥内容。
+ */
+const capability = computed(() =>
+  describeCapability(ai.status, { previewEnabled: props.previewEnabled }),
+)
+
+const capabilitySummary = computed(() => capability.value.summary)
+const technicalFacts = computed(() => capability.value.facts)
+
+/** 技术详情默认折叠（用原生 `<details>`，键盘与读屏可直接使用）。 */
+const technicalOpen = ref(false)
 
 /** 后端给的 `blocked_reason` → 面向用户的说明（⛔ 不夸大能力）。 */
 const blockedReasonLabel = computed(() => {
@@ -263,7 +279,7 @@ function startUndo(): void {
     :aria-hidden="!open"
   >
     <header class="ai-drawer__head">
-      <div>
+      <div class="ai-drawer__head-main">
         <h3>AI 调整 · 围绕当前补修方案</h3>
         <p class="ai-drawer__context" data-testid="ai-drawer-context">
           调整对象：<strong>{{ basePlanLabel }}</strong>
@@ -272,9 +288,35 @@ function startUndo(): void {
         </p>
         <p class="ai-drawer__context">
           通道：<strong data-testid="ai-drawer-channel">{{ capabilityLabel }}</strong>
-          <span class="ai-drawer__sep" aria-hidden="true">·</span>
-          <span data-testid="ai-drawer-status">{{ statusLine }}</span>
         </p>
+        <!--
+          面向普通用户的能力状态：一句话说清"现在能不能用、以及为什么"。
+          ⛔ 原始配置字段不再直接铺在头部（375px 下会挤成多行），
+          而是收进下面的"技术详情"，完整保留、可展开、⛔ 不删信息。
+        -->
+        <p class="ai-drawer__capability" data-testid="ai-drawer-status">
+          {{ capabilitySummary }}
+        </p>
+        <details
+          class="ai-drawer__tech"
+          data-testid="ai-drawer-tech"
+          :open="technicalOpen"
+          @toggle="technicalOpen = ($event.target as HTMLDetailsElement).open"
+        >
+          <summary data-testid="ai-drawer-tech-toggle">技术详情（配置与限额）</summary>
+          <p class="ai-drawer__tech-line" data-testid="ai-drawer-tech-raw">{{ statusLine }}</p>
+          <dl class="ai-drawer__tech-list" data-testid="ai-drawer-tech-facts">
+            <template v-for="fact in technicalFacts" :key="fact.label">
+              <dt>{{ fact.label }}</dt>
+              <dd>{{ fact.value }}</dd>
+            </template>
+          </dl>
+          <p class="ai-drawer__tech-note" data-testid="ai-drawer-tech-note">
+            ⛔ 这里只显示"是否已配置"这类事实，不显示密钥内容；
+            ⛔ <code class="mono">live_model_available=true</code> 只说明开关与密钥就绪，
+            <strong>不是</strong>在线鉴权或模型调用成功的证明。
+          </p>
+        </details>
       </div>
       <button
         type="button"

@@ -40,6 +40,7 @@ const casesArg = args.find((item) => item.startsWith('--cases='))?.slice('--case
 
 const caseModule = await import(pathToFileURL(join(import.meta.dirname, casesArg)).href)
 const {
+  demoRehearsalCases,
   disabledCases,
   explanationCases,
   liveBaselineCases,
@@ -178,6 +179,7 @@ async function main() {
     const groups = [
       ['P0 主流程（live）', liveBaselineCases({ baseUrl: liveFrontend.baseUrl })],
       ['联合验收：规则解释入口与面板', explanationCases({ baseUrl: liveFrontend.baseUrl })],
+      ['最终交付：演示剧本彩排', demoRehearsalCases({ baseUrl: liveFrontend.baseUrl })],
       ['联合验收：UX 结构（缺口摘要 / 五阶段 / 支撑数据）', uxStructureCases({ baseUrl: liveFrontend.baseUrl })],
       ['P1 响应式布局', responsiveCases({ baseUrl: liveFrontend.baseUrl })],
       ['P1 异常与并发', resilienceCases({ baseUrl: liveFrontend.baseUrl })],

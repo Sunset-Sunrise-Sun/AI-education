@@ -116,10 +116,18 @@ describe('AI 抽屉：可用状态（三种未启用态）', () => {
     await flushPromises()
 
     expect(wrapper.find('[data-testid="ai-drawer-channel"]').text()).toContain('前端预览')
-    expect(wrapper.find('[data-testid="ai-drawer-status"]').text()).toContain('enabled=true')
-    expect(wrapper.find('[data-testid="ai-drawer-status"]').text()).toContain(
-      'live_model_available=false',
-    )
+    // 头部默认只给**面向用户的一句话状态**（⛔ 不再把原始配置字段直接铺开）
+    const summary = wrapper.find('[data-testid="ai-drawer-status"]').text()
+    expect(summary).toContain('演示模式')
+    expect(summary).not.toContain('api_key_configured')
+    // 原始状态字段必须**完整保留**在可展开的"技术详情"里（⛔ 不删信息）
+    const tech = wrapper.find('[data-testid="ai-drawer-tech"]')
+    expect(tech.exists()).toBe(true)
+    expect(tech.attributes('open')).toBeUndefined()
+    const raw = wrapper.find('[data-testid="ai-drawer-tech-raw"]').text()
+    expect(raw).toContain('enabled=true')
+    expect(raw).toContain('live_model_available=false')
+    expect(raw).toContain('api_key_configured=')
 
     await parseMessage(wrapper)
     const notice = wrapper.find('[data-testid="ai-preview-notice"]')

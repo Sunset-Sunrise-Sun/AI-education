@@ -1175,3 +1175,44 @@ frontend: npm test（9 文件 134 用例）· npm run typecheck（vue-tsc --noEm
   （实测 317 node / 97 python）并拖垮后续运行。现改用真实子进程 PID + `taskkill /T /F` 树级清理，
   运行后残留进程 **0**，单例 19.6s、全量 205.9s。⛔ 未触碰业务逻辑。
 - 详见 `docs/final_upgrade/reports/UX_BROWSER_E2E_FINAL_ACCEPTANCE.md`。
+
+## 最终交付冲刺（2026-10-09，分支 `release/final-upgrade-demo-readiness`）
+
+- 基线：`origin/feature/final-upgrade` = `85152e9`（PR #70 合并提交，已核实其父链含 `ed82794` 与 `01fc7b5`）。
+- **P0 合并后回归（现场实测）**：后端 **3188 passed / 2 failed（既有 Windows+Py3.14 平台差异）/ 2 skipped**；
+  前端 **313 passed**（含新增 10 项）、`vue-tsc` exit 0、`npm run build` exit 0；
+  浏览器 **24 passed / 0 failed**；`QA_STRICT_HEADER_BUTTON=1` 三档 **3 passed**；
+  运行后遗留 `node`/`python`/headless Edge 进程 **0**（未触碰开发者自己的浏览器）。
+- **P1 移动端头部信息密度（观察项 O-1）已修复**：头部改为"一句话能力状态" +
+  可展开的"技术详情（配置与限额）"，**原始字段完整保留**；
+  375px 状态行 **2.8 行 → 2 行**，768/1440px **1.8 行 → 1 行**；
+  五档能力状态（未配置通道/状态未知/前端预览/未启用/无密钥/无在线模型/配置就绪）逐档区分，
+  明写"配置就绪不代表在线调用已经成功"，并有 10 项穷举测试锁定；⛔ 未删任何状态信息、⛔ 不泄露密钥。
+- **P1 依赖安全已清零**：`npm audit` **0 漏洞**。低风险补丁 `source-map-js 1.2.1 → 1.2.2`；
+  `vitest` **3.2.7 → 4.1.11**（依据 advisory 明确"3.x 不再修复"、且 `4.1.11` 为首个含全部修复的版本；
+  升级前已核验 Vite 8.3.1 / Node 24 满足前提，且本项目**零 `vi.spyOn`**，避开 v4 的 mock 语义变更）。
+  升级后前端 313 passed、类型检查与构建通过、浏览器 24/24。
+- **P1 CI**：新增 `.github/workflows/ci.yml`（`contents: read`、零 secret、⛔ 无 audit fix、⛔ 无 auto-merge）
+  与 `docs/final_upgrade/CI_PLAN.md`。**已在 GitHub Actions 真实运行**（Run #37948975531，提交 `af6a5cb`）：
+  前端 Job 与依赖审计 Job **SUCCESS**；后端 Job **FAILURE** —— 原因是**缺少测试依赖 `python-docx`**
+  （只存在于开发机、未写进 `requirements.txt`），Linux+Py3.12 收集阶段 `ModuleNotFoundError: No module named 'docx'`。
+  已判定它为**测试依赖**（`docx_reader.py` 用标准库 zipfile+ElementTree 读 OOXML，不 import docx；
+  只有 2 个测试文件用它构造 .docx），补进 `backend/requirements.txt` 测试依赖段，
+  并在**空白虚拟环境**中自证：`pip install -r requirements.txt` 后全量 pytest **3188/2/2**，与基线一致。
+  ⛔ 未跳过测试、⛔ 未加 continue-on-error。
+  **修复后第 2 次运行（Run #38006322656，提交 `decc84b`）三个 Job 全部 SUCCESS**：
+  Backend pytest / Frontend tests / Dependency audit 均通过；后端日志确认
+  `Collecting python-docx>=1.1 (from -r requirements.txt (line 37))` 且无 `FAILED` 段。
+  ⚠️ 如实说明：该 Job 日志本地读取时被尾部截断，**Linux 上的准确测试计数未取到**
+  （可确证收集成功、跑到 100%、无失败）。
+- **P1 真实 DeepSeek 在线验证：BLOCKED — NEW DEEPSEEK_API_KEY NOT AVAILABLE**
+  （实测四个环境变量全部 unset，未打印任何值、未使用历史旧密钥）。
+  已交付可直接执行的说明 `docs/final_upgrade/DEEPSEEK_LIVE_VERIFICATION.md`（8 条验收标准 + 8 步流程 + 失败处理表）。
+  另：`DEEPSEEK_MODEL=deepseek-flash` 已按官方 *Models & Pricing* 在线核验为**当前有效模型名**（2026-10-09）。
+- **P1 真实数据接入准备**：`docs/final_upgrade/REAL_DATA_READINESS.md`（缺口清单 D1–D5、逐字段说明、
+  五层校验流程、接入指南、合成夹具清单、已知风险）；新增可直接执行的验收脚本
+  `backend/tests/verify_real_data_e2e.py`（合成模式已实测：目录 → 已修记录 → MakeupTask 通，教学班缺失时如实 `no_course_data`）。
+- **P2 演示剧本已彩排并自动化**：新增浏览器用例 `DMO01-demo-script-rehearsal`，按剧本 11 步实测全通；
+  `DEMO_SCRIPT.md` 追加 §7 彩排记录与"哪一步是什么数据"对照表。
+- 修改文件与未验证项详见 `docs/final_upgrade/reports/FINAL_DELIVERY_READINESS_REPORT.md`。
+- ⛔ 未改 `main`、公共 Schema、`docs/interfaces/`、Planner 核心算法；⛔ 未自动合并。

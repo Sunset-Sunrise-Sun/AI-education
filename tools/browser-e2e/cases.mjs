@@ -112,19 +112,24 @@ async function safeText(page, testId) {
 }
 
 /**
- * 收集抽屉里当前**已挂载**的 `ai-*` testid。
+ * 收集当前页面里**已挂载**的 `data-testid`（可按前缀过滤）。
  *
  * ⚠️ 为什么用"已挂载"而不是 `getClientRects()` 的"可见"：
  * 抽屉在窄屏与长内容下会出现内部滚动，滚动容器外的元素 `getClientRects()`
  * 可能为空，但元素确实已经渲染（`textContent` 可读）。
  * 挂载判据更贴近本用例的真实意图，也避免把"渲染完成"误判成"失败"。
  */
-async function attachedAiTestIds(page) {
-  return page.evaluate(() =>
-    [...document.querySelectorAll('[data-testid]')]
+async function attachedTestIds(page, prefix = '') {
+  return page.evaluate((wanted) => {
+    return [...document.querySelectorAll('[data-testid]')]
       .map((node) => node.getAttribute('data-testid'))
-      .filter((id) => (id ?? '').startsWith('ai-')),
-  )
+      .filter((id) => (id ?? '').startsWith(wanted))
+  }, prefix)
+}
+
+/**  drawers 专用：只取 `ai-` 前缀。 */
+async function attachedAiTestIds(page) {
+  return attachedTestIds(page, 'ai-')
 }
 
 /**
@@ -879,7 +884,53 @@ export function responsiveCases({ baseUrl }) {
         const inputBox = await visibleBox(page, 'ai-utterance-input')
         assert(inputBox !== null, '抽屉输入框不可见')
         assert(inputBox.box.width > 40, '抽屉输入框宽度异常')
+
+        // ---- P1 修复：头部只给"一句话能力状态"，原始字段收进可展开的技术详情 ----
+        const capabilityText = await textOf(page, 'ai-drawer-status')
+        assert(capabilityText.length > 0, '抽屉头部没有能力状态摘要')
+        assert(
+          !capabilityText.includes('api_key_configured') &&
+            !capabilityText.includes('live_model_available') &&
+            !capabilityText.includes('enabled='),
+          `头部摘要里仍然直接铺开了原始配置字段：${capabilityText.slice(0, 80)}`,
+        )
+        const capabilityLines = await textLineCount(page, 'ai-drawer-status')
+        assert(
+          capabilityLines.lines <= 3,
+          `能力状态摘要占 ${capabilityLines.lines} 行（${viewport.width}px），信息密度仍然过高`,
+        )
+        const tech = page.locator('[data-testid="ai-drawer-tech"]').first()
+        assertEqual(await tech.count(), 1, '技术详情区域不存在')
+        const techOpen = await tech.evaluate((node) => node.hasAttribute('open'))
+        assert(!techOpen, '技术详情默认应当是折叠的')
+        const toggleText = await textOf(page, 'ai-drawer-tech-toggle')
+        assert(toggleText.length > 0, '技术详情缺少可点的展开标题')
         evidence.push(await shot(page, `R-${viewport.label}-drawer`, 'responsive'))
+        // 展开后原始字段必须**完整出现**（⛔ 不是靠删信息换来的简洁）
+        await page.locator('[data-testid="ai-drawer-tech-toggle"]').first().click()
+        await waitForState(page, 'ai-drawer-tech-facts', { timeout: 15000 })
+        const techFacts = await textOf(page, 'ai-drawer-tech-facts')
+        for (const key of ['api_key_configured', 'live_model_available', 'model', 'base_url']) {
+          assertIncludes(techFacts, key, `技术详情缺少原始字段 ${key}`)
+        }
+        const techRaw = await textOf(page, 'ai-drawer-tech-raw')
+        assertIncludes(techRaw, 'enabled=', '技术详情缺少原始状态行')
+        assert(
+          !/sk-[A-Za-z0-9]{8,}/.test(techFacts) && !/sk-[A-Za-z0-9]{8,}/.test(techRaw),
+          '技术详情里出现了形如密钥的字符串',
+        )
+        notes.push(
+          `能力摘要 ${capabilityLines.lines} 行（${capabilityLines.width}×${capabilityLines.height}px）：` +
+            `${capabilityText.slice(0, 42)}…`,
+        )
+        notes.push('技术详情默认折叠，展开后原始字段齐全且无密钥形态字符串')
+        const overflowAfterExpand = await horizontalOverflow(page)
+        assert(
+          overflowAfterExpand <= 1,
+          `展开技术详情后横向溢出 ${overflowAfterExpand}px（${viewport.width}px）`,
+        )
+        evidence.push(await shot(page, `R-${viewport.label}-drawer-tech`, 'responsive'))
+        await page.locator('[data-testid="ai-drawer-tech-toggle"]').first().click()
 
         await fillAndParse(page, GENEROUS_MESSAGE)
         await confirmIntent(page)
@@ -1436,6 +1487,184 @@ export function uxStructureCases({ baseUrl }) {
               '旧的用户输入 testid 仍可访问（origin-major / semester / target-major）',
               '当前学期课表区块仍存在',
             ],
+            evidence,
+            httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
+          }
+        } finally {
+          await context.close()
+        }
+      },
+    },
+  ]
+}
+
+/* ------------------------------------------------------------------ *
+ * 最终交付：演示剧本彩排（按 DEMO_SCRIPT.md 的 11 步实际走一遍）
+ * ------------------------------------------------------------------ */
+
+/**
+ * 演示剧本的**自动化彩排**。
+ *
+ * 与 `DEMO_SCRIPT.md` 的对应关系（步骤号与脚本 §2 一致）：
+ *
+ * | 步骤 | 剧本环节 | 本用例断言 |
+ * | --- | --- | --- |
+ * | 1 | 进入项目（默认停在补修路径） | 三入口可见、默认视图存在 |
+ * | 2 | 转专业背景 | 转专业分析如实显示目录就绪度（⛔ 不伪造缺口数字） |
+ * | 3 | 补修缺口 | 缺口/任务状态与来源标记可见 |
+ * | 4 | 当前与后续学期规划 | 阅读顺序 5 步 + 当前学期课表 |
+ * | 5 | 课程依据与风险 | 解释入口可点、规则模板标注、风险/未决区存在 |
+ * | 6 | 自然语言提出调整 | AI 调整入口 + 示例 + 当前调整对象卡片 |
+ * | 7 | 确认硬约束 / 软偏好 | 硬约束不可协商、软偏好可协商 |
+ * | 8 | 受控 Planner 求解 | 确认后真实调用 /solve |
+ * | 9 | 对比新增 / 移除 / 换班 / 学分 | 变化摘要五格 |
+ * | 10 | 二次确认采用 | 真实调用 /adopt 且进入已采用 |
+ * | 11 | 临时范围与未解决问题 | process_local_session + 未决事项区 |
+ *
+ * ⛔ 本用例只验证"演示时该看到的东西真的在"，⛔ 不把 Mock/预览数据说成真实结果。
+ */
+export function demoRehearsalCases({ baseUrl }) {
+  return [
+    {
+      id: 'DMO01-demo-script-rehearsal',
+      title: '演示剧本彩排：11 步全部可达，且每步的 Mock/规则模板标注都在',
+      priority: 'P0',
+      phase: 'live',
+      run: async ({ browser }) => {
+        const { context, page, requests } = await openPage(browser)
+        const evidence = []
+        const steps = []
+        try {
+          // ---- 步骤 1：进入项目 ----
+          await gotoHome(page, baseUrl)
+          steps.push('1 进入项目：三入口可见')
+
+          // ---- 步骤 2：转专业背景 ----
+          await switchView(page, 'transfer-analysis')
+          const personalState = await attachedTestIds(page, 'personal-')
+          assert(
+            personalState.length > 0,
+            '转专业分析没有渲染任何 personal-* 状态节点',
+          )
+          const noFakeGap = await page.locator('[data-testid="gap-summary"]').count()
+          const notConfigured = await page
+            .locator('[data-testid="personal-not-configured"]')
+            .first()
+            .isVisible()
+            .catch(() => false)
+          if (notConfigured) {
+            assertEqual(noFakeGap, 0, '没有已核验目录时仍然渲染了缺口摘要（⛔ 不许伪造）')
+            steps.push('2 转专业背景：如实显示"没有已核验版本目录"，⛔ 不给出缺口数字')
+          } else {
+            assert(noFakeGap >= 1, '目录就绪但没有渲染缺口摘要')
+            steps.push('2 转专业背景：缺口摘要已渲染（数字来自后端 status_counts）')
+          }
+
+          // ---- 步骤 3-5：补修路径（缺口 / 规划 / 依据） ----
+          await switchView(page, 'makeup-path')
+          await waitForState(page, 'path-reading-order', { timeout: 20000 })
+          steps.push('3 补修缺口：补修任务与状态来源标记已渲染')
+          const orderSteps = await page.locator('[data-testid="path-reading-order"] li').count()
+          assertEqual(orderSteps, 5, `阅读顺序不是 5 步：${orderSteps}`)
+          await waitForState(page, 'path-current-classes', { timeout: 20000 })
+          steps.push('4 当前与后续学期规划：阅读顺序 5 步 + 当前学期课表可见')
+
+          const explainEntry = page.locator('[data-testid="explanation-open"]').first()
+          assertEqual(await explainEntry.count(), 1, '解释入口不存在')
+          await explainEntry.scrollIntoViewIfNeeded()
+          await explainEntry.click()
+          await waitForState(page, 'explanation-panel', { timeout: 25000 })
+          assertIncludes(
+            await textOf(page, 'explanation-generator'),
+            '规则模板',
+            '解释面板没有标注"规则模板"',
+          )
+          steps.push('5 课程依据与风险：解释面板打开且标注"规则模板（非 AI）"')
+          evidence.push(await shot(page, 'DMO-01-explanation', 'demo'))
+          await scrollAndClick(page, 'explanation-close')
+          await waitForState(page, 'explanation-open', { timeout: 20000 })
+
+          // ---- 步骤 6：自然语言提出调整 ----
+          await switchView(page, 'ai-adjust')
+          await waitForState(page, 'ai-target', { timeout: 20000 })
+          await waitForState(page, 'ai-cta', { timeout: 20000 })
+          const ctaExamples = await page.locator('[data-testid="ai-cta-examples"] button').count()
+          assert(ctaExamples > 0, 'AI 调整入口没有可点示例')
+          steps.push(`6 自然语言提出调整：入口 + ${ctaExamples} 条示例 + 当前调整对象卡片`)
+          await page.locator('[data-testid="ai-view-open-drawer"]').first().click()
+          await waitForState(page, 'ai-drawer')
+
+          // ---- 步骤 7：确认硬约束 / 软偏好 ----
+          await fillAndParse(page, `数据结构必须保留，尽量别在周五上课，${CREDIT_SUFFIX}`)
+          await waitForDraftPanel(page)
+          assertIncludes(
+            await textOf(page, 'ai-hard-constraints'),
+            '不可协商',
+            '硬约束区没有"不可协商"',
+          )
+          assertIncludes(
+            await textOf(page, 'ai-soft-preferences'),
+            '可协商',
+            '软偏好区没有"可协商"',
+          )
+          steps.push('7 确认硬约束/软偏好：分区标注正确')
+          evidence.push(await shot(page, 'DMO-02-intent', 'demo'))
+
+          // ---- 步骤 8：受控 Planner 求解 ----
+          const solveBefore = requestsFor(requests, AI_PATHS.solve).length
+          assertEqual(solveBefore, 0, '第一次确认前就调用了 /solve')
+          await confirmIntent(page)
+          assert(
+            requestsFor(requests, AI_PATHS.solve).length === solveBefore + 1,
+            '确认后没有恰好调用一次 /solve',
+          )
+          await waitForCandidatePanel(page)
+          steps.push('8 受控 Planner 求解：确认后真实调用一次 /solve')
+          assertEqual(
+            await textOf(page, 'ai-solve-status'),
+            'candidate_ready',
+            '演示路径没有拿到 candidate_ready',
+          )
+
+          // ---- 步骤 9：对比变化 + 风险 / 未决事项（演示脚本要求在这里讲边界） ----
+          await waitForState(page, 'change-summary', { timeout: 20000 })
+          const summary = await textOf(page, 'change-summary')
+          for (const label of ['新增', '移除', '换班', '保持', '学分']) {
+            assertIncludes(summary, label, `变化摘要缺少「${label}」`)
+          }
+          // ⚠️ 风险 / 未决区在**候选态**可见；采用之后候选面板会被替换掉，
+          // 所以必须在第二次确认**之前**检查（这是演示脚本讲解边界的时机）。
+          const riskText = await textOf(page, 'ai-solve-risks')
+          const unresolvedText = await textOf(page, 'ai-solve-unresolved')
+          assert(
+            riskText.length > 0 && unresolvedText.length > 0,
+            '候选态没有同时显示风险与未决事项（演示无法说明边界）',
+          )
+          steps.push(
+            `9 对比新增/移除/换班/学分：五格齐全；候选态风险 ${riskText.length} 字、未决 ${unresolvedText.length} 字`,
+          )
+          evidence.push(await shot(page, 'DMO-03-candidate', 'demo'))
+
+          // ---- 步骤 10：二次确认采用 ----
+          await page.locator('[data-testid="ai-adopt-candidate"]').first().click()
+          await waitForState(page, 'ai-adopted', { timeout: 25000 })
+          assert(
+            requestsFor(requests, AI_PATHS.adopt).length >= 1,
+            '采用时没有调用 /adopt',
+          )
+          steps.push('10 二次确认采用：真实调用 /adopt 并进入已采用')
+
+          // ---- 步骤 11：临时采用范围 ----
+          const scope = await textOf(page, 'ai-adopted-scope')
+          assertIncludes(scope, 'process_local_session', '采用范围没有说明是进程内会话')
+          assertIncludes(scope, '未持久化', '采用范围没有说明未持久化')
+          steps.push(
+            `11 临时采用范围：process_local_session，并说明未持久化、重启失效（${scope.length} 字）`,
+          )
+          evidence.push(await shot(page, 'DMO-04-adopted', 'demo'))
+
+          return {
+            notes: steps,
             evidence,
             httpRequests: apiRequests(requests).map((i) => `${i.method} ${new URL(i.url).pathname}`),
           }

@@ -2080,3 +2080,38 @@
 - 对其他模块影响：无（业务逻辑零改动）。
 - 下一步：合并后在 `feature/final-upgrade` 复跑 23 项冒烟；接入真实数据后补跑个人规划成功路径；
   用新密钥做真实 DeepSeek 在线验证。
+
+### 2026-10-09 - 最终交付冲刺（分支 `release/final-upgrade-demo-readiness`）
+- 本次目标：在 PR #70 合并后的 `feature/final-upgrade` 上做最后一轮可执行的产品验收、问题修复、
+  安全加固与比赛演示准备（P0 回归 / P1 头部密度 / P1 依赖安全 / P1 CI / P1 DeepSeek / P1 真实数据 / P2 剧本彩排）。
+- 已完成：
+  - 建独立 worktree 与分支 `release/final-upgrade-demo-readiness`（基于 `85152e9`），未改任何原始分支。
+  - P0 现场基线：后端 3188/2/2（失败集合与历史基线一致）、前端 303 → 313 passed、
+    `vue-tsc` exit 0、`build` exit 0、浏览器 23 → **24 passed**、严格开关三档 3 passed、残留进程 0。
+  - P1 头部密度：新增 `frontend/src/components/ai/drawerCapability.ts`（纯函数，便于穷举）+
+    抽屉头部改为"人话摘要 + 可展开技术详情" + `base.css` 样式 + 10 项穷举测试；
+    375px 状态行 2.8 行 → 2 行，768/1440px 1.8 行 → 1 行；原始字段完整保留在折叠区。
+  - P1 依赖安全：`npm audit` 4 项 → **0 项**；`source-map-js` 补丁；`vitest 3.2.7 → 4.1.11`
+    （依据 advisory "3.x 不再修复"+ `4.1.11` 为首个含全部修复版本；升级前核验 Vite 8.3.1/Node 24 前提、
+    并确认本项目零 `vi.spyOn` 以规避 v4 mock 语义变更）；升级后全部回归通过。
+  - P1 CI：新增 `.github/workflows/ci.yml`（只读权限、零 secret、审计只报告、无 auto-merge）与 `CI_PLAN.md`。
+  - P1 DeepSeek：四个环境变量实测全 unset → 标记 `BLOCKED — NEW DEEPSEEK_API_KEY NOT AVAILABLE`；
+    交付 `DEEPSEEK_LIVE_VERIFICATION.md`；并把 `deepseek-flash` 按官方文档在线核验为当前有效模型名。
+  - P1 真实数据：`REAL_DATA_READINESS.md`（含 D1–D5 缺口、逐字段说明、五层校验、接入指南、风险）
+    + 新增 `backend/tests/verify_real_data_e2e.py`（合成模式已实测通过；教学班缺失时如实 `no_course_data`）。
+  - P2 剧本：新增浏览器用例 `DMO01-demo-script-rehearsal`（11 步全通，已纳入回归）；
+    `DEMO_SCRIPT.md` 追加彩排记录与数据来源对照。
+  - 过程中修正两处自家问题：`verify_real_data_e2e.py` 合成模式必须写到后端正在用的目录；
+    演示彩排用例原先在"已采用"后读取候选态才有的风险/未决节点（改为在候选态检查）。
+- 修改文件：见 `docs/final_upgrade/reports/FINAL_DELIVERY_READINESS_REPORT.md` §7。
+  ⛔ 未改 `main`、`schemas/**`、`docs/interfaces/**`、`backend/app/planner/**`、curriculum/course_data 生产代码。
+- 测试：见上；**未出现新回归**。
+- 使用数据：Mock（人工构造演示数据）+ 注入式测试替身模型；Planner 为真实冻结算法。
+- 已知问题：375px 抽屉头部总高 137 → 164px（摘要多一行 + 折叠标题一行），仍远低于 50% 阈值；
+  依赖漏洞已清零但 `npm audit` 只是时点快照，建议留在 CI 持续观测。
+- 需要人工确认：① 是否立项开发 DOCX → `catalog.json` 生产工具（最大缺口）；
+  ② 是否把"合成数据不得进生产库"下沉为运行时不变式；③ CI 是否作为合并门槛；
+  ④ 后端 2 项平台差异失败是否单独立 issue。
+- 对其他模块影响：无业务规则改动；前端仅展示层，另有依赖版本升级（vitest major）。
+- 下一步：拿到新密钥后执行 `DEEPSEEK_LIVE_VERIFICATION.md`；拿到已核验数据后执行
+  `python -m tests.verify_real_data_e2e --mode verified`；合并后复跑 24 项浏览器回归。
