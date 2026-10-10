@@ -221,7 +221,7 @@ def build_textonly_pdf(text: str = "No table here") -> bytes:
 
 def build_two_row_header_pdf(
     header_rows: list[list[str | None]], data_rows: list[list[str | None]], *,
-    column_count: int = 6,
+    column_count: int = 6, extra_pages: int = 0,
 ) -> bytes:
     """生成"**双行表头 + 合并单元格 + 中文表头**"的表格 PDF（真实培养方案的常见形态）。
 

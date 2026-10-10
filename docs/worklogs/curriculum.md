@@ -373,3 +373,20 @@
 测试：后端 3435 passed / 2 failed（既有 Windows+Py3.14 平台差异）/ 2 skipped，
 其中 PDF 相关 72 例；前端 341 passed；vue-tsc 0；build 0；浏览器 E2E 25 passed。
 使用数据：**合成 PDF**；真实 PDF 验收仍 BLOCKED（见 PDF_IMPORT_REAL_ACCEPTANCE.md）。
+
+### 2026-10-10（第 3 轮）两份真实 PDF 实际验收完成
+材料：`D:\webDownload\` 下两份 PDF（磁盘文件名是 percent-encoded，故此前按精确名搜索未命中）。
+- 页数**实测 8 / 9**，与组长所述一致；逐页表格数量/列数/行数/逐行表头原文全部记录。
+- 解析结果：遥感 **84 行**、网络空间安全 **89 行**；课程编码/名称/学分/开课学期 **零缺失**；
+  文档级问题 **0**；`source_record` **100% 唯一**；汇总表与实践附表**零重复导入**。
+- 未识别 **8 行**（两份合计）全部是**课程模块小节标题**，进入待确认清单，⛔ 未丢弃、⛔ 未造编号。
+- 发现并修复**两个新的真实缺陷**：
+  ① 一页多表时 `source_record` 撞车（第 6 页 4 张表）⇒ 加入表序号
+     `page:{n}!table:{t}!row:{i}`；
+  ② 页限定的 `continue` 放在 `find_tables()` 之前 ⇒ 未声明页的表格**静默消失**（已修 + 负向回归）。
+- 新增 `pages` 页限定（同一 `table_index` 在不同页是不同的表；重叠即拒绝、不相交允许）。
+- 重复课程号（遥感 7 个各 2 次，学分与学期完全一致）**不自动合并**，写入 `human_required`。
+- ⚠️ `requirement` 仍为 `UNKNOWN`：课程表类别列是合并单元格、逐门课为空；
+  权威代号（公必/专必/专选/公选）在实践教学附表里，跨表连接属于课程认定 ⇒ 交人工。
+- 报告：`docs/final_upgrade/PDF_IMPORT_REAL_ACCEPTANCE.md`（含逐页表、准确性数字、未识别清单、复现命令）。
+- 真实 PDF ⛔ 未提交进仓库；`verified=false` / `complete=false`，⛔ 未写目录、⛔ 未写锚点。

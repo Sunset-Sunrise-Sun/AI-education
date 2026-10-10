@@ -102,7 +102,7 @@ def test_source_record_locates_every_row_by_page_and_row() -> None:
         source_id=SOURCE_ID, tables=PROFILE,
     )
 
-    assert [row.source_record for row in result.rows] == ["page:1!row:1", "page:1!row:2"]
+    assert [row.source_record for row in result.rows] == ["page:1!table:1!row:1", "page:1!table:1!row:2"]
 
 
 def test_credit_accepts_a_trailing_unit_but_never_a_range() -> None:
@@ -155,7 +155,7 @@ def test_cross_page_rows_keep_distinct_source_records() -> None:
     )
 
     # 第 1 页有表；后续"附录页"没有表格 ⇒ 如实报 `table_not_found`。
-    assert [row.source_record for row in result.rows] == ["page:1!row:1", "page:1!row:2"]
+    assert [row.source_record for row in result.rows] == ["page:1!table:1!row:1", "page:1!table:1!row:2"]
     not_found = [issue for issue in result.issues if issue.code == "table_not_found"]
     assert sorted(issue.row_index for issue in not_found) == [2, 3]
 
@@ -168,7 +168,7 @@ def test_table_on_a_later_page_is_found() -> None:
     # 用"只有文字的第 1 页 + 有表的第 2 页"构造：把两页拼起来不可行（生成器按页），
     # 因此直接验证"单页表在 page:1"与"附录页无表"的行为已被上面覆盖。
     result = load_curriculum_pdf(two_page, source_id=SOURCE_ID, tables=PROFILE)
-    assert [row.source_record for row in result.rows] == ["page:1!row:1"]
+    assert [row.source_record for row in result.rows] == ["page:1!table:1!row:1"]
     assert first  # 占位：说明本用例只覆盖单页语义
 
 

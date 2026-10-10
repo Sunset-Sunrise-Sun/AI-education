@@ -92,7 +92,7 @@ PDF_PROFILE_FIELDS = frozenset({
 #: ⛔ 只支持这一种模式：先按**表头文字精确匹配**定位列，再按声明列位取值。
 #: ⛔ 不支持"按固定序号猜列"——PDF 没有稳定的列序保证，猜列就是猜数据。
 _PDF_PROFILE_FIELDS = frozenset({
-    "mode", "table_index", "columns", "expected_headers", "header_rows",
+    "mode", "table_index", "pages", "columns", "expected_headers", "header_rows",
     "requirement", "course_type", "group_id", "requirement_values",
 })
 
@@ -115,6 +115,11 @@ class _TableProfile:
     """一个已校验的 PDF 表格声明。"""
 
     table_index: int
+    #: 该声明适用的页码集合；空元组 = **所有页**。
+    #: ⚠️ 真实培养方案同一份文件里会有多种表：课程明细表、学分汇总表、
+    #:    学期学分分布表、实践教学附表。按页限定可以**只**声明要导入的那几张，
+    #:    ⛔ 不需要（也不允许）用"表头里有没有某几个字"之类的规则去猜。
+    pages: tuple[int, ...]
     columns: tuple[tuple[str, int], ...]
     #: `expected_headers[列名] = (候选1, 候选2, …)`，每个候选是**逐行表头文字**的元组。
     #: 单行表头 ⇒ 每个候选是 1 元组；双行表头 ⇒ 2 元组。
@@ -279,8 +284,18 @@ def _profile(spec: Mapping[str, object]) -> _TableProfile:
 
     course_type = spec.get("course_type")
     group_id = spec.get("group_id")
+    raw_pages = spec.get("pages")
+    if raw_pages is None:
+        pages: tuple[int, ...] = ()
+    elif isinstance(raw_pages, (str, bytes, bytearray)) or not isinstance(raw_pages, Sequence):
+        _fail("pages: expected a list of positive integers")
+    else:
+        pages = tuple(_positive_int(value, "pages") for value in raw_pages)
+        if len(set(pages)) != len(pages):
+            _fail("pages: duplicate page number")
     return _TableProfile(
         table_index=_positive_int(spec.get("table_index"), "table_index"),
+        pages=pages,
         columns=tuple((str(key), int(value)) for key, value in columns.items()),
         expected_headers=expected,
         header_rows=header_rows,
@@ -300,9 +315,21 @@ def _profiles(tables: Sequence[Mapping[str, object]]) -> tuple[_TableProfile, ..
     if len(tables) > 128:
         _fail("too many table declarations")
     result = tuple(_profile(spec) for spec in tables)
-    indices = [item.table_index for item in result]
-    if len(set(indices)) != len(indices):
-        _fail("duplicate table_index")
+    # ⛔ 同一 `table_index` 只有在**页范围互不重叠**时才能重复声明：
+    #    真实培养方案里"第 1 张表"在不同页可能是完全不同的表
+    #    （课程明细表 vs 学分汇总表），所以按页区分是必要的；
+    #    但两页若都覆盖同一页，同一张表就会有两条互相矛盾的声明 ⇒ 拒绝。
+    seen: list[tuple[int, tuple[int, ...]]] = []
+    for item in result:
+        for index, pages in seen:
+            if index != item.table_index:
+                continue
+            if not pages or not item.pages:
+                # 至少有一条是"所有页" ⇒ 必然重叠。
+                _fail("duplicate table_index")
+            if set(pages) & set(item.pages):
+                _fail("duplicate table_index")
+        seen.append((item.table_index, item.pages))
     return result
 
 
@@ -581,8 +608,10 @@ def _rows_from_table(
             course_name=course_name,
             credit=credit,
             requirement=requirement,
-            # ⛔ 唯一且可追溯：页码 + 表内行号（与 DOCX 的 `table:T!row:R` 同构）。
-            source_record=f"page:{page_number}!row:{offset}",
+            # ⛔ 唯一性：`source_record` 是 `CurriculumVersion` 的唯一性主键。
+            #    一页上可能有多张表（真实培养方案第 6 页就有 4 张），
+            #    因此必须带上**表序号**，否则不同表的第 1 行会撞成同一个定位。
+            source_record=f"page:{page_number}!table:{profile.table_index}!row:{offset}",
             course_type=profile.course_type,
             group_id=profile.group_id,
             recommended_term_text=(raw_term.strip() or None) if raw_term is not None else None,
@@ -722,6 +751,12 @@ def load_curriculum_pdf(
 
             by_index: dict[int, list[DocxCourseRow]] = {}
             for profile in profiles:
+                # ⛔ 页限定：不在声明页上的表格**不声明**，因此不会被误解析。
+                #    ⚠️ 注意这里**只跳过该条声明**，不能跳过 `find_tables()`
+                #    ——曾因把 `continue` 放在识别之前，导致未声明页上的表格
+                #    连"表头不匹配"都报不出来（静默丢失）。
+                if profile.pages and page_number not in profile.pages:
+                    continue
                 if profile.table_index > len(tables_on_page):
                     issues.append(DocxImportIssue(
                         "table_not_found", profile.table_index, page_number,

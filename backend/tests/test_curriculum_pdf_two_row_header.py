@@ -153,7 +153,7 @@ def test_two_row_header_is_parsed_with_declared_profiles() -> None:
     assert result.issues == ()
     assert [row.course_id for row in result.rows] == ["MAR103", "CSE323"]
     # ⚠️ 行号相对**数据区第一行**计数：表头有几行都不改变 source_record 的含义。
-    assert [row.source_record for row in result.rows] == ["page:1!row:1", "page:1!row:2"]
+    assert [row.source_record for row in result.rows] == ["page:1!table:1!row:1", "page:1!table:1!row:2"]
     # ⚠️ "必修/选修"是**表头第二行的文字**，不是单元格取值：
     #    这里是"课程类别合并成一列、其下按必修/选修分栏"的形态，
     #    ⛔ 解析器不得把表头文字当取值，⛔ 也不得由它推断必修/选修。
@@ -329,7 +329,7 @@ def test_inspection_output_round_trips_into_the_profile_verbatim() -> None:
     )
     assert {issue.code for issue in result.issues} == set()
     assert [row.course_id for row in result.rows] == ["MAR103", "CSE323"]
-    assert [row.source_record for row in result.rows] == ["page:1!row:1", "page:1!row:2"]
+    assert [row.source_record for row in result.rows] == ["page:1!table:1!row:1", "page:1!table:1!row:2"]
 
 
 @pytest.mark.parametrize("bad", [0, 4, "2", 2.0, True, None])

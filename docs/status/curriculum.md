@@ -180,3 +180,12 @@
   改为按 `table.rows[i].bbox` + `table.header.cells` 重建网格，几何不可用时 fail closed。
 - 材料到位后：`python tools/parse_curriculum_pdf.py --pdf <路径> ... --inspect`
   再按输出写 `--profile`，步骤见 `docs/final_upgrade/PDF_IMPORT_REAL_ACCEPTANCE.md`。
+
+### 第 3 轮（2026-10-10）真实 PDF 验收 ✅ 已完成
+- 两份真实 PDF 找到并**实测通过**：页数 8 / 9（一致）；课程行 84 / 89；
+  课程编码·名称·学分·学期**零缺失**；文档级问题 0；定位 100% 唯一；汇总/附表零重复导入。
+- 未识别 8 行全部为模块小节标题 ⇒ 待确认清单；重复课程号 7 个 ⇒ `human_required`（⛔ 不合并）。
+- 修复两个新的真实缺陷：一页多表 `source_record` 撞车、页限定导致表格静默消失。
+- 新增 `pages` 页限定；`source_record` 现为 `page:{n}!table:{t}!row:{i}`。
+- ⚠️ 待人工：`requirement`（必修/选修）仍需人工或经批准规则补齐。
+- 报告见 `docs/final_upgrade/PDF_IMPORT_REAL_ACCEPTANCE.md`。

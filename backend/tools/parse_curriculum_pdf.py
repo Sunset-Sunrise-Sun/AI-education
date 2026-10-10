@@ -112,6 +112,21 @@ def _write(path: Path, payload: object) -> None:
     )
 
 
+def _readable_stem(pdf_path: Path) -> str:
+    """把 percent-encoded 的下载文件名解成可读 stem；⛔ 解不出就用原样。"""
+
+    stem = pdf_path.stem
+    if "%" not in stem:
+        return stem
+    from urllib.parse import unquote
+
+    decoded = unquote(stem)
+    # ⛔ 只接受"解出来更可读"的情况；不引入路径分隔符或空串。
+    if decoded and decoded != stem and not any(ch in decoded for ch in "/\\"):
+        return decoded
+    return stem
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _ArgumentParser(
         prog="python tools/parse_curriculum_pdf.py",
@@ -125,7 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cohort", required=True, help="年级（由人给出）")
     parser.add_argument("--role", default="origin", choices=("origin", "target"))
     parser.add_argument("--source", default="未提供来源说明", help="来源说明（提交者提供）")
-    parser.add_argument("--out", required=True, help="输出目录（仓库外）")
+    # ⚠️ `--out` 只在**解析**模式下必需；`--inspect` 是只读检查，不需要输出目录。
+    #    这里不能用 `required=True`，否则 `--inspect` 单独跑会被参数校验挡下。
+    parser.add_argument("--out", default=None, help="输出目录（仓库外；解析模式必需）")
     parser.add_argument(
         "--profile", default=None,
         help="可选：覆盖默认表格声明的 JSON 文件（当真实表头与默认不同时由人提供）",
@@ -153,6 +170,10 @@ def main(argv: list[str] | None = None) -> int:
                          ensure_ascii=False), file=sys.stderr)
         return EXIT_INPUT
 
+    # ⚠️ 解析模式才需要 `--out`；`--inspect` 是纯只读检查。
+    if not args.inspect and not args.out:
+        parser.error("--out is required unless --inspect is used")
+
     if args.inspect:
         # ⛔ 只读检查：不解析课程、不产出草稿、不写目录。
         try:
@@ -179,11 +200,21 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"status": "failed", "reason": "profile_unreadable"},
                              ensure_ascii=False), file=sys.stderr)
             return EXIT_INPUT
-        if not isinstance(loaded, list):
+        # 允许两种形状：直接的 profile 列表，或带说明的包装对象（便于归档人读的注释）。
+        # ⚠️ 只有 `tables` 会进解析器；⛔ 包装里的说明文字不参与任何判断。
+        if isinstance(loaded, dict) and isinstance(loaded.get("tables"), list):
+            tables = loaded["tables"]
+        elif isinstance(loaded, list):
+            tables = loaded
+        else:
             print(json.dumps({"status": "failed", "reason": "profile_must_be_a_list"},
                              ensure_ascii=False), file=sys.stderr)
             return EXIT_INPUT
-        tables = loaded
+        # ⛔ 每个声明都必须是纯 profile：未知键会被 pdf_reader fail closed 拒绝。
+        if any(not isinstance(spec, dict) for spec in tables):
+            print(json.dumps({"status": "failed", "reason": "profile_entry_must_be_an_object"},
+                             ensure_ascii=False), file=sys.stderr)
+            return EXIT_INPUT
 
     data = pdf_path.read_bytes()
     digest = hashlib.sha256(data).hexdigest()
@@ -227,7 +258,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = pdf_path.stem
+    # ⚠️ 下载来的文件名可能是 percent-encoded（`%E9%81%A5%E6%84%9F...`），
+    #    直接拿来做文件名会生成一串看不懂的乱码。这里解回来；
+    #    解不出来就退回原始 stem（⛔ 不猜文件名）。
+    stem = _readable_stem(pdf_path)
 
     courses = [_row_payload(row) for row in result.rows]
     unresolved = [item for item in courses if item["issues"]]

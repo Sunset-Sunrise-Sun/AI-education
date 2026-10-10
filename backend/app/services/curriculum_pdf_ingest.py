@@ -207,13 +207,34 @@ def _is_resolved(row: object) -> bool:
     )
 
 
+def _duplicate_course_ids(result: DocxImportResult) -> dict[str, tuple[str, ...]]:
+    """找出**同一课程号出现多次**的情况（返回 `{课程号: (定位, …)}`）。
+
+    ⚠️ 这是真实培养方案里确实存在的形态：同一门课会**同时列在多个课程模块下**
+    （例如"专业必修"与"本研贯通"各列一次），学分与开课学期完全一致。
+
+    ⛔ 本模块**不去重**：`source_record` 是唯一性主键，合并两处出现等于
+    擅自判定"这两条是同一门课"，那属于**课程认定**——必须由人决定。
+    ⛔ 也不静默丢弃重复项：它们既不是"无法识别"，也不能被悄悄删掉。
+    因此这里只做**如实统计**，由调用方写进待人工确认清单。
+    """
+
+    seen: dict[str, list[str]] = {}
+    for row in result.rows:
+        if row.course_id is None:
+            continue
+        seen.setdefault(row.course_id, []).append(row.source_record)
+    return {key: tuple(value) for key, value in seen.items() if len(value) > 1}
+
+
 def build_draft_from_result(
     result: DocxImportResult, *, role: str, file_name: str, source_id: str,
 ) -> CatalogDraftInput:
     """把解析结果组装成**审核草稿**（复用既有 `CatalogDraftInput` 形状）。
 
     ⛔ 与 `catalog_draft._HUMAN_REQUIRED_FIELDS` **同一张**待确认清单：
-    这里**不新增**任何"人工必须确认"的字段（那属于业务规则，需人工批准）。
+    这里**不新增**任何"人工必须确认"的字段（那属于业务规则，需人工批准）；
+    只把**本次解析实际观察到**的问题追加进去。
     """
 
     from app.curriculum.catalog_draft import _HUMAN_REQUIRED_FIELDS
@@ -234,6 +255,19 @@ def build_draft_from_result(
             "field": "unresolved_rows",
             "reason": "文档里有未能确定取值的行：必须人工判定后再决定是否进入正式目录。",
             "applies_to": f"{len(unresolved)} row(s)",
+        })
+    duplicates = _duplicate_course_ids(result)
+    if duplicates:
+        human_required.append({
+            "field": "duplicate_course_id",
+            "reason": (
+                "同一课程号在文档中**出现多次**（真实培养方案会把同一门课列在多个课程模块下）。"
+                "⛔ 解析器不去重、⛔ 不合并：是否视为同一门课属于**课程认定**，"
+                "必须由人判定后再决定保留哪一条或如何归并。"
+            ),
+            "applies_to": "、".join(
+                f"{key}×{len(value)}" for key, value in sorted(duplicates.items())
+            ),
         })
     # ⛔ PDF **不产出** group_records：课程组学分要求必须来自文档明示数值，
     #    且⛔ 不得用成员学分求和代替。缺失即明确要求人工填写。

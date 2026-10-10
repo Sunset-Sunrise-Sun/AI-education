@@ -207,7 +207,7 @@ def test_endpoint_parses_a_synthetic_pdf_into_a_pending_draft(client: TestClient
     records = draft["course_records"]
     assert isinstance(records, list) and records
     for record in records:
-        assert record["source_record"].startswith("page:1!row:")
+        assert record["source_record"].startswith("page:1!table:1!row:")
         # ⛔ 解析器不推断这三个字段
         assert "recommended_semester" not in record
         assert "deadline_semester" not in record
