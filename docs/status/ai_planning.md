@@ -112,3 +112,20 @@ cd backend && $env:PYTHONUTF8="1"; python -m pytest -q
 
 1. Reviewer 评审；2. 运行方用**新密钥**做在线验证；3. B 按 HANDOFF 实现前端；
 4. 是否扩展 Planner（exclude / 跨学期 / 可行子集）需先走接口变更提案。
+
+## 真实能力接入第一阶段（2026-10-09，`feature/real-capability-readiness`）
+
+- **离线验收工具**：新增 `backend/tests/verify_deepseek_live.py`（默认离线，⛔ 不调用收费模型）。
+  离线模式用注入的确定性假模型驱动**真实 FastAPI**，**19 项检查全部通过**，覆盖：
+  未启用 / 无模型 / 正常闭环 / 意图歧义 / 指纹不符 / 候选过期 / 拒绝采用 /
+  **模型幻觉课程号被白名单拦截** / 非 JSON 输出 / 请求体夹带姓名 / **模型试图夹带 candidate_plan 被拒**。
+  在线模式需 `--live` **和** `--i-understand-this-costs-money` 双重开关，密钥只从
+  `DEEPSEEK_API_KEY` 读取（⛔ 不打印、不落盘、不进前端）。
+- **契约修正**：`docs/final_upgrade/DEEPSEEK_LIVE_VERIFICATION.md` 从代码重新提取
+  `/status`、`/interpret`、`/solve`、`/adopt` 的请求/响应结构；修正了 `/solve` 示例里
+  **不存在的 `confirm` 字段**与缺失的 `plan_digest` / `confirmed_intent`，并补充
+  `confirmed_intent` 只允许 8 个键、`scope` 只能是 `current_semester`、指纹不符 ⇒ 410。
+- **真实在线状态：BLOCKED**（`DEEPSEEK_API_KEY` 实测 unset）。`--check-env` 只报告有无；
+  `--live`（无密钥）返回退出码 3 并打印 `BLOCKED — NEW DEEPSEEK_API_KEY NOT AVAILABLE`。
+  ⛔ 未使用历史旧密钥、⛔ 未伪造成功、⛔ 未用测试替身冒充在线调用。
+- 详见 `docs/final_upgrade/REAL_CAPABILITY_PHASE1.md`。

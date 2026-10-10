@@ -94,3 +94,18 @@
   ⛔ 未进入 `/schemas/` 或 `/docs/interfaces/`。
 - 本轮全部验证使用**人工构造 Mock**（`backend/tests/personal_fixtures.py`）：
   **当前功能仅使用 Mock 数据验证，尚未完成真实数据验证。**
+
+## 真实能力接入第一阶段：DOCX → 目录草稿（2026-10-09）
+
+- 新增 `backend/app/curriculum/catalog_draft.py`（**纯序列化**，⛔ 不重写 DOCX 解析、⛔ 不判定核验）
+  与薄 CLI `backend/tools/build_catalog_draft.py`：把培养方案 DOCX 转成
+  ① 审核中间格式（来源文件 / 原始条目 / 证据 / 待确认清单），② `verification.verified=false` 的目录草稿。
+- **硬边界**：`verified` 与 `complete` 在序列化层**硬编码为 false**（函数签名里没有开关）；
+  解析器不推断的字段（`recommended_semester` / `deadline_semester` / `prerequisites`）
+  一律进 `human_required` 清单；未确定的行进 `unresolved_rows`，⛔ 不丢弃、⛔ 不猜值。
+- **安全性**：草稿即使被放进 `APP_PERSONAL_CATALOG_DIR` 也会被 `catalog.py` 判为
+  `not_verified` 而**不可选**（fail closed，不是"半可用"）——已有可执行断言。
+- 新增 `backend/tests/test_catalog_draft.py`（8 项，全部使用**合成** DOCX，⛔ 真实培养方案不进仓库）。
+- ⛔ 未修改 `docx_reader.py` / `plan_profiles.py` / `catalog.py` / `requirements.py` / `__main__.py`。
+- 仍未验证：真实培养方案 DOCX 不在仓库内，本工具**从未**在真实文档上运行过。
+- 详见 `docs/final_upgrade/DOCX_CATALOG_DRAFT.md`。
