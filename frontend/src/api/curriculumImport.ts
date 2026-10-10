@@ -182,6 +182,22 @@ export interface CurriculumSourceNote {
   notes: string[]
 }
 
+/**
+ * 解析响应里的**审核会话**摘要（本轮新增）。
+ *
+ * ⚠️ 只带 `review_id` 与统计；⛔ 证据与候选由服务端保管，前端按需拉取。
+ */
+export interface CurriculumReviewSummary {
+  review_id: string | null
+  expires_in_seconds?: number
+  statistics?: Record<string, unknown>
+  progress?: Record<string, unknown>
+  endpoints?: Record<string, string>
+  notes?: string[]
+  error?: string
+  message?: string
+}
+
 export interface CurriculumParseResult {
   source_id: string
   major: string
@@ -189,6 +205,8 @@ export interface CurriculumParseResult {
   source: CurriculumSourceNote
   draft: CurriculumDraft
   report: string
+  /** 审核会话；`review_id` 为 `null` 表示会话未建立（⛔ 前端不伪造）。 */
+  review?: CurriculumReviewSummary | null
 }
 
 /**
@@ -257,6 +275,29 @@ export function parseCurriculumParseResult(payload: unknown): CurriculumParseRes
       human_required: draftRecord['human_required'] as CurriculumHumanRequired[],
     },
     report: typeof record['report'] === 'string' ? record['report'] : '',
+    review: _parseReviewSummary(record['review']),
+  }
+}
+
+/** 解析 `review` 段；⛔ 缺字段时返回 `null`，⛔ 不编造 review_id。 */
+function _parseReviewSummary(raw: unknown): CurriculumReviewSummary | null {
+  if (typeof raw !== 'object' || raw === null) {
+    return null
+  }
+  const record = raw as Record<string, unknown>
+  const reviewId = record['review_id']
+  return {
+    review_id: typeof reviewId === 'string' && reviewId ? reviewId : null,
+    expires_in_seconds:
+      typeof record['expires_in_seconds'] === 'number' ? record['expires_in_seconds'] : undefined,
+    statistics: (record['statistics'] ?? undefined) as Record<string, unknown> | undefined,
+    progress: (record['progress'] ?? undefined) as Record<string, unknown> | undefined,
+    endpoints: (record['endpoints'] ?? undefined) as Record<string, string> | undefined,
+    notes: Array.isArray(record['notes'])
+      ? (record['notes'] as unknown[]).map((item) => String(item))
+      : undefined,
+    error: typeof record['error'] === 'string' ? record['error'] : undefined,
+    message: typeof record['message'] === 'string' ? record['message'] : undefined,
   }
 }
 

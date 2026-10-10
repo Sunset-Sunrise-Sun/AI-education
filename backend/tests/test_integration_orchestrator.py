@@ -549,4 +549,9 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         "/api/v1/curriculum-import/parse-pdf",
         # 已验收文档类型清单（⛔ 不含任何列位映射）。
         "/api/v1/curriculum-import/document-types",
+        # 课程分类**审核**（本轮新增，已获架构确认）：审核草稿，⛔ 不是批准件。
+        # ⛔ 不写批准锚点、⛔ 不改 verification.verified、⛔ 不接入正式个人补修规划。
+        "/api/v1/curriculum-review/{review_id}",
+        "/api/v1/curriculum-review/{review_id}/decisions",
+        "/api/v1/curriculum-review/{review_id}/export",
     }

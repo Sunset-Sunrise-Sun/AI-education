@@ -43,7 +43,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 
 from app.curriculum.catalog_draft import render_draft_report
-from app.curriculum.pdf_profiles import list_document_types
+from app.curriculum.pdf_evidence import build_classification_report, extract_evidence
+from app.curriculum.pdf_profiles import (
+    category_values_for,
+    list_document_types,
+)
+from app.curriculum.requirements import RequirementKind
+from app.services.curriculum_review import ReviewStoreError, get_review_store
 from app.curriculum.errors import CurriculumNormalizationError
 from app.services.curriculum_pdf_ingest import (
     ERROR_DECLARED_LENGTH_MISMATCH,
@@ -58,6 +64,9 @@ from app.services.curriculum_pdf_ingest import (
 )
 
 __all__ = ["router"]
+
+#: 与 main.py 一致的 API 前缀（仅用于在响应里回填审核端点的**相对**路径）。
+API_V1_PREFIX = "/api/v1"
 
 router = APIRouter(tags=["curriculum-import"])
 
@@ -105,6 +114,8 @@ class PdfImportParseResponse(BaseModel):
     source: PdfImportSource
     draft: dict[str, Any]
     report: str
+    #: 审核会话（本轮新增）。⚠️ 只增不改：既有字段语义一字未改。
+    review: dict[str, Any] | None = None
 
 
 def _reject(code: str, message: str, http_status: int) -> JSONResponse:
@@ -210,6 +221,63 @@ async def parse_curriculum_pdf(
 
     summary = describe_outcome(outcome, source=source)
     draft_payload = outcome.draft.to_payload()
+
+    # --- 分类证据 + 审核会话（本轮新增）---
+    # ⚠️ 证据与候选都在**服务端**生成并保管；客户端只能拿到 `review_id`。
+    review_payload: dict[str, Any] | None = None
+    try:
+        requirements, appendix, sections, unmapped = extract_evidence(
+            body, tables=outcome.document.tables,
+        )
+        report = build_classification_report(
+            outcome.result.rows,
+            category_requirements=requirements,
+            appendix_evidence=appendix,
+            sections=sections,
+            category_values={
+                code: RequirementKind(value)
+                for code, value in category_values_for(outcome.document).items()
+            },
+            unmapped_category_codes=unmapped,
+        )
+        session = get_review_store().create(
+            document_key=outcome.document.key,
+            major=outcome.major,
+            cohort=outcome.cohort,
+            role=outcome.role,
+            file_name=summary["file_name"],
+            source_id=outcome.source_id,
+            source_sha256=summary["sha256"],
+            report=report,
+        )
+        review_payload = {
+            "review_id": session.review_id,
+            "expires_in_seconds": max(0, int(session.expires_at - session.created_at)),
+            "statistics": report.statistics(),
+            "progress": session.progress(),
+            "endpoints": {
+                "status": f"{API_V1_PREFIX}/curriculum-review/{session.review_id}",
+                "decisions": (
+                    f"{API_V1_PREFIX}/curriculum-review/{session.review_id}/decisions"
+                ),
+                "export": f"{API_V1_PREFIX}/curriculum-review/{session.review_id}/export",
+            },
+            "notes": list(report.notes),
+        }
+    except ReviewStoreError as error:
+        # ⛔ 会话建不出来时**明确告知**，⛔ 不静默返回一个"没有审核入口"的成功响应
+        review_payload = {
+            "review_id": None,
+            "error": error.code,
+            "message": error.message,
+        }
+    except CurriculumNormalizationError as error:
+        review_payload = {
+            "review_id": None,
+            "error": "review_evidence_unavailable",
+            "message": str(error),
+        }
+
     return {
         "source_id": outcome.source_id,
         "major": outcome.major,
@@ -237,4 +305,5 @@ async def parse_curriculum_pdf(
         },
         "draft": draft_payload,
         "report": render_draft_report(outcome.draft),
+        "review": review_payload,
     }

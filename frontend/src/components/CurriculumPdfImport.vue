@@ -22,6 +22,7 @@
 
 import { computed, onMounted, ref } from 'vue'
 
+import CurriculumReviewPanel from './CurriculumReviewPanel.vue'
 import { CURRICULUM_IMPORT_API_ENABLED } from '../config'
 import {
   CURRICULUM_IMPORT_ERROR_LABEL,
@@ -71,6 +72,12 @@ const targetMajor = ref(props.defaultTargetMajor)
 const cohort = ref(props.defaultCohort)
 const originSource = ref('教务系统保存网页重排生成的 PDF')
 const targetSource = ref('教务系统保存网页重排生成的 PDF')
+
+/**
+ * 当前审核会话 id（来自解析响应）。
+ * ⚠️ `null` 表示会话未建立 —— 此时⛔ 不展示审核面板，也⛔ 不编造一个 id。
+ */
+const reviewId = ref<string>('')
 
 const enabled = CURRICULUM_IMPORT_API_ENABLED
 const maxMiB = Math.round(MAX_PDF_UPLOAD_BYTES / 1024 / 1024)
@@ -153,6 +160,13 @@ async function upload(role: CurriculumRole): Promise<void> {
       documentType: documentTypeKey.value || undefined,
     })
     slot.status = 'parsed'
+    // ⚠️ 只记录**服务端**返回的 review_id；⛔ 前端不生成、不猜测
+    const returned = slot.result?.review?.review_id
+    if (typeof returned === 'string' && returned) {
+      reviewId.value = returned
+    } else {
+      reviewId.value = ''
+    }
   } catch (error) {
     slot.status = 'failed'
     slot.errorKind = error instanceof CurriculumImportError ? error.kind : 'network'
@@ -425,6 +439,17 @@ const allConfirmed = computed(
         </template>
       </article>
     </div>
+
+    <!--
+      课程分类**审核**（本轮新增）：解析完成并拿到 review_id 后展示。
+      \u26d4 只产出审核**草稿**；\u26d4 不写批准锚点、\u26d4 不接入正式个人补修规划。
+    -->
+    <CurriculumReviewPanel
+      v-if="reviewId"
+      :review-id="reviewId"
+      :enabled="enabled"
+      data-testid="pdf-review-panel"
+    />
 
     <footer class="pdf-import__footer">
       <p data-testid="pdf-import-next">

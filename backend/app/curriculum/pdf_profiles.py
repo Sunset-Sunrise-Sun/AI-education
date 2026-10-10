@@ -384,6 +384,20 @@ DOCUMENT_TYPES: tuple[DocumentType, ...] = (
 _BY_KEY: dict[str, DocumentType] = {item.key: item for item in DOCUMENT_TYPES}
 
 
+def category_values_for(document: DocumentType) -> Mapping[str, str]:
+    """取该文档类型声明里的 category_values（类别代号 → 归一化类别）。
+
+    ⚠️ 由**服务端**从受控 profile 读取；⛔ 前端⛔ 不能提交任何映射规则。
+    ⛔ 未声明即空映射（⇒ 所有代号都是 UNKNOWN，而不是被猜成必修/选修）。
+    """
+
+    for spec in document.tables:
+        values = spec.get("category_values")
+        if isinstance(values, Mapping):
+            return values
+    return {}
+
+
 def list_document_types() -> tuple[dict, ...]:
     """给前端的**受支持文档类型**清单（⛔ 不含任何列位映射）。"""
 
