@@ -18,6 +18,7 @@ from app import __version__
 from app.api import (
     ai_planning,
     completed_courses,
+    curriculum_import,
     explanation,
     health,
     mock,
@@ -136,3 +137,9 @@ app.include_router(explanation.router, prefix=API_V1_PREFIX)
 # 意图草稿 → 用户确认 → 受控 Planner 候选 → 二次确认采用；
 # 默认关闭（AI_PLANNING_ENABLED=false），无密钥时明确不可用且不回退。
 app.include_router(ai_planning.router, prefix=API_V1_PREFIX)
+
+# 培养方案 PDF 导入（**新增私有前缀**，⛔ 不覆盖任何旧路由）：
+# 上传 → 安全校验 → 表格解析 → **待组长审核**的草稿。
+# ⛔ 不写 APP_PERSONAL_CATALOG_DIR、⛔ 不写批准锚点、⛔ 不把草稿标成已核验；
+# 请求 / 响应模型定义在该模块内（⛔ 不改 /schemas/** 与 /docs/interfaces/**）。
+app.include_router(curriculum_import.router, prefix=API_V1_PREFIX)

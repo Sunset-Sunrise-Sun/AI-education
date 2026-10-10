@@ -507,6 +507,13 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
     `POST /api/v1/ai-planning/adopt`。
     它们默认关闭（`AI_PLANNING_ENABLED=false`），⛔ 不覆盖任何旧路由，
     ⛔ 不改 `PlannerProvider` 四参数签名，也⛔ 不在无密钥时伪造模型结果。
+
+    培养方案 PDF 导入新增一条**私有**入口
+    （见 `docs/final_upgrade/PDF_IMPORT_REUSE_REPORT.md`）：
+    `POST /api/v1/curriculum-import/parse-pdf`。
+    它**只**产出待组长审核的草稿（`verified=false` / `complete=false`），
+    ⛔ 不写 `APP_PERSONAL_CATALOG_DIR`、⛔ 不写批准锚点，
+    也⛔ 不在解析失败时用演示数据替代。
     """
 
     # 合并验收：个人规划 2 条 + 只读解释 1 条 + AI 规划 4 条 API 均显式登记。
@@ -536,4 +543,10 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         "/api/v1/ai-planning/interpret",
         "/api/v1/ai-planning/solve",
         "/api/v1/ai-planning/adopt",
+        # 培养方案 PDF 导入（本轮新增，已获架构负责人批准）：
+        # **只产出待组长审核的草稿**，⛔ 不写 APP_PERSONAL_CATALOG_DIR、
+        # ⛔ 不写批准锚点、⛔ 不接入 integration 数据通道、⛔ 不改 `/api/v1/plan` 契约。
+        "/api/v1/curriculum-import/parse-pdf",
+        # 已验收文档类型清单（⛔ 不含任何列位映射）。
+        "/api/v1/curriculum-import/document-types",
     }

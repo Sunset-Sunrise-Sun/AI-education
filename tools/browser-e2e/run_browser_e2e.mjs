@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 浏览器 E2E 运行器。
  *
  * 编排五组服务（每组都含真实后端 + 真实 Vite 前端）：
@@ -92,6 +92,8 @@ const LIVE_FRONTEND_ENV = {
   VITE_PERSONAL_PLANNING_PREVIEW: 'false',
   VITE_AI_PLANNING_API_ENABLED: 'true',
   VITE_AI_PLANNING_PREVIEW: 'false',
+  // ⚠️ 培养方案 PDF 导入（本轮新增）：live 档**打开**，用于验证入口可达与边界文案。
+  VITE_CURRICULUM_IMPORT_API_ENABLED: 'true',
 }
 
 const PREVIEW_FRONTEND_ENV = {

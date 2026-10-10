@@ -14,6 +14,19 @@ fastapi>=0.115
 uvicorn[standard]>=0.30
 jsonschema>=4.20
 
+# PyMuPDF 是**运行期**依赖（培养方案 PDF 导入）。
+#
+# 为什么必须引入：任务书要求"优先引入成熟的 PDF 文本及表格提取库，⛔ 不自行实现
+# PDF 格式解析器"。`app/curriculum/pdf_reader.py` 只用它的**表格结构识别**
+# （`page.find_tables()`）与文本层探测，⛔ 不用它做任何业务判断。
+#
+# ⚠️ 许可证：PyMuPDF 采用 **AGPL-3.0 或 Artifex 商业许可** 双许可。
+#    引入前已取得**架构负责人明确确认**（记录见 PR 说明与
+#    `docs/final_upgrade/PDF_IMPORT_REUSE_REPORT.md` §6）。
+#    若日后需要更换许可证策略，替换点集中在 `pdf_reader.py`
+#    （它只依赖"给定字节 → 返回 `DocxImportResult`"这一层契约）。
+pymupdf>=1.24
+
 # --- 以下仅测试需要 ---
 pytest>=8.0
 httpx>=0.27

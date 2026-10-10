@@ -124,3 +124,78 @@
   ⛔ production 调用点已全部传集合。
 - ⛔ 未修改 `/schemas/**`、`docs/interfaces/**`、`requirements.py` 的公共形状。
 - 详见 `docs/final_upgrade/TRUST_ANCHOR_DESIGN.md`、`PROVENANCE_GATE_CLOSURE.md`。
+
+## 培养方案 PDF 导入（2026-10-10，`feature/pdf-curriculum-import`）
+
+**先交付复用面报告**：`docs/final_upgrade/PDF_IMPORT_REUSE_REPORT.md`（§1 可复用、§2 必须新写、§3 新接口、§5 未验证项）。
+**验收报告**：`docs/final_upgrade/PDF_IMPORT_ACCEPTANCE_REPORT.md`。
+
+一句话结论：**DOCX 链的下游 100% 复用；只有"PDF 字节 → 表格单元格"必须新写**。
+
+### 交付
+
+| 层 | 文件 |
+| --- | --- |
+| 解析 | `app/curriculum/pdf_reader.py`（PDF → **既有** `DocxImportResult`） |
+| 传输与安全 | `app/services/curriculum_pdf_ingest.py` |
+| HTTP | `app/api/curriculum_import.py`（`POST /api/v1/curriculum-import/parse-pdf`，模块内私有包络） |
+| CLI 取证 | `tools/parse_curriculum_pdf.py`（产出解析准确性报告 + 未识别课程清单） |
+| 前端 | `components/CurriculumPdfImport.vue` + `api/curriculumImport.ts` + `config.ts` 开关 |
+| 依赖 | `requirements.txt` 新增 `pymupdf>=1.24`（已获架构负责人许可） |
+
+### 硬边界如何被结构性保证
+
+- **⛔ 不从课程名猜课程号**：只读声明列位/表头；缺失即 `unresolved_course_id`；源码里无任何别名/推断（测试断言）。
+- **⛔ 不用成员学分求和猜组学分**：PDF **完全不产出** `group_records`，且进 `human_required`；`project_makeup_tasks` 在 `minimum_credit is None` 时 raise。
+- **⛔ 不自动判定跨专业等价**：不产出任何等价关系。
+- **默认 `verified=false` / `complete=false` / `approval=pending`**：`draft_to_catalog_payload` 硬编码 + 响应 `is_official_school_pdf: false` 硬编码。
+- **⛔ 上传不写 `APP_PERSONAL_CATALOG_DIR` / 不写批准锚点**：端点只返回内存 payload；测试断言运行后目录为空、锚点不存在。
+- **扫描件**：`scanned_pdf_text_layer_missing` 式 fail closed，明确"不支持 + 转人工"，⛔ 不 OCR。
+
+### 测试
+
+- 后端新增 `tests/test_curriculum_pdf_reader.py`、`tests/test_curriculum_pdf_upload_api.py`（含自建**最小 PDF 生成器** `tests/pdf_fixtures.py`，⛔ 未引入第二个库）。
+- 前端新增 `tests/curriculum-pdf-import.spec.ts`（契约 + 边界文案 + "⛔ 不降级"）。
+- E2E 新增 `L11-curriculum-pdf-import-entry`；live 档打开 `VITE_CURRICULUM_IMPORT_API_ENABLED`。
+- 路由白名单测试登记新端点（`test_integration_orchestrator.py`）。
+
+### ⚠️ 实测发现（写进夹具注释，供后续参考）
+
+`find_tables()` 对合成 PDF 有三个静默丢数据的行为：① 无表格线 ⇒ 识别不出表；
+② 列间距太小 ⇒ 相邻列并成一格；③ 表线超出页面 / 贴太近 ⇒ **最后一列或最后一行被丢掉**。
+夹具已按这些约束构造，且**测试断言"画出多少行就必须读出多少行"**，因此这些行为一旦变化会立刻暴露。
+
+### 【BLOCKED】真实材料验收
+
+两份 PDF（遥感 2025级 8页、网络空间安全 2025级 9页）**在本机不存在**（已整机搜索）。
+真实材料相关的 5 项验收保持 BLOCKED；放置目录与执行步骤已备好
+（见验收报告 §5）。⛔ 未用合成数据冒充真实验收结果。
+
+### 第 2 轮（2026-10-10）真实文件验收
+- **BLOCKED**：两份真实 PDF（遥感 8 页 / 网络空间安全 9 页）仍不在本机
+  （`real-curriculum-pdf\` 为空；C:/D: 全盘按精确文件名搜索未找到）。⛔ 未用合成数据冒充。
+- 真实验收的全部程序性前提已就绪：逐页结构检查（`--inspect`）、双行表头/合并单元格/
+  分页/不同列数的声明式 profile、许可证评估、执行手册。
+- **已修复真实缺陷**：`extract()` 行序与页面阅读顺序相反 ⇒ `page:{n}!row:{i}` 曾指错行。
+  改为按 `table.rows[i].bbox` + `table.header.cells` 重建网格，几何不可用时 fail closed。
+- 材料到位后：`python tools/parse_curriculum_pdf.py --pdf <路径> ... --inspect`
+  再按输出写 `--profile`，步骤见 `docs/final_upgrade/PDF_IMPORT_REAL_ACCEPTANCE.md`。
+
+### 第 3 轮（2026-10-10）真实 PDF 验收 ✅ 已完成
+- 两份真实 PDF 找到并**实测通过**：页数 8 / 9（一致）；课程行 84 / 89；
+  课程编码·名称·学分·学期**零缺失**；文档级问题 0；定位 100% 唯一；汇总/附表零重复导入。
+- 未识别 8 行全部为模块小节标题 ⇒ 待确认清单；重复课程号 7 个 ⇒ `human_required`（⛔ 不合并）。
+- 修复两个新的真实缺陷：一页多表 `source_record` 撞车、页限定导致表格静默消失。
+- 新增 `pages` 页限定；`source_record` 现为 `page:{n}!table:{t}!row:{i}`。
+- ⚠️ 待人工：`requirement`（必修/选修）仍需人工或经批准规则补齐。
+- 报告见 `docs/final_upgrade/PDF_IMPORT_REAL_ACCEPTANCE.md`。
+
+### 第 4 轮（2026-10-10）CLI / HTTP profile 统一
+- **已修复审核缺口**：CLI 与 HTTP 现在共用 `app/curriculum/pdf_profiles.py` 一份已验收 profile；
+  旧的 `_install_pdf_tables()` 与 CLI 本地默认声明均已删除。
+- 文档类型**只由内容结构判定**；`document_type` 只是断言（不一致 422）；
+  HTTP 摄取签名不含 `tables`（⛔ 调用方无法提交列位映射）。
+- **HTTP 实测**：遥感 84 行 / 2 待确认；网络空间安全 89 行 / 6 待确认；文档级问题 0。
+- `requirement` 两份文件均为 `unknown` ⇒ ⛔ 不能直接进入正式补修分析（如实呈现）。
+- 重复课程编码保留各自定位，⛔ 不自动去重；`group_records` 仍需人工核验。
+- ⚠️ 许可证：**正式公开部署前必须完成核查**。

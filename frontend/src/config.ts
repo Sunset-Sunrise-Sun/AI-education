@@ -101,6 +101,33 @@ export const PERSONAL_PLANNING_ENDPOINTS = {
 export const PERSONAL_PLANNING_API_ENABLED: boolean =
   import.meta.env.VITE_PERSONAL_PLANNING_API_ENABLED === 'true'
 
+/**
+ * 培养方案 PDF 导入接口（**本轮新增**）。
+ *
+ * ⚠️ 这条路径**只**产出一份**待组长审核**的草稿：
+ * - ⛔ 不写 `APP_PERSONAL_CATALOG_DIR`；
+ * - ⛔ 不写批准锚点；
+ * - ⛔ 上传成功 / 解析成功 / 用户点击确认，都**不构成**来源核验。
+ *
+ * 上传用**原始字节**（⛔ 不用 multipart）：与既有已修课程 XLSX 入口同一范式。
+ */
+export const CURRICULUM_IMPORT_ENDPOINTS = {
+  parsePdf: `${API_BASE_URL}/api/v1/curriculum-import/parse-pdf`,
+  /**
+   * ⚠️ **已验收文档类型清单**：前端只能从这里选择用哪份声明解析。
+   * ⛔ 前端⛔ 不能提交课程列位映射 —— profile 由后端注册表给出。
+   */
+  documentTypes: `${API_BASE_URL}/api/v1/curriculum-import/document-types`,
+} as const
+
+/**
+ * 培养方案导入开关；默认关闭。
+ *
+ * ⛔ 关闭时不渲染上传入口，也⛔ 不回退到任何"演示用的假解析结果"。
+ */
+export const CURRICULUM_IMPORT_API_ENABLED: boolean =
+  import.meta.env.VITE_CURRICULUM_IMPORT_API_ENABLED === 'true'
+
 export const APP_TITLE = '学航·转衔'
 export const APP_SUBTITLE = '面向转专业学生的 AI 学业路径重构 Agent'
 

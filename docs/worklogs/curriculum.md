@@ -340,3 +340,70 @@
 - 需要人工确认：锚点文件位置与权限、approver 身份口径、authorization 依据形式、是否签名。
 - 仍未完成：`_build_curriculum_provenance` 里残留的 `"synthetic": False` 字面量等 5 条，
   见 `PROVENANCE_GATE_CLOSURE.md` §5。
+
+### 2026-10-10 - 培养方案 PDF 上传与解析（`feature/pdf-curriculum-import`）
+- 先交付复用面报告（PDF_IMPORT_REUSE_REPORT.md），再实现最小闭环。
+- 新增 pdf_reader（PDF → 既有 DocxImportResult，下游零改动复用）、
+  curriculum_pdf_ingest（传输与安全）、curriculum_import API（私有包络）、
+  parse_curriculum_pdf CLI（解析准确性报告 + 未识别课程清单）、前端导入视图。
+- 依赖：requirements.txt 新增 pymupdf（已获负责人许可）。
+- 测试：后端 2 个新文件（含自建最小 PDF 生成器）、前端 1 个新文件、E2E L11。
+- 使用数据：**合成 PDF**；真实两份 PDF 不在本机 ⇒ 真实验收保持 BLOCKED。
+- 需要人工确认：真实 PDF 的表头与表格位置（用于调整声明式 profile，⛔ 不让 Agent 猜列位）。
+
+### 2026-10-10（第 2 轮）真实文件验收准备 + 修复行序缺陷
+架构审核要求先做真实文件验收。两份 PDF 仍未出现在 `real-curriculum-pdf\`（C:/D: 全盘按精确
+文件名搜索均未找到）⇒ 真实验收**保持 BLOCKED**，如实报告，⛔ 未用合成数据冒充。
+
+本轮交付（真实验收的全部程序性前提）：
+- **修复真实缺陷**：`find_tables()` 的 `extract()` 行序与页面阅读顺序**相反**，
+  会让 `source_record = page:{n}!row:{i}` 指错行（比报错更糟）。已改为按
+  `table.rows[i].bbox`（顺序可信）+ `table.header.cells` 重建网格，几何不可解释时
+  fail closed。⛔ 无法靠 profile 解决（行序发生在列映射之前）。
+- 新增逐页结构检查 `inspect_curriculum_pdf()` / CLI `--inspect`（表格数量、列数、
+  行数、逐行表头原文），profile 的 `expected_headers` 直接照抄其输出（有往返测试）。
+- 声明式 profile 新增 `header_rows`（1–3）：支持**双行表头 + 合并单元格**；
+  合并单元格实测为 `null`（⛔ 不是 `""`），⛔ 不向上填充。分页/不同列数用
+  "每页每表一条 profile"覆盖，⛔ 无需新代码。
+- 新增 `PYMUPDF_LICENSE_ASSESSMENT.md`：AGPL 在"公开仓库 + 网络服务"现状下可满足；
+  需负责人确认**将来是否闭源**，以及仓库目前**没有 LICENSE 文件**。
+- 夹具修正：`build_two_row_header_pdf` 用 PyMuPDF 嵌 CJK 字体（⛔ 不引第二个库）；
+  修掉两个夹具几何 bug（行边界切进字形、`insert_text` 是左上原点）。
+
+测试：后端 3435 passed / 2 failed（既有 Windows+Py3.14 平台差异）/ 2 skipped，
+其中 PDF 相关 72 例；前端 341 passed；vue-tsc 0；build 0；浏览器 E2E 25 passed。
+使用数据：**合成 PDF**；真实 PDF 验收仍 BLOCKED（见 PDF_IMPORT_REAL_ACCEPTANCE.md）。
+
+### 2026-10-10（第 3 轮）两份真实 PDF 实际验收完成
+材料：`D:\webDownload\` 下两份 PDF（磁盘文件名是 percent-encoded，故此前按精确名搜索未命中）。
+- 页数**实测 8 / 9**，与组长所述一致；逐页表格数量/列数/行数/逐行表头原文全部记录。
+- 解析结果：遥感 **84 行**、网络空间安全 **89 行**；课程编码/名称/学分/开课学期 **零缺失**；
+  文档级问题 **0**；`source_record` **100% 唯一**；汇总表与实践附表**零重复导入**。
+- 未识别 **8 行**（两份合计）全部是**课程模块小节标题**，进入待确认清单，⛔ 未丢弃、⛔ 未造编号。
+- 发现并修复**两个新的真实缺陷**：
+  ① 一页多表时 `source_record` 撞车（第 6 页 4 张表）⇒ 加入表序号
+     `page:{n}!table:{t}!row:{i}`；
+  ② 页限定的 `continue` 放在 `find_tables()` 之前 ⇒ 未声明页的表格**静默消失**（已修 + 负向回归）。
+- 新增 `pages` 页限定（同一 `table_index` 在不同页是不同的表；重叠即拒绝、不相交允许）。
+- 重复课程号（遥感 7 个各 2 次，学分与学期完全一致）**不自动合并**，写入 `human_required`。
+- ⚠️ `requirement` 仍为 `UNKNOWN`：课程表类别列是合并单元格、逐门课为空；
+  权威代号（公必/专必/专选/公选）在实践教学附表里，跨表连接属于课程认定 ⇒ 交人工。
+- 报告：`docs/final_upgrade/PDF_IMPORT_REAL_ACCEPTANCE.md`（含逐页表、准确性数字、未识别清单、复现命令）。
+- 真实 PDF ⛔ 未提交进仓库；`verified=false` / `complete=false`，⛔ 未写目录、⛔ 未写锚点。
+
+### 2026-10-10（第 4 轮）统一 CLI 与 HTTP 的 profile 来源
+审核缺口：CLI 用真实 profile，HTTP 仍用 `_install_pdf_tables()` 里猜出来的旧默认声明 ⇒ 必然漂移。
+- **新增 `app/curriculum/pdf_profiles.py`**：已验收 profile 注册表 + 按内容结构判定文档类型。
+  删除 `_install_pdf_tables()` 与 CLI 的 `DEFAULT_TABLES`；两侧都走
+  `load_curriculum_pdf_verified()`（有结构断言防止再出现第二份副本）。
+- **文档类型只由内容结构判定**：新增 `GET /api/v1/curriculum-import/document-types`；
+  `document_type` 只是断言（不一致即 422）；HTTP 摄取签名里**没有** `tables` 参数；
+  `detect_document_type` 只接收 bytes（⛔ 不看专业名/文件名/角色）。
+- **真实 PDF 经 HTTP 端点验收**：遥感 84 行 / 2 待确认 / 0 问题；网络空间安全 89 行 / 6 待确认 / 0 问题；
+  错误类型与未知类型均 422；篡改专业名后 `source_id` 不变；⛔ 未写目录、⛔ 未写锚点。
+- 修正我自己写错的三处声明（10 列表用了 9 列表头、第 5 页表序号写错、合并"学时"两半未都声明）；
+  并修掉一个真实缺陷：未声明 requirement 列时 `UNKNOWN` 被误算成"未解析"，导致 84 行全进待确认。
+- 前端：文档类型清单来自后端，页面不暴露任何列位映射；新增浏览器用例 `L12`。
+- 许可证：标注"**正式公开部署前必须完成核查**"；⛔ 未改仓库 LICENSE。
+- 测试：后端 3493 passed（新增 40 例）/ 2 既有平台差异 / 2 skipped；前端 351 passed；
+  vue-tsc 0；build 0；浏览器 E2E 26 passed。
