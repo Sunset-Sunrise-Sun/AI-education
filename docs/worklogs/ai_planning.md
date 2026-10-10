@@ -82,3 +82,16 @@
   是否接受本分支以 Draft PR 呈现后再合并。
 - 对其他模块影响：仅前端 AI 规划契约层与对比面板；后端、Schema、接口、其他模块均未改。
 - 下一步：项目 Reviewer 验收；运行方在受控环境用**新密钥**做真实在线验证。
+
+### 2026-10-09 - 真实能力接入第一阶段：DeepSeek 在线验收工具（分支 `feature/real-capability-readiness`）
+- 本次目标：修复在线验收工具与文档、评估 DOCX→catalog 工具、加强真实数据隔离、跑可重复验收。
+- 已完成（AI 规划部分）：
+  - 从 `backend/app/api/ai_planning.py` 逐个 pydantic 模型提取真实契约（⛔ 不再照抄文档）。
+  - 新增 `backend/tests/verify_deepseek_live.py`：默认离线 19 项检查全绿；在线模式双重开关；
+    密钥只读进程环境且不落盘；无密钥时退出码 3 + BLOCKED。
+  - 修正 `DEEPSEEK_LIVE_VERIFICATION.md` 中与实现不一致的 `/solve` / `/adopt` 示例与验收标准。
+- 修改文件：见 `docs/final_upgrade/REAL_CAPABILITY_PHASE1.md`。
+- 测试：浏览器 24/24；后端 3203 passed / 2 failed（既有 Windows 平台差异）/ 2 skipped；
+  前端 313 passed；`vue-tsc` exit 0；`npm run build` exit 0。
+- 使用数据：Mock + 注入式测试替身（离线）；真实在线 **BLOCKED**（无密钥）。
+- 需要人工确认：是否按 `REAL_DATA_ISOLATION_AUDIT.md` §4 落地运行时真实性不变式。

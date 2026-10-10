@@ -304,3 +304,20 @@
   目录 artifact 字段是否作为长期内部格式保留。
 - 对其他模块影响：Planner 新增 `credit_limit.py` 并改变 `max_credit` 接纳口径（见 planner STATUS/WORKLOG）。
 - 下一步：项目 Reviewer 审核；负责人提供已核验目录与第二位学生脱敏材料后做真实联调。
+
+### 2026-10-09 - DOCX → 待审核目录草稿工具（分支 `feature/real-capability-readiness`）
+- 本次目标：评估并（如可行）实现最小的"DOCX → 待人工审核 catalog 草稿"工具，尽可能复用既有解析模块。
+- 已完成：
+  - 判定可行：解析/校验/归一化全部复用既有模块，只新增"序列化器 + 薄 CLI"。
+  - 新增 `app/curriculum/catalog_draft.py`：`build_catalog_draft_input()`（审核中间格式）、
+    `draft_to_catalog_payload()`（草稿；`verified`/`complete` 硬编码 false）、`render_draft_report()`。
+  - 新增 `tools/build_catalog_draft.py`：`--role source|target`（复用已冻结的 Case A 档案）或
+    `--profile`（人工声明列映射）；⛔ 表索引/列位/锚点绝不猜测。
+  - 新增 `tests/test_catalog_draft.py`：8 项合成 DOCX 回归，覆盖机械提取、人工确认清单、
+    永不自动核验、放进目录不可选、未确定行保留、坏取值整份失败关闭、报告不回显原始文案。
+- 修改文件：`backend/app/curriculum/catalog_draft.py`、`backend/tools/build_catalog_draft.py`、
+  `backend/tests/test_catalog_draft.py`、`docs/final_upgrade/DOCX_CATALOG_DRAFT.md`。
+- 测试：新增 8 项全通过；后端整体 3203 passed / 2 failed（既有平台差异）/ 2 skipped。
+- 使用数据：全合成夹具（⛔ 真实培养方案未进仓库）。
+- 需要人工确认：是否把该工具接进运行时流程；非 Case A 文档需人工写 profile。
+- 仍未验证：真实 DOCX 上从未运行（文档不在仓库内）。
