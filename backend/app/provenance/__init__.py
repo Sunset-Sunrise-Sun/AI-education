@@ -127,16 +127,29 @@ _RECORD_REQUIRED: Final[tuple[str, ...]] = (
 )
 _RECORD_ALLOWED: Final[frozenset[str]] = frozenset(_RECORD_REQUIRED) | {
     "expires_at", "note",
+    # ⚠️ 本轮新增（角色分离与撤销）：全部为**可选元数据**，缺失即 null。
+    # ⛔ 不破坏既有锚点：这些字段都不参与"是否放行"的判定（除 revoked 外）。
+    "submitter", "generator", "review_evidence_sha256",
+    "revoked", "revoked_at", "revoked_by", "revocation_reason",
 }
 
 #: 自签识别：artifact 生成工具**不得**成为自己的批准人。
 #:
 #: ⚠️ 这是**启发式**（小写子串匹配），不是安全边界：它只能挡住"工具名直接写进
 #: `approver`"这种明显的自签。真正的边界是"锚点文件由人写、且生成工具没有写权限"。
+#:
+#: ⚠️ 它**只**作用于 `approver` 字段。`generator` 字段**允许**出现工具名——
+#: 那是在**如实记录**artifact 由什么产出，不是在声称批准。
 _SELF_ISSUING: Final[tuple[str, ...]] = (
     "generator", "importer", "parser", "loader", "builder", "collector",
     "mock", "fixture", "test", "tool", "prepare_real_case_a_runtime",
     "sysu_course_offering_collector", "catalog_draft",
+)
+
+
+#: 撤销时必须同时提供的三个字段（⛔ 不允许"撤了一半"的模糊记录）。
+_REVOCATION_FIELDS: Final[tuple[str, ...]] = (
+    "revoked_at", "revoked_by", "revocation_reason",
 )
 
 
@@ -153,11 +166,14 @@ class ProvenanceReason:
     IDENTITY_MISMATCH: Final[str] = "approval_identity_mismatch"
     SELF_ISSUED: Final[str] = "approval_self_issued"
     APPROVAL_EXPIRED: Final[str] = "approval_expired"
+    #: ⚠️ 本轮新增：**曾批准、现已撤销**。与 `APPROVAL_MISSING`（从未批准）区分，
+    #: 因为两者的处置完全不同：前者要查撤销理由，后者要去补齐批准。
+    APPROVAL_REVOKED: Final[str] = "approval_revoked"
 
     ALL: Final[tuple[str, ...]] = (
         ANCHOR_NOT_CONFIGURED, ANCHOR_UNREADABLE, ANCHOR_FORMAT_UNSUPPORTED,
         ANCHOR_INVALID, APPROVAL_MISSING, APPROVAL_INVALID, DIGEST_MISMATCH,
-        IDENTITY_MISMATCH, SELF_ISSUED, APPROVAL_EXPIRED,
+        IDENTITY_MISMATCH, SELF_ISSUED, APPROVAL_EXPIRED, APPROVAL_REVOKED,
     )
 
 
@@ -178,7 +194,15 @@ class TrustAnchorUnavailable(ProvenanceDenied):
 
 @dataclass(frozen=True, slots=True)
 class ApprovalRecord:
-    """一条批准记录（人工或授权流程在带外写入）。"""
+    """一条批准记录（**只能**由组长明确授权后的独立受控流程在带外写入）。
+
+    角色分离（见 `docs/final_upgrade/APPROVAL_WORKFLOW_DESIGN.md` §1）：
+
+    - `submitter`：数据提交者（材料从哪来）；
+    - `generator`：产出该 artifact 的工具（⛔ 与 `approver` 不得相同）；
+    - `approver`：**审核人**，本项目为组长本人（唯一有权批准的人）；
+    - 保管者：在带外把记录写入锚点文件的人（⛔ 可能是组长本人）。
+    """
 
     kind: str
     identity: tuple[tuple[str, str], ...]
@@ -188,6 +212,16 @@ class ApprovalRecord:
     approved_at: str
     expires_at: str | None = None
     note: str | None = None
+    # ---- 本轮新增（全部可选；⛔ 缺失即 None，⛔ 不猜测）------------------- #
+    submitter: str | None = None
+    generator: str | None = None
+    #: 组长**实际审核过的那份待审核清单**的 SHA-256。
+    #: ⚠️ 这是**审计字段**：它⛔ 不参与放行判定（见设计 §3.3）。
+    review_evidence_sha256: str | None = None
+    revoked: bool = False
+    revoked_at: str | None = None
+    revoked_by: str | None = None
+    revocation_reason: str | None = None
 
     def identity_map(self) -> dict[str, str]:
         return dict(self.identity)
@@ -363,15 +397,61 @@ def _record(item: object) -> ApprovalRecord:
             )
         return value.strip()
 
+    # ---- 撤销字段：⛔ 不允许"撤了一半"的模糊记录 ------------------------- #
+    raw_revoked = item.get("revoked", False)
+    if type(raw_revoked) is not bool:
+        raise TrustAnchorUnavailable(
+            ProvenanceReason.ANCHOR_INVALID, "revoked 必须是真布尔。",
+        )
+    revocation = {name: _optional_text(item, name) for name in _REVOCATION_FIELDS}
+    if raw_revoked:
+        missing = [name for name, value in revocation.items() if value is None]
+        if missing:
+            raise TrustAnchorUnavailable(
+                ProvenanceReason.ANCHOR_INVALID,
+                "revoked=true 时必须同时给出 revoked_at / revoked_by / revocation_reason。",
+            )
+    elif any(value is not None for value in revocation.values()):
+        raise TrustAnchorUnavailable(
+            ProvenanceReason.ANCHOR_INVALID,
+            "revoked=false 时不得填写撤销字段（⛔ 拒绝模糊记录）。",
+        )
+
+    evidence_digest = _optional_text(item, "review_evidence_sha256")
+    if evidence_digest is not None and not _SHA256_PATTERN.fullmatch(evidence_digest.lower()):
+        raise TrustAnchorUnavailable(
+            ProvenanceReason.ANCHOR_INVALID,
+            "review_evidence_sha256 必须是 64 位小写十六进制。",
+        )
+
+    approver = text("approver")
+    generator = _optional_text(item, "generator")
+    if generator is not None and generator.strip().lower() == approver.strip().lower():
+        # ⛔ 角色分离：产出 artifact 的工具不得同时是审核人。
+        # （`approver` 本身另受 `is_self_issued()` 的子串检测约束。）
+        raise TrustAnchorUnavailable(
+            ProvenanceReason.ANCHOR_INVALID,
+            "approver 与 generator 不能是同一个人/工具（⛔ 违反角色分离）。",
+        )
+
     record = ApprovalRecord(
         kind=kind,
         identity=tuple(identity),
         artifact_sha256=digest.strip().lower(),
-        approver=text("approver"),
+        approver=approver,
         authorization=text("authorization"),
         approved_at=text("approved_at"),
         expires_at=_optional_text(item, "expires_at"),
         note=_optional_text(item, "note"),
+        submitter=_optional_text(item, "submitter"),
+        generator=generator,
+        review_evidence_sha256=(
+            evidence_digest.lower() if evidence_digest is not None else None
+        ),
+        revoked=raw_revoked,
+        revoked_at=revocation["revoked_at"],
+        revoked_by=revocation["revoked_by"],
+        revocation_reason=revocation["revocation_reason"],
     )
     if record.is_self_issued():
         raise TrustAnchorUnavailable(
@@ -455,12 +535,23 @@ def verify_approval(
             message="批准记录存在，但其摘要与当前内容不符（内容可能已被修改）。",
         )
 
+    # ⚠️ 撤销优先于到期：撤销是**主动**决定，需要让人看到"被谁、因为什么撤销"，
+    #    而不是含糊地报"过期"。若全部匹配记录都已撤销 ⇒ 明确报 `approval_revoked`。
+    live = [item for item in matching_digest if not item.revoked]
+    if not live:
+        revoked = matching_digest[0]
+        detail = revoked.revocation_reason or "未给出理由"
+        return ProvenanceCheck(
+            verified=False, reason=ProvenanceReason.APPROVAL_REVOKED,
+            message=f"该批准已被撤销（{detail}）；⛔ 不再作为来源依据。",
+        )
+
     reference = now
     if reference is None:
         import datetime
 
         reference = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    for item in matching_digest:
+    for item in live:
         if item.expires_at is not None and item.expires_at < reference:
             continue
         return ProvenanceCheck(verified=True, reason="approved")

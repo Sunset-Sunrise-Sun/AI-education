@@ -82,6 +82,22 @@
 | `expires_at` | 失效时间（可选） | 若存在且已过期 ⇒ 拒绝 |
 | `note` | 备注（可选） | —— |
 
+### 2.1 角色分离与撤销字段（`feature/approval-workflow` 新增，全部可选）
+
+> 完整流程见 `APPROVAL_WORKFLOW_DESIGN.md`；组长操作手册见 `APPROVAL_OPERATING_PROCEDURE.md`。
+> ⛔ 这些字段**不破坏既有锚点**：缺失即 `null`，且除 `revoked` 外都不参与放行判定。
+
+| 字段 | 含义 | 校验规则 |
+| --- | --- | --- |
+| `submitter` | 数据提交者（材料从哪来） | 非空字符串或 `null`；⛔ 不参与放行判定 |
+| `generator` | 产出该 artifact 的工具 | 非空字符串或 `null`；✅ **允许**是工具名（如实记录），但⛔ **不得等于 `approver`** |
+| `review_evidence_sha256` | 组长**实际审核过的那份待审核清单**的 SHA-256 | 64 位小写十六进制或 `null`；⚠️ **审计字段**，⛔ 不参与放行判定（见 `APPROVAL_WORKFLOW_DESIGN.md` §3.3） |
+| `revoked` | 是否已撤销 | **必须是真布尔**；缺省视为 `false` |
+| `revoked_at` / `revoked_by` / `revocation_reason` | 撤销时间 / 撤销人 / 撤销理由 | `revoked=true` 时**三者都必须非空**；`revoked=false` 时**必须都为 `null`**（⛔ 拒绝"撤了一半"的模糊记录） |
+
+**新增拒绝原因码**：`approval_revoked`（与 `approval_missing` 区分：
+前者"曾批准、现已撤销"，后者"从未批准"）。撤销**优先于**过期被报告。
+
 **受支持的 kind 与身份字段**
 
 | kind | 绑定的 artifact | identity 字段 |

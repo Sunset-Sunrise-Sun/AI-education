@@ -1866,3 +1866,27 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
 ⛔ 仓库内没有可信身份与信任锚，Agent 只实现了安全的拒绝路径与证据记录接口，
 ⛔ 未自创伪安全签名方案。锚点文件位置 / 权限、approver 口径、authorization 依据形式、
 是否签名，均需人工配置。详见 `PROVENANCE_GATE_CLOSURE.md` §5。
+
+## 组长批准流程（2026-10-10，`feature/approval-workflow`）
+
+架构负责人已确定：**项目组长本人是唯一的项目内部真实数据最终审核人。**
+
+- **设计**：`docs/final_upgrade/APPROVAL_WORKFLOW_DESIGN.md`
+  —— 四个角色（数据提交者 / 工具生成者 / 审核人 / 批准记录保管者）的职责分离、
+  批准记录字段、待审核清单列、Agent 无法自批的六层机制、存储权限、撤销/失效/重审规则。
+- **操作手册**：`docs/final_upgrade/APPROVAL_OPERATING_PROCEDURE.md`
+  —— 组长逐条执行的五阶段流程 + 逐条核对表 + 结论记录模板 + 失败排查表。
+- **最小工具**：`backend/tools/review_real_data.py`
+  - `evidence`：产出**待审核清单**（文件名称 / 来源 / 版本 / 学期 / SHA-256 /
+    解析异常 / 完整性 / 审核结论）。审核结论**固定**为 `pending_group_lead_review`；
+  - `check-anchor`：**只读**自检锚点格式与每条记录状态。
+  - ⛔ **没有**批准 / 撤销子命令；`--out` 指向 `APP_TRUST_ANCHOR_PATH` 时**拒绝写入**（退出码 3）。
+- **锚点扩展**（复用既有校验，⛔ 未自创签名方案）：新增可选字段
+  `submitter` / `generator` / `review_evidence_sha256` / `revoked` / `revoked_at` /
+  `revoked_by` / `revocation_reason`；新拒绝码 **`approval_revoked`**；
+  强制角色分离（`approver != generator`）与撤销字段完整性（⛔ 拒绝"撤了一半"）。
+- **测试**：`backend/tests/test_approval_workflow.py`（**28 项**，全合成数据）
+  覆盖批准 / 拒绝 / 篡改 / 过期 / 撤销五种流程，外加角色分离与
+  "工具无批准路径 / provenance 模块无写路径"的结构性断言。
+- **`.gitignore`**：新增锚点、证据、真实材料、bundle、manifest 的忽略模式（⛔ 绝不提交）。
+- **真实数据验收：保持 BLOCKED**（无真实材料；锚点目录与访问控制待组长确认）。

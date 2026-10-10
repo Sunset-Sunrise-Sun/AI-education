@@ -3221,3 +3221,17 @@
 - 需要人工确认：锚点文件位置与权限、approver 身份口径、authorization 依据形式、是否签名。
 - 仍未完成：`_build_curriculum_provenance` 里残留的 `"synthetic": False` 字面量等 5 条，
   见 `PROVENANCE_GATE_CLOSURE.md` §5。
+
+### 2026-10-10 - 组长批准流程（`feature/approval-workflow`）
+- 本次目标：为"组长是唯一项目内部真实数据审核人"落地可审计的批准流程与最小工具。
+- 先设计后实施：APPROVAL_WORKFLOW_DESIGN.md（角色分离 / 字段 / 清单 / 六层防自批 /
+  存储权限 / 撤销失效重审）+ APPROVAL_OPERATING_PROCEDURE.md（组长操作手册）。
+- 实现：`backend/tools/review_real_data.py`（evidence 产出待审核清单；check-anchor 只读自检；
+  ⛔ 无批准/撤销子命令；写入前拒绝锚点路径）；`app/provenance/__init__.py` 新增可选字段与
+  `approval_revoked` 拒绝码、角色分离与撤销完整性校验。
+- 测试：新增 `tests/test_approval_workflow.py`（28 项）覆盖批准/拒绝/篡改/过期/撤销。
+- 修改文件：上述 + `.gitignore`（新增锚点/证据/材料忽略模式）+ REAL_DATA_READINESS.md（新增 D6）。
+- 使用数据：全合成夹具（⛔ 无真实材料）。
+- 需要人工确认：锚点目录位置与访问控制、approver 身份口径、authorization 依据形式、
+  是否设 expires_at、保管者是否另有其人。
+- 真实数据验收：保持 **BLOCKED**。

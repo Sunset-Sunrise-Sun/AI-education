@@ -27,3 +27,17 @@ Thumbs.db
 *.log
 # pytest temp dirs (created when cacheprovider is disabled)
 pytest-cache-files-*/
+
+# --- 真实数据批准流程：⛔ 以下**绝不**提交（AGENTS.md 第 11 / 18 节）---
+# 批准锚点：只能由组长在**仓库外**、用受权限保护的目录保存。
+# 见 docs/final_upgrade/APPROVAL_WORKFLOW_DESIGN.md §5。
+trust-anchor*.json
+*.trust-anchor.json
+# 待审核清单（证据）
+*.evidence.json
+*.review.json
+# 真实材料 / 标准化 artifact / 采集产物
+real-data-*/
+real_data_*/
+campus-bundle*/
+full-semester-manifest*.json

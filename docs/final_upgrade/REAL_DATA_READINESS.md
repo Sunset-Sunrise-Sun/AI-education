@@ -22,10 +22,17 @@
 | D2 | **学生已修记录（脱敏）** | ① 合规 XLSX，或 ② 直接构造 `student.completed.records[]` | XLSX 走 `POST /api/v1/completed-courses/import`；inline 走个人规划请求体 | **缺失**（前端目前硬编码 `records: []`，所以 UI 上恒为"全部缺修"） |
 | D3 | **本学期教学班快照（真实）** | 五校区 Capture Bundle + 已批准的 inventory + 前后基线 | 通过两个 CLI 验收进 SQLite；再由 5 个环境变量接入 | **缺失**（仓库内 `"data_source": "real"` 的 JSON **0 条**） |
 | D4 | **Case A 冻结案例文件** | case JSON（`data_source=real` 且与冻结决策一致） | `APP_CASE_A_CURRICULUM_CASE_PATH` | **缺失**（仅影响 `/api/v1/plan`，不影响个人规划） |
-| D5 | **catalog artifact 的生产工具** | 把"real DOCX 培养方案 + 规则"转成 `catalog.json` 的导入器 | —— | **不存在**：`plan_profiles.py` 只被测试使用，没有生产调用方（最大缺口） |
+| D5 | **catalog artifact 的生产工具** | 把"real DOCX 培养方案 + 规则"转成 `catalog.json` 的导入器 | —— | ✅ **已交付**（`tools/build_catalog_draft.py`，产出 `verified=false` 的审核草稿；见 `DOCX_CATALOG_DRAFT.md`） |
+| D6 | **批准锚点（组长签署）** | `trust-anchor.json`（含 kind / identity / artifact_sha256 / approver / authorization） | ⛔ **仓库外**受权限保护目录，由 `APP_TRUST_ANCHOR_PATH` 指向 | **缺失**（组长尚未签署任何记录；缺它 ⇒ `provenance_not_verified`（503），这是设计意图） |
 
-> **D5 说明**：现在要产出 D1，只能**人工手写** `catalog.json`，
-> 或先写一个新的导入器。这是一项**新增开发**，不是配置问题。
+> **D5 说明**：产出 D1 的导入器已交付，但它只产出 `verification.verified=false` 的**草稿**；
+> 补齐为可用目录仍需人工确认字段（见 `DOCX_CATALOG_DRAFT.md` §4）。
+
+> **D6 说明（本轮新增）**：即使 D1–D4 齐备，运行时仍会拒绝装配，直到组长签署 D6。
+> 流程见 `APPROVAL_OPERATING_PROCEDURE.md`（组长逐条执行），
+> 原理与角色分离见 `APPROVAL_WORKFLOW_DESIGN.md`。
+> ⚠️ 组长签署仅代表**项目内部**确认来源可靠，
+> ⛔ 不代表学校正式认证，也⛔ 不代表课程等价或学分认定。
 
 ---
 
