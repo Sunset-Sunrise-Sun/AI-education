@@ -82,6 +82,44 @@
 | `expires_at` | 失效时间（可选） | 若存在且已过期 ⇒ 拒绝 |
 | `note` | 备注（可选） | —— |
 
+### 2.1 角色分离与撤销字段（`feature/approval-workflow` 新增，全部可选）
+
+> 完整流程见 `APPROVAL_WORKFLOW_DESIGN.md`；组长操作手册见 `APPROVAL_OPERATING_PROCEDURE.md`。
+> ⛔ 这些字段**不破坏既有锚点**：缺失即 `null`，且除 `revoked` 外都不参与放行判定。
+
+| 字段 | 含义 | 校验规则 |
+| --- | --- | --- |
+| `submitter` | 数据提交者（材料从哪来） | 非空字符串或 `null`；⛔ 不参与放行判定 |
+| `generator` | 产出该 artifact 的工具 | 非空字符串或 `null`；✅ **允许**是工具名（如实记录），但⛔ **不得等于 `approver`** |
+| `review_evidence_sha256` | 组长**实际审核过的那份待审核清单**的 SHA-256 | 64 位小写十六进制或 `null`；⚠️ **审计字段**，⛔ 不参与放行判定（见 `APPROVAL_WORKFLOW_DESIGN.md` §3.3） |
+| `revoked` | 是否已撤销 | **必须是真布尔**；缺省视为 `false` |
+| `revoked_at` / `revoked_by` / `revocation_reason` | 撤销时间 / 撤销人 / 撤销理由 | `revoked=true` 时**三者都必须非空**；`revoked=false` 时**必须都为 `null`**（⛔ 拒绝"撤了一半"的模糊记录） |
+
+**新增拒绝原因码**：`approval_revoked`（与 `approval_missing` 区分：
+前者"曾批准、现已撤销"，后者"从未批准"）。撤销**优先于**过期被报告。
+
+### 2.2 ⚠️ 批准对象的唯一性（`approval_conflict`）
+
+**批准对象** = `(kind, identity, artifact_sha256)`。**同一对象只允许一条记录**；
+出现第二条 ⇒ **拒绝整个锚点**（错误码 `approval_conflict`）。
+
+| 同一对象的记录情况 | 结果 | 错误码 |
+| --- | --- | --- |
+| 恰好 1 条、未撤销、未过期 | ✅ 放行 | `approved` |
+| 恰好 1 条、已撤销 | ⛔ 拒绝 | `approval_revoked` |
+| 恰好 1 条、未撤销、已过期 | ⛔ 拒绝（可续期） | `approval_expired` |
+| **≥2 条**（撤销+有效 / 重复有效 / 过期+有效 / 重复撤销） | ⛔ 拒绝整个锚点 | **`approval_conflict`** |
+
+⛔ 修复前的实现会"挑出未撤销的那条放行"，因此撤销可被遗留记录绕过；
+修复后不留任何"挑一条"的空间。**撤销与重新审核都改同一条记录**，
+所以审计链天然完整，⛔ 不需要、也⛔ 不允许审批版本系统。
+
+**重复检查是统一的**：`load_trust_anchor()` 与 `verify_approval()` **第一步**
+都调用同一个 `first_duplicate_object()`，因此"任何重复记录 ⇒ `approval_conflict`"
+在两个入口上口径一致，⛔ 不依赖调用方走了哪条路径；
+且重复检查覆盖**整个批准集合**（重复发生在别的对象上也一样拒绝）。
+详见 `APPROVAL_WORKFLOW_DESIGN.md` §2.2–§2.3 与 `APPROVAL_OPERATING_PROCEDURE.md` §4.2。
+
 **受支持的 kind 与身份字段**
 
 | kind | 绑定的 artifact | identity 字段 |

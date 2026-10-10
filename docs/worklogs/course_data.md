@@ -3221,3 +3221,41 @@
 - 需要人工确认：锚点文件位置与权限、approver 身份口径、authorization 依据形式、是否签名。
 - 仍未完成：`_build_curriculum_provenance` 里残留的 `"synthetic": False` 字面量等 5 条，
   见 `PROVENANCE_GATE_CLOSURE.md` §5。
+
+### 2026-10-10 - 组长批准流程（`feature/approval-workflow`）
+- 本次目标：为"组长是唯一项目内部真实数据审核人"落地可审计的批准流程与最小工具。
+- 先设计后实施：APPROVAL_WORKFLOW_DESIGN.md（角色分离 / 字段 / 清单 / 六层防自批 /
+  存储权限 / 撤销失效重审）+ APPROVAL_OPERATING_PROCEDURE.md（组长操作手册）。
+- 实现：`backend/tools/review_real_data.py`（evidence 产出待审核清单；check-anchor 只读自检；
+  ⛔ 无批准/撤销子命令；写入前拒绝锚点路径）；`app/provenance/__init__.py` 新增可选字段与
+  `approval_revoked` 拒绝码、角色分离与撤销完整性校验。
+- 测试：新增 `tests/test_approval_workflow.py`（28 项）覆盖批准/拒绝/篡改/过期/撤销。
+- 修改文件：上述 + `.gitignore`（新增锚点/证据/材料忽略模式）+ REAL_DATA_READINESS.md（新增 D6）。
+- 使用数据：全合成夹具（⛔ 无真实材料）。
+- 需要人工确认：锚点目录位置与访问控制、approver 身份口径、authorization 依据形式、
+  是否设 expires_at、保管者是否另有其人。
+- 真实数据验收：保持 **BLOCKED**。
+
+### 2026-10-10 - PR #74 复审修复：批准对象唯一性（`feature/approval-workflow`）
+- 复审问题：同 (kind, identity, artifact_sha256) 下"已撤销 + 有效"共存时，
+  旧实现筛未撤销记录放行 ⇒ 撤销可被遗留记录绕过。
+- 修复：同一批准对象只允许一条记录；≥2 条 ⇒ 拒绝整个锚点，新错误码 `approval_conflict`；
+  两层纵深防御（装载期 `_require_unique_objects` + 校验期拒绝挑一条）。
+- 撤销后重新批准：必须改**同一条**记录（清空撤销字段 + 更新 approved_at/authorization +
+  撤销历史写进 note）；内容变化才是不同对象、才允许新增记录。
+- 测试：`tests/test_approval_workflow.py` 新增 10 项（复审必测 5 类 + 纵深防御 + 运行时映射）。
+- 文档：APPROVAL_WORKFLOW_DESIGN.md §2.2/§2.3/§6.2/§6.3、
+  APPROVAL_OPERATING_PROCEDURE.md §4.2/§5.2/§5.3/§6、TRUST_ANCHOR_DESIGN.md §2.2。
+- 使用数据：全合成夹具（⛔ 无真实材料）。真实数据验收保持 BLOCKED。
+
+### 2026-10-10 - PR #74 复审收尾：重复批准对象统一检查（`feature/approval-workflow`）
+- 要求 ①：`verify_approval()` 第一步统一检查重复对象 ⇒ 任何重复返回 `approval_conflict`。
+  实现：新增共用 `first_duplicate_object()`，装载期 `_require_unique_objects()` 与
+  校验期都调用它；`ApprovalRecord.__post_init__` 规范化 identity 为可哈希元组。
+- 要求 ②：补充"重复撤销""重复过期"测试；六种重复形状 × 两个入口参数化断言；
+  另加"重复在无关对象上也拒绝"与三类对照用例。
+- 测试：`tests/test_approval_workflow.py` 56 个参数化实例全绿；
+  后端整体 3319 passed / 2 failed（既有平台差异）/ 2 skipped。
+- 文档：APPROVAL_WORKFLOW_DESIGN.md §2.2（统一检查与前提）、
+  APPROVAL_OPERATING_PROCEDURE.md §4.2、TRUST_ANCHOR_DESIGN.md §2.2。
+- 使用数据：全合成夹具。真实数据验收保持 BLOCKED。

@@ -1866,3 +1866,76 @@ Reviewer：分支 `review/full-semester-runtime-redteam`（`reviewer/full_semest
 ⛔ 仓库内没有可信身份与信任锚，Agent 只实现了安全的拒绝路径与证据记录接口，
 ⛔ 未自创伪安全签名方案。锚点文件位置 / 权限、approver 口径、authorization 依据形式、
 是否签名，均需人工配置。详见 `PROVENANCE_GATE_CLOSURE.md` §5。
+
+## 组长批准流程（2026-10-10，`feature/approval-workflow`）
+
+架构负责人已确定：**项目组长本人是唯一的项目内部真实数据最终审核人。**
+
+- **设计**：`docs/final_upgrade/APPROVAL_WORKFLOW_DESIGN.md`
+  —— 四个角色（数据提交者 / 工具生成者 / 审核人 / 批准记录保管者）的职责分离、
+  批准记录字段、待审核清单列、Agent 无法自批的六层机制、存储权限、撤销/失效/重审规则。
+- **操作手册**：`docs/final_upgrade/APPROVAL_OPERATING_PROCEDURE.md`
+  —— 组长逐条执行的五阶段流程 + 逐条核对表 + 结论记录模板 + 失败排查表。
+- **最小工具**：`backend/tools/review_real_data.py`
+  - `evidence`：产出**待审核清单**（文件名称 / 来源 / 版本 / 学期 / SHA-256 /
+    解析异常 / 完整性 / 审核结论）。审核结论**固定**为 `pending_group_lead_review`；
+  - `check-anchor`：**只读**自检锚点格式与每条记录状态。
+  - ⛔ **没有**批准 / 撤销子命令；`--out` 指向 `APP_TRUST_ANCHOR_PATH` 时**拒绝写入**（退出码 3）。
+- **锚点扩展**（复用既有校验，⛔ 未自创签名方案）：新增可选字段
+  `submitter` / `generator` / `review_evidence_sha256` / `revoked` / `revoked_at` /
+  `revoked_by` / `revocation_reason`；新拒绝码 **`approval_revoked`**；
+  强制角色分离（`approver != generator`）与撤销字段完整性（⛔ 拒绝"撤了一半"）。
+- **测试**：`backend/tests/test_approval_workflow.py`（**28 项**，全合成数据）
+  覆盖批准 / 拒绝 / 篡改 / 过期 / 撤销五种流程，外加角色分离与
+  "工具无批准路径 / provenance 模块无写路径"的结构性断言。
+- **`.gitignore`**：新增锚点、证据、真实材料、bundle、manifest 的忽略模式（⛔ 绝不提交）。
+- **真实数据验收：保持 BLOCKED**（无真实材料；锚点目录与访问控制待组长确认）。
+
+## Architecture Review 修复：批准对象唯一性（2026-10-10）
+
+**复审结论 CHANGES REQUIRED 的修复**：`verify_approval()` 此前筛出所有"未撤销"记录，
+只要其中一条有效就放行 ⇒ "已撤销 + 有效"共存时**撤销被静默忽略**，
+可用遗留记录绕过撤销。
+
+**最小 fail-closed 修复**（⛔ 未引入审批版本系统）：
+
+- **批准对象** = `(kind, identity, artifact_sha256)`；**同一对象只允许一条记录**；
+- 出现第二条（重复有效 / 撤销+有效 / 过期+有效 / 重复撤销）⇒
+  **拒绝整个锚点**，新错误码 **`approval_conflict`**；
+- 两层纵深防御：① `load_trust_anchor()` 的 `_require_unique_objects()`（装载期整体拒绝）；
+  ② `verify_approval()` 即使收到手工构造的 `TrustAnchor` 也绝不挑一条放行；
+- 判定表：唯一未撤销未过期 ⇒ `approved`；唯一已撤销 ⇒ `approval_revoked`；
+  唯一已过期 ⇒ `approval_expired`；≥2 条 ⇒ `approval_conflict`。
+- 判定表见 `APPROVAL_WORKFLOW_DESIGN.md` §2.2–§2.3。
+
+**撤销后重新批准必须明确、可追溯**：
+
+- ⛔ 不允许为同一对象**新增**有效记录（会触发 `approval_conflict`）；
+- ✅ 必须改**同一条**记录：`revoked` 改回 `false`、清空三个撤销字段、
+  更新 `approved_at` / `authorization`，把撤销历史留在 `note`；
+- 内容变化时摘要不同 = **不同对象** ⇒ 才允许新增记录（旧记录保持 revoked）。
+
+**新增测试**（`tests/test_approval_workflow.py`，+10 项 ⇒ 共 38 项）：
+① 撤销+有效 ② 重复有效 ③ 过期+有效（+ 单条过期仍报 expired）
+④ 撤销不可自动恢复（含"再补一条"与"重复撤销"两种尝试）
+④b 明确重审改同一条记录可恢复 ⑤ 不同 identity / 摘要 / kind 的独立批准不受影响
++ 手工构造锚点的纵深防御 + 错误码登记 + 运行时映射。
+
+## 复审补充修复：重复批准对象的**统一**检查（2026-10-10）
+
+复审要求两项收尾修复，均已完成：
+
+1. **`verify_approval()` 统一检查重复对象**：重复检测从"只在装载期"改为
+   装载期与校验期**调用同一个** `first_duplicate_object()`。`verify_approval()`
+   在**第一步**就对**整个** `anchor.approvals` 做重复检查 —— 只要发现重复即返回
+   `approval_conflict`，⛔ **不进入**任何按身份 / 摘要筛选的逻辑。
+   因此手工构造或绕过装载的 `TrustAnchor` 也不再可能被放行。
+   配套：`ApprovalRecord.__post_init__` 把 `dict` 形式的 `identity` 规范化成
+   可哈希元组，保证两种入口形状一致（否则重复检测会抛 `TypeError` 而非明确错误码）。
+2. **补充测试**：新增 **"重复撤销"** 与 **"重复过期"** 两类，并把"同一对象两条记录"
+   的六种形状（有效+有效、撤销+撤销、过期+过期、撤销+有效、过期+有效、撤销+过期）
+   在**装载期**与**校验期**两个入口上全部参数化断言；另加"重复出现在无关对象上
+   也拒绝"与三类对照用例（单条各状态、不同对象、identity 规范化）。
+
+测试文件 `tests/test_approval_workflow.py` 由 38 个用例（56 个参数化实例）
+扩展为覆盖上述矩阵；后端整体 **3319 passed / 2 failed（既有平台差异）/ 2 skipped**。
