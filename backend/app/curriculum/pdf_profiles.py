@@ -126,15 +126,127 @@ _COLUMNS_8COL = {
 
 def _declaration(
     *, table_index: int, pages: list[int], headers: dict, columns: dict,
+    section_columns: list[int],
 ) -> dict:
+    """课程明细表声明。
+
+    `section_columns` 声明"模块小节标题行"出现在哪些物理列（1 起），
+    供 `app/curriculum/pdf_evidence.py` 识别小节标题行 —— ⛔ 这类行不是课程。
+    """
+
     return {
         "mode": "tables",
+        "table_purpose": "course_detail",
         "table_index": table_index,
         "pages": pages,
         "header_rows": 2,
         "columns": columns,
         "expected_headers": headers,
+        "section_columns": section_columns,
     }
+
+
+# --------------------------------------------------------------------------- #
+# 分类证据声明（⛔ 只产出证据，绝不产出课程行）
+# --------------------------------------------------------------------------- #
+#
+# ⚠️ 这些表的 `table_purpose` **不是** `course_detail`，因此 `pdf_reader`
+#    ⛔ 不会把它们当成课程导入（学分汇总表 / 实践附表从未产出课程行，该边界保持）。
+# 真实形态（已用两份 PDF 核实）：
+#   · 类别学分要求表：6 列，首列是类别代号，**第 3 列是类别学分要求原文**
+#   · 实践教学附表：8 列，第 2 列课程编码、**第 4 列课程类别**
+#   · 明细表小节标题行：8 列形态在第 1 列；9/10 列形态在第 1、2 列
+
+#: 类别代号 / 小节标题 → 归一化类别。
+#: ⚠️ 这是**声明数据**：代码里⛔ 没有任何"公必 ⇒ required"的条件分支；
+#:    未在此出现的代号一律 `UNKNOWN` 并要求人工确认。
+#: ⚠️ 小节标题也走**同一张**表，⛔ 不用 `"选修" in title` 这类子串匹配。
+_CATEGORY_VALUES = {
+    "公必": "required",
+    "专必": "required",
+    "专选": "elective",
+    "公选": "elective",
+    "专业选修课模块": "elective",
+    "本研贯通课": "elective",
+    "专业提升课": "elective",
+    "网络与通信安全": "elective",
+    "软硬件系统及安全": "elective",
+    "安全基础模块": "elective",
+    "密码与攻防对抗": "elective",
+    "人工智能与内容安全": "elective",
+}
+
+#: 类别学分要求表（第 1 页"课程结构与学分要求总表"）。
+#: ⚠️ 表头在不同文件里换行位置不同，因此每个字段给出**两种精确写法** ——
+#:    ⛔ 仍然是精确匹配，⛔ 不是模糊匹配。
+_CATEGORY_REQUIREMENT_TABLE = {
+    "mode": "tables",
+    "table_purpose": "category_credit_requirement",
+    "table_index": 1,
+    "pages": [1],
+    "header_rows": 1,
+    "columns": {
+        "category_code": 1,
+        "sub_minimum_credit": 2,
+        "minimum_credit": 3,
+        "sub_ratio": 4,
+        "ratio": 5,
+        "note": 6,
+    },
+    # ⚠️ 单行表头：`["写法A", "写法B"]` 表示**两个候选**（⛔ 不是"一个写法的两段文字"）。
+    #    两份文件的换行位置不同，因此每个字段都要给出两种精确写法。
+    "expected_headers": {
+        "category_code": ["课程类别/课\n程细类", "课程类别/\n课程细类"],
+        "sub_minimum_credit": ["细类学分\n要求", "细类学\n分要求"],
+        "minimum_credit": ["类别学分\n要求", "类别学\n分要求"],
+        "sub_ratio": ["细类所占\n比例", "细类所\n占比例"],
+        "ratio": ["类别所占\n比例", "类别所\n占比例"],
+        "note": ["备注"],
+    },
+    "category_values": _CATEGORY_VALUES,
+}
+
+#: 实践教学附表表头（单行，**实测 8 列**，照抄真实表头）。
+_APPENDIX_HEADERS = {
+    # ⚠️ 本表**只有 1 行表头**，因此每个字段用一个字符串（= 一个写法）。
+    #    ⛔ 不要写成 `[["序号", None]]`：那在多行语义下是"一个 2 行写法"，
+    #    与 `header_rows=1` 不符，会直接被拒绝（实测踩过）。
+    "sequence": "序号",
+    "course_id": "课程编码",
+    "course_name": "实践教学课程名称",
+    "category": "课程类别",
+    "recommended_term_text": "开课学期",
+    "course_kind": "课程类型",
+    "practice_credit": "其中实践教学环节学分",
+    "practice_hours": "其中实践教学环节学时",
+}
+
+_APPENDIX_COLUMNS = {
+    "sequence": 1, "course_id": 2, "course_name": 3, "category": 4,
+    "recommended_term_text": 5, "course_kind": 6,
+    "practice_credit": 7, "practice_hours": 8,
+}
+
+
+def _appendix_declaration(*, table_index: int, pages: list[int]) -> dict:
+    """实践教学附表声明（⛔ 不产出课程行，只产出"课程编码 → 类别"证据）。"""
+
+    return {
+        "mode": "tables",
+        "table_purpose": "practice_appendix",
+        "table_index": table_index,
+        "pages": pages,
+        "header_rows": 1,
+        "columns": _APPENDIX_COLUMNS,
+        "expected_headers": _APPENDIX_HEADERS,
+    }
+
+
+#: 小节标题行所在的物理列。
+#: ⚠️ 实测：8 列形态的**第 2 列**也可能放小节标题（如 专业提升课、
+#:    本研贯通课），因此 8 列形态同样要声明两列；否则会漏掉这些小节。
+_SECTION_COLUMNS_8COL = [1, 2]
+_SECTION_COLUMNS_9COL = [1, 2]
 
 
 # --------------------------------------------------------------------------- #
@@ -187,31 +299,41 @@ DOCUMENT_TYPES: tuple[DocumentType, ...] = (
             _declaration(
                 table_index=1, pages=[2, 3],
                 headers=_DETAIL_9COL_HEADERS, columns=_COLUMNS_9COL,
+                section_columns=_SECTION_COLUMNS_9COL,
             ),
             # 第 3 页第 3 张：10 列
             _declaration(
                 table_index=3, pages=[3],
                 headers=_DETAIL_10COL_HEADERS, columns=_COLUMNS_10COL,
+                section_columns=_SECTION_COLUMNS_9COL,
             ),
             # 第 4 页第 1 张：10 列
             _declaration(
                 table_index=1, pages=[4],
                 headers=_DETAIL_10COL_HEADERS, columns=_COLUMNS_10COL,
+                section_columns=_SECTION_COLUMNS_9COL,
             ),
             # 第 5 页第 2 张：8 列
             _declaration(
                 table_index=2, pages=[5],
                 headers=_DETAIL_8COL_HEADERS, columns=_COLUMNS_8COL,
+                section_columns=_SECTION_COLUMNS_8COL,
             ),
             # 第 6 页第 1、3 张：8 列
             _declaration(
                 table_index=1, pages=[6],
                 headers=_DETAIL_8COL_HEADERS, columns=_COLUMNS_8COL,
+                section_columns=_SECTION_COLUMNS_8COL,
             ),
             _declaration(
                 table_index=3, pages=[6],
                 headers=_DETAIL_8COL_HEADERS, columns=_COLUMNS_8COL,
+                section_columns=_SECTION_COLUMNS_8COL,
             ),
+            # --- 分类证据表（⛔ 不产出课程行）---
+            _CATEGORY_REQUIREMENT_TABLE,
+            _appendix_declaration(table_index=2, pages=[7]),
+            _appendix_declaration(table_index=1, pages=[8]),
         ),
     ),
     DocumentType(
@@ -227,25 +349,34 @@ DOCUMENT_TYPES: tuple[DocumentType, ...] = (
             _declaration(
                 table_index=1, pages=[2, 3],
                 headers=_DETAIL_9COL_HEADERS, columns=_COLUMNS_9COL,
+                section_columns=_SECTION_COLUMNS_9COL,
             ),
             _declaration(
                 table_index=3, pages=[3],
                 headers=_DETAIL_10COL_HEADERS, columns=_COLUMNS_10COL,
+                section_columns=_SECTION_COLUMNS_9COL,
             ),
             # ⚠️ 与遥感**不同**：网络空间安全第 4、5 页第 1 张都是 10 列课程表
             #    （遥感第 5 页第 1 张是 5 列学分汇总表）。
             _declaration(
                 table_index=1, pages=[4, 5],
                 headers=_DETAIL_10COL_HEADERS, columns=_COLUMNS_10COL,
+                section_columns=_SECTION_COLUMNS_9COL,
             ),
             _declaration(
                 table_index=3, pages=[5],
                 headers=_DETAIL_8COL_HEADERS, columns=_COLUMNS_8COL,
+                section_columns=_SECTION_COLUMNS_8COL,
             ),
             _declaration(
                 table_index=1, pages=[6],
                 headers=_DETAIL_8COL_HEADERS, columns=_COLUMNS_8COL,
+                section_columns=_SECTION_COLUMNS_8COL,
             ),
+            # --- 分类证据表（⛔ 不产出课程行）---
+            _CATEGORY_REQUIREMENT_TABLE,
+            _appendix_declaration(table_index=2, pages=[8]),
+            _appendix_declaration(table_index=1, pages=[9]),
         ),
     ),
 )
@@ -323,6 +454,11 @@ def _fingerprint(
 
     marks: set[tuple[int, int, int, tuple[str, ...]]] = set()
     for spec in document.tables:
+        # ⚠️ 结构指纹**只**由课程明细表决定：分类证据表（类别学分要求表 / 实践附表）
+        #    的表头形状与明细表完全不同，混进来会让指纹失去可比性
+        #    —— 实测结果是把两份真实文件都判成"无匹配类型"。
+        if spec.get("table_purpose", "course_detail") != "course_detail":
+            continue
         shape = _spec_header_shape(spec)
         for page in spec.get("pages", []):  # type: ignore[union-attr]
             marks.add((int(page), int(spec["table_index"]), int(spec["header_rows"]), shape))
