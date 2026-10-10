@@ -448,7 +448,6 @@ const allConfirmed = computed(
       v-if="reviewId"
       :review-id="reviewId"
       :enabled="enabled"
-      data-testid="pdf-review-panel"
     />
 
     <footer class="pdf-import__footer">
