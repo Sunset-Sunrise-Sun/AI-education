@@ -1,100 +1,92 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { loadCaseAOfferings, runCaseADemo, type CaseADemoResponse } from '../api/caseADemo'
+import {
+  CaseAApiError,
+  loadCaseAOfferings,
+  runCaseADemo,
+  type CaseADemoResponse,
+} from '../api/caseADemo'
 import {
   addManualScheduleEntry,
+  addPreferredCourse,
   applyManualAttestation,
   buildRealPlanRequest,
   createDefaultUserInputForm,
   invalidateManualAttestation,
   manualScheduleOfferingCount,
   removeCurrentScheduleOffering,
-  toggleCurrentScheduleOffering,
+  removePreferredCourse,
   type ManualScheduleEntry,
 } from '../state/userInput'
 import type { CourseOffering } from '../types/contracts'
+import CurrentScheduleEditor from './CurrentScheduleEditor.vue'
+import FutureRoadmapView from './FutureRoadmapView.vue'
+import IntentCourseSearch from './IntentCourseSearch.vue'
 import MakeupTaskList from './MakeupTaskList.vue'
 import ManualScheduleForm from './ManualScheduleForm.vue'
+import PendingAdjustments from './PendingAdjustments.vue'
 import PlanResultPanel from './PlanResultPanel.vue'
 import PreferenceForm from './PreferenceForm.vue'
 import PreferencePanel from './PreferencePanel.vue'
 import SectionCard from './SectionCard.vue'
+import WeeklyScheduleView from './WeeklyScheduleView.vue'
 
-const SEARCH_LIMIT = 20
+/** 说明卡的固定内容：⛔ 不承诺"系统会自动替换课程"，真实语义是"找候选 → 提建议 → 用户确认"。 */
+const PLANNING_STEPS = [
+  '检查当前课表的时间冲突',
+  '为补修课程寻找本学期开设的教学班',
+  '尝试安排你选择的意向课程',
+  '发现冲突时寻找同课程其他教学班',
+  '无法自动确认的问题会明确提示，由你决定',
+] as const
+
 const form = ref(createDefaultUserInputForm())
 const offerings = ref<CourseOffering[]>([])
 const transcript = ref<File | null>(null)
 const result = ref<CaseADemoResponse | null>(null)
 const loading = ref(false)
 const error = ref('')
-const searchQuery = ref('')
-const campusFilter = ref('')
-const weekdayFilter = ref('')
+
+/**
+ * 教学班（offerings）的**真实加载状态**。
+ *
+ * ⚠️ 存在的理由（R1 修复）：页面此前**无条件**显示「真实教学班数据」，
+ * 而该数据来自 `/api/v1/case-a-demo/offerings`，其运行时由环境变量开关控制，
+ * 未配置时返回 503 ⇒ 会出现「已加载真实教学班数据 0 条」+ 报错的自相矛盾展示。
+ *
+ * 现在按状态如实展示：
+ *   `idle`      尚未请求
+ *   `loading`   请求中
+ *   `success`   拿到 HTTP 200（列表可能为空，空列表**不等于**不可用）
+ *   `error`     其它失败（网络 / 未知状态码）
+ *   `not_configured` 后端 503 + `case_a_demo_not_configured`（运行时未配置）
+ */
+type OfferingsStatus = 'idle' | 'loading' | 'success' | 'error' | 'not_configured'
+const offeringsStatus = ref<OfferingsStatus>('idle')
+
+/**
+ * 来源说明文案。
+ *
+ * ⚠️ 关键约束：`loadCaseAOfferings` 的响应是**裸数组** `CourseOffering[]`，
+ * **不携带任何来源字段**。因此前端**没有证据**对这一批数据做来源认证，
+ * 只能给出中性表述；⛔ 不得声称"真实""已核验"。
+ * （规划结果 `/plan` 的响应**有** `provenance`，那部分按实际字段展示。）
+ */
+const OFFERINGS_SOURCE_NOTE =
+  '教学班数据来自本次响应；该接口未返回来源字段，因此本页不对其真实性作认定。'
 const manualOpen = ref(false)
 
 const manualCount = computed(() => manualScheduleOfferingCount(form.value))
-const normalizedQuery = computed(() => searchQuery.value.trim().toLocaleLowerCase())
 
-const campusOptions = computed(() => {
-  const campuses = new Set<string>()
-  for (const item of offerings.value) {
-    for (const meeting of item.meetings) {
-      if (meeting.campus?.trim()) campuses.add(meeting.campus.trim())
-    }
-  }
-  return [...campuses].sort((a, b) => a.localeCompare(b, 'zh-CN'))
-})
-
-const filteredOfferings = computed(() => {
-  const query = normalizedQuery.value
-  if (!query) return []
-
-  return offerings.value
-    .filter((item) => {
-      const haystack = [
-        item.course_name,
-        item.course_id,
-        item.class_id,
-        item.teacher ?? '',
-      ].join(' ').toLocaleLowerCase()
-
-      if (!haystack.includes(query)) return false
-      if (
-        campusFilter.value &&
-        !item.meetings.some((meeting) => meeting.campus === campusFilter.value)
-      ) {
-        return false
-      }
-      if (
-        weekdayFilter.value &&
-        !item.meetings.some((meeting) => String(meeting.weekday) === weekdayFilter.value)
-      ) {
-        return false
-      }
-      return true
-    })
-    .slice(0, SEARCH_LIMIT)
-})
-
-const groupedOfferings = computed(() => {
-  const groups = new Map<string, { key: string; courseId: string; courseName: string; credit: number | null; items: CourseOffering[] }>()
-  for (const item of filteredOfferings.value) {
-    const key = `${item.course_id}::${item.course_name}`
-    const existing = groups.get(key)
-    if (existing) {
-      existing.items.push(item)
-      continue
-    }
-    groups.set(key, {
-      key,
-      courseId: item.course_id,
-      courseName: item.course_name,
-      credit: item.credit ?? null,
-      items: [item],
-    })
-  }
-  return [...groups.values()]
-})
+/**
+ * 当前课表被改动后，如果之前确认过的手工信息被作废，如实提示需要重新确认。
+ * ⛔ 不暗示"学校已核验"，也⛔ 不把作废状态藏起来。
+ */
+const attestationNotice = computed(() =>
+  form.value.manualAttestation.invalidated
+    ? '当前课表在上次确认之后被改动，之前的确认已作废；请重新确认手工录入信息后再提交。'
+    : '',
+)
 
 const resultCourseNames = computed(() => {
   const map: Record<string, string> = {}
@@ -104,13 +96,83 @@ const resultCourseNames = computed(() => {
 
 async function loadOfferings(): Promise<void> {
   error.value = ''
+  offeringsStatus.value = 'loading'
   try {
     offerings.value = await loadCaseAOfferings(form.value.semester)
+    // ⚠️ 空列表也是**成功**：接口确实答复了，只是该学期没有教学班。
+    //    ⛔ 不得把"空"当成"未加载/不可用"。
+    offeringsStatus.value = 'success'
   } catch (cause) {
     offerings.value = []
-    error.value = cause instanceof Error ? cause.message : '教学班数据暂时不可用。'
+    if (cause instanceof CaseAApiError && cause.isNotConfigured) {
+      offeringsStatus.value = 'not_configured'
+      error.value = '教学班数据运行时尚未配置（后端返回 503），因此当前没有可展示的教学班。'
+    } else {
+      offeringsStatus.value = 'error'
+      error.value = cause instanceof Error ? cause.message : '教学班数据暂时不可用。'
+    }
   }
 }
+
+/**
+ * 规划结果里的**教学班来源**（仅当后端 `provenance` 真的给出字段时才展示）。
+ *
+ * ⚠️ 这是"依据已有可信响应字段展示来源"的正例：
+ *     `/plan` 响应带 `provenance.course_data`（实测值 `case-scoped:south+shenzhen`），
+ *     因此这里**照实显示后端给的值**，⛔ 不自行改写、⛔ 不添加"真实/已核验"等认定。
+ */
+const planCourseDataSource = computed(() => {
+  const value = result.value?.provenance?.course_data
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+})
+
+/**
+ * 结果区「教学班」条目的**说明**。
+ *
+ * ⚠️ 有 provenance 时如实带出来源；缺失时用中性表述（⛔ 不声称真实）。
+ */
+const planCourseDataLabel = computed(() =>
+  planCourseDataSource.value ? '教学班（来源见下）' : '教学班',
+)
+
+/** 教学班数据是否**已成功加载**（唯一允许展示"已加载"字样的依据）。 */
+const offeringsLoaded = computed(() => offeringsStatus.value === 'success')
+
+/** 顶部来源标签：只按真实状态表述，⛔ 不做无条件真实性认证。 */
+const offeringsTagLabel = computed(() => {
+  switch (offeringsStatus.value) {
+    case 'loading':
+      return '教学班数据加载中'
+    case 'success':
+      return '已加载教学班数据'
+    case 'not_configured':
+      return '教学班数据未配置'
+    case 'error':
+      return '教学班数据不可用'
+    default:
+      return '教学班数据待加载'
+  }
+})
+
+/** 标签是否可用"已加载"的强调样式（仅在确实成功时）。 */
+const offeringsTagEmphasized = computed(() => offeringsStatus.value === 'success')
+
+/** 第二步副标题：按状态如实描述，⛔ 未成功时⛔ 不出现"已加载真实…"。 */
+const scheduleSubtitle = computed(() => {
+  const scope = '数据范围为南校园 + 深圳校区。'
+  switch (offeringsStatus.value) {
+    case 'loading':
+      return `正在加载教学班数据；${scope}`
+    case 'success':
+      return `已加载教学班数据 ${offerings.value.length} 条；${scope}`
+    case 'not_configured':
+      return `教学班数据运行时未配置，当前无可展示教学班；${scope}`
+    case 'error':
+      return `教学班数据加载失败，当前无可展示教学班；${scope}`
+    default:
+      return `尚未加载教学班数据；${scope}`
+  }
+})
 
 function chooseTranscript(event: Event): void {
   const input = event.target as HTMLInputElement
@@ -120,17 +182,8 @@ function chooseTranscript(event: Event): void {
   result.value = null
 }
 
-function keyOf(offering: CourseOffering): string {
-  return `${offering.semester}::${offering.course_id}::${offering.class_id}`
-}
-
-function isSelected(offering: CourseOffering): boolean {
-  return form.value.currentSchedule.some((item) => keyOf(item) === keyOf(offering))
-}
-
-function addAcceptedOffering(offering: CourseOffering): void {
-  if (isSelected(offering)) return
-  const next = toggleCurrentScheduleOffering(form.value.currentSchedule, offering, offerings.value)
+/** 当前课表变更的唯一入口：改课表 + 作废既有手工确认（⛔ 旧确认不得覆盖新数据）。 */
+function updateSchedule(next: CourseOffering[]): void {
   form.value = invalidateManualAttestation(form.value, next).form
 }
 
@@ -151,21 +204,27 @@ function removeOffering(offering: CourseOffering): void {
   form.value = invalidateManualAttestation(form.value, next).form
 }
 
-function teacherText(offering: CourseOffering): string {
-  const value = offering.teacher?.trim()
-  if (!value) return '任课教师：待核验'
-  if (value.toLocaleLowerCase() === 'redacted') return '任课教师：信息已脱敏'
-  return `任课教师：${value}`
+/* 意向课程（课程级，写入 Preference.preferredCourses；重复课程不会重复加入） */
+const preferredCourses = computed(() => form.value.preference.preferredCourses)
+
+function addPreferred(courseId: string): void {
+  form.value = {
+    ...form.value,
+    preference: {
+      ...form.value.preference,
+      preferredCourses: addPreferredCourse(form.value.preference.preferredCourses, courseId),
+    },
+  }
 }
 
-function meetingText(offering: CourseOffering): string {
-  if (offering.meetings.length === 0) return '上课时间待核验'
-  return offering.meetings.map((meeting) => {
-    const weeks = meeting.weeks.length > 0 ? `${meeting.weeks[0]}-${meeting.weeks[meeting.weeks.length - 1]}周` : '周次待核验'
-    const campus = meeting.campus ? ` · ${meeting.campus}` : ''
-    const classroom = meeting.classroom ? ` · ${meeting.classroom}` : ''
-    return `周${meeting.weekday} 第${meeting.start_section}-${meeting.end_section}节 · ${weeks}${campus}${classroom}`
-  }).join('；')
+function removePreferred(courseId: string): void {
+  form.value = {
+    ...form.value,
+    preference: {
+      ...form.value.preference,
+      preferredCourses: removePreferredCourse(form.value.preference.preferredCourses, courseId),
+    },
+  }
 }
 
 async function submit(): Promise<void> {
@@ -208,12 +267,23 @@ onMounted(loadOfferings)
           <h1>学航·转衔</h1>
           <p class="case-a-subtitle">面向转专业学生的学业路径重构</p>
           <p class="case-a-lead">
-            上传成绩单后，系统将结合目标专业培养方案、真实教学班数据和你的当前课表，
+            上传成绩单后，系统将结合目标专业培养方案、教学班数据和你的当前课表，
             生成补修与排课建议。
           </p>
         </div>
+        <!--
+          ⚠️ 来源标签按**真实加载状态**渲染（R1 修复）：
+          此前无条件写死「真实教学班数据」，在运行时未配置（503）或加载失败时
+          会与同一屏的报错自相矛盾。现在只有 `success` 才用强调样式。
+        -->
         <div class="case-a-tags" aria-label="数据与计算范围">
-          <span class="tag tag--source-real">真实教学班数据</span>
+          <span
+            class="tag"
+            :class="offeringsTagEmphasized ? 'tag--source-real' : ''"
+            data-testid="case-a-offerings-tag"
+          >
+            {{ offeringsTagLabel }}
+          </span>
           <span class="tag">南校园 + 深圳校区</span>
           <span class="tag">RestrictedPlanner</span>
         </div>
@@ -237,123 +307,16 @@ onMounted(loadOfferings)
       <SectionCard
         :mock="false"
         title="第二步：填写当前课表"
-        :subtitle="`已加载真实教学班数据 ${offerings.length} 条；数据范围为南校园 + 深圳校区。`"
+        :subtitle="scheduleSubtitle"
       >
         <div class="case-a-schedule">
-          <div class="case-a-search-panel">
-            <label class="case-a-search">
-              <span>搜索你已经选中的课程</span>
-              <input
-                v-model="searchQuery"
-                data-testid="case-a-offering-search"
-                class="input-text"
-                type="search"
-                placeholder="搜索课程名称、课程号、任课教师或教学班号"
-              />
-            </label>
-
-            <div class="case-a-filters">
-              <label>
-                <span>校区</span>
-                <select v-model="campusFilter" data-testid="case-a-campus-filter" class="input-text">
-                  <option value="">全部校区</option>
-                  <option v-for="campus in campusOptions" :key="campus" :value="campus">{{ campus }}</option>
-                </select>
-              </label>
-              <label>
-                <span>上课日</span>
-                <select v-model="weekdayFilter" data-testid="case-a-weekday-filter" class="input-text">
-                  <option value="">全部上课日</option>
-                  <option value="1">周一</option>
-                  <option value="2">周二</option>
-                  <option value="3">周三</option>
-                  <option value="4">周四</option>
-                  <option value="5">周五</option>
-                  <option value="6">周六</option>
-                  <option value="7">周日</option>
-                </select>
-              </label>
-            </div>
-          </div>
-
-          <p v-if="!normalizedQuery" class="case-a-empty">请输入课程名称、课程号或任课教师开始搜索，不需要浏览全部教学班。</p>
-          <p v-else-if="filteredOfferings.length === 0" class="case-a-empty">没有找到匹配的教学班，可调整筛选条件或手工添加。</p>
-
-          <div v-if="groupedOfferings.length > 0" class="case-a-course-groups">
-            <section
-              v-for="group in groupedOfferings"
-              :key="group.key"
-              class="case-a-course-group"
-              data-testid="case-a-course-group"
-            >
-              <header class="case-a-course-group__head">
-                <div>
-                  <h3>{{ group.courseName }}</h3>
-                  <div class="case-a-course-meta">
-                    <span>{{ group.courseId }}</span>
-                    <span v-if="group.credit !== null">{{ group.credit }} 学分</span>
-                    <span>{{ group.items.length }} 个匹配教学班</span>
-                  </div>
-                </div>
-              </header>
-
-              <article
-                v-for="item in group.items"
-                :key="keyOf(item)"
-                class="case-a-class-row"
-                data-testid="case-a-search-result"
-              >
-                <div class="case-a-class-main">
-                  <div class="case-a-class-title">
-                    <strong>教学班 {{ item.class_id }}</strong>
-                    <span class="case-a-teacher">{{ teacherText(item) }}</span>
-                  </div>
-                  <p>{{ meetingText(item) }}</p>
-                  <div class="case-a-class-extra">
-                    <span v-if="item.remaining_capacity !== null && item.remaining_capacity !== undefined">
-                      剩余容量：{{ item.remaining_capacity }}
-                    </span>
-                    <span v-if="item.capacity !== null && item.capacity !== undefined">
-                      容量：{{ item.capacity }}
-                    </span>
-                  </div>
-                </div>
-                <button
-                  class="button button--small"
-                  type="button"
-                  :disabled="isSelected(item)"
-                  @click="addAcceptedOffering(item)"
-                >
-                  {{ isSelected(item) ? '已加入' : '加入当前课表' }}
-                </button>
-              </article>
-            </section>
-            <p class="case-a-secondary">最多显示 {{ SEARCH_LIMIT }} 个匹配教学班，请继续输入关键词缩小范围。</p>
-          </div>
-
-          <div class="case-a-selected">
-            <div class="case-a-selected__head">
-              <h3>我的当前课表（{{ form.currentSchedule.length }}）</h3>
-            </div>
-            <p v-if="form.currentSchedule.length === 0" class="case-a-empty">尚未添加当前课程。</p>
-            <article
-              v-for="item in form.currentSchedule"
-              :key="keyOf(item)"
-              class="case-a-selected-item"
-              data-testid="case-a-current-schedule-item"
-            >
-              <div>
-                <strong>{{ item.course_name }}</strong>
-                <p>{{ item.course_id }} · 教学班 {{ item.class_id }}</p>
-                <p>{{ teacherText(item) }}</p>
-                <p>{{ meetingText(item) }}</p>
-                <p v-if="item.source === 'manual-entry://current-schedule'" class="case-a-warning">
-                  该课程信息由你本人填写，未经学校系统核验。
-                </p>
-              </div>
-              <button class="button button--small case-a-remove" type="button" @click="removeOffering(item)">移除</button>
-            </article>
-          </div>
+          <CurrentScheduleEditor
+            :offerings="offerings"
+            :current-schedule="form.currentSchedule"
+            :semester="form.semester"
+            :attestation-notice="attestationNotice"
+            @update:current-schedule="updateSchedule"
+          />
 
           <div class="case-a-manual">
             <button
@@ -386,13 +349,36 @@ onMounted(loadOfferings)
         </div>
       </SectionCard>
 
-      <SectionCard :mock="false" title="第三步：设置排课偏好" subtitle="根据你的时间、校区和学分偏好调整推荐方案。">
-        <PreferenceForm :form="form" @update:form="form = $event" />
+      <SectionCard :mock="false" title="第三步：告诉我你的选课需求" subtitle="这些信息会用于本学期排课与补修安排，不会改变学校规则。">
+        <div class="case-a-needs">
+          <IntentCourseSearch
+            :offerings="offerings"
+            :selected-course-ids="preferredCourses"
+            @add="addPreferred"
+            @remove="removePreferred"
+          />
+          <PreferenceForm
+            :form="form"
+            :preferred-courses="preferredCourses"
+            @update:form="form = $event"
+            @remove-preferred="removePreferred"
+          />
+        </div>
       </SectionCard>
+
+      <div class="case-a-explainer" data-testid="case-a-planning-explainer">
+        <h2 class="case-a-explainer__title">系统将如何帮你规划</h2>
+        <ul class="case-a-explainer__list">
+          <li v-for="step in PLANNING_STEPS" :key="step">✓ {{ step }}</li>
+        </ul>
+        <p class="case-a-explainer__note">
+          调整只会以<strong>建议</strong>形式给出：系统找到候选教学班后需要你确认，⛔ 不会自动替换你的课程。
+        </p>
+      </div>
 
       <div class="case-a-submit-wrap">
         <button class="button case-a-submit" type="button" :disabled="loading" data-testid="case-a-submit" @click="submit">
-          {{ loading ? '正在生成方案…' : '生成我的转专业补修方案' }}
+          {{ loading ? '正在规划你的学业路径…' : '生成并优化我的转专业学业方案' }}
         </button>
         <p>系统仅提供规划建议，不执行实际选课操作。</p>
       </div>
@@ -410,19 +396,56 @@ onMounted(loadOfferings)
           <MakeupTaskList :tasks="result.makeup_tasks" />
         </SectionCard>
 
+        <SectionCard :mock="false" :title="'本学期推荐课表'" subtitle="按本次响应返回的教学班绘制；这是 Planner 的建议，不代表已经选上课。">
+          <WeeklyScheduleView
+            :plan-result="result.plan_result"
+            :offerings="result.course_offerings"
+            :semester="form.semester"
+            :current-schedule="form.currentSchedule"
+            :makeup-tasks="result.makeup_tasks"
+            :preferred-courses="preferredCourses"
+          />
+        </SectionCard>
+
+        <SectionCard :mock="false" title="待你确认的调整" subtitle="系统只提出建议；确认后才会生效。">
+          <PendingAdjustments :plan-result="result.plan_result" :course-name-by-id="resultCourseNames" />
+        </SectionCard>
+
+        <!-- 未来学期：只有后端真的返回 roadmap 时才渲染（⛔ 不补假数据） -->
+        <SectionCard
+          v-if="result.roadmap && result.roadmap.semesters.length > 0"
+          :mock="false"
+          title="未来学期修读路径"
+          subtitle="课程级规划，不含具体教学班。"
+        >
+          <FutureRoadmapView :roadmap="result.roadmap" />
+        </SectionCard>
+
         <SectionCard :mock="false" title="本次规划数据">
           <div class="case-a-coverage" data-testid="case-a-coverage-summary">
             <div><strong>{{ result.transcript.record_count }}</strong><span>成绩单课程</span></div>
-            <div><strong>{{ result.course_offerings.length }}</strong><span>真实教学班</span></div>
+            <div><strong>{{ result.course_offerings.length }}</strong><span>{{ planCourseDataLabel }}</span></div>
             <div><strong>南 + 深</strong><span>数据范围</span></div>
-            <div><strong>否</strong><span>全校完整学期数据</span></div>
+            <div><strong>{{ result.provenance?.is_full_semester ? '是' : '否' }}</strong><span>全校完整学期数据</span></div>
           </div>
+          <!--
+            ⚠️ 此前这里写死「4069 条教学班」——那是**神秘数字**，且与响应无关。
+            现在如实说明"候选池"这一语义，条数见上方由响应计算出的数字。
+          -->
           <p class="case-a-secondary">
-            4069 条教学班仅作为规划候选池使用，不在页面中逐条铺开。
+            响应中的教学班仅作为规划候选池使用，不在页面中逐条铺开。
+          </p>
+          <!-- 来源照实展示后端 provenance（缺失时整行不渲染） -->
+          <p
+            v-if="planCourseDataSource"
+            class="case-a-secondary"
+            data-testid="case-a-plan-course-data-source"
+          >
+            教学班来源：<code class="mono">{{ planCourseDataSource }}</code>
           </p>
         </SectionCard>
 
-        <SectionCard :mock="false" title="排课偏好">
+        <SectionCard :mock="false" title="我的选课需求">
           <PreferencePanel :preference="result.preference" :course-name-by-id="resultCourseNames" />
         </SectionCard>
 
@@ -738,6 +761,43 @@ onMounted(loadOfferings)
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.case-a-needs {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.case-a-explainer {
+  padding: 20px 24px;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius-lg);
+  background: #f2f7ff;
+}
+
+.case-a-explainer__title {
+  margin: 0 0 12px;
+  font-size: 17px;
+  color: #1e40af;
+}
+
+.case-a-explainer__list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: #1e293b;
+  line-height: 1.7;
+}
+
+.case-a-explainer__note {
+  margin: 12px 0 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.7;
 }
 
 .case-a-submit {
