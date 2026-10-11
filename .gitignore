@@ -41,3 +41,6 @@ real-data-*/
 real_data_*/
 campus-bundle*/
 full-semester-manifest*.json
+
+# 本地 UI 对比截图（⚠️ 仅供人眼验收，⛔ 不提交）
+_ux-baseline/

@@ -209,27 +209,128 @@ describe('补修路径：阅读顺序与分区（P0）', () => {
     await flushPromises()
 
     const order = wrapper.find('[data-testid="path-reading-order"]').text()
+    // ⚠️ 第 2 轮组长裁定：旧版（main）的输入 / 概览 / 补修工作区**优先展示**，
+    //    新增的历史要求与规划分析区块后置。因此阅读顺序提示也同步更新为 7 步。
+    expect(order).toContain('学生信息与当前课表')
+    expect(order).toContain('我的学业概览')
+    expect(order).toContain('历史培养要求评估')
+    expect(order).toContain('教学班与偏好')
     expect(order).toContain('当前学期课表')
-    expect(order).toContain('后续学期路径')
-    expect(order).toContain('优先级 / 风险 / 待确认')
-    expect(order).toContain('规划结果明细')
-    expect(order).toContain('解释与依据')
+    expect(order).toContain('后续学期路径与风险')
+    expect(order).toContain('规划结果与解释')
   })
 
-  it('规划结果区块紧跟在风险/待确认之后（阅读顺序不被旧区块打断）', async () => {
+  it('恢复旧版优先顺序：输入 / 概览 / 补修三块排在新增规划区块之前', async () => {
     const wrapper = mountPath()
     await flushPromises()
 
     const html = wrapper.html()
-    const riskIndex = html.indexOf('section-priority-risk')
-    const planIndex = html.indexOf('section-plan')
-    const userInputIndex = html.indexOf('section-user-input')
-    const makeupIndex = html.indexOf('section-makeup')
+    // ⚠️ 用**带引号的完整属性值**做锚点：`section-offerings` 的尾部恰好包含
+    //    `section-preference` 的前缀，裸子串会让 preferenceIndex 取到 offerings 的位置。
+    const at = (id: string): number => html.indexOf(`"${id}"`)
+    const userInputIndex = at('section-user-input')
+    const makeupIndex = at('section-makeup')
+    const offeringsIndex = at('section-offerings')
+    const preferenceIndex = at('section-preference')
+    const currentIndex = at('section-current-semester')
+    const riskIndex = at('section-priority-risk')
+    const planIndex = at('section-plan')
+    const explainIndex = at('section-explanation')
+    const supportIndex = at('path-supporting-data')
+    const guideIndex = at('path-pipeline-guide')
+    const laterIndex = at('section-later-semesters')
 
-    expect(riskIndex).toBeGreaterThan(-1)
-    expect(planIndex).toBeGreaterThan(riskIndex)
-    expect(userInputIndex).toBeGreaterThan(planIndex)
+    for (const [name, value] of [
+      ['user-input', userInputIndex],
+      ['makeup', makeupIndex],
+      ['offerings', offeringsIndex],
+      ['preference', preferenceIndex],
+      ['current-semester', currentIndex],
+      ['later-semesters', laterIndex],
+      ['priority-risk', riskIndex],
+      ['plan', planIndex],
+      ['explanation', explainIndex],
+      ['supporting-data', supportIndex],
+      ['pipeline-guide', guideIndex],
+    ] as const) {
+      expect(value, `${name} 未渲染`).toBeGreaterThan(-1)
+    }
+
+    // 旧版优先：输入 → 补修 → 教学班 → 偏好 → 规划工作区
     expect(makeupIndex).toBeGreaterThan(userInputIndex)
+    expect(offeringsIndex).toBeGreaterThan(makeupIndex)
+    expect(preferenceIndex).toBeGreaterThan(offeringsIndex)
+    expect(preferenceIndex).not.toBe(offeringsIndex)
+    // 四步流程条是规划工作区的入口，排在旧版支撑数据之后
+    expect(guideIndex).toBeGreaterThan(preferenceIndex)
+    expect(currentIndex).toBeGreaterThan(guideIndex)
+    // 规划工作区内部顺序不变：当前学期 → 后续学期 → 风险 → 结果 → 解释 → 支撑数据
+    expect(laterIndex).toBeGreaterThan(currentIndex)
+    expect(riskIndex).toBeGreaterThan(laterIndex)
+    expect(planIndex).toBeGreaterThan(riskIndex)
+    expect(explainIndex).toBeGreaterThan(planIndex)
+    expect(supportIndex).toBeGreaterThan(explainIndex)
+  })
+
+  it('恢复旧版四步流程引导（仅作流程说明，⛔ 不是功能导航）', async () => {
+    const wrapper = mountPath()
+    await flushPromises()
+
+    const guide = wrapper.find('[data-testid="path-pipeline-guide"]')
+    expect(guide.exists()).toBe(true)
+    const text = guide.text()
+    expect(text).toContain('培养方案对比')
+    expect(text).toContain('教学班供给获取')
+    expect(text).toContain('偏好约束注入')
+    expect(text).toContain('课表求解与调班')
+    // 四步条只引导规划流程，⛔ 不含功能导航语义
+    expect(text).not.toContain('转专业分析')
+    expect(text).not.toContain('培养方案导入')
+  })
+
+  it('新增的大型分析区块默认折叠，且可展开（⛔ 不删内容、⛔ 不改数据）', async () => {
+    const wrapper = mountPath()
+    await flushPromises()
+
+    // 默认折叠：两个体量大、非首要信息的新增分析区块
+    for (const id of ['section-later-semesters', 'section-priority-risk']) {
+      const card = wrapper.find(`[id="${id}"]`)
+      expect(card.exists(), `${id} 未渲染`).toBe(true)
+      expect(card.attributes('data-collapsible'), `${id} 不可折叠`).toBe('true')
+      expect(card.attributes('data-open'), `${id} 应默认折叠`).toBe('false')
+      const toggle = wrapper.find(`[data-testid="${id}-toggle"]`)
+      expect(toggle.exists(), `${id} 缺少折叠开关`).toBe(true)
+      expect(toggle.attributes('aria-expanded')).toBe('false')
+    }
+
+    // 保持展开与不可折叠的区块：
+    //  - `section-current-semester` / `section-plan`：旧版核心展示（课表 / 方案）
+    //  - `section-explanation`：内含关键功能入口 `explanation-open`，
+    //    默认折叠会让用户必须先猜到要展开才能用（⛔ 不可接受）
+    for (const id of [
+      'section-current-semester',
+      'section-plan',
+      'section-explanation',
+    ]) {
+      const card = wrapper.find(`[id="${id}"]`)
+      expect(card.exists(), `${id} 未渲染`).toBe(true)
+      expect(card.attributes('data-collapsible'), `${id} ⛔ 不应可折叠`).toBeUndefined()
+    }
+
+    // 关键功能入口必须**无需展开**即可访问
+    expect(wrapper.find('[data-testid="explanation-open"]').exists()).toBe(true)
+
+    // 展开后内容仍可访问（⛔ 未删除任何内容）
+    const target = 'section-priority-risk'
+    await wrapper.find(`[data-testid="${target}-toggle"]`).trigger('click')
+    const afterOpen = wrapper.find(`[id="${target}"]`)
+    expect(afterOpen.attributes('data-open')).toBe('true')
+    expect(
+      wrapper.find(`[data-testid="${target}-toggle"]`).attributes('aria-expanded'),
+    ).toBe('true')
+    // 折叠后再点一次可收起
+    await wrapper.find(`[data-testid="${target}-toggle"]`).trigger('click')
+    expect(wrapper.find(`[id="${target}"]`).attributes('data-open')).toBe('false')
   })
 
   it('支撑数据分区明确说明"不产生新结论"', async () => {
