@@ -51,7 +51,10 @@ describe('Case A 学生端页面', () => {
     expect(wrapper.text()).toContain('第三步：告诉我你的选课需求')
     expect(wrapper.findAll('[data-testid="case-a-search-result"]')).toHaveLength(0)
     expect(wrapper.find('[data-testid="case-a-manual-form"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('已加载真实教学班数据 4069 条')
+    // R1 修复：成功加载时只陈述已加载 N 条，不再宣称真实。
+    expect(wrapper.text()).toContain('已加载教学班数据 4069 条')
+    expect(wrapper.text()).not.toContain('真实教学班数据')
+    expect(wrapper.text()).not.toContain('已加载真实')
   })
 
   it('同一课程的教学班聚合展示，任课教师可见，结果仍最多 20 条', async () => {

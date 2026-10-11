@@ -71,8 +71,12 @@ function blockAt(weekday: number, section: number): ScheduleBlock | null {
 
 <template>
   <div class="weekly" data-testid="case-a-weekly-schedule">
+    <!--
+      ⚠️ R1 修复：此处原先写「已返回的真实教学班数据」——「真实」是**前端自行**的来源认定，
+      而课表数据来自本次响应，前端对它没有来源证据。改为中性表述。
+    -->
     <p class="weekly__note">
-      本周课表来自 Planner 的 <strong>建议教学班</strong>（`selected_classes`）与已返回的真实教学班数据；
+      本周课表来自 Planner 的 <strong>建议教学班</strong>（`selected_classes`）与本次响应中已返回的教学班；
       ⛔ 不代表已经完成选课或注册。
     </p>
 
