@@ -181,6 +181,21 @@ export interface MajorOption {
   label: string
 }
 
+/**
+ * 本轮**只允许的两个样本专业**（组长指定范围）。
+ *
+ * ⚠️ 为什么会和上面的 `MAJOR_OPTIONS` 同时存在：
+ * - `MAJOR_OPTIONS` 是既有的**候选项层**（旧版自由输入用的 datalist），⛔ 本轮不动它；
+ * - `SAMPLE_MAJOR_OPTIONS` 只用于新增的「原专业 / 目标专业」**下拉框**，
+ *   范围被明确限定为两个样本专业，其余专业后续增量补充。
+ *
+ * ⛔ 这两个值不参与任何业务规则；页面里**不存在**按专业名分叉的判断分支。
+ */
+export const SAMPLE_MAJOR_OPTIONS: readonly MajorOption[] = [
+  { value: '网络空间安全', label: '网络空间安全' },
+  { value: '遥感科学与技术', label: '遥感科学与技术' },
+]
+
 export const MAJOR_OPTIONS: readonly MajorOption[] = [
   { value: '遥感科学与技术', label: '遥感科学与技术' },
   { value: '网络空间安全', label: '网络空间安全' },

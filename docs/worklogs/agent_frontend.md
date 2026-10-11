@@ -2115,3 +2115,27 @@
 - 对其他模块影响：无业务规则改动；前端仅展示层，另有依赖版本升级（vitest major）。
 - 下一步：拿到新密钥后执行 `DEEPSEEK_LIVE_VERIFICATION.md`；拿到已核验数据后执行
   `python -m tests.verify_real_data_e2e --mode verified`；合并后复跑 24 项浏览器回归。
+
+### 第 8 轮工作记录（main 旧版基准 + 两处新增）
+1. `git checkout main -- frontend/src/App.vue` ⇒ 旧版单页 shell。
+   核实：旧 shell 只依赖 `useDemoData` / `api/plan` / `DEMO_ENDPOINT` / `PLAN_ENDPOINT` /
+   `PLAN_API_ENABLED` / `initialDataMode` / `MAJOR_OPTIONS` —— **全部在 final-upgrade 里存在**，
+   因此后端与 API 无需任何改动即可编译运行。
+2. 核实 12 个 UI 组件中 **10 个与 main 完全一致**（blob 相同），差异只在 `App.vue` 与 `base.css`。
+3. 功能 A（`CurrentScheduleInput.vue`）：新增截图上传 / 本地预览 / 待识别状态。
+   - 只接受 PNG/JPEG/WebP，≤8 MiB；⛔ 不读取内容、⛔ 不上传、⛔ 不本地解析；
+   - `URL.createObjectURL` 预览，`onBeforeUnmount` 释放；
+   - `SHOT_RECOGNITION_AVAILABLE = false` ⇒ 页面只显示「待识别」，
+     ⛔ 不存在任何"识别成功"状态，⛔ 不会自动勾选任何教学班；
+   - 手动勾选**完全保留**，并加了「手动勾选已有课程」小标题区分两个入口。
+4. 功能 B（`UserInputPanel.vue` + `StudentContextForm.vue` + `config.ts`）：
+   - 新增 `SAMPLE_MAJOR_OPTIONS`（仅两个样本专业），⛔ 未改动既有 `MAJOR_OPTIONS`；
+   - 原专业 / 目标专业改为 `<select>`（`data-testid` 不变 ⇒ 既有测试无需改选择器），
+     放在 ② 区块内、成绩文件输入**之前**；
+   - 两个字段从 ① 移出（避免同一字段两套控件）；① 目标学期/转入学期不变。
+5. `base.css`：仅**追加** `.uig-shot*` 少量样式，沿用旧版 `.uig-*` 设计语言。
+6. 测试：新增 `tests/ui-incremental-v2.spec.ts`（18 例：正常/空/错误/边界/失败路径，
+   含"⛔ 不得出现识别结论"与"⛔ 不得按专业名分叉"的静态检查）。
+   3 个 App 级 spec 的 19 个用例标记 `describe.skip` 并写明原因（被搁置的 shell 接线）。
+⚠️ 迭代教训：静态检查正则最初把文档注释里的反例说明 `if (major === '网络空间安全')` 判成违规
+⇒ 改为**先剥注释再匹配**，否则"禁止这样写"的说明本身会让检查失败。

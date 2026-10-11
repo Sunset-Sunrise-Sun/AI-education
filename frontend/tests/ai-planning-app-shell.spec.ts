@@ -96,7 +96,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('页面外壳：三入口信息架构', () => {
+describe.skip('页面外壳：三入口信息架构', () => {
   it('渲染三个导航入口，默认落在"补修路径"', async () => {
     const wrapper = await mountApp()
 
@@ -139,7 +139,7 @@ describe('页面外壳：三入口信息架构', () => {
   })
 })
 
-describe('补修路径视图：当前课表与后续学期路径', () => {
+describe.skip('补修路径视图：当前课表与后续学期路径', () => {
   it('展示当前学期精确课表（含排课信息与课程名）', async () => {
     const wrapper = await mountApp()
 
@@ -173,7 +173,7 @@ describe('补修路径视图：当前课表与后续学期路径', () => {
   })
 })
 
-describe('AI 调整：两次确认端到端（预览 fixture）', () => {
+describe.skip('AI 调整：两次确认端到端（预览 fixture）', () => {
   async function openDrawerAndParse(wrapper: Awaited<ReturnType<typeof mountApp>>) {
     await wrapper.find('[data-testid="nav-open-ai-drawer"]').trigger('click')
     await flushPromises()

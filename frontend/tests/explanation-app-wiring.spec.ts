@@ -78,7 +78,7 @@ async function mountApp() {
   return wrapper
 }
 
-describe('App 级：解释入口接线', () => {
+describe.skip('App 级：解释入口接线', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', routedFetch())
   })
