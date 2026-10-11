@@ -148,14 +148,14 @@ def test_empty_schedule_is_still_accepted(
     assert response.json()["plan_result"]["selected_classes"] == []
 
 
-def test_unexpected_planner_value_error_is_409_with_original_message(
+def test_unexpected_planner_failure_is_not_rewritten_as_a_user_input_error(
     runtime_and_pdf: tuple[CaseADemoRuntime, bytes],
 ) -> None:
-    """An unknown Planner ValueError must not be swallowed into a generic 422.
+    """An unknown Planner failure must never be re-labelled as a fixable request error.
 
-    It is surfaced as a 409 carrying the Planner's own message, so a genuinely
-    unexpected failure stays visible and diagnosable instead of masquerading as
-    "your input is invalid".
+    The API boundary only translates the two shapes it explicitly validates; anything
+    else propagates untouched, so it surfaces as a server fault and its internal message
+    is **not** handed to the caller as something they could act on.
     """
     runtime, pdf = runtime_and_pdf
     sentinel = "unexpected-planner-invariant-xyz"
@@ -165,16 +165,65 @@ def test_unexpected_planner_value_error_is_409_with_original_message(
         raise ValueError(sentinel)
 
     object.__setattr__(runtime.planner, "plan", boom)
+    app.dependency_overrides[get_case_a_demo_runtime] = lambda: runtime
     try:
-        response = _post(runtime, pdf, [_manual().model_dump(mode="json")])
+        # raise_server_exceptions=False: observe the real HTTP response instead of
+        # letting TestClient re-raise the unhandled exception in-process.
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/case-a-demo/plan",
+            json={
+                "semester": SEMESTER,
+                "transcript_pdf_base64": base64.b64encode(pdf).decode("ascii"),
+                "current_schedule": [_manual().model_dump(mode="json")],
+                "manual_schedule_attested": True,
+                "preference": PREFERENCE,
+            },
+        )
     finally:
         object.__setattr__(runtime.planner, "plan", original)
+        app.dependency_overrides.clear()
 
-    assert response.status_code == 409, response.text
-    detail = response.json()["detail"]
-    assert detail["error"] == "case_a_demo_planner_input_rejected"
-    # The original message is preserved verbatim; nothing is invented.
-    assert sentinel in detail["message"]
+    # Not a "your input is wrong" answer: neither of the corrective statuses.
+    assert response.status_code not in (409, 422), response.text
+    assert response.status_code == 500, response.text
+
+    body = response.text
+    # The internal message must not be used as a caller-facing correction hint.
+    assert sentinel not in body
+    for hint in ("重复教学班身份", "多个已选班", "case_a_demo_duplicate_offering",
+                 "case_a_demo_multiple_classes_for_course", "case_a_demo_planner_input_rejected"):
+        assert hint not in body
+
+
+def test_only_the_two_validated_shapes_are_translated(
+    runtime_and_pdf: tuple[CaseADemoRuntime, bytes],
+) -> None:
+    """Guard the boundary: exactly the two validated shapes get a corrective 422.
+
+    A shape that the API does *not* pre-validate (here: an inverted avoid_times range,
+    which the Planner rejects on its own) must not be silently relabelled either.
+    """
+    runtime, pdf = runtime_and_pdf
+    app.dependency_overrides[get_case_a_demo_runtime] = lambda: runtime
+    try:
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/v1/case-a-demo/plan",
+            json={
+                "semester": SEMESTER,
+                "transcript_pdf_base64": base64.b64encode(pdf).decode("ascii"),
+                "current_schedule": [_manual().model_dump(mode="json")],
+                "manual_schedule_attested": True,
+                "preference": {
+                    **PREFERENCE,
+                    "avoid_times": [{"weekday": 1, "start_section": 5, "end_section": 3}],
+                },
+            },
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code not in (409,), response.text
+    assert "case_a_demo_planner_input_rejected" not in response.text
 
 
 def test_runtime_missing_is_still_503(

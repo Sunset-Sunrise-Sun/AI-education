@@ -144,18 +144,6 @@ def create_case_a_plan(
         )
     except CaseADemoInputError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
-    except ValueError as exc:
-        # ⚠️ 兜底：Planner 仍可能对其**其它**输入形状抛裸 ValueError（例如 avoid_times 区间倒置、
-        # makeup_tasks 重复 course_id、混合学期）。这些同样是**调用方可纠正**的输入问题，
-        # ⛔ 不应变成 500；但为了避免把未知异常伪装成"用户输入错误"，把原始信息**如实**带出，
-        # 并使用 409（请求与既有状态冲突），与 422 的"请求本身不合法"区分开。
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "error": "case_a_demo_planner_input_rejected",
-                "message": str(exc) or "Planner rejected the request input.",
-            },
-        ) from exc
     except CompletedCoursesImportRejected as exc:
         raise HTTPException(
             status_code=400,
