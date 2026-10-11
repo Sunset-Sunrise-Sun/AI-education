@@ -320,7 +320,7 @@ describe('当前课表批量录入组件', () => {
     expect(lastSchedule(wrapper).map((item) => item.class_id)).toEqual(['CLASS-2'])
   })
 
-  it('截图识别入口只有外壳：不渲染文件上传，也不发任何请求', async () => {
+  it('截图入口：可本地选择图片并预览，但⛔ 不发请求、⛔ 不产生识别结果', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
     const xhrSpy = vi.spyOn(globalThis.XMLHttpRequest.prototype, 'open')
 
@@ -328,9 +328,20 @@ describe('当前课表批量录入组件', () => {
     await testId(wrapper, 'case-a-screenshot-entry').trigger('click')
 
     const dialog = testId(wrapper, 'case-a-screenshot-dialog')
-    expect(dialog.text()).toContain('本轮不会上传任何图片')
-    expect(dialog.find('input[type="file"]').exists()).toBe(false)
+    // 本轮补齐：弹窗内**有**文件上传控件（此前只有说明文案）
+    expect(dialog.find('[data-testid="case-a-screenshot-input"]').exists()).toBe(true)
+    expect(dialog.find('input[type="file"]').exists()).toBe(true)
+    // ⛔ 一开始不得显示任何"已识别"结论
     expect(dialog.html()).not.toContain('已支持截图识别')
+    expect(dialog.text()).not.toContain('识别成功')
+    expect(dialog.text()).not.toContain('已识别')
+
+    // 未选择文件时：显示空态、⛔ 无预览、⛔ 无待识别状态
+    expect(dialog.find('[data-testid="case-a-screenshot-empty"]').exists()).toBe(true)
+    expect(dialog.find('[data-testid="case-a-screenshot-preview"]').exists()).toBe(false)
+    expect(dialog.find('[data-testid="case-a-screenshot-status"]').exists()).toBe(false)
+
+    // 全程⛔ 不发任何请求（截图只在浏览器本地处理）
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(xhrSpy).not.toHaveBeenCalled()
 

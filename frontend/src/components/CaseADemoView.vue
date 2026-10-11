@@ -18,6 +18,16 @@ import {
   removePreferredCourse,
   type ManualScheduleEntry,
 } from '../state/userInput'
+import { SAMPLE_MAJOR_OPTIONS } from '../config'
+import {
+  bothPlanYearsSupported,
+  describePlanYearPair,
+  describePlanYearScope,
+  deriveTransferType,
+  FUTURE_PLAN_YEARS,
+  isSupportedPlanYear,
+  SUPPORTED_PLAN_YEARS,
+} from '../utils/planYear'
 import type { CourseOffering } from '../types/contracts'
 import CurrentScheduleEditor from './CurrentScheduleEditor.vue'
 import FutureRoadmapView from './FutureRoadmapView.vue'
@@ -41,6 +51,103 @@ const PLANNING_STEPS = [
 ] as const
 
 const form = ref(createDefaultUserInputForm())
+
+/**
+ * 两个样本专业（组长本轮指定的范围）。
+ * ⛔ 只作为下拉选项；组件内⛔ 不按专业名分叉做任何业务判断。
+ */
+const MAJOR_CHOICES = SAMPLE_MAJOR_OPTIONS
+
+/**
+ * ⚠️ 原专业与目标专业**不得相同**。
+ *
+ * 做法：把"对方已选中的那个"在该下拉框里标为 `disabled`，
+ * 因此**无法通过界面**选成相同专业；若父级传入的历史值恰好相同，
+ * 这里只**如实提示**，⛔ 不静默改写用户数据。
+ */
+const sameMajorSelected = computed(
+  () => form.value.studentContext.originMajor === form.value.studentContext.targetMajor,
+)
+
+function isMajorDisabled(field: 'originMajor' | 'targetMajor', value: string): boolean {
+  const context = form.value.studentContext
+  const other = field === 'originMajor' ? context.targetMajor : context.originMajor
+  // 只有“选中该值就会与对方撞车”时才禁用（即该值正好等于对方当前值）。
+  // 不能反过来写“把对方的选择禁用”：那样在两者已经相同时会把两个选项同时禁用，
+  // 用户无法改回，页面会卡死。
+  return value === other
+}
+
+/**
+ * 可选培养方案年级。
+ *
+ * ⚠️ 本轮**只有 2025 级有数据支持**（样本均为 2025 平转 2025）。
+ * `2026级` 只登记在 `FUTURE_PLAN_YEARS` 里作将来扩充用，⛔ 不作为可选项渲染。
+ */
+const PLAN_YEAR_CHOICES = SUPPORTED_PLAN_YEARS
+
+/** 尚未有数据支持的年级（仅用于如实提示，⛔ 不可选）。 */
+const PENDING_PLAN_YEARS = FUTURE_PLAN_YEARS
+
+/** 年级选项是否可选：必须有数据支持。 */
+function isPlanYearDisabled(value: string): boolean {
+  return !isSupportedPlanYear(value)
+}
+
+function onPlanYearChange(field: 'originPlanYear' | 'targetPlanYear', event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  form.value = {
+    ...form.value,
+    studentContext: { ...form.value.studentContext, [field]: value },
+  }
+}
+
+/** 当前转专业类型（仅展示用归类，⛔ 不参与任何业务规则）。 */
+const transferType = computed(() =>
+  deriveTransferType(
+    form.value.studentContext.originPlanYear,
+    form.value.studentContext.targetPlanYear,
+  ),
+)
+
+/** 卡片底部简短摘要，例如 `2025 平转 2025`。 */
+const planYearPairLabel = computed(() =>
+  describePlanYearPair(
+    form.value.studentContext.originPlanYear,
+    form.value.studentContext.targetPlanYear,
+  ),
+)
+
+/** 例如 `2025 → 2025：遥感科学与技术 → 网络空间安全`。 */
+const planYearScopeLabel = computed(() =>
+  describePlanYearScope(
+    form.value.studentContext.originPlanYear,
+    form.value.studentContext.targetPlanYear,
+    form.value.studentContext.originMajor,
+    form.value.studentContext.targetMajor,
+  ),
+)
+
+/**
+ * 所选年级是否**都有数据支持**。
+ *
+ * ⚠️ 若为 false，页面**如实说明**实际规划仍使用 2025 级样本，
+ *    并且**不把所选年级送进任何请求**（后端本来也不接收该字段）。
+ */
+const planYearsSupported = computed(() =>
+  bothPlanYearsSupported(
+    form.value.studentContext.originPlanYear,
+    form.value.studentContext.targetPlanYear,
+  ),
+)
+
+function onMajorChange(field: 'originMajor' | 'targetMajor', event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  form.value = {
+    ...form.value,
+    studentContext: { ...form.value.studentContext, [field]: value },
+  }
+}
 const offerings = ref<CourseOffering[]>([])
 const transcript = ref<File | null>(null)
 const result = ref<CaseADemoResponse | null>(null)
@@ -289,6 +396,139 @@ onMounted(loadOfferings)
         </div>
       </section>
 
+      <!--
+        转专业方向（本轮扩展：在原有两个专业下拉之下，各加一个**培养方案年级**）
+        ⚠️ 两个年级字段**各自独立保存**，⛔ 不共用；
+        ⚠️ 与「转入学期」是不同概念，⛔ 本卡片不展示也不改动转入学期；
+        ⚠️ 本轮**只有 2025 级有数据支持**，⛔ 2026 级不作为可选项（不假装数据存在）。
+      -->
+      <SectionCard
+        :mock="false"
+        title="转专业方向"
+        subtitle="请选择转出与转入专业，以及对应的培养方案年级。"
+      >
+        <div class="case-a-majors" data-testid="case-a-majors">
+          <label class="case-a-majors__field">
+            <span class="case-a-majors__label">原专业</span>
+            <select
+              class="case-a-majors__select"
+              data-testid="case-a-origin-major"
+              :value="form.studentContext.originMajor"
+              @change="onMajorChange('originMajor', $event)"
+            >
+              <option
+                v-for="major in MAJOR_CHOICES"
+                :key="major.value"
+                :value="major.value"
+                :disabled="isMajorDisabled('originMajor', major.value)"
+              >
+                {{ major.label }}
+              </option>
+            </select>
+          </label>
+
+          <label class="case-a-majors__field">
+            <span class="case-a-majors__label">目标专业</span>
+            <select
+              class="case-a-majors__select"
+              data-testid="case-a-target-major"
+              :value="form.studentContext.targetMajor"
+              @change="onMajorChange('targetMajor', $event)"
+            >
+              <option
+                v-for="major in MAJOR_CHOICES"
+                :key="major.value"
+                :value="major.value"
+                :disabled="isMajorDisabled('targetMajor', major.value)"
+              >
+                {{ major.label }}
+              </option>
+            </select>
+          </label>
+
+          <!-- 两个年级字段分别独立保存 -->
+          <label class="case-a-majors__field">
+            <span class="case-a-majors__label">原专业培养方案年级</span>
+            <select
+              class="case-a-majors__select"
+              data-testid="case-a-origin-plan-year"
+              :value="form.studentContext.originPlanYear"
+              @change="onPlanYearChange('originPlanYear', $event)"
+            >
+              <option
+                v-for="year in PLAN_YEAR_CHOICES"
+                :key="year"
+                :value="year"
+                :disabled="isPlanYearDisabled(year)"
+              >
+                {{ year }}
+              </option>
+            </select>
+          </label>
+
+          <label class="case-a-majors__field">
+            <span class="case-a-majors__label">目标专业培养方案年级</span>
+            <select
+              class="case-a-majors__select"
+              data-testid="case-a-target-plan-year"
+              :value="form.studentContext.targetPlanYear"
+              @change="onPlanYearChange('targetPlanYear', $event)"
+            >
+              <option
+                v-for="year in PLAN_YEAR_CHOICES"
+                :key="year"
+                :value="year"
+                :disabled="isPlanYearDisabled(year)"
+              >
+                {{ year }}
+              </option>
+            </select>
+          </label>
+        </div>
+
+        <p class="case-a-majors__hint" data-testid="case-a-majors-scope">
+          当前仅提供<strong>两个样本专业</strong>（网络空间安全 / 遥感科学与技术）；
+          <strong>原专业与目标专业不能相同</strong>。
+        </p>
+        <p
+          v-if="sameMajorSelected"
+          class="case-a-majors__warn"
+          data-testid="case-a-majors-same-warning"
+          role="alert"
+        >
+          ⚠️ 原专业与目标专业当前相同，请改选其中一个（被对方占用的选项不可选）。
+        </p>
+
+        <!-- 当前转专业类型（仅展示用归类） -->
+        <div class="case-a-transfer-type" data-testid="case-a-transfer-type">
+          <div class="case-a-transfer-type__head">
+            <h4 class="case-a-transfer-type__title">当前转专业类型</h4>
+            <span class="case-a-transfer-type__badge" data-testid="case-a-transfer-type-label">
+              {{ transferType }}
+            </span>
+          </div>
+          <p class="case-a-transfer-type__path" data-testid="case-a-plan-year-scope">
+            {{ planYearScopeLabel }}
+          </p>
+          <p class="case-a-transfer-type__pair" data-testid="case-a-plan-year-pair">
+            {{ planYearPairLabel }}
+          </p>
+          <p class="case-a-transfer-type__note" data-testid="case-a-plan-year-note">
+            当前演示数据仅支持 <strong>2025 级</strong> 对应的培养方案。
+            其他年级（{{ PENDING_PLAN_YEARS.join('、') }}）需要补充相应数据后才能进行真实对比。
+          </p>
+          <p
+            v-if="!planYearsSupported"
+            class="case-a-majors__warn"
+            data-testid="case-a-plan-year-unsupported"
+            role="alert"
+          >
+            ⚠️ 所选年级缺少培养方案数据。实际规划仍使用 <strong>2025 级</strong> 样本，
+            ⛔ 不会按所选年级生成结果。
+          </p>
+        </div>
+      </SectionCard>
+
       <SectionCard
         :mock="false"
         title="第一步：上传成绩单"
@@ -468,6 +708,109 @@ onMounted(loadOfferings)
 </template>
 
 <style scoped>
+/* ---- 原专业 / 目标专业（本轮新增；两列栅格，沿用 Case A 既有配色与圆角） ---- */
+/* 2×2 栅格：原专业/目标专业 一行，两个培养方案年级 一行（与验收稿一致） */
+.case-a-majors {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 20px;
+}
+
+@media (max-width: 720px) {
+  .case-a-majors {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.case-a-majors__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.case-a-majors__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.case-a-majors__select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.case-a-majors__hint {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---- 当前转专业类型（本轮新增；仅展示用归类） ---- */
+.case-a-transfer-type {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.case-a-transfer-type__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.case-a-transfer-type__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.case-a-transfer-type__badge {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.case-a-transfer-type__path {
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.case-a-transfer-type__pair {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.case-a-transfer-type__note {
+  margin: 8px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.case-a-majors__warn {
+  margin: 8px 0 0;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #f3d9a4;
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
 .case-a-page {
   background: #f4f7fb;
 }
