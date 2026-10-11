@@ -70,6 +70,35 @@ def _runtime_or_503(runtime: CaseADemoRuntime | None) -> CaseADemoRuntime:
     return runtime
 
 
+def _validate_schedule_shape(current_schedule: list[CourseOffering]) -> None:
+    """Report the two schedule-shape problems the Planner rejects as *request* errors.
+
+    These are caller-fixable, so they must not surface as a 500. The Planner still runs
+    every check itself and remains the authority on rules and semantics; this only
+    turns its two input-shape rejections into a 422 whose message a user can act on,
+    instead of letting a bare ``ValueError`` escape. No solving, ordering or rule
+    logic is changed.
+    """
+    identities = [(item.semester, item.course_id, item.class_id) for item in current_schedule]
+    if len(set(identities)) != len(identities):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "error": "case_a_demo_duplicate_offering",
+                "message": "current_schedule 存在重复教学班身份；同一教学班只能提交一次。",
+            },
+        )
+    course_ids = [item.course_id for item in current_schedule]
+    if len(set(course_ids)) != len(course_ids):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "error": "case_a_demo_multiple_classes_for_course",
+                "message": "current_schedule 同一课程存在多个已选班；请先明确要保留哪一个教学班。",
+            },
+        )
+
+
 @router.get("/offerings", response_model=list[CourseOffering])
 def get_case_a_offerings(
     semester: str,
@@ -98,6 +127,7 @@ def create_case_a_plan(
     runtime: Annotated[CaseADemoRuntime | None, Depends(get_case_a_demo_runtime)],
 ) -> CaseADemoPlanResponse:
     configured = _runtime_or_503(runtime)
+    _validate_schedule_shape(request.current_schedule)
     if len(request.transcript_pdf_base64) > ((MAX_UPLOAD_BYTES + 2) // 3) * 4 + 4:
         raise HTTPException(status_code=413, detail="Transcript PDF is too large.")
     try:
