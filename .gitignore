@@ -27,3 +27,8 @@ Thumbs.db
 *.log
 # pytest temp dirs (created when cacheprovider is disabled)
 pytest-cache-files-*/
+
+# 本地验收截图（仅供人眼查看，不提交）
+_verify-case-a/
+_verify/
+VERIFICATION-*.md

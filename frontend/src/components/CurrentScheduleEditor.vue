@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 import { summarizeCredits, matchesSearchTokens } from '../utils/courseSearch'
 import { applyBatchAdd, describeConflicts, evaluateBatchAdd } from '../utils/scheduleBulkAdd'
 import { compactMeetingSummary } from '../utils/weeklySchedule'
@@ -18,6 +18,21 @@ import type { CourseOffering } from '../types/contracts'
  * - 教师为空显示"任课教师：待核验"（⛔ 不造教师数据）；
  * - ⛔ 本轮**不做**截图识别：入口只弹说明，不上传、不 OCR、不调用模型。
  */
+/** 允许的截图类型（只做**本地预览**，⛔ 不上传、⛔ 不解析）。 */
+const SHOT_ACCEPT = 'image/png,image/jpeg,image/webp'
+
+/** 截图大小上限：8 MiB（仅本地校验，⛔ 不代表后端限制）。 */
+const SHOT_MAX_BYTES = 8 * 1024 * 1024
+
+/**
+ * 课表截图识别的**通道状态**。
+ *
+ * ⚠️ 本项目**尚未接入任何图片识别服务**，因此这里恒为 `false`，
+ * 页面只可能显示「待识别」，⛔ 不存在"识别成功"这种状态，
+ * ⇒ ⛔ 永远不会出现任何据称来自截图解析的课程，也⛔ 不会自动勾选任何教学班。
+ */
+const SHOT_RECOGNITION_AVAILABLE = false
+
 const props = defineProps<{
   offerings: readonly CourseOffering[]
   currentSchedule: readonly CourseOffering[]
@@ -65,6 +80,88 @@ const batchNotice = ref('')
 const clearOpen = ref(false)
 const showAll = ref(false)
 const screenshotOpen = ref(false)
+
+/* --------------------------------------------------------------------- *
+ * 课表截图：上传 / 预览 / 移除 / 待识别（本轮补齐）
+ *
+ * ⚠️ 这些状态**完全不参与** `current_schedule` 的产出：
+ *    勾选与手工添加仍是写入课表的**唯一**途径。
+ * --------------------------------------------------------------------- */
+
+/** 已选择的截图文件（⛔ 不读取其内容）。 */
+const shotFile = ref<File | null>(null)
+/** 本地预览 URL（`URL.createObjectURL`，换图或卸载时释放）。 */
+const shotPreviewUrl = ref('')
+/** 校验错误（只针对类型与大小）。 */
+const shotError = ref('')
+
+const shotFileName = (): string => shotFile.value?.name ?? ''
+
+function releaseShotPreview(): void {
+  if (shotPreviewUrl.value) {
+    URL.revokeObjectURL(shotPreviewUrl.value)
+    shotPreviewUrl.value = ''
+  }
+}
+
+/**
+ * 选择 / 更换截图。
+ *
+ * `event.target.value` 会被清空：否则连续选择**同一张图**不会触发 `change`。
+ */
+function onShotChange(event: Event): void {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0] ?? null
+  input.value = ''
+  shotError.value = ''
+
+  if (!file) {
+    return
+  }
+  if (!SHOT_ACCEPT.split(',').includes(file.type)) {
+    // 只接受明确列出的图片类型；⛔ 不做扩展名猜测
+    shotFile.value = null
+    releaseShotPreview()
+    shotError.value = '仅支持 PNG / JPEG / WebP 图片；未选择任何文件，也未读取其内容。'
+    return
+  }
+  if (file.size > SHOT_MAX_BYTES) {
+    shotFile.value = null
+    releaseShotPreview()
+    shotError.value = '截图不得超过 8 MiB；未读取其内容。'
+    return
+  }
+
+  releaseShotPreview()
+  shotFile.value = file
+  // ⚠️ 预览只用浏览器本地对象 URL：⛔ 不发送到任何后端。
+  shotPreviewUrl.value = URL.createObjectURL(file)
+}
+
+function clearShot(): void {
+  releaseShotPreview()
+  shotFile.value = null
+  shotError.value = ''
+}
+
+function closeScreenshotDialog(): void {
+  screenshotOpen.value = false
+  // 关闭时清掉上一次的校验错误，否则重新打开会继续显示过期报错。
+  // 已选中的截图保留（用户可能只是先关掉看看课表）。
+  shotError.value = ''
+}
+
+function formatShotSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+}
+
+onBeforeUnmount(releaseShotPreview)
 
 const campusOptions = computed(() => {
   const campuses = new Set<string>()
@@ -436,13 +533,77 @@ function confirmClear(): void {
 
     <div v-if="screenshotOpen" class="cse__dialog" role="dialog" data-testid="case-a-screenshot-dialog">
       <p>
-        截图识别功能正在接入。未来将用于识别课程名称、星期和节次，并与真实教学班数据匹配；
+        上传课表截图，用于识别课程名称、星期和节次，并与真实教学班数据匹配；
         识别结果需由你确认后才能加入当前课表。
       </p>
-      <p class="cse__hint">本轮不会上传任何图片，也不会产生识别结果。</p>
+
+      <!-- 图片选择：⛔ 只做本地校验与预览，不上传 -->
+      <div class="cse__shot-field">
+        <span class="cse__shot-label">课表截图（PNG / JPEG / WebP）</span>
+        <input
+          class="cse__shot-input"
+          data-testid="case-a-screenshot-input"
+          type="file"
+          :accept="SHOT_ACCEPT"
+          @change="onShotChange"
+        />
+        <span v-if="shotError" class="cse__error" data-testid="case-a-screenshot-error">
+          {{ shotError }}
+        </span>
+        <span
+          v-else-if="shotFile"
+          class="cse__hint"
+          data-testid="case-a-screenshot-name"
+        >
+          已选择：<code class="mono">{{ shotFileName() }}</code>
+          （{{ formatShotSize(shotFile.size) }}；仅本地预览，未上传、未解析）
+        </span>
+        <span v-else class="cse__hint" data-testid="case-a-screenshot-empty">尚未选择截图。</span>
+
+        <button
+          v-if="shotFile"
+          class="cse__link cse__link--danger"
+          type="button"
+          data-testid="case-a-screenshot-remove"
+          @click="clearShot"
+        >
+          移除截图
+        </button>
+      </div>
+
+      <!-- 预览：只用本地对象 URL，⛔ 不经过后端 -->
+      <div
+        v-if="shotPreviewUrl"
+        class="cse__shot-preview"
+        data-testid="case-a-screenshot-preview"
+      >
+        <img :src="shotPreviewUrl" :alt="`课表截图预览：${shotFileName()}`" />
+      </div>
+
+      <!--
+        ⚠️ 待识别反馈：本项目**尚未接入图片识别服务** ⇒ 只有「待识别」。
+        ⛔ 不显示任何识别结论，⛔ 不自动勾选任何教学班。
+      -->
+      <p
+        v-if="shotFile"
+        class="cse__warn"
+        data-testid="case-a-screenshot-status"
+        role="note"
+      >
+        <template v-if="!SHOT_RECOGNITION_AVAILABLE">
+          <strong>状态：待识别。</strong>
+          当前<strong>尚未接入图片识别服务</strong>，因此不会从截图中读出任何课程。
+          请继续使用上方<strong>搜索加入</strong>或<strong>手工添加课程</strong>录入当前课表；
+          ⛔ 本页不会用任何写死数据冒充识别结果。
+        </template>
+        <template v-else>
+          <strong>状态：识别通道已启用。</strong>
+        </template>
+      </p>
+
       <div class="cse__dialog-actions">
-        <button class="button button--small" type="button" data-testid="case-a-screenshot-close" @click="screenshotOpen = false">
-          知道了
+        <button class="button button--small" type="button" data-testid="case-a-screenshot-close" @click="closeScreenshotDialog">
+          关闭
         </button>
       </div>
     </div>
@@ -740,6 +901,44 @@ function confirmClear(): void {
 .cse__dialog-actions {
   display: flex;
   gap: 10px;
+}
+
+/* ---- 课表截图上传（本轮补齐；⛔ 仅追加，不改上方既有规则） ---- */
+.cse__shot-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* 「移除截图」跟在文件名行下方，避免与预览错位 */
+.cse__shot-field .cse__link--danger {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+
+.cse__shot-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cse__shot-input {
+  font-size: 13px;
+}
+
+.cse__shot-preview {
+  border: 1px solid #d9e6f7;
+  border-radius: var(--radius);
+  padding: 8px;
+  background: #f8fbff;
+  max-width: 520px;
+}
+
+.cse__shot-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
 }
 
 .cse__screenshot {

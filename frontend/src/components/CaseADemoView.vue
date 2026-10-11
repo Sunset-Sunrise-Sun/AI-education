@@ -13,6 +13,7 @@ import {
   removePreferredCourse,
   type ManualScheduleEntry,
 } from '../state/userInput'
+import { SAMPLE_MAJOR_OPTIONS } from '../config'
 import type { CourseOffering } from '../types/contracts'
 import CurrentScheduleEditor from './CurrentScheduleEditor.vue'
 import FutureRoadmapView from './FutureRoadmapView.vue'
@@ -36,6 +37,40 @@ const PLANNING_STEPS = [
 ] as const
 
 const form = ref(createDefaultUserInputForm())
+
+/**
+ * 两个样本专业（组长本轮指定的范围）。
+ * ⛔ 只作为下拉选项；组件内⛔ 不按专业名分叉做任何业务判断。
+ */
+const MAJOR_CHOICES = SAMPLE_MAJOR_OPTIONS
+
+/**
+ * ⚠️ 原专业与目标专业**不得相同**。
+ *
+ * 做法：把"对方已选中的那个"在该下拉框里标为 `disabled`，
+ * 因此**无法通过界面**选成相同专业；若父级传入的历史值恰好相同，
+ * 这里只**如实提示**，⛔ 不静默改写用户数据。
+ */
+const sameMajorSelected = computed(
+  () => form.value.studentContext.originMajor === form.value.studentContext.targetMajor,
+)
+
+function isMajorDisabled(field: 'originMajor' | 'targetMajor', value: string): boolean {
+  const context = form.value.studentContext
+  const other = field === 'originMajor' ? context.targetMajor : context.originMajor
+  // 只有“选中该值就会与对方撞车”时才禁用（即该值正好等于对方当前值）。
+  // 不能反过来写“把对方的选择禁用”：那样在两者已经相同时会把两个选项同时禁用，
+  // 用户无法改回，页面会卡死。
+  return value === other
+}
+
+function onMajorChange(field: 'originMajor' | 'targetMajor', event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  form.value = {
+    ...form.value,
+    studentContext: { ...form.value.studentContext, [field]: value },
+  }
+}
 const offerings = ref<CourseOffering[]>([])
 const transcript = ref<File | null>(null)
 const result = ref<CaseADemoResponse | null>(null)
@@ -174,6 +209,69 @@ onMounted(loadOfferings)
           <span class="tag">RestrictedPlanner</span>
         </div>
       </section>
+
+      <!--
+        原专业 / 目标专业（本轮新增，位置：第一步「上传成绩单」**之前**）
+        ⚠️ 仅两个样本专业；⛔ 两个下拉框不允许选成同一个专业；
+        ⛔ 不参与任何业务规则，只作为转专业上下文随表单提交。
+      -->
+      <SectionCard
+        :mock="false"
+        title="转专业方向"
+        subtitle="选择原专业与目标专业；两个专业不能相同，其余专业后续增量补充。"
+      >
+        <div class="case-a-majors" data-testid="case-a-majors">
+          <label class="case-a-majors__field">
+            <span class="case-a-majors__label">原专业</span>
+            <select
+              class="case-a-majors__select"
+              data-testid="case-a-origin-major"
+              :value="form.studentContext.originMajor"
+              @change="onMajorChange('originMajor', $event)"
+            >
+              <option
+                v-for="major in MAJOR_CHOICES"
+                :key="major.value"
+                :value="major.value"
+                :disabled="isMajorDisabled('originMajor', major.value)"
+              >
+                {{ major.label }}
+              </option>
+            </select>
+          </label>
+
+          <label class="case-a-majors__field">
+            <span class="case-a-majors__label">目标专业</span>
+            <select
+              class="case-a-majors__select"
+              data-testid="case-a-target-major"
+              :value="form.studentContext.targetMajor"
+              @change="onMajorChange('targetMajor', $event)"
+            >
+              <option
+                v-for="major in MAJOR_CHOICES"
+                :key="major.value"
+                :value="major.value"
+                :disabled="isMajorDisabled('targetMajor', major.value)"
+              >
+                {{ major.label }}
+              </option>
+            </select>
+          </label>
+        </div>
+        <p class="case-a-majors__hint" data-testid="case-a-majors-scope">
+          当前仅提供<strong>两个样本专业</strong>（网络空间安全 / 遥感科学与技术）；
+          <strong>原专业与目标专业不能相同</strong>。
+        </p>
+        <p
+          v-if="sameMajorSelected"
+          class="case-a-majors__warn"
+          data-testid="case-a-majors-same-warning"
+          role="alert"
+        >
+          ⚠️ 原专业与目标专业当前相同，请改选其中一个（被对方占用的选项不可选）。
+        </p>
+      </SectionCard>
 
       <SectionCard
         :mock="false"
@@ -342,6 +440,52 @@ onMounted(loadOfferings)
 </template>
 
 <style scoped>
+/* ---- 原专业 / 目标专业（本轮新增；两列栅格，沿用 Case A 既有配色与圆角） ---- */
+.case-a-majors {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.case-a-majors__field {
+  display: flex;
+  flex: 1 1 240px;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.case-a-majors__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.case-a-majors__select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.case-a-majors__hint {
+  margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.case-a-majors__warn {
+  margin: 8px 0 0;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #f3d9a4;
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
 .case-a-page {
   background: #f4f7fb;
 }
