@@ -379,3 +379,109 @@ def test_status_must_agree_with_candidate_payload() -> None:
 def test_empty_completed_input_yields_no_sets() -> None:
     catalog = _catalog((_course("A", "甲"),))
     assert build_identity_candidates((), catalog, target_version_id=VERSION) == ()
+
+
+# ------------------------------------------- input identifier integrity (review fix)
+
+
+def test_duplicate_record_identity_is_rejected_not_deduplicated() -> None:
+    """One (source_id, source_record) cannot denote two rows.
+
+    The input is not silently de-duplicated: that would hide the malformed row a
+    reviewer needs to see.
+    """
+    catalog = _catalog((_course("A", "甲"),))
+    first = _record("甲", row=5)
+    same_again = _record("甲", row=5)
+
+    assert first == same_again  # identical identifier AND identical content
+    with pytest.raises(CurriculumNormalizationError) as error:
+        build_identity_candidates((first, same_again), catalog, target_version_id=VERSION)
+    assert "duplicate record identity" in str(error.value)
+
+
+def test_duplicate_record_identity_is_rejected_even_when_content_differs() -> None:
+    """Same identifier but different content is still an error, never a merge."""
+    catalog = _catalog((_course("甲", "甲"), _course("乙", "乙")))
+    one = _record("甲", row=9)
+    conflicting = _record("乙", row=9)  # same source_record, different course name
+
+    with pytest.raises(CurriculumNormalizationError) as error:
+        build_identity_candidates((one, conflicting), catalog, target_version_id=VERSION)
+    assert "duplicate record identity" in str(error.value)
+
+
+def test_duplicate_identity_error_lists_the_offending_reference_only() -> None:
+    """The error names the identifier, never the record's course name or content."""
+    catalog = _catalog((_course("甲", "甲"),))
+    with pytest.raises(CurriculumNormalizationError) as error:
+        build_identity_candidates(
+            (_record("甲", row=3), _record("甲", row=3)), catalog, target_version_id=VERSION
+        )
+    message = str(error.value)
+    assert "pdf:3" in message
+    assert "DEMO-COMPLETED" in message
+    assert "甲" not in message
+
+
+def test_same_name_with_distinct_source_records_stays_separate() -> None:
+    """The legitimate real-transcript shape: two 体育 rows are two records."""
+    catalog = _catalog((_course("PED101", "体育"),))
+    sets = build_identity_candidates(
+        (_record("体育", row=7), _record("体育", row=18)), catalog, target_version_id=VERSION
+    )
+
+    assert len(sets) == 2
+    assert [s.record_reference for s in sets] == [
+        ("DEMO-COMPLETED", "pdf:7"),
+        ("DEMO-COMPLETED", "pdf:18"),
+    ]
+    assert all(s.status is IdentityStatus.CANDIDATES_FOUND for s in sets)
+
+
+def test_mixing_two_source_ids_in_one_call_is_rejected() -> None:
+    """Case A works within one transcript artifact; artifacts must not be mixed."""
+    catalog = _catalog((_course("A", "甲"),))
+
+    with pytest.raises(CurriculumNormalizationError) as error:
+        build_identity_candidates(
+            (_record("甲", row=1), _record("甲", row=2, source_id="DEMO-OTHER-SOURCE")),
+            catalog,
+            target_version_id=VERSION,
+        )
+    assert "more than one source_id" in str(error.value)
+
+
+def test_mixing_source_ids_is_rejected_even_when_record_ids_do_not_clash() -> None:
+    """Distinct source_records across distinct sources is still a mixed input."""
+    catalog = _catalog((_course("甲", "甲"), _course("乙", "乙")))
+    with pytest.raises(CurriculumNormalizationError):
+        build_identity_candidates(
+            (
+                _record("甲", row=1),
+                _record("乙", row=1, source_id="upload:pdf:sha256:otherdigest"),
+            ),
+            catalog,
+            target_version_id=VERSION,
+        )
+
+
+def test_a_mixed_input_is_rejected_before_any_candidate_is_built() -> None:
+    """The integrity check runs first, so no partial result can escape."""
+    catalog = _catalog((_course("A", "甲"),))
+    with pytest.raises(CurriculumNormalizationError):
+        build_identity_candidates(
+            (_record("甲", row=1, source_id="S1"), _record("甲", row=2, source_id="S2")),
+            catalog,
+            target_version_id=VERSION,
+        )
+
+
+def test_single_source_id_input_is_accepted() -> None:
+    """The check must not reject the ordinary single-artifact input."""
+    catalog = _catalog((_course("A", "甲"), _course("B", "乙")))
+    sets = build_identity_candidates(
+        (_record("甲", row=1), _record("乙", row=2)), catalog, target_version_id=VERSION
+    )
+    assert len(sets) == 2
+    assert {s.completed_source_id for s in sets} == {"DEMO-COMPLETED"}

@@ -240,6 +240,55 @@ _UNRESOLVED_REASON = "目录中没有任何课程与该记录的名称精确匹�
 _CONFIRMED_REASON = "该记录已带有明确的课程身份，无需再生成候选。"
 
 
+def _validated_records(completed: Sequence[CompletedCourse]) -> tuple[CompletedCourse, ...]:
+    """Return the records after checking the identifier integrity of the input.
+
+    A record is identified by ``(source_id, source_record)``. Two violations are input
+    errors and are **never** repaired silently, because quietly dropping or merging
+    records would hide exactly the mistake a reviewer needs to see:
+
+    1. the same ``(source_id, source_record)`` twice — one identifier cannot denote two
+       rows, so any candidate or later confirmation built on it would be ambiguous;
+    2. more than one ``source_id`` in a single call — Case A works within one transcript
+       artifact, and mixing artifacts would let a decision bound to one transcript be
+       read as if it belonged to another.
+
+    Repeated *course names* with distinct ``source_record`` are legal and untouched: the
+    real Case A transcript has two 体育 rows and they must stay separate.
+    """
+
+    if isinstance(completed, (str, bytes, bytearray)) or not isinstance(completed, Sequence):
+        raise CurriculumNormalizationError("completed: expected a sequence")
+
+    records: list[CompletedCourse] = []
+    for record in completed:
+        if not isinstance(record, CompletedCourse):
+            raise CurriculumNormalizationError("completed: unexpected item type")
+        records.append(record)
+
+    source_ids = {record.source_id for record in records}
+    if len(source_ids) > 1:
+        raise CurriculumNormalizationError(
+            "completed: records from more than one source_id cannot be combined"
+        )
+
+    seen: set[tuple[str, str]] = set()
+    duplicates: set[tuple[str, str]] = set()
+    for record in records:
+        reference = (record.source_id, record.source_record)
+        if reference in seen:
+            duplicates.add(reference)
+        seen.add(reference)
+    if duplicates:
+        # Field names and row identifiers only; no record content is echoed.
+        listed = ", ".join(sorted(f"{sid}#{srec}" for sid, srec in duplicates))
+        raise CurriculumNormalizationError(
+            f"completed: duplicate record identity ({listed})"
+        )
+
+    return tuple(records)
+
+
 def build_identity_candidates(
     completed: Sequence[CompletedCourse],
     catalog: CurriculumVersion,
@@ -253,6 +302,11 @@ def build_identity_candidates(
     intends to bind confirmations to; it must equal ``catalog.version_id``, otherwise
     a candidate from one version could be paired with another version's requirements.
 
+    The input must be internally consistent: every record must carry the same
+    ``source_id`` and each ``(source_id, source_record)`` must be unique. Both
+    violations raise :class:`CurriculumNormalizationError` rather than being repaired,
+    so a malformed input never produces a plausible-looking candidate list.
+
     Nothing here recognises credit, satisfies a requirement, or selects a candidate.
     """
 
@@ -263,8 +317,7 @@ def build_identity_candidates(
         raise CurriculumNormalizationError(
             "catalog: version does not match the requested target version"
         )
-    if isinstance(completed, (str, bytes, bytearray)) or not isinstance(completed, Sequence):
-        raise CurriculumNormalizationError("completed: expected a sequence")
+    records_in = _validated_records(completed)
 
     # Index the catalogue by normalised name. Every entry is kept, so repeated names
     # stay visible instead of being collapsed into one.
@@ -273,9 +326,7 @@ def build_identity_candidates(
         by_name.setdefault(normalize_course_name(course.course_name), []).append(course)
 
     sets: list[IdentityCandidateSet] = []
-    for record in completed:
-        if not isinstance(record, CompletedCourse):
-            raise CurriculumNormalizationError("completed: unexpected item type")
+    for record in records_in:
 
         if record.course_id_status is CourseIdStatus.CONFIRMED:
             sets.append(IdentityCandidateSet(
