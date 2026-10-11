@@ -2134,3 +2134,18 @@
 单引号 vs 双引号、`</template>` 与 `</SectionCard>` 计数、`<pipeline-step` 实际不存在、
 `section-offerings` 尾部包含 `section-preference` 前缀导致 `indexOf` 取错位置）。
 全部靠"先断言、后写盘"拦住，⛔ 未产生半成品文件。
+
+### 第 7 轮工作记录（折叠 + dev server 稳定性）
+1. `SectionCard.vue`：加 `collapsible`/`defaultOpen`，`v-show` 控内容，`aria-expanded` 同步；
+   ⛔ 未改任何既有 props 的默认值 ⇒ 旧调用方零影响。
+2. `MakeupPathView.vue`：`section-later-semesters` / `section-priority-risk` 加
+   `collapsible` + `:default-open="false"`。
+3. `base.css`：**仅追加** `.card__toggle*` 与 `.card--collapsible[data-open='false']`
+   （旧版 1–2006 行仍逐字未动）。
+4. `vite.config.ts`：`server.watch.ignored` 忽略 `*tmpdir*`。
+5. 测试：`ux-polish.spec.ts` 加 1 个折叠用例（默认折叠集合 + 保持展开集合 +
+   **关键入口无需展开即可访问** + 可展开/收起）；E2E 加 `expandSection()` 助手，
+   `L03` 先展开再断言 `path-priority-list`。
+⚠️ 本轮踩坑与修正：初始把 `section-explanation` 也默认折叠，导致 7 个 E2E 用例超时
+（`element is not visible`）——**证明"把关键功能入口放进折叠区"是真实 UX 缺陷**，
+已回退为默认展开，并把该约束写进测试断言。

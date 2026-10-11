@@ -138,6 +138,27 @@ async function attachedAiTestIds(page) {
  * ⚠️ 为什么不能只等容器：`v-if` 让容器与子元素在不同 tick 挂载，
  * 只等 `ai-intent-draft` 会出现"容器在、子元素还没在"的竞态。
  */
+/**
+ * 展开一个**默认折叠**的区块（Phase 2 第 2 轮：新增的大型分析区块默认折叠）。
+ *
+ * ⚠️ 折叠只是展示状态（`v-show`），内容仍在 DOM 里但**不可见**，
+ * 所以 Playwright 的 `scrollIntoViewIfNeeded` / `expect visible` 会超时。
+ * 本助手点开折叠开关，之后按常规断言即可。
+ */
+async function expandSection(page, sectionId, timeout = 15000) {
+  const toggle = page.locator(`[data-testid="${sectionId}-toggle"]`)
+  await toggle.waitFor({ state: 'attached', timeout })
+  const expanded = await toggle.getAttribute('aria-expanded')
+  if (expanded !== 'true') {
+    await toggle.click()
+    await page.waitForFunction(
+      (id) => document.querySelector(`[id="${id}"]`)?.getAttribute('data-open') === 'true',
+      sectionId,
+      { timeout },
+    )
+  }
+}
+
 async function waitForDraftPanel(page, timeout = 25000) {
   await waitForState(page, 'ai-intent-draft', { timeout })
   await waitForState(page, 'ai-generator-kind', { timeout })
@@ -361,6 +382,8 @@ export function liveBaselineCases({ baseUrl }) {
         try {
           await gotoHome(page, baseUrl)
           await switchView(page, 'makeup-path')
+          // ⚠️ 优先级/风险区块**默认折叠**（Phase 2 第 2 轮），先展开再断言
+          await expandSection(page, 'section-priority-risk')
           await waitForState(page, 'path-priority-list')
           const body = await page.locator('body').innerText()
           for (const label of ['需要补修', '已满足']) {

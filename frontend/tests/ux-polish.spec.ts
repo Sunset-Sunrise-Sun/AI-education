@@ -288,6 +288,51 @@ describe('补修路径：阅读顺序与分区（P0）', () => {
     expect(text).not.toContain('培养方案导入')
   })
 
+  it('新增的大型分析区块默认折叠，且可展开（⛔ 不删内容、⛔ 不改数据）', async () => {
+    const wrapper = mountPath()
+    await flushPromises()
+
+    // 默认折叠：两个体量大、非首要信息的新增分析区块
+    for (const id of ['section-later-semesters', 'section-priority-risk']) {
+      const card = wrapper.find(`[id="${id}"]`)
+      expect(card.exists(), `${id} 未渲染`).toBe(true)
+      expect(card.attributes('data-collapsible'), `${id} 不可折叠`).toBe('true')
+      expect(card.attributes('data-open'), `${id} 应默认折叠`).toBe('false')
+      const toggle = wrapper.find(`[data-testid="${id}-toggle"]`)
+      expect(toggle.exists(), `${id} 缺少折叠开关`).toBe(true)
+      expect(toggle.attributes('aria-expanded')).toBe('false')
+    }
+
+    // 保持展开与不可折叠的区块：
+    //  - `section-current-semester` / `section-plan`：旧版核心展示（课表 / 方案）
+    //  - `section-explanation`：内含关键功能入口 `explanation-open`，
+    //    默认折叠会让用户必须先猜到要展开才能用（⛔ 不可接受）
+    for (const id of [
+      'section-current-semester',
+      'section-plan',
+      'section-explanation',
+    ]) {
+      const card = wrapper.find(`[id="${id}"]`)
+      expect(card.exists(), `${id} 未渲染`).toBe(true)
+      expect(card.attributes('data-collapsible'), `${id} ⛔ 不应可折叠`).toBeUndefined()
+    }
+
+    // 关键功能入口必须**无需展开**即可访问
+    expect(wrapper.find('[data-testid="explanation-open"]').exists()).toBe(true)
+
+    // 展开后内容仍可访问（⛔ 未删除任何内容）
+    const target = 'section-priority-risk'
+    await wrapper.find(`[data-testid="${target}-toggle"]`).trigger('click')
+    const afterOpen = wrapper.find(`[id="${target}"]`)
+    expect(afterOpen.attributes('data-open')).toBe('true')
+    expect(
+      wrapper.find(`[data-testid="${target}-toggle"]`).attributes('aria-expanded'),
+    ).toBe('true')
+    // 折叠后再点一次可收起
+    await wrapper.find(`[data-testid="${target}-toggle"]`).trigger('click')
+    expect(wrapper.find(`[id="${target}"]`).attributes('data-open')).toBe('false')
+  })
+
   it('支撑数据分区明确说明"不产生新结论"', async () => {
     const wrapper = mountPath()
     await flushPromises()

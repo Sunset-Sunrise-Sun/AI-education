@@ -396,6 +396,8 @@ const explanationEntryVisible = computed(() => props.displayedPlanResult !== nul
       <!-- 后续学期课程级条件路径 -->
       <SectionCard
         section-id="section-later-semesters"
+        collapsible
+        :default-open="false"
         title="后续学期课程级条件路径"
         subtitle="按后端给出的 recommended_semester 分组展示补修课程；先修关系只转述 prerequisites，前端不新增、不猜测先修边。"
       >
@@ -429,6 +431,8 @@ const explanationEntryVisible = computed(() => props.displayedPlanResult !== nul
       <!-- 补修优先级说明 / 风险 / 人工确认 -->
       <SectionCard
         section-id="section-priority-risk"
+        collapsible
+        :default-open="false"
         tone="attention"
         title="补修优先级说明、风险与人工确认"
         subtitle="优先级与风险一律来自后端字段（deadline_semester / risks / unresolved）；前端不作排名或风险判定。"

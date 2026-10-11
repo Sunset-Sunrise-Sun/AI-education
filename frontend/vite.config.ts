@@ -29,6 +29,13 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [vue()],
     server: {
+      watch: {
+        // ⚠️ Windows 环境修复：编辑器会在 tests/ 下创建 《*.tmpdir》 临时目录，
+        // Vite 的文件监听器在它上报 EBUSY 并**直接崩澃 dev server**。
+        // 这不属于产品代码问题，但会让本地预览反复中断。
+        // 只忽略这类临时目录，不影响 src/ 的 HMR。
+        ignored: ['**/.*tmpdir*/**', '**/*.tmpdir/**'],
+      },
       // 显式绑定 IPv4。
       // 不写 host 时 Vite 绑定的是 localhost，而 Node 在 Windows 上会优先解析到 IPv6
       // `::1`，于是浏览器/命令行访问 http://127.0.0.1:5173 会连接失败——

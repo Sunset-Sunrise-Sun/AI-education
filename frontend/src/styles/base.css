@@ -3386,3 +3386,41 @@ code.mono {
     width: 100%;
   }
 }
+
+/* ===== 区块折叠（Phase 2 第 2 轮）===== */
+/* ⚠️ 仅新增样式，⛔ 不修改旧版任何规则（旧版 1–2006 行保持逐字不变）。
+   `.card__toggle` 只在 `collapsible` 为真时渲染，因此⛔ 不影响既有区块。 */
+.card__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.card__toggle:hover .card__title {
+  color: var(--accent, #2563eb);
+}
+
+.card__toggle:focus-visible {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.card__toggle-icon {
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-muted, #64748b);
+}
+
+/* 折叠后卡片本身收紧，避免留下一大块空白 */
+.card--collapsible[data-open='false'] {
+  padding-bottom: 14px;
+}

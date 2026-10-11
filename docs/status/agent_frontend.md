@@ -1230,3 +1230,15 @@ frontend: npm test（9 文件 134 用例）· npm run typecheck（vue-tsc --noEm
 - 测试：前端 **372 passed**（+1）；`vue-tsc` 0；`build` 0；浏览器 E2E **27/27**。
 - 页面高度：旧版 6635px → 新版 8440px（+1805px，含 5 个新增区块）。
 - ⚠️ 「成绩截图样本导入」样本未提供 ⇒ ⛔ 未实现，也⛔ 不假装已实现识别。
+
+### 第 7 轮（新增分析区块默认折叠 · Phase 2 第 2 轮）
+- `SectionCard` 新增**可选** `collapsible` / `defaultOpen`（默认 `false` / `true`）
+  ⇒ ⛔ 既有调用方行为一字不变；`.card__toggle` 只在可折叠时渲染。
+- **默认折叠**（体量大、非首要信息）：`section-later-semesters`、`section-priority-risk`。
+- **保持展开**：`section-current-semester`、`section-plan`（旧版核心展示），
+  以及 `section-explanation` —— ⚠️ 它内含关键功能入口 `explanation-open`，
+  默认折叠会让用户必须先猜到要展开，实测会导致 E2E 直接超时，故不折叠。
+- `vite.config.ts`：忽略编辑器 `*tmpdir*` 临时目录 —— Windows 下 Vite 监听它报
+  `EBUSY` 会**直接崩掉 dev server**（本轮复现 3 次），⛔ 与产品代码无关。
+- 测试：前端 **373 passed**（+1 折叠用例）；`vue-tsc` 0；`build` 0；E2E **27/27**。
+- 整页高度 8440px → **7941px**（折叠省 499px）。
