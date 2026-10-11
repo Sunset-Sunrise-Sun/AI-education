@@ -533,7 +533,7 @@ function confirmClear(): void {
 
     <div v-if="screenshotOpen" class="cse__dialog" role="dialog" data-testid="case-a-screenshot-dialog">
       <p>
-        上传课表截图，用于识别课程名称、星期和节次，并与真实教学班数据匹配；
+        上传课表截图，用于识别课程名称、星期和节次，并与教学班数据匹配；
         识别结果需由你确认后才能加入当前课表。
       </p>
 
