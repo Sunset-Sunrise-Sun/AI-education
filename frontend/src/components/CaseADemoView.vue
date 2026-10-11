@@ -1,6 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { loadCaseAOfferings, runCaseADemo, type CaseADemoResponse } from '../api/caseADemo'
+import {
+  CaseAApiError,
+  loadCaseAOfferings,
+  runCaseADemo,
+  type CaseADemoResponse,
+} from '../api/caseADemo'
 import {
   addManualScheduleEntry,
   addPreferredCourse,
@@ -148,6 +153,34 @@ const transcript = ref<File | null>(null)
 const result = ref<CaseADemoResponse | null>(null)
 const loading = ref(false)
 const error = ref('')
+
+/**
+ * 教学班（offerings）的**真实加载状态**。
+ *
+ * ⚠️ 存在的理由（R1 修复）：页面此前**无条件**显示「真实教学班数据」，
+ * 而该数据来自 `/api/v1/case-a-demo/offerings`，其运行时由环境变量开关控制，
+ * 未配置时返回 503 ⇒ 会出现「已加载真实教学班数据 0 条」+ 报错的自相矛盾展示。
+ *
+ * 现在按状态如实展示：
+ *   `idle`      尚未请求
+ *   `loading`   请求中
+ *   `success`   拿到 HTTP 200（列表可能为空，空列表**不等于**不可用）
+ *   `error`     其它失败（网络 / 未知状态码）
+ *   `not_configured` 后端 503 + `case_a_demo_not_configured`（运行时未配置）
+ */
+type OfferingsStatus = 'idle' | 'loading' | 'success' | 'error' | 'not_configured'
+const offeringsStatus = ref<OfferingsStatus>('idle')
+
+/**
+ * 来源说明文案。
+ *
+ * ⚠️ 关键约束：`loadCaseAOfferings` 的响应是**裸数组** `CourseOffering[]`，
+ * **不携带任何来源字段**。因此前端**没有证据**对这一批数据做来源认证，
+ * 只能给出中性表述；⛔ 不得声称"真实""已核验"。
+ * （规划结果 `/plan` 的响应**有** `provenance`，那部分按实际字段展示。）
+ */
+const OFFERINGS_SOURCE_NOTE =
+  '教学班数据来自本次响应；该接口未返回来源字段，因此本页不对其真实性作认定。'
 const manualOpen = ref(false)
 
 const manualCount = computed(() => manualScheduleOfferingCount(form.value))
@@ -170,13 +203,83 @@ const resultCourseNames = computed(() => {
 
 async function loadOfferings(): Promise<void> {
   error.value = ''
+  offeringsStatus.value = 'loading'
   try {
     offerings.value = await loadCaseAOfferings(form.value.semester)
+    // ⚠️ 空列表也是**成功**：接口确实答复了，只是该学期没有教学班。
+    //    ⛔ 不得把"空"当成"未加载/不可用"。
+    offeringsStatus.value = 'success'
   } catch (cause) {
     offerings.value = []
-    error.value = cause instanceof Error ? cause.message : '教学班数据暂时不可用。'
+    if (cause instanceof CaseAApiError && cause.isNotConfigured) {
+      offeringsStatus.value = 'not_configured'
+      error.value = '教学班数据运行时尚未配置（后端返回 503），因此当前没有可展示的教学班。'
+    } else {
+      offeringsStatus.value = 'error'
+      error.value = cause instanceof Error ? cause.message : '教学班数据暂时不可用。'
+    }
   }
 }
+
+/**
+ * 规划结果里的**教学班来源**（仅当后端 `provenance` 真的给出字段时才展示）。
+ *
+ * ⚠️ 这是"依据已有可信响应字段展示来源"的正例：
+ *     `/plan` 响应带 `provenance.course_data`（实测值 `case-scoped:south+shenzhen`），
+ *     因此这里**照实显示后端给的值**，⛔ 不自行改写、⛔ 不添加"真实/已核验"等认定。
+ */
+const planCourseDataSource = computed(() => {
+  const value = result.value?.provenance?.course_data
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+})
+
+/**
+ * 结果区「教学班」条目的**说明**。
+ *
+ * ⚠️ 有 provenance 时如实带出来源；缺失时用中性表述（⛔ 不声称真实）。
+ */
+const planCourseDataLabel = computed(() =>
+  planCourseDataSource.value ? '教学班（来源见下）' : '教学班',
+)
+
+/** 教学班数据是否**已成功加载**（唯一允许展示"已加载"字样的依据）。 */
+const offeringsLoaded = computed(() => offeringsStatus.value === 'success')
+
+/** 顶部来源标签：只按真实状态表述，⛔ 不做无条件真实性认证。 */
+const offeringsTagLabel = computed(() => {
+  switch (offeringsStatus.value) {
+    case 'loading':
+      return '教学班数据加载中'
+    case 'success':
+      return '已加载教学班数据'
+    case 'not_configured':
+      return '教学班数据未配置'
+    case 'error':
+      return '教学班数据不可用'
+    default:
+      return '教学班数据待加载'
+  }
+})
+
+/** 标签是否可用"已加载"的强调样式（仅在确实成功时）。 */
+const offeringsTagEmphasized = computed(() => offeringsStatus.value === 'success')
+
+/** 第二步副标题：按状态如实描述，⛔ 未成功时⛔ 不出现"已加载真实…"。 */
+const scheduleSubtitle = computed(() => {
+  const scope = '数据范围为南校园 + 深圳校区。'
+  switch (offeringsStatus.value) {
+    case 'loading':
+      return `正在加载教学班数据；${scope}`
+    case 'success':
+      return `已加载教学班数据 ${offerings.value.length} 条；${scope}`
+    case 'not_configured':
+      return `教学班数据运行时未配置，当前无可展示教学班；${scope}`
+    case 'error':
+      return `教学班数据加载失败，当前无可展示教学班；${scope}`
+    default:
+      return `尚未加载教学班数据；${scope}`
+  }
+})
 
 function chooseTranscript(event: Event): void {
   const input = event.target as HTMLInputElement
@@ -271,12 +374,23 @@ onMounted(loadOfferings)
           <h1>学航·转衔</h1>
           <p class="case-a-subtitle">面向转专业学生的学业路径重构</p>
           <p class="case-a-lead">
-            上传成绩单后，系统将结合目标专业培养方案、真实教学班数据和你的当前课表，
+            上传成绩单后，系统将结合目标专业培养方案、教学班数据和你的当前课表，
             生成补修与排课建议。
           </p>
         </div>
+        <!--
+          ⚠️ 来源标签按**真实加载状态**渲染（R1 修复）：
+          此前无条件写死「真实教学班数据」，在运行时未配置（503）或加载失败时
+          会与同一屏的报错自相矛盾。现在只有 `success` 才用强调样式。
+        -->
         <div class="case-a-tags" aria-label="数据与计算范围">
-          <span class="tag tag--source-real">真实教学班数据</span>
+          <span
+            class="tag"
+            :class="offeringsTagEmphasized ? 'tag--source-real' : ''"
+            data-testid="case-a-offerings-tag"
+          >
+            {{ offeringsTagLabel }}
+          </span>
           <span class="tag">南校园 + 深圳校区</span>
           <span class="tag">RestrictedPlanner</span>
         </div>
@@ -433,7 +547,7 @@ onMounted(loadOfferings)
       <SectionCard
         :mock="false"
         title="第二步：填写当前课表"
-        :subtitle="`已加载真实教学班数据 ${offerings.length} 条；数据范围为南校园 + 深圳校区。`"
+        :subtitle="scheduleSubtitle"
       >
         <div class="case-a-schedule">
           <CurrentScheduleEditor
@@ -522,7 +636,7 @@ onMounted(loadOfferings)
           <MakeupTaskList :tasks="result.makeup_tasks" />
         </SectionCard>
 
-        <SectionCard :mock="false" title="本学期推荐课表" subtitle="按真实教学班绘制；这是 Planner 的建议，不代表已经选上课。">
+        <SectionCard :mock="false" :title="'本学期推荐课表'" subtitle="按本次响应返回的教学班绘制；这是 Planner 的建议，不代表已经选上课。">
           <WeeklyScheduleView
             :plan-result="result.plan_result"
             :offerings="result.course_offerings"
@@ -550,12 +664,24 @@ onMounted(loadOfferings)
         <SectionCard :mock="false" title="本次规划数据">
           <div class="case-a-coverage" data-testid="case-a-coverage-summary">
             <div><strong>{{ result.transcript.record_count }}</strong><span>成绩单课程</span></div>
-            <div><strong>{{ result.course_offerings.length }}</strong><span>真实教学班</span></div>
+            <div><strong>{{ result.course_offerings.length }}</strong><span>{{ planCourseDataLabel }}</span></div>
             <div><strong>南 + 深</strong><span>数据范围</span></div>
-            <div><strong>否</strong><span>全校完整学期数据</span></div>
+            <div><strong>{{ result.provenance?.is_full_semester ? '是' : '否' }}</strong><span>全校完整学期数据</span></div>
           </div>
+          <!--
+            ⚠️ 此前这里写死「4069 条教学班」——那是**神秘数字**，且与响应无关。
+            现在如实说明"候选池"这一语义，条数见上方由响应计算出的数字。
+          -->
           <p class="case-a-secondary">
-            4069 条教学班仅作为规划候选池使用，不在页面中逐条铺开。
+            响应中的教学班仅作为规划候选池使用，不在页面中逐条铺开。
+          </p>
+          <!-- 来源照实展示后端 provenance（缺失时整行不渲染） -->
+          <p
+            v-if="planCourseDataSource"
+            class="case-a-secondary"
+            data-testid="case-a-plan-course-data-source"
+          >
+            教学班来源：<code class="mono">{{ planCourseDataSource }}</code>
           </p>
         </SectionCard>
 
