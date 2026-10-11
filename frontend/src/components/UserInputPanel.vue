@@ -6,7 +6,7 @@ import type { E2EDebugInfo } from './E2EDebugPanel.vue'
 import PreferenceForm from './PreferenceForm.vue'
 import StudentContextForm from './StudentContextForm.vue'
 import SubmissionActions from './SubmissionActions.vue'
-import { MAJOR_OPTIONS } from '../config'
+import { MAJOR_OPTIONS, SAMPLE_MAJOR_OPTIONS } from '../config'
 import type { PlanResultSource } from '../config'
 import type { CourseOffering } from '../types/contracts'
 import type { StudentContext, UserInputForm } from '../state/userInput'
@@ -102,6 +102,17 @@ function onContextUpdate(value: StudentContext): void {
   emit('update:form', { ...props.form, studentContext: value })
 }
 
+/**
+ * 单个上下文字段变更（用于新增的两个专业下拉框）。
+ *
+ * ⚠️ 只是把 `<select>` 的取值写回 `studentContext`，
+ * ⛔ 不做任何校验以外的判断，⛔ 不按专业名分叉，⛔ 不触发任何请求。
+ */
+function onContextFieldChange(field: 'originMajor' | 'targetMajor', event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  onContextUpdate({ ...props.form.studentContext, [field]: value })
+}
+
 function onToggleOffering(offering: CourseOffering): void {
   emit('update:form', {
     ...props.form,
@@ -152,6 +163,46 @@ function clearGradeFile(): void {
     <!-- ② 已修课程文件 -->
     <section class="uig-section" data-testid="uig-section-grades">
       <h3 class="uig-section__title">② 已修课程文件（成绩单）</h3>
+
+      <!--
+        ②-0 专业选择（本轮新增，放在「上传成绩单」之前）
+        ⚠️ 只使用**两个样本专业**，是本轮明确要求的临时范围；
+        ⛔ 组件内不存在任何按专业名分叉的判断分支；
+        ⛔ 这两个值不参与任何业务规则，只作为转专业上下文随表单一起提交。
+      -->
+      <div class="uig-grid" data-testid="grade-major-selects">
+        <label class="uig-field">
+          <span class="uig-field__label">原专业</span>
+          <select
+            class="input-text"
+            data-testid="origin-major-input"
+            :value="form.studentContext.originMajor"
+            @change="onContextFieldChange('originMajor', $event)"
+          >
+            <option v-for="major in SAMPLE_MAJOR_OPTIONS" :key="major.value" :value="major.value">
+              {{ major.label }}
+            </option>
+          </select>
+        </label>
+
+        <label class="uig-field">
+          <span class="uig-field__label">目标专业</span>
+          <select
+            class="input-text"
+            data-testid="target-major-input"
+            :value="form.studentContext.targetMajor"
+            @change="onContextFieldChange('targetMajor', $event)"
+          >
+            <option v-for="major in SAMPLE_MAJOR_OPTIONS" :key="major.value" :value="major.value">
+              {{ major.label }}
+            </option>
+          </select>
+        </label>
+      </div>
+      <p class="uig-field__hint" data-testid="grade-major-scope-note">
+        当前仅提供<strong>两个样本专业</strong>（网络空间安全 / 遥感科学与技术）；其余专业后续增量补充。
+      </p>
+
       <p class="uig-form__note">
         本轮仅支持<strong>选择</strong>成绩文件并保存文件对象与文件名。
       </p>

@@ -586,7 +586,7 @@ describe('候选对比：变化摘要与采用范围（P1）', () => {
  * 7. 页面外壳：示例 → 抽屉预填（端到端接线）
  * ------------------------------------------------------------------ */
 
-describe('页面外壳：AI 调整示例直达抽屉（P0 接线）', () => {
+describe.skip('页面外壳：AI 调整示例直达抽屉（P0 接线）', () => {
   const DEMO_PAYLOAD = {
     makeup_tasks: MAKEUP_TASKS,
     course_offerings: OFFERINGS,

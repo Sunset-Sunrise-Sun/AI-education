@@ -3386,3 +3386,28 @@ code.mono {
     width: 100%;
   }
 }
+
+/* ===== 课表截图上传（本轮新增）===== */
+/* ⚠️ 仅**追加**样式；⛔ 不修改旧版任何既有规则（旧版 1–2006 行保持逐字不变）。
+   类名沿用旧版 `.uig-*` 设计语言，配色/圆角/间距与既有表单一致。 */
+.uig-shot {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border, #e2e8f0);
+}
+
+.uig-shot__preview {
+  margin-top: 10px;
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: var(--radius, 8px);
+  padding: 8px;
+  background: #f8fafc;
+  max-width: 560px;
+}
+
+.uig-shot__preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+}

@@ -1216,3 +1216,15 @@ frontend: npm test（9 文件 134 用例）· npm run typecheck（vue-tsc --noEm
   `DEMO_SCRIPT.md` 追加 §7 彩排记录与"哪一步是什么数据"对照表。
 - 修改文件与未验证项详见 `docs/final_upgrade/reports/FINAL_DELIVERY_READINESS_REPORT.md`。
 - ⛔ 未改 `main`、公共 Schema、`docs/interfaces/`、Planner 核心算法；⛔ 未自动合并。
+
+### 第 8 轮（PR #77 被否决 → 以 main 旧版为基准重做）
+组长否决 PR #77 的布局改造方案（布局重排 / 折叠面板 / 流程引导）。本轮改为：
+- 新分支 `feature/student-ui-incremental-v2`，基线 `feature/final-upgrade`；
+- `frontend/src/App.vue` **从 main 恢复** ⇒ 交付的就是旧版单页网页（视觉/布局/导航/模块顺序/配色全部回到旧版）；
+- 保留 final-upgrade 的**后端 / API / 状态管理 / 业务功能**（后端与 api/、state/ 一字未动）；
+- **只新增两处功能**：① 当前课表模块的课表截图上传 + 待识别；② 成绩单区前的原专业/目标专业下拉框。
+- ⚠️ 「四标签 + AI 调整视图/抽屉 + ExplainPanel」这套 App 级接线在本预览中不渲染，
+  对应 19 个 App 级用例**如实标记为 skipped**（保留用例，未删除）。
+- 测试：前端 **370 passed / 19 skipped**（新增 18 个用例，覆盖两处新功能）；
+  `vue-tsc` 0；`build` 0。
+- 页面高度：main 6635px → 本分支 6919px（+284px = 两处新增）。

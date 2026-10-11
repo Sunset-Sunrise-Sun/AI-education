@@ -72,34 +72,6 @@ function onContextInput(field: keyof StudentContext, event: Event): void {
         <span v-else class="uig-field__hint">规划针对的目标学期。默认 {{ CASE_A_CONTEXT.semester }}。</span>
       </label>
 
-      <!-- 原专业 -->
-      <label class="uig-field">
-        <span class="uig-field__label">原专业</span>
-        <input
-          class="input-text"
-          data-testid="origin-major-input"
-          type="text"
-          list="uig-major-options"
-          :value="context.originMajor"
-          autocomplete="off"
-          @input="onContextInput('originMajor', $event)"
-        />
-      </label>
-
-      <!-- 目标专业 -->
-      <label class="uig-field">
-        <span class="uig-field__label">目标专业</span>
-        <input
-          class="input-text"
-          data-testid="target-major-input"
-          type="text"
-          list="uig-major-options"
-          :value="context.targetMajor"
-          autocomplete="off"
-          @input="onContextInput('targetMajor', $event)"
-        />
-      </label>
-
       <!-- 转入学期 -->
       <label class="uig-field">
         <span class="uig-field__label">转入学期</span>
