@@ -162,6 +162,10 @@ def validate_identity_assertions(
     prove that the value belongs to *this* transcript and catalogue. Stale assertions are
     therefore rejected explicitly rather than silently applied.
 
+    Every supplied candidate set is checked the same way, and that check runs **before**
+    the assertions are considered, so a caller holding candidate sets from a superseded
+    transcript or catalogue is rejected even when it asserts nothing.
+
     Returns the assertions in input order. Raises
     :class:`CurriculumNormalizationError` for anything unknown, stale, out of range,
     contradictory or duplicated.
@@ -175,6 +179,21 @@ def validate_identity_assertions(
         raise CurriculumNormalizationError("assertions: expected a sequence")
 
     index = _index_records(candidate_sets)
+
+    # The candidate sets themselves must belong to the current run. This is checked even
+    # when no assertions are supplied: a stale candidate set is not a harmless empty
+    # input, it is evidence that the caller is working from a superseded transcript or
+    # catalogue, and silently accepting it would let a later selection be applied to the
+    # wrong context.
+    for item in candidate_sets:
+        if item.completed_source_id != current_source_id:
+            raise CurriculumNormalizationError(
+                "candidate_sets: record source does not match the current transcript"
+            )
+        if item.target_version_id != current_target_version_id:
+            raise CurriculumNormalizationError(
+                "candidate_sets: target version does not match the current catalogue"
+            )
 
     seen_decisions: dict[tuple[str, str], StudentIdentityDecision] = {}
     validated: list[StudentIdentityAssertion] = []

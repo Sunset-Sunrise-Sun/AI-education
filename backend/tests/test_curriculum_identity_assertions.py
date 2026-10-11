@@ -501,6 +501,102 @@ def test_empty_inputs_are_accepted() -> None:
     ) == ()
 
 
+# ------------------------------- stale candidate sets (rejected even with no assertions)
+
+
+def test_stale_candidate_set_is_rejected_even_with_no_assertions() -> None:
+    """Candidate sets from another transcript must not pass as an empty input."""
+    sets, _ = _setup()
+    assert _validate(sets, []) == ()  # the matching context is fine
+
+    with pytest.raises(CurriculumNormalizationError) as error:
+        validate_identity_assertions(
+            sets, [], current_source_id="upload:pdf:sha256:changed",
+            current_target_version_id=VERSION,
+        )
+    assert "candidate_sets: record source does not match" in str(error.value)
+
+
+def test_stale_catalogue_candidate_set_is_rejected_even_with_no_assertions() -> None:
+    sets, _ = _setup()
+    with pytest.raises(CurriculumNormalizationError) as error:
+        validate_identity_assertions(
+            sets, [], current_source_id=SOURCE,
+            current_target_version_id="DEMO-VERSION-OTHER",
+        )
+    assert "candidate_sets: target version does not match" in str(error.value)
+
+
+def test_stale_candidate_set_is_rejected_before_assertions_are_examined() -> None:
+    """The set check runs first, so a stale set fails even alongside a valid assertion."""
+    sets, _ = _setup()
+    good_assertion = _assertion(sets)
+    with pytest.raises(CurriculumNormalizationError) as error:
+        validate_identity_assertions(
+            sets, [good_assertion], current_source_id="upload:pdf:sha256:changed",
+            current_target_version_id=VERSION,
+        )
+    assert "candidate_sets:" in str(error.value)
+
+
+def test_partially_mixed_sources_are_rejected() -> None:
+    """One stale set among valid ones is enough to reject the whole call."""
+    catalog = _catalog((_course("C0", "线性代数"), _course("C1", "高等数学")))
+    records = (
+        _record("线性代数", row=1),
+        _record("高等数学", row=2),
+        _record("线性代数", row=3, source_id="upload:pdf:sha256:stale"),
+    )
+    with pytest.raises(CurriculumNormalizationError):
+        build_identity_candidates(records, catalog, target_version_id=VERSION)
+
+    # Build each set separately so a mixed collection can be assembled by hand.
+    fresh = build_identity_candidates(
+        (_record("线性代数", row=1),), catalog, target_version_id=VERSION
+    )
+    stale = build_identity_candidates(
+        (_record("线性代数", row=3, source_id="upload:pdf:sha256:stale"),),
+        catalog, target_version_id=VERSION,
+    )
+    assert fresh[0].completed_source_id != stale[0].completed_source_id
+
+    with pytest.raises(CurriculumNormalizationError) as error:
+        validate_identity_assertions(
+            (*fresh, *stale), [], current_source_id=SOURCE,
+            current_target_version_id=VERSION,
+        )
+    assert "candidate_sets: record source does not match" in str(error.value)
+
+
+def test_partially_mixed_versions_are_rejected() -> None:
+    catalog = _catalog((_course("C0", "线性代数"),))
+    other = _catalog((_course("C0", "线性代数"),), version_id="DEMO-VERSION-OTHER")
+    fresh = build_identity_candidates((_record("线性代数", row=1),), catalog,
+                                      target_version_id=VERSION)
+    stale = build_identity_candidates((_record("线性代数", row=2),), other,
+                                      target_version_id="DEMO-VERSION-OTHER")
+    # Different records, so identity is not what trips the check.
+    assert fresh[0].record_reference != stale[0].record_reference
+    assert fresh[0].target_version_id != stale[0].target_version_id
+
+    with pytest.raises(CurriculumNormalizationError) as error:
+        validate_identity_assertions(
+            (*fresh, *stale), [], current_source_id=SOURCE, current_target_version_id=VERSION,
+        )
+    assert "candidate_sets: target version does not match" in str(error.value)
+
+
+def test_matching_candidate_sets_with_no_assertions_still_pass() -> None:
+    """The regression guard: legitimate empty input must keep working."""
+    sets, _ = _setup(("线性代数", "高等数学"))
+    assert validate_identity_assertions(
+        sets, [], current_source_id=SOURCE, current_target_version_id=VERSION
+    ) == ()
+    # And with assertions, the ordinary path is unaffected.
+    out = _validate(sets, [_assertion(sets, row=1)])
+    assert len(out) == 1
+
+
 def test_duplicate_record_identity_in_supplied_sets_is_rejected() -> None:
     sets, _ = _setup()
     with pytest.raises(CurriculumNormalizationError):
