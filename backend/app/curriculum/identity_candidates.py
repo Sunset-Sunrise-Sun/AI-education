@@ -109,6 +109,18 @@ class IdentityCandidate:
 
     ⛔ There is no credit field. ``recognized_credit`` belongs to the recognition
     decision, which is a separate, authorised step.
+
+    **What identifies a candidate.** ``course_id`` alone is not enough: a catalogue may
+    legitimately contain several byte-identical entries (the real Case A catalogue holds
+    six identical 体育 rows sharing one course id *and* one source record). The identity
+    of a candidate is therefore exactly:
+
+        (source_version_id, course_id, catalog_source_record, catalog_entry_ordinal)
+
+    ``catalog_entry_ordinal`` is the entry's position within
+    ``CurriculumVersion.courses``, so the value always describes an entry the caller was
+    actually shown. It is derived from the loaded catalogue only — never from a course
+    name and never from any caller-supplied course number.
     """
 
     #: Version of the catalogue this candidate came from. Pins the candidate.
@@ -125,6 +137,9 @@ class IdentityCandidate:
     evidence: str
     #: Catalogue record this candidate was read from.
     catalog_source_record: str
+    #: Position of this entry within ``CurriculumVersion.courses`` (0-based). Separates
+    #: byte-identical catalogue entries that share a course id and a source record.
+    catalog_entry_ordinal: int
     #: Transcript artifact identity. Changes when the transcript changes.
     completed_source_id: str
     #: The specific transcript row this candidate is about.
@@ -147,8 +162,28 @@ class IdentityCandidate:
             )
         if not isinstance(self.match_method, IdentityMatchMethod):
             raise CurriculumNormalizationError("candidate: unsupported match method")
+        ordinal = self.catalog_entry_ordinal
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+            raise CurriculumNormalizationError(
+                "candidate: catalog_entry_ordinal must be a nonnegative integer"
+            )
         if not isinstance(self.completed_passed, bool):
             raise CurriculumNormalizationError("candidate: completed_passed must be a boolean")
+
+    @property
+    def identity(self) -> tuple[str, str, str, int]:
+        """The values that uniquely denote this catalogue entry.
+
+        An assertion records this tuple rather than a bare course id, so a choice can
+        always be traced back to the exact entry that was displayed.
+        """
+
+        return (
+            self.source_version_id,
+            self.course_id,
+            self.catalog_source_record,
+            self.catalog_entry_ordinal,
+        )
 
     @property
     def record_reference(self) -> tuple[str, str]:
@@ -322,8 +357,8 @@ def build_identity_candidates(
     # Index the catalogue by normalised name. Every entry is kept, so repeated names
     # stay visible instead of being collapsed into one.
     by_name: dict[str, list] = {}
-    for course in catalog.courses:
-        by_name.setdefault(normalize_course_name(course.course_name), []).append(course)
+    for ordinal, course in enumerate(catalog.courses):
+        by_name.setdefault(normalize_course_name(course.course_name), []).append((ordinal, course))
 
     sets: list[IdentityCandidateSet] = []
     for record in records_in:
@@ -373,12 +408,13 @@ def build_identity_candidates(
                     "⚠️ 仅证明该候选身份存在于该目录版本，不代表满足目标培养方案要求。"
                 ),
                 catalog_source_record=course.source_record,
+                catalog_entry_ordinal=ordinal,
                 completed_source_id=record.source_id,
                 completed_source_record=record.source_record,
                 completed_course_name=record.course_name,
                 completed_passed=record.passed,
             )
-            for course in matches
+            for ordinal, course in matches
         )
 
         ambiguous = len(candidates) > 1

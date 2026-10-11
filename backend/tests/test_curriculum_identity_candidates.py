@@ -31,13 +31,14 @@ def _course(
     course_id: str, course_name: str, *,
     requirement: RequirementKind = RequirementKind.REQUIRED,
     credit: float = 3.0,
+    source_record: str | None = None,
 ) -> CurriculumCourse:
     return CurriculumCourse(
         course_id=course_id,
         course_name=course_name,
         credit=credit,
         requirement=requirement,
-        source_record=f"DEMO-CATALOG#{course_id}",
+        source_record=source_record or f"DEMO-CATALOG#{course_id}",
         prerequisites=(),
     )
 
@@ -248,11 +249,58 @@ def test_candidate_from_a_foreign_version_cannot_be_constructed() -> None:
             match_method=IdentityMatchMethod.EXACT_NORMALIZED_NAME,
             evidence="e",
             catalog_source_record="c",
+            catalog_entry_ordinal=0,
             completed_source_id="s",
             completed_source_record="pdf:1",
             completed_course_name="甲",
             completed_passed=True,
         )
+
+
+def test_entries_sharing_a_course_id_get_distinct_identities() -> None:
+    """The real 体育 shape: one course id, six catalogue entries.
+
+    ``CurriculumVersion`` guarantees a unique ``source_record`` while allowing a
+    repeated ``course_id``, so identity must include the catalogue record (and the
+    ordinal) — a bare course id would collapse all six into one choice.
+    """
+    catalog = _catalog(tuple(
+        _course("PE101", "体育", source_record=f"DEMO-CATALOG#PE101-{n}")
+        for n in range(6)
+    ))
+
+    sets = build_identity_candidates((_record("体育"),), catalog, target_version_id=VERSION)
+
+    item = sets[0]
+    assert item.status is IdentityStatus.AMBIGUOUS
+    assert len(item.candidates) == 6
+    identities = [c.identity for c in item.candidates]
+    assert len(set(identities)) == 6, "each entry needs a distinct identity"
+    # All six share the course id, so that alone could not identify a choice.
+    assert {c.course_id for c in item.candidates} == {"PE101"}
+    assert [c.catalog_entry_ordinal for c in item.candidates] == [0, 1, 2, 3, 4, 5]
+    assert len({c.catalog_source_record for c in item.candidates}) == 6
+
+
+def test_candidate_identity_exposes_version_course_source_and_ordinal() -> None:
+    catalog = _catalog((_course("DCS101", "线性代数"),))
+    candidate = build_identity_candidates(
+        (_record("线性代数"),), catalog, target_version_id=VERSION
+    )[0].candidates[0]
+    assert candidate.identity == (VERSION, "DCS101", "DEMO-CATALOG#DCS101", 0)
+
+
+def test_negative_or_boolean_entry_ordinal_is_rejected() -> None:
+    for bad in (-1, True):
+        with pytest.raises(CurriculumNormalizationError):
+            IdentityCandidate(
+                source_version_id=VERSION, target_version_id=VERSION,
+                course_id="X", course_name="甲", course_requirement="required",
+                match_method=IdentityMatchMethod.EXACT_NORMALIZED_NAME,
+                evidence="e", catalog_source_record="c", catalog_entry_ordinal=bad,
+                completed_source_id="s", completed_source_record="pdf:1",
+                completed_course_name="甲", completed_passed=True,
+            )
 
 
 # ------------------------------------------------- 8. failed record -> candidates only
