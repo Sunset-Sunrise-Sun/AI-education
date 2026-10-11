@@ -21,6 +21,7 @@ import {
   type ManualScheduleAttestationState,
   type ManualScheduleEntry,
 } from './manualSchedule'
+import { DEFAULT_PLAN_YEAR } from '../utils/planYear'
 
 export type { ManualScheduleAttestationState, ManualScheduleEntry } from './manualSchedule'
 
@@ -29,6 +30,16 @@ export interface StudentContext {
   originMajor: string
   targetMajor: string
   transferTerm: string
+  /**
+   * **原专业**培养方案年级（例如 `2025级`）。
+   *
+   * ⚠️ 与 `targetPlanYear` **各自独立保存**，⛔ 不共用一个字段：
+   * "2025 平转 2025" 与 "2025 降转 2026" 是两种不同情形。
+   * ⚠️ 与 `transferTerm`（转入学期）是**不同概念**，⛔ 不得混为一谈。
+   */
+  originPlanYear: string
+  /** **目标专业**培养方案年级；与 `originPlanYear` 独立。 */
+  targetPlanYear: string
 }
 
 /** 回避时段表单行；`key` 只用于前端列表渲染，不进入公共契约。 */
@@ -189,7 +200,9 @@ export function createDefaultUserInputForm(): UserInputForm {
     semester: CASE_A_CONTEXT.semester,
     studentContext: {
       originMajor: CASE_A_CONTEXT.originMajor,
+  originPlanYear: DEFAULT_PLAN_YEAR,
       targetMajor: CASE_A_CONTEXT.targetMajor,
+  targetPlanYear: DEFAULT_PLAN_YEAR,
       transferTerm: CASE_A_CONTEXT.transferTerm,
     },
     preference: {

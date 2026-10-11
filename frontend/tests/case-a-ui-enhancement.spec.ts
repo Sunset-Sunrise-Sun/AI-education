@@ -12,6 +12,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import CaseADemoView from '@/components/CaseADemoView.vue'
 import CurrentScheduleEditor from '@/components/CurrentScheduleEditor.vue'
 import { SAMPLE_MAJOR_OPTIONS } from '@/config'
+import {
+  DEFAULT_PLAN_YEAR,
+  FUTURE_PLAN_YEARS,
+  SUPPORTED_PLAN_YEARS,
+  deriveTransferType,
+  describePlanYearPair,
+  bothPlanYearsSupported,
+} from '@/utils/planYear'
 
 /** 造一个合法的 PNG 文件（jsdom 不校验内容，只校验我们自己的类型/大小逻辑）。 */
 function makePng(name = 'schedule.png', bytes = 2048): File {
@@ -303,5 +311,133 @@ describe('§1 原专业 / 目标专业下拉框', () => {
     expect(text).toContain('上传课表截图，辅助识别')
     expect(wrapper.find('[data-testid="case-a-manual-toggle"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="case-a-pdf"]').exists()).toBe(true)
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * §3 培养方案年级（原专业 / 目标专业各一个，独立保存）
+ * ------------------------------------------------------------------ */
+
+describe('§3 培养方案年级', () => {
+  function mountView() {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    )
+    return mount(CaseADemoView)
+  }
+
+  it('两个年级字段都存在、都是 <select>、默认均为 2025 级', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    for (const testid of ['case-a-origin-plan-year', 'case-a-target-plan-year']) {
+      const el = wrapper.find(`[data-testid="${testid}"]`)
+      expect(el.exists(), `${testid} 不存在`).toBe(true)
+      expect(el.element.tagName).toBe('SELECT')
+      expect((el.element as HTMLSelectElement).value).toBe(DEFAULT_PLAN_YEAR)
+    }
+  })
+
+  it('两个年级字段是**各自独立**的节点，⛔ 不共用同一个字段', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const a = wrapper.find('[data-testid="case-a-origin-plan-year"]').element
+    const b = wrapper.find('[data-testid="case-a-target-plan-year"]').element
+    expect(a).not.toBe(b)
+
+    // 切换原专业年级⛔ 不得连带改动目标专业年级
+    await wrapper.find('[data-testid="case-a-origin-plan-year"]').setValue('2025级')
+    await flushPromises()
+    expect(
+      (wrapper.find('[data-testid="case-a-target-plan-year"]').element as HTMLSelectElement).value,
+    ).toBe(DEFAULT_PLAN_YEAR)
+  })
+
+  it('本轮**只启用 2025 级**：⛔ 不把 2026 级渲染成可选项', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    for (const testid of ['case-a-origin-plan-year', 'case-a-target-plan-year']) {
+      const values = wrapper
+        .find(`[data-testid="${testid}"]`)
+        .findAll('option')
+        .map((o) => o.attributes('value'))
+      expect(values).toEqual(['2025级'])
+      // ⛔ 2026 级不在可选项里（不假装该年级培养方案已存在）
+      expect(values).not.toContain('2026级')
+    }
+  })
+
+  it('SUPPORTED_PLAN_YEARS 只含 2025 级；2026 级仅作未来占位', () => {
+    expect([...SUPPORTED_PLAN_YEARS]).toEqual(['2025级'])
+    expect([...FUTURE_PLAN_YEARS]).toContain('2026级')
+    expect(bothPlanYearsSupported('2025级', '2025级')).toBe(true)
+    expect(bothPlanYearsSupported('2025级', '2026级')).toBe(false)
+    expect(bothPlanYearsSupported('2026级', '2026级')).toBe(false)
+  })
+
+  it('纯函数：平转 / 降转 / 升级 的归类与摘要正确', () => {
+    expect(deriveTransferType('2025级', '2025级')).toBe('同级转专业')
+    expect(deriveTransferType('2025级', '2026级')).toBe('降级转专业')
+    expect(deriveTransferType('2026级', '2025级')).toBe('升级转专业')
+
+    expect(describePlanYearPair('2025级', '2025级')).toBe('2025级 平转 2025级')
+    expect(describePlanYearPair('2025级', '2026级')).toBe('2025级 降转 2026级')
+  })
+
+  it('卡片底部显示转专业类型、路径摘要与如实的数据范围说明', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const type = wrapper.find('[data-testid="case-a-transfer-type-label"]')
+    expect(type.exists()).toBe(true)
+    expect(type.text()).toBe('同级转专业')
+
+    const scope = wrapper.find('[data-testid="case-a-plan-year-scope"]')
+    expect(scope.text()).toContain('2025 → 2025')
+    expect(scope.text()).toContain('遥感科学与技术')
+    expect(scope.text()).toContain('网络空间安全')
+
+    expect(wrapper.find('[data-testid="case-a-plan-year-pair"]').text()).toBe('2025级 平转 2025级')
+
+    const note = wrapper.find('[data-testid="case-a-plan-year-note"]')
+    expect(note.text()).toContain('仅支持')
+    expect(note.text()).toContain('2025 级')
+    expect(note.text()).toContain('需要补充相应数据')
+
+    // ⚠️ 所选年级都有数据 ⇒ ⛔ 不显示"缺数据"警告
+    expect(wrapper.find('[data-testid="case-a-plan-year-unsupported"]').exists()).toBe(false)
+  })
+
+  it('⛔ 不把培养方案年级和转入学期混为一谈', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    // 卡片内⛔ 不出现"转入学期"字样（它是另一个概念，本轮不展示也不改动）
+    const card = wrapper.find('[data-testid="case-a-majors"]')
+    expect(card.text()).not.toContain('转入学期')
+    // 两个年级字段的 testid 与 transferTerm 不同
+    expect(wrapper.find('[data-testid="case-a-origin-plan-year"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="case-a-transfer-term"]').exists()).toBe(false)
+  })
+
+  it('⛔ 年级字段不进入真实规划请求（后端不支持）', async () => {
+    // buildRealPlanRequest 只发 semester / current_schedule / preference
+    const stateModule = await import('@/state/userInput')
+    const form = stateModule.createDefaultUserInputForm()
+    const request = stateModule.buildRealPlanRequest(form)
+    const serialized = JSON.stringify(request)
+    expect(serialized).not.toContain('PlanYear')
+    expect(serialized).not.toContain('2025级')
+    expect(Object.keys(request).sort()).toEqual(['current_schedule', 'preference', 'semester'])
+  })
+
+  it('⛔ 未破坏专业下拉与不能相同规则', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const originOptions = wrapper.find('[data-testid="case-a-origin-major"]').findAll('option')
+    const network = originOptions.find((o) => o.attributes('value') === '网络空间安全')!
+    expect(network.attributes('disabled')).toBeDefined()
   })
 })

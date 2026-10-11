@@ -55,7 +55,13 @@ describe('学期输入', () => {
       originMajor: '遥感科学与技术',
       targetMajor: '网络空间安全',
       transferTerm: '2026-1',
+      // 本轮新增：两个培养方案年级**各自独立**，默认均为 2025 级
+      originPlanYear: '2025级',
+      targetPlanYear: '2025级',
     })
+    // 两个年级字段⛔ 不共用同一个 key（"2025 平转 2025" 与 "2025 降转 2026" 是两种情形）
+    expect(form.studentContext.originPlanYear).toBe(form.studentContext.targetPlanYear)
+    expect('planYear' in form.studentContext).toBe(false)
     expect(Object.keys(form)).not.toContain('studentName')
     expect(Object.keys(form)).not.toContain('studentId')
   })

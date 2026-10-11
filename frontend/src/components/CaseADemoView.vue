@@ -14,6 +14,15 @@ import {
   type ManualScheduleEntry,
 } from '../state/userInput'
 import { SAMPLE_MAJOR_OPTIONS } from '../config'
+import {
+  bothPlanYearsSupported,
+  describePlanYearPair,
+  describePlanYearScope,
+  deriveTransferType,
+  FUTURE_PLAN_YEARS,
+  isSupportedPlanYear,
+  SUPPORTED_PLAN_YEARS,
+} from '../utils/planYear'
 import type { CourseOffering } from '../types/contracts'
 import CurrentScheduleEditor from './CurrentScheduleEditor.vue'
 import FutureRoadmapView from './FutureRoadmapView.vue'
@@ -63,6 +72,69 @@ function isMajorDisabled(field: 'originMajor' | 'targetMajor', value: string): b
   // 用户无法改回，页面会卡死。
   return value === other
 }
+
+/**
+ * 可选培养方案年级。
+ *
+ * ⚠️ 本轮**只有 2025 级有数据支持**（样本均为 2025 平转 2025）。
+ * `2026级` 只登记在 `FUTURE_PLAN_YEARS` 里作将来扩充用，⛔ 不作为可选项渲染。
+ */
+const PLAN_YEAR_CHOICES = SUPPORTED_PLAN_YEARS
+
+/** 尚未有数据支持的年级（仅用于如实提示，⛔ 不可选）。 */
+const PENDING_PLAN_YEARS = FUTURE_PLAN_YEARS
+
+/** 年级选项是否可选：必须有数据支持。 */
+function isPlanYearDisabled(value: string): boolean {
+  return !isSupportedPlanYear(value)
+}
+
+function onPlanYearChange(field: 'originPlanYear' | 'targetPlanYear', event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  form.value = {
+    ...form.value,
+    studentContext: { ...form.value.studentContext, [field]: value },
+  }
+}
+
+/** 当前转专业类型（仅展示用归类，⛔ 不参与任何业务规则）。 */
+const transferType = computed(() =>
+  deriveTransferType(
+    form.value.studentContext.originPlanYear,
+    form.value.studentContext.targetPlanYear,
+  ),
+)
+
+/** 卡片底部简短摘要，例如 `2025 平转 2025`。 */
+const planYearPairLabel = computed(() =>
+  describePlanYearPair(
+    form.value.studentContext.originPlanYear,
+    form.value.studentContext.targetPlanYear,
+  ),
+)
+
+/** 例如 `2025 → 2025：遥感科学与技术 → 网络空间安全`。 */
+const planYearScopeLabel = computed(() =>
+  describePlanYearScope(
+    form.value.studentContext.originPlanYear,
+    form.value.studentContext.targetPlanYear,
+    form.value.studentContext.originMajor,
+    form.value.studentContext.targetMajor,
+  ),
+)
+
+/**
+ * 所选年级是否**都有数据支持**。
+ *
+ * ⚠️ 若为 false，页面**如实说明**实际规划仍使用 2025 级样本，
+ *    并且**不把所选年级送进任何请求**（后端本来也不接收该字段）。
+ */
+const planYearsSupported = computed(() =>
+  bothPlanYearsSupported(
+    form.value.studentContext.originPlanYear,
+    form.value.studentContext.targetPlanYear,
+  ),
+)
 
 function onMajorChange(field: 'originMajor' | 'targetMajor', event: Event): void {
   const value = (event.target as HTMLSelectElement).value
@@ -211,14 +283,15 @@ onMounted(loadOfferings)
       </section>
 
       <!--
-        原专业 / 目标专业（本轮新增，位置：第一步「上传成绩单」**之前**）
-        ⚠️ 仅两个样本专业；⛔ 两个下拉框不允许选成同一个专业；
-        ⛔ 不参与任何业务规则，只作为转专业上下文随表单提交。
+        转专业方向（本轮扩展：在原有两个专业下拉之下，各加一个**培养方案年级**）
+        ⚠️ 两个年级字段**各自独立保存**，⛔ 不共用；
+        ⚠️ 与「转入学期」是不同概念，⛔ 本卡片不展示也不改动转入学期；
+        ⚠️ 本轮**只有 2025 级有数据支持**，⛔ 2026 级不作为可选项（不假装数据存在）。
       -->
       <SectionCard
         :mock="false"
         title="转专业方向"
-        subtitle="选择原专业与目标专业；两个专业不能相同，其余专业后续增量补充。"
+        subtitle="请选择转出与转入专业，以及对应的培养方案年级。"
       >
         <div class="case-a-majors" data-testid="case-a-majors">
           <label class="case-a-majors__field">
@@ -258,7 +331,47 @@ onMounted(loadOfferings)
               </option>
             </select>
           </label>
+
+          <!-- 两个年级字段分别独立保存 -->
+          <label class="case-a-majors__field">
+            <span class="case-a-majors__label">原专业培养方案年级</span>
+            <select
+              class="case-a-majors__select"
+              data-testid="case-a-origin-plan-year"
+              :value="form.studentContext.originPlanYear"
+              @change="onPlanYearChange('originPlanYear', $event)"
+            >
+              <option
+                v-for="year in PLAN_YEAR_CHOICES"
+                :key="year"
+                :value="year"
+                :disabled="isPlanYearDisabled(year)"
+              >
+                {{ year }}
+              </option>
+            </select>
+          </label>
+
+          <label class="case-a-majors__field">
+            <span class="case-a-majors__label">目标专业培养方案年级</span>
+            <select
+              class="case-a-majors__select"
+              data-testid="case-a-target-plan-year"
+              :value="form.studentContext.targetPlanYear"
+              @change="onPlanYearChange('targetPlanYear', $event)"
+            >
+              <option
+                v-for="year in PLAN_YEAR_CHOICES"
+                :key="year"
+                :value="year"
+                :disabled="isPlanYearDisabled(year)"
+              >
+                {{ year }}
+              </option>
+            </select>
+          </label>
         </div>
+
         <p class="case-a-majors__hint" data-testid="case-a-majors-scope">
           当前仅提供<strong>两个样本专业</strong>（网络空间安全 / 遥感科学与技术）；
           <strong>原专业与目标专业不能相同</strong>。
@@ -271,6 +384,35 @@ onMounted(loadOfferings)
         >
           ⚠️ 原专业与目标专业当前相同，请改选其中一个（被对方占用的选项不可选）。
         </p>
+
+        <!-- 当前转专业类型（仅展示用归类） -->
+        <div class="case-a-transfer-type" data-testid="case-a-transfer-type">
+          <div class="case-a-transfer-type__head">
+            <h4 class="case-a-transfer-type__title">当前转专业类型</h4>
+            <span class="case-a-transfer-type__badge" data-testid="case-a-transfer-type-label">
+              {{ transferType }}
+            </span>
+          </div>
+          <p class="case-a-transfer-type__path" data-testid="case-a-plan-year-scope">
+            {{ planYearScopeLabel }}
+          </p>
+          <p class="case-a-transfer-type__pair" data-testid="case-a-plan-year-pair">
+            {{ planYearPairLabel }}
+          </p>
+          <p class="case-a-transfer-type__note" data-testid="case-a-plan-year-note">
+            当前演示数据仅支持 <strong>2025 级</strong> 对应的培养方案。
+            其他年级（{{ PENDING_PLAN_YEARS.join('、') }}）需要补充相应数据后才能进行真实对比。
+          </p>
+          <p
+            v-if="!planYearsSupported"
+            class="case-a-majors__warn"
+            data-testid="case-a-plan-year-unsupported"
+            role="alert"
+          >
+            ⚠️ 所选年级缺少培养方案数据。实际规划仍使用 <strong>2025 级</strong> 样本，
+            ⛔ 不会按所选年级生成结果。
+          </p>
+        </div>
       </SectionCard>
 
       <SectionCard
@@ -441,17 +583,24 @@ onMounted(loadOfferings)
 
 <style scoped>
 /* ---- 原专业 / 目标专业（本轮新增；两列栅格，沿用 Case A 既有配色与圆角） ---- */
+/* 2×2 栅格：原专业/目标专业 一行，两个培养方案年级 一行（与验收稿一致） */
 .case-a-majors {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 20px;
+}
+
+@media (max-width: 720px) {
+  .case-a-majors {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .case-a-majors__field {
   display: flex;
-  flex: 1 1 240px;
   flex-direction: column;
   gap: 6px;
+  min-width: 0;
 }
 
 .case-a-majors__label {
@@ -471,6 +620,56 @@ onMounted(loadOfferings)
 
 .case-a-majors__hint {
   margin: 10px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ---- 当前转专业类型（本轮新增；仅展示用归类） ---- */
+.case-a-transfer-type {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.case-a-transfer-type__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.case-a-transfer-type__title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.case-a-transfer-type__badge {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.case-a-transfer-type__path {
+  margin: 8px 0 0;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.case-a-transfer-type__pair {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.case-a-transfer-type__note {
+  margin: 8px 0 0;
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.6;
