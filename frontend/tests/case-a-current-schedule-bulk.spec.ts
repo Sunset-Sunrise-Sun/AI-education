@@ -247,7 +247,12 @@ describe('当前课表批量录入组件', () => {
     const wrapper = mountEditor({ offerings: [kept], currentSchedule: [kept] })
 
     await testId(wrapper, 'case-a-offering-search').setValue('数据结构')
-    await testId(wrapper, 'case-a-result-add').trigger('click')
+
+    // ⚠️ 行为变更（本次前端输入增强）：已在当前课表里的教学班显示「✓ 已确认」，
+    //    原「加入当前课表」按钮不再渲染，因此这里断言确认态而不是去点按钮。
+    //    验证的仍然是同一件事：⛔ 不重复加入、⛔ 不发 update:currentSchedule。
+    expect(wrapper.find('[data-testid="case-a-result-add"]').exists()).toBe(false)
+    expect(testId(wrapper, 'case-a-result-confirmed').text()).toContain('已确认')
 
     expect(wrapper.find('[data-testid="case-a-batch-conflict"]').exists()).toBe(false)
     expect(wrapper.emitted('update:currentSchedule')).toBeUndefined()
@@ -320,36 +325,16 @@ describe('当前课表批量录入组件', () => {
     expect(lastSchedule(wrapper).map((item) => item.class_id)).toEqual(['CLASS-2'])
   })
 
-  it('截图入口：可本地选择图片并预览，但⛔ 不发请求、⛔ 不产生识别结果', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch')
-    const xhrSpy = vi.spyOn(globalThis.XMLHttpRequest.prototype, 'open')
-
+  it('旧的「上传课表截图，辅助识别」重复入口已移除', () => {
+    // ⚠️ 变更说明（最终展示版 Task 2）：旧入口与它的说明弹窗已删除，
+    //    上传/预览/识别/确认的职责全部由独立组件 `TimetableImageImport` 承担，
+    //    其行为测试见 tests/timetable-image-import.spec.ts。
+    //    这里只断言重复入口确实不再存在于本组件中。
     const wrapper = mountEditor({ offerings: [], currentSchedule: [] })
-    await testId(wrapper, 'case-a-screenshot-entry').trigger('click')
 
-    const dialog = testId(wrapper, 'case-a-screenshot-dialog')
-    // 本轮补齐：弹窗内**有**文件上传控件（此前只有说明文案）
-    expect(dialog.find('[data-testid="case-a-screenshot-input"]').exists()).toBe(true)
-    expect(dialog.find('input[type="file"]').exists()).toBe(true)
-    // ⛔ 一开始不得显示任何"已识别"结论
-    expect(dialog.html()).not.toContain('已支持截图识别')
-    expect(dialog.text()).not.toContain('识别成功')
-    expect(dialog.text()).not.toContain('已识别')
-
-    // 未选择文件时：显示空态、⛔ 无预览、⛔ 无待识别状态
-    expect(dialog.find('[data-testid="case-a-screenshot-empty"]').exists()).toBe(true)
-    expect(dialog.find('[data-testid="case-a-screenshot-preview"]').exists()).toBe(false)
-    expect(dialog.find('[data-testid="case-a-screenshot-status"]').exists()).toBe(false)
-
-    // 全程⛔ 不发任何请求（截图只在浏览器本地处理）
-    expect(fetchSpy).not.toHaveBeenCalled()
-    expect(xhrSpy).not.toHaveBeenCalled()
-
-    await testId(wrapper, 'case-a-screenshot-close').trigger('click')
+    expect(wrapper.find('[data-testid="case-a-screenshot-entry"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="case-a-screenshot-dialog"]').exists()).toBe(false)
-
-    fetchSpy.mockRestore()
-    xhrSpy.mockRestore()
+    expect(wrapper.text()).not.toContain('上传课表截图，辅助识别')
   })
 })
 

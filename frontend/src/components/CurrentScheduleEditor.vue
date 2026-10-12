@@ -1,39 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref } from 'vue'
 import { summarizeCredits, matchesSearchTokens } from '../utils/courseSearch'
 import { applyBatchAdd, describeConflicts, evaluateBatchAdd } from '../utils/scheduleBulkAdd'
 import { compactMeetingSummary } from '../utils/weeklySchedule'
 import type { CourseOffering } from '../types/contracts'
+import CurrentScheduleList from './CurrentScheduleList.vue'
 
-/**
- * 当前课表录入区（Phase 1：批量录入体验）。
- *
- * 边界：
- * - 搜索只匹配**真实字段**（课程名 / 课程号 / 教学班号 / 任课教师），支持空格分词；
- *   ⛔ 无拼音、无 embedding、无 LLM、⛔ 不做语义扩展；
- * - 结果上限固定 20 条，⛔ 不一次性铺开；
- * - 批量加入复用既有 `toggleCurrentScheduleOffering`（经 `applyBatchAdd`），
- *   ⛔ 不绕过重复检查；同一门课出现多个教学班时 **fail closed** 并提示用户先保留一个；
- * - `meetings = []` 使用中性文案（⛔ 不等于没有课 / 无冲突）；
- * - 教师为空显示"任课教师：待核验"（⛔ 不造教师数据）；
- * - ⛔ 本轮**不做**截图识别：入口只弹说明，不上传、不 OCR、不调用模型。
- */
-/** 允许的截图类型（只做**本地预览**，⛔ 不上传、⛔ 不解析）。 */
-const SHOT_ACCEPT = 'image/png,image/jpeg,image/webp'
-
-/** 截图大小上限：8 MiB（仅本地校验，⛔ 不代表后端限制）。 */
-const SHOT_MAX_BYTES = 8 * 1024 * 1024
-
-/**
- * 课表截图识别的**通道状态**。
- *
- * ⚠️ 本项目**尚未接入任何图片识别服务**，因此这里恒为 `false`，
- * 页面只可能显示「待识别」，⛔ 不存在"识别成功"这种状态，
- * ⇒ ⛔ 永远不会出现任何据称来自截图解析的课程，也⛔ 不会自动勾选任何教学班。
- */
-const SHOT_RECOGNITION_AVAILABLE = false
-
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   offerings: readonly CourseOffering[]
   currentSchedule: readonly CourseOffering[]
   /**
@@ -46,7 +19,15 @@ const props = defineProps<{
   semester: string
   /** 手工确认被作废时的提示文案（由父级提供）。 */
   attestationNotice?: string
-}>()
+  /**
+   * 是否在本组件内渲染「已确认加入的当前课表」区块。
+   *
+   * ⚠️ 默认 true（向后兼容：既有测试与既有用法一字不改）。
+   *    父级传 false 时本区块隐藏，由父级在「上传课表截图 + 识别结果」之后渲染，
+   *    ⛔ 不改任何数据流，⛔ 不删任何 DOM。
+   */
+  showCurrentSchedule?: boolean
+}>(), { showCurrentSchedule: true })
 
 /**
  * 教学班身份（架构口径）：**semester + course_id + class_id**。
@@ -55,6 +36,66 @@ const props = defineProps<{
  * 同名课程号在不同学期是不同条目，⛔ 不得跨学期合并。
  * 学期取值优先用户填写的条目学期，其次退回显式传入的规划学期。
  */
+/**
+ * 已经加入当前课表的教学班身份集合。
+ *
+ * ⚠️ 用途仅限**展示状态**：搜索列表里把已加入的班显示为「✓ 已确认」，避免重复加入。
+ *   ⛔ 不改动搜索/过滤/排序逻辑，⛔ 不改 `current_schedule` 的数据结构，
+ *   ⛔ 不新增任何身份认定语义 —— 这里的"确认"只表示"我已把它放进当前课表"。
+ */
+const confirmedScheduleIds = computed(
+  () => new Set(props.currentSchedule.map((item) => identity(item))),
+)
+
+function isConfirmedInSchedule(offering: CourseOffering): boolean {
+  return confirmedScheduleIds.value.has(identity(offering))
+}
+
+/**
+ * 撤回：把该教学班从当前课表移除。
+ * ⚠️ 复用父级既有的移除路径（`removeCurrentScheduleOffering` + 作废手工确认），
+ *   ⛔ 不新增任何身份或来源语义。
+ */
+function undoSingle(offering: CourseOffering): void {
+  emit('remove', offering)
+}
+
+/**
+ * 把**已有**的教学班搜索定位到给定关键词。
+ * ⚠️ 供父组件在「图片识别 → 未识别课程 → 搜索教学班」时调用；
+ *   ⛔ 不新增第二套搜索逻辑，只是给既有搜索框设值并聚焦。
+ */
+const searchInputRef = ref<HTMLInputElement | null>(null)
+
+/**
+ * 子组件 CurrentScheduleList 的移除/清空回调。
+ *
+ * ⚠️ 布局调整后当前课表由子组件渲染，但**既有契约不变**：
+ *   本组件仍然是「课表变更 → 发出 update:currentSchedule(+remove)」的唯一出口，
+ *   并照旧设置提示文案、作废手工确认由父级统一处理。
+ *   ⛔ 数据流与提示文案一字未改。
+ */
+function onListRemove(offering: CourseOffering): void {
+  const next = props.currentSchedule.filter(
+    (item) => identity(item) !== identity(offering),
+  )
+  commitSchedule(next, '已从当前课表移除。')
+  emit('remove', offering)
+}
+
+function onListClear(): void {
+  commitSchedule([], '当前课表已清空。')
+  emit('clear')
+}
+
+function focusSearch(keyword: string): void {
+  searchQuery.value = keyword
+  batchNotice.value = ''
+  void nextTick(() => searchInputRef.value?.focus())
+}
+
+defineExpose({ focusSearch })
+
 function identity(offering: CourseOffering): string {
   return `${offering.semester || props.semester}::${offering.course_id}::${offering.class_id}`
 }
@@ -66,6 +107,8 @@ function identity(offering: CourseOffering): string {
  */
 const emit = defineEmits<{
   (event: 'update:currentSchedule', value: CourseOffering[]): void
+  (event: 'remove', offering: CourseOffering): void
+  (event: 'clear'): void
 }>()
 
 /** 搜索结果上限（⛔ 保持既有约束：不一次性铺开真实数据）。 */
@@ -79,7 +122,6 @@ const conflictMessage = ref('')
 const batchNotice = ref('')
 const clearOpen = ref(false)
 const showAll = ref(false)
-const screenshotOpen = ref(false)
 
 /* --------------------------------------------------------------------- *
  * 课表截图：上传 / 预览 / 移除 / 待识别（本轮补齐）
@@ -87,81 +129,6 @@ const screenshotOpen = ref(false)
  * ⚠️ 这些状态**完全不参与** `current_schedule` 的产出：
  *    勾选与手工添加仍是写入课表的**唯一**途径。
  * --------------------------------------------------------------------- */
-
-/** 已选择的截图文件（⛔ 不读取其内容）。 */
-const shotFile = ref<File | null>(null)
-/** 本地预览 URL（`URL.createObjectURL`，换图或卸载时释放）。 */
-const shotPreviewUrl = ref('')
-/** 校验错误（只针对类型与大小）。 */
-const shotError = ref('')
-
-const shotFileName = (): string => shotFile.value?.name ?? ''
-
-function releaseShotPreview(): void {
-  if (shotPreviewUrl.value) {
-    URL.revokeObjectURL(shotPreviewUrl.value)
-    shotPreviewUrl.value = ''
-  }
-}
-
-/**
- * 选择 / 更换截图。
- *
- * `event.target.value` 会被清空：否则连续选择**同一张图**不会触发 `change`。
- */
-function onShotChange(event: Event): void {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0] ?? null
-  input.value = ''
-  shotError.value = ''
-
-  if (!file) {
-    return
-  }
-  if (!SHOT_ACCEPT.split(',').includes(file.type)) {
-    // 只接受明确列出的图片类型；⛔ 不做扩展名猜测
-    shotFile.value = null
-    releaseShotPreview()
-    shotError.value = '仅支持 PNG / JPEG / WebP 图片；未选择任何文件，也未读取其内容。'
-    return
-  }
-  if (file.size > SHOT_MAX_BYTES) {
-    shotFile.value = null
-    releaseShotPreview()
-    shotError.value = '截图不得超过 8 MiB；未读取其内容。'
-    return
-  }
-
-  releaseShotPreview()
-  shotFile.value = file
-  // ⚠️ 预览只用浏览器本地对象 URL：⛔ 不发送到任何后端。
-  shotPreviewUrl.value = URL.createObjectURL(file)
-}
-
-function clearShot(): void {
-  releaseShotPreview()
-  shotFile.value = null
-  shotError.value = ''
-}
-
-function closeScreenshotDialog(): void {
-  screenshotOpen.value = false
-  // 关闭时清掉上一次的校验错误，否则重新打开会继续显示过期报错。
-  // 已选中的截图保留（用户可能只是先关掉看看课表）。
-  shotError.value = ''
-}
-
-function formatShotSize(bytes: number): string {
-  if (bytes < 1024) {
-    return `${bytes} B`
-  }
-  if (bytes < 1024 * 1024) {
-    return `${(bytes / 1024).toFixed(1)} KiB`
-  }
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
-}
-
-onBeforeUnmount(releaseShotPreview)
 
 const campusOptions = computed(() => {
   const campuses = new Set<string>()
@@ -327,7 +294,8 @@ function confirmClear(): void {
       <label class="cse__search">
         <span>搜索你已经选中的课程</span>
         <input
-          v-model="searchQuery"
+          ref="searchInputRef"
+            v-model="searchQuery"
           data-testid="case-a-offering-search"
           class="input-text"
           type="search"
@@ -402,7 +370,24 @@ function confirmClear(): void {
             </div>
             <p class="cse__row-meta">{{ compactMeetingSummary(item.meetings) }}</p>
           </div>
+          <span
+            v-if="isConfirmedInSchedule(item)"
+            class="cse__confirmed"
+            data-testid="case-a-result-confirmed"
+          >
+            ✓ 已确认 已加入当前课表
+          </span>
           <button
+            v-if="isConfirmedInSchedule(item)"
+            class="button button--small button--ghost"
+            type="button"
+            data-testid="case-a-result-undo"
+            @click="undoSingle(item)"
+          >
+            撤回
+          </button>
+          <button
+            v-else
             class="button button--small"
             type="button"
             data-testid="case-a-result-add"
@@ -428,185 +413,29 @@ function confirmClear(): void {
     </p>
     <p v-if="batchNotice" class="cse__success" data-testid="case-a-batch-notice">{{ batchNotice }}</p>
 
-    <!-- 当前课表 -->
-    <section class="cse__current">
-      <header class="cse__current-head">
-        <h3>我的当前课表（{{ summary.count }}）</h3>
-        <p class="cse__summary" data-testid="case-a-schedule-summary">
-          <template v-if="summary.total !== null">
-            已加入 {{ summary.count }} 门 · 预计 {{ summary.total }} 学分
-          </template>
-          <template v-else>
-            已加入 {{ summary.count }} 门
-          </template>
-        </p>
-        <p v-if="summary.hasUnknownCredit" class="cse__hint" data-testid="case-a-credit-unknown">
-          部分课程学分待核验（{{ summary.unknownCount }} 门），因此不显示预计总学分。
-        </p>
-      </header>
+    <!--
+      当前课表（已确认加入）。
+      ⚠️ 布局调整（最终展示优化）：父级可传 `show-current-schedule=false`，
+         由父级在「上传课表截图 + 识别结果」之后渲染本区块，
+         让「识别 → 确认 → 课表实时更新」形成可感知闭环。
+         ⛔ DOM 一字未删，只是交由父级决定显隐；默认 true 保持向后兼容。
+    -->
+    <!--
+      当前课表（已确认加入）。
+      ⚠️ 布局调整（最终展示优化）：父级可传 `show-current-schedule=false`，
+         改由父级在「上传课表截图 + 识别结果」之后渲染，
+         让「识别 → 确认 → 课表实时更新」形成可感知闭环。
+         ⛔ 区块本身与数据流未变，只是换了渲染位置。
+    -->
+    <CurrentScheduleList
+      v-if="showCurrentSchedule"
+      :current-schedule="currentSchedule"
+      :attestation-notice="attestationNotice"
+      @remove="onListRemove($event)"
+      @clear="onListClear()"
+    />
 
-      <p v-if="currentSchedule.length === 0" class="cse__empty">尚未添加当前课程。</p>
 
-      <ul v-else class="cse__list">
-        <li
-          v-for="item in visibleSchedule"
-          :key="identity(item)"
-          class="cse__item"
-          data-testid="case-a-current-schedule-item"
-        >
-          <div class="cse__item-main">
-            <strong>{{ item.course_name }}</strong>
-            <span class="cse__item-id">{{ item.course_id }} · 教学班 {{ item.class_id }}</span>
-            <span class="cse__item-meta">{{ compactMeetingSummary(item.meetings) }}</span>
-            <span class="cse__item-meta">{{ placeText(item) }}</span>
-            <span class="cse__item-meta">{{ teacherText(item) }}</span>
-            <span v-if="item.source === 'manual-entry://current-schedule'" class="cse__warn">
-              该课程信息由你本人填写，未经学校系统核验。
-            </span>
-          </div>
-          <button
-            class="button button--small cse__remove"
-            type="button"
-            data-testid="case-a-current-schedule-remove"
-            @click="removeOffering(item)"
-          >
-            移除
-          </button>
-        </li>
-      </ul>
-
-      <div v-if="currentSchedule.length > 0" class="cse__actions">
-        <button
-          v-if="currentSchedule.length > 3"
-          class="cse__link"
-          type="button"
-          data-testid="case-a-schedule-view-all"
-          @click="showAll = !showAll"
-        >
-          {{ showAll ? '收起列表' : `查看全部（${currentSchedule.length}）` }}
-        </button>
-        <button
-          class="cse__link cse__link--danger"
-          type="button"
-          data-testid="case-a-schedule-clear"
-          @click="clearOpen = true"
-        >
-          清空当前课表
-        </button>
-      </div>
-
-      <p v-if="attestationNotice" class="cse__warn" data-testid="case-a-attestation-notice">
-        {{ attestationNotice }}
-      </p>
-
-      <!-- 清空二次确认 -->
-      <div v-if="clearOpen" class="cse__dialog" role="dialog" data-testid="case-a-clear-confirm">
-        <p>确定清空当前已加入的 {{ currentSchedule.length }} 门课程吗？</p>
-        <p class="cse__hint">清空后需要重新确认手工录入信息，确认状态不会被保留。</p>
-        <div class="cse__dialog-actions">
-          <button class="button button--small" type="button" data-testid="case-a-clear-cancel" @click="clearOpen = false">
-            取消
-          </button>
-          <button
-            class="button button--small cse__remove"
-            type="button"
-            data-testid="case-a-clear-confirm-button"
-            @click="confirmClear"
-          >
-            确认清空
-          </button>
-        </div>
-      </div>
-    </section>
-
-    <!-- 截图识别入口（本轮只放信息架构，⛔ 不上传 / 不 OCR / 不调用模型） -->
-    <div class="cse__screenshot">
-      <button
-        class="cse__link"
-        type="button"
-        data-testid="case-a-screenshot-entry"
-        @click="screenshotOpen = true"
-      >
-        上传课表截图，辅助识别
-      </button>
-    </div>
-
-    <div v-if="screenshotOpen" class="cse__dialog" role="dialog" data-testid="case-a-screenshot-dialog">
-      <p>
-        上传课表截图，用于识别课程名称、星期和节次，并与教学班数据匹配；
-        识别结果需由你确认后才能加入当前课表。
-      </p>
-
-      <!-- 图片选择：⛔ 只做本地校验与预览，不上传 -->
-      <div class="cse__shot-field">
-        <span class="cse__shot-label">课表截图（PNG / JPEG / WebP）</span>
-        <input
-          class="cse__shot-input"
-          data-testid="case-a-screenshot-input"
-          type="file"
-          :accept="SHOT_ACCEPT"
-          @change="onShotChange"
-        />
-        <span v-if="shotError" class="cse__error" data-testid="case-a-screenshot-error">
-          {{ shotError }}
-        </span>
-        <span
-          v-else-if="shotFile"
-          class="cse__hint"
-          data-testid="case-a-screenshot-name"
-        >
-          已选择：<code class="mono">{{ shotFileName() }}</code>
-          （{{ formatShotSize(shotFile.size) }}；仅本地预览，未上传、未解析）
-        </span>
-        <span v-else class="cse__hint" data-testid="case-a-screenshot-empty">尚未选择截图。</span>
-
-        <button
-          v-if="shotFile"
-          class="cse__link cse__link--danger"
-          type="button"
-          data-testid="case-a-screenshot-remove"
-          @click="clearShot"
-        >
-          移除截图
-        </button>
-      </div>
-
-      <!-- 预览：只用本地对象 URL，⛔ 不经过后端 -->
-      <div
-        v-if="shotPreviewUrl"
-        class="cse__shot-preview"
-        data-testid="case-a-screenshot-preview"
-      >
-        <img :src="shotPreviewUrl" :alt="`课表截图预览：${shotFileName()}`" />
-      </div>
-
-      <!--
-        ⚠️ 待识别反馈：本项目**尚未接入图片识别服务** ⇒ 只有「待识别」。
-        ⛔ 不显示任何识别结论，⛔ 不自动勾选任何教学班。
-      -->
-      <p
-        v-if="shotFile"
-        class="cse__warn"
-        data-testid="case-a-screenshot-status"
-        role="note"
-      >
-        <template v-if="!SHOT_RECOGNITION_AVAILABLE">
-          <strong>状态：待识别。</strong>
-          当前<strong>尚未接入图片识别服务</strong>，因此不会从截图中读出任何课程。
-          请继续使用上方<strong>搜索加入</strong>或<strong>手工添加课程</strong>录入当前课表；
-          ⛔ 本页不会用任何写死数据冒充识别结果。
-        </template>
-        <template v-else>
-          <strong>状态：识别通道已启用。</strong>
-        </template>
-      </p>
-
-      <div class="cse__dialog-actions">
-        <button class="button button--small" type="button" data-testid="case-a-screenshot-close" @click="closeScreenshotDialog">
-          关闭
-        </button>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -766,6 +595,18 @@ function confirmClear(): void {
 }
 
 .cse__teacher,
+.cse__confirmed {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid #2e7d32;
+  border-radius: 6px;
+  background: #e8f5e9;
+  color: #1b5e20;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .cse__row-meta {
   color: #64748b;
   font-size: 12px;
@@ -813,6 +654,18 @@ function confirmClear(): void {
 .cse__current-head h3 {
   margin: 0 0 4px;
   font-size: 16px;
+}
+
+.cse__summary-lead {
+  margin: 0 0 4px;
+  color: #33404f;
+  font-size: 13px;
+}
+
+.cse__summary-safe {
+  margin: 0 0 6px;
+  color: #8a5a00;
+  font-size: 12px;
 }
 
 .cse__summary {
@@ -904,44 +757,5 @@ function confirmClear(): void {
 }
 
 /* ---- 课表截图上传（本轮补齐；⛔ 仅追加，不改上方既有规则） ---- */
-.cse__shot-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
 /* 「移除截图」跟在文件名行下方，避免与预览错位 */
-.cse__shot-field .cse__link--danger {
-  align-self: flex-start;
-  margin-top: 2px;
-}
-
-.cse__shot-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.cse__shot-input {
-  font-size: 13px;
-}
-
-.cse__shot-preview {
-  border: 1px solid #d9e6f7;
-  border-radius: var(--radius);
-  padding: 8px;
-  background: #f8fbff;
-  max-width: 520px;
-}
-
-.cse__shot-preview img {
-  display: block;
-  width: 100%;
-  height: auto;
-  border-radius: 4px;
-}
-
-.cse__screenshot {
-  padding-top: 8px;
-}
 </style>

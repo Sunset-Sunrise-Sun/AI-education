@@ -57,132 +57,8 @@ function mountEditor() {
   })
 }
 
-async function openDialog(wrapper: ReturnType<typeof mount>) {
-  await wrapper.find('[data-testid="case-a-screenshot-entry"]').trigger('click')
-  await flushPromises()
-  return wrapper.find('[data-testid="case-a-screenshot-dialog"]')
-}
-
-async function chooseShot(wrapper: ReturnType<typeof mount>, file: File) {
-  const input = wrapper.find('[data-testid="case-a-screenshot-input"]')
-  Object.defineProperty(input.element, 'files', { value: [file], configurable: true })
-  Object.defineProperty(input.element, 'value', { value: '', writable: true, configurable: true })
-  await input.trigger('change')
-  await flushPromises()
-}
-
 describe('§2 课表截图：上传 / 预览 / 移除 / 待识别', () => {
-  it('入口文案与弹窗保持原样（复用既有入口，⛔ 未改文案）', async () => {
-    const wrapper = mountEditor()
-    const entry = wrapper.find('[data-testid="case-a-screenshot-entry"]')
-    expect(entry.exists()).toBe(true)
-    expect(entry.text()).toBe('上传课表截图，辅助识别')
-
-    const dialog = await openDialog(wrapper)
-    expect(dialog.exists()).toBe(true)
-  })
-
-  it('选择合法 PNG：显示文件名、大小、预览与「待识别」', async () => {
-    ensureObjectUrl()
-    const wrapper = mountEditor()
-    await openDialog(wrapper)
-    await chooseShot(wrapper, makePng('my-timetable.png', 4096))
-
-    const name = wrapper.find('[data-testid="case-a-screenshot-name"]')
-    expect(name.exists()).toBe(true)
-    expect(name.text()).toContain('my-timetable.png')
-    expect(name.text()).toContain('仅本地预览，未上传、未解析')
-
-    expect(wrapper.find('[data-testid="case-a-screenshot-preview"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="case-a-screenshot-preview"] img').exists()).toBe(true)
-
-    const status = wrapper.find('[data-testid="case-a-screenshot-status"]')
-    expect(status.exists()).toBe(true)
-    expect(status.text()).toContain('待识别')
-    expect(status.text()).toContain('尚未接入图片识别服务')
-  })
-
-  it('⛔ 全程不发任何请求（截图只在本地处理）', async () => {
-    ensureObjectUrl()
-    const fetchSpy = vi.spyOn(globalThis, 'fetch')
-    const wrapper = mountEditor()
-    await openDialog(wrapper)
-    await chooseShot(wrapper, makePng())
-    expect(fetchSpy).not.toHaveBeenCalled()
-  })
-
-  it('⛔ 不出现任何识别结论，也⛔ 不自动加入当前课表', async () => {
-    ensureObjectUrl()
-    const wrapper = mountEditor()
-    await openDialog(wrapper)
-    await chooseShot(wrapper, makePng())
-
-    const text = wrapper.text()
-    for (const forbidden of ['识别成功', '已识别出', '解析完成', '识别结果：']) {
-      expect(text, `出现不应有的识别结论：${forbidden}`).not.toContain(forbidden)
-    }
-    // ⛔ 选截图不会改动 current_schedule
-    expect(wrapper.emitted('update:currentSchedule')).toBeFalsy()
-  })
-
-  it('错误输入：非图片类型被拒，且不产生预览与状态', async () => {
-    const wrapper = mountEditor()
-    await openDialog(wrapper)
-    await chooseShot(wrapper, makeFile('grades.pdf', 'application/pdf', 1000))
-
-    const error = wrapper.find('[data-testid="case-a-screenshot-error"]')
-    expect(error.exists()).toBe(true)
-    expect(error.text()).toContain('仅支持 PNG / JPEG / WebP')
-    expect(wrapper.find('[data-testid="case-a-screenshot-preview"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="case-a-screenshot-status"]').exists()).toBe(false)
-  })
-
-  it('边界：超过 8 MiB 的图片被拒', async () => {
-    const wrapper = mountEditor()
-    await openDialog(wrapper)
-    await chooseShot(wrapper, makeFile('huge.png', 'image/png', 9 * 1024 * 1024))
-    const error = wrapper.find('[data-testid="case-a-screenshot-error"]')
-    expect(error.exists()).toBe(true)
-    expect(error.text()).toContain('8 MiB')
-  })
-
-  it('移除截图后回到空态', async () => {
-    ensureObjectUrl()
-    const wrapper = mountEditor()
-    await openDialog(wrapper)
-    await chooseShot(wrapper, makePng())
-    expect(wrapper.find('[data-testid="case-a-screenshot-status"]').exists()).toBe(true)
-
-    await wrapper.find('[data-testid="case-a-screenshot-remove"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-testid="case-a-screenshot-preview"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="case-a-screenshot-status"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="case-a-screenshot-empty"]').exists()).toBe(true)
-  })
-
-  it('空输入：未选文件时只有空态提示', async () => {
-    const wrapper = mountEditor()
-    await openDialog(wrapper)
-    expect(wrapper.find('[data-testid="case-a-screenshot-empty"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="case-a-screenshot-name"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="case-a-screenshot-remove"]').exists()).toBe(false)
-  })
-
-  it('关闭弹窗后重新打开，状态仍可用（不残留错误）', async () => {
-    const wrapper = mountEditor()
-    await openDialog(wrapper)
-    await chooseShot(wrapper, makeFile('bad.gif', 'image/gif', 10))
-    expect(wrapper.find('[data-testid="case-a-screenshot-error"]').exists()).toBe(true)
-
-    await wrapper.find('[data-testid="case-a-screenshot-close"]').trigger('click')
-    await flushPromises()
-    expect(wrapper.find('[data-testid="case-a-screenshot-dialog"]').exists()).toBe(false)
-
-    await openDialog(wrapper)
-    expect(wrapper.find('[data-testid="case-a-screenshot-error"]').exists()).toBe(false)
-  })
-
-  it('⛔ 手动搜索加入与手工添加入口未受影响', async () => {
+                    it('⛔ 手动搜索加入与手工添加入口未受影响', async () => {
     const wrapper = mountEditor()
     // 搜索面板与手工添加入口由父组件承载；这里确认本组件仍渲染搜索区
     expect(wrapper.find('.cse__search-panel').exists()).toBe(true)
@@ -308,7 +184,9 @@ describe('§1 原专业 / 目标专业下拉框', () => {
     expect(text).toContain('第一步：上传成绩单')
     expect(text).toContain('第二步：填写当前课表')
     expect(text).toContain('第三步：告诉我你的选课需求')
-    expect(text).toContain('上传课表截图，辅助识别')
+    // ⚠️ Task 2：旧入口已删除，改为断言**新**的图片导入入口仍在。
+    expect(text).toContain('上传我的课表截图')
+    expect(wrapper.find('[data-testid="case-a-image-import"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="case-a-manual-toggle"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="case-a-pdf"]').exists()).toBe(true)
   })

@@ -91,7 +91,10 @@ describe('Case A 学生端页面', () => {
     const firstResult = wrapper.get('[data-testid="case-a-search-result"]')
     await firstResult.get('button').trigger('click')
     expect(wrapper.findAll('[data-testid="case-a-current-schedule-item"]')).toHaveLength(1)
-    expect(wrapper.text()).toContain('我的当前课表（1）')
+    // ⚠️ 标题变更（最终展示优化）：由「我的当前课表」改为「已确认加入的当前课表」，
+    //    强调这些课程是**用户确认**的结果，⛔ 不是系统自动认定。
+    expect(wrapper.text()).toContain('已确认加入的当前课表（1）')
+    expect(wrapper.text()).toContain('以下课程已通过用户确认加入，将用于后续方案生成。')
     expect(wrapper.get('[data-testid="case-a-current-schedule-item"]').text()).toContain('任课教师：教师0')
 
     await wrapper.get('[data-testid="case-a-current-schedule-item"] button').trigger('click')

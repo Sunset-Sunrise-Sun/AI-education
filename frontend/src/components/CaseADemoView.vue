@@ -30,6 +30,8 @@ import {
 } from '../utils/planYear'
 import type { CourseOffering } from '../types/contracts'
 import CurrentScheduleEditor from './CurrentScheduleEditor.vue'
+import CurrentScheduleList from './CurrentScheduleList.vue'
+import TimetableImageImport from './TimetableImageImport.vue'
 import FutureRoadmapView from './FutureRoadmapView.vue'
 import IntentCourseSearch from './IntentCourseSearch.vue'
 import MakeupTaskList from './MakeupTaskList.vue'
@@ -306,9 +308,38 @@ function addManual(payload: { offering: CourseOffering; entries: ManualScheduleE
   ).form
 }
 
+/**
+ * 图片识别候选经用户确认后加入当前课表。
+ *
+ * ⚠️ 与手工添加同构：新条目 `data_source='mock'`、`source='image-recognition://…'`，
+ *   因此会**作废已有手工确认**，必须由用户再次显式确认（attestation）才能提交，
+ *   ⛔ 不会被当作已核验的真实教学班、⛔ 不绕过任何来源校验。
+ */
+function addRecognizedOffering(offering: CourseOffering): void {
+  form.value = invalidateManualAttestation(
+    form.value,
+    [...form.value.currentSchedule, offering],
+  ).form
+}
+
+/**
+ * 把**已有**的教学班搜索定位到图片识别中未识别的课程。
+ * ⚠️ 复用 `CurrentScheduleEditor` 暴露的 `focusSearch`，⛔ 不新建第二套搜索逻辑。
+ */
+const scheduleEditor = ref<{ focusSearch: (keyword: string) => void } | null>(null)
+
+function focusOfferingSearch(keyword: string): void {
+  scheduleEditor.value?.focusSearch(keyword)
+}
+
 function removeOffering(offering: CourseOffering): void {
   const next = removeCurrentScheduleOffering(form.value.currentSchedule, offering)
   form.value = invalidateManualAttestation(form.value, next).form
+}
+
+/** 清空当前课表（由 `CurrentScheduleList` / 编辑器的二次确认后触发，复用既有作废逻辑）。 */
+function clearSchedule(): void {
+  form.value = invalidateManualAttestation(form.value, []).form
 }
 
 /* 意向课程（课程级，写入 Preference.preferredCourses；重复课程不会重复加入） */
@@ -550,13 +581,51 @@ onMounted(loadOfferings)
         :subtitle="scheduleSubtitle"
       >
         <div class="case-a-schedule">
+          <!--
+            ⚠️ 布局调整（最终展示优化）：编辑器的「当前课表」区块在此隐藏
+               （`show-current-schedule=false`），改由下方在「图片导入 + 识别结果」之后渲染，
+               让「识别 → 用户确认 → 课表实时更新 → 剩余未识别」形成可感知闭环。
+               ⛔ 不改数据流：`currentSchedule` 仍是唯一数据源，事件仍回到既有处理函数。
+          -->
           <CurrentScheduleEditor
+            ref="scheduleEditor"
             :offerings="offerings"
             :current-schedule="form.currentSchedule"
             :semester="form.semester"
             :attestation-notice="attestationNotice"
+            :show-current-schedule="false"
             @update:current-schedule="updateSchedule"
+            @remove="removeOffering"
+            @clear="clearSchedule"
           />
+
+          <!--
+            课表截图导入确认（第二步内的输入增强）。
+            ⚠️ 只在第二步新增入口：识别 → 候选 → **用户确认** → 进入当前课表。
+            ⛔ 不自动生成 CourseOffering、⛔ 不认定教学班身份、⛔ 不绕过人工确认。
+            确认后的条目 `data_source='mock'` 且 `source='image-recognition://…'`，
+            因此仍需人工确认（attestation）才能提交，⛔ 不会被当作已核验的真实教学班。
+          -->
+          <TimetableImageImport
+            :semester="form.semester"
+            :selected="form.currentSchedule"
+            @confirm="addRecognizedOffering"
+            @remove="removeOffering"
+            @search="focusOfferingSearch"
+          >
+            <!--
+              已确认加入的当前课表（实时状态）。
+              ⚠️ 插在「识别结果」与「未识别/搜索教学班」之间，让用户确认后立即可见。
+            -->
+            <template #between>
+              <CurrentScheduleList
+                :current-schedule="form.currentSchedule"
+                :attestation-notice="attestationNotice"
+                @remove="removeOffering"
+                @clear="clearSchedule"
+              />
+            </template>
+          </TimetableImageImport>
 
           <div class="case-a-manual">
             <button
