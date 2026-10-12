@@ -76,8 +76,7 @@ function blockAt(weekday: number, section: number): ScheduleBlock | null {
       而课表数据来自本次响应，前端对它没有来源证据。改为中性表述。
     -->
     <p class="weekly__note">
-      本周课表来自 Planner 的 <strong>建议教学班</strong>（`selected_classes`）与本次响应中已返回的教学班；
-      ⛔ 不代表已经完成选课或注册。
+      本周课表为<strong>建议安排</strong>，具体选课请在教务系统完成。
     </p>
 
     <p v-if="isEmpty" class="weekly__empty" data-testid="case-a-weekly-empty">

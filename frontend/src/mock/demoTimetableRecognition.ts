@@ -191,36 +191,3 @@ export const DEMO_UNRESOLVED_COURSES: readonly DemoUnresolvedCourse[] = [
     reason: '存在多个教学安排，需要人工选择',
   },
 ]
-
-/**
- * 把一条**已由用户确认**的识别候选转成可加入当前课表的条目。
- *
- * ⚠️ 刻意与手工录入完全同构：
- *   - `source` 如实标明来自图片识别，⛔ 不冒充学校来源；
- *   - `data_source` 恒为 `'mock'`，因此**必须**走人工确认（attestation）才能提交，
- *     ⛔ 不会被当作已核验的真实教学班；
- *   - `course_id` / `class_id` 用演示标识占位，⛔ 不代表任何真实课程号或教学班号。
- */
-export function blockToUnverifiedOffering(
-  block: DemoRecognizedBlock,
-  semester: string,
-): CourseOffering {
-  return {
-    course_id: `IMAGE-RECOGNIZED-${block.demoId}`,
-    course_name: block.courseName,
-    class_id: `IMAGE-RECOGNIZED-${block.demoId}`,
-    semester,
-    meetings: [
-      {
-        weekday: block.weekday,
-        start_section: block.startSection,
-        end_section: block.endSection,
-        weeks: [1, 2, 3, 4, 5, 6, 7, 8],
-        campus: block.campus,
-        classroom: block.classroom,
-      },
-    ],
-    source: 'image-recognition://timetable-screenshot',
-    data_source: 'mock',
-  }
-}

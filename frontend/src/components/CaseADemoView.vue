@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
   CaseAApiError,
   loadCaseAOfferings,
@@ -18,6 +18,7 @@ import {
   removePreferredCourse,
   type ManualScheduleEntry,
 } from '../state/userInput'
+import { studentText } from '../utils/displayLanguage'
 import { SAMPLE_MAJOR_OPTIONS } from '../config'
 import {
   bothPlanYearsSupported,
@@ -34,7 +35,6 @@ import CurrentScheduleList from './CurrentScheduleList.vue'
 import TimetableImageImport from './TimetableImageImport.vue'
 import FutureRoadmapView from './FutureRoadmapView.vue'
 import IntentCourseSearch from './IntentCourseSearch.vue'
-import MakeupTaskList from './MakeupTaskList.vue'
 import ManualScheduleForm from './ManualScheduleForm.vue'
 import PendingAdjustments from './PendingAdjustments.vue'
 import PlanResultPanel from './PlanResultPanel.vue'
@@ -45,11 +45,11 @@ import WeeklyScheduleView from './WeeklyScheduleView.vue'
 
 /** 说明卡的固定内容：⛔ 不承诺"系统会自动替换课程"，真实语义是"找候选 → 提建议 → 用户确认"。 */
 const PLANNING_STEPS = [
-  '检查当前课表的时间冲突',
-  '为补修课程寻找本学期开设的教学班',
-  '尝试安排你选择的意向课程',
-  '发现冲突时寻找同课程其他教学班',
-  '无法自动确认的问题会明确提示，由你决定',
+  '分析你的培养要求和已有课程',
+  '找出可能需要补修的课程',
+  '根据时间、校区和课程安排推荐方案',
+  '结合你的选课偏好完善本学期安排',
+  '帮助你了解后续学期的学习路径',
 ] as const
 
 const form = ref(createDefaultUserInputForm())
@@ -153,8 +153,15 @@ function onMajorChange(field: 'originMajor' | 'targetMajor', event: Event): void
 const offerings = ref<CourseOffering[]>([])
 const transcript = ref<File | null>(null)
 const result = ref<CaseADemoResponse | null>(null)
+// 学生已核对的课程作为页面级输入状态保存；只用于前端连续规划体验，不改写 API 请求。
+const confirmedPlanInputKeys = ref<string[]>([])
 const loading = ref(false)
 const error = ref('')
+
+// 编辑规划输入后旧结果作废；课程核对状态保留，供下一次生成结果恢复展示。
+watch(form, () => { result.value = null }, { deep: true })
+// 转专业上下文本身变化时，之前目标专业下的课程核对不再沿用。
+watch(() => form.value.studentContext, () => { confirmedPlanInputKeys.value = [] }, { deep: true })
 
 /**
  * 教学班（offerings）的**真实加载状态**。
@@ -182,7 +189,7 @@ const offeringsStatus = ref<OfferingsStatus>('idle')
  * （规划结果 `/plan` 的响应**有** `provenance`，那部分按实际字段展示。）
  */
 const OFFERINGS_SOURCE_NOTE =
-  '教学班数据来自本次响应；该接口未返回来源字段，因此本页不对其真实性作认定。'
+  '请搜索并选择你的教学班，核对时间和地点后加入当前课表。'
 const manualOpen = ref(false)
 
 const manualCount = computed(() => manualScheduleOfferingCount(form.value))
@@ -199,6 +206,7 @@ const attestationNotice = computed(() =>
 
 const resultCourseNames = computed(() => {
   const map: Record<string, string> = {}
+  for (const task of result.value?.makeup_tasks ?? []) map[task.course_id] = task.course_name
   for (const item of result.value?.course_offerings ?? []) map[item.course_id] = item.course_name
   return map
 })
@@ -215,34 +223,13 @@ async function loadOfferings(): Promise<void> {
     offerings.value = []
     if (cause instanceof CaseAApiError && cause.isNotConfigured) {
       offeringsStatus.value = 'not_configured'
-      error.value = '教学班数据运行时尚未配置（后端返回 503），因此当前没有可展示的教学班。'
+      error.value = '教学班数据尚未准备好，请稍后重试。'
     } else {
       offeringsStatus.value = 'error'
-      error.value = cause instanceof Error ? cause.message : '教学班数据暂时不可用。'
+      error.value = '暂时无法加载教学班，请检查服务连接后刷新页面。'
     }
   }
 }
-
-/**
- * 规划结果里的**教学班来源**（仅当后端 `provenance` 真的给出字段时才展示）。
- *
- * ⚠️ 这是"依据已有可信响应字段展示来源"的正例：
- *     `/plan` 响应带 `provenance.course_data`（实测值 `case-scoped:south+shenzhen`），
- *     因此这里**照实显示后端给的值**，⛔ 不自行改写、⛔ 不添加"真实/已核验"等认定。
- */
-const planCourseDataSource = computed(() => {
-  const value = result.value?.provenance?.course_data
-  return typeof value === 'string' && value.trim() ? value.trim() : ''
-})
-
-/**
- * 结果区「教学班」条目的**说明**。
- *
- * ⚠️ 有 provenance 时如实带出来源；缺失时用中性表述（⛔ 不声称真实）。
- */
-const planCourseDataLabel = computed(() =>
-  planCourseDataSource.value ? '教学班（来源见下）' : '教学班',
-)
 
 /** 教学班数据是否**已成功加载**（唯一允许展示"已加载"字样的依据）。 */
 const offeringsLoaded = computed(() => offeringsStatus.value === 'success')
@@ -275,7 +262,7 @@ const scheduleSubtitle = computed(() => {
     case 'success':
       return `已加载教学班数据 ${offerings.value.length} 条；${scope}`
     case 'not_configured':
-      return `教学班数据运行时未配置，当前无可展示教学班；${scope}`
+      return `教学班数据尚未准备好；${scope}`
     case 'error':
       return `教学班数据加载失败，当前无可展示教学班；${scope}`
     default:
@@ -289,6 +276,7 @@ function chooseTranscript(event: Event): void {
   transcript.value = file && file.name.toLowerCase().endsWith('.pdf') ? file : null
   error.value = file && transcript.value === null ? '请上传 PDF 格式的中山大学成绩单。' : ''
   result.value = null
+  confirmedPlanInputKeys.value = []
 }
 
 /** 当前课表变更的唯一入口：改课表 + 作废既有手工确认（⛔ 旧确认不得覆盖新数据）。 */
@@ -305,20 +293,6 @@ function addManual(payload: { offering: CourseOffering; entries: ManualScheduleE
     form.value,
     [...form.value.currentSchedule, payload.offering],
     payload.entries,
-  ).form
-}
-
-/**
- * 图片识别候选经用户确认后加入当前课表。
- *
- * ⚠️ 与手工添加同构：新条目 `data_source='mock'`、`source='image-recognition://…'`，
- *   因此会**作废已有手工确认**，必须由用户再次显式确认（attestation）才能提交，
- *   ⛔ 不会被当作已核验的真实教学班、⛔ 不绕过任何来源校验。
- */
-function addRecognizedOffering(offering: CourseOffering): void {
-  form.value = invalidateManualAttestation(
-    form.value,
-    [...form.value.currentSchedule, offering],
   ).form
 }
 
@@ -387,7 +361,7 @@ async function submit(): Promise<void> {
       preference: request.preference,
     })
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '方案生成失败，请检查输入后重试。'
+    error.value = cause instanceof CaseAApiError && cause.status !== null && cause.status >= 500 ? '方案暂时无法生成，请稍后重试。' : studentText(cause instanceof Error ? cause.message : '', '方案生成失败，请检查输入后重试。')
   } finally {
     loading.value = false
   }
@@ -423,7 +397,7 @@ onMounted(loadOfferings)
             {{ offeringsTagLabel }}
           </span>
           <span class="tag">南校园 + 深圳校区</span>
-          <span class="tag">RestrictedPlanner</span>
+
         </div>
       </section>
 
@@ -571,7 +545,7 @@ onMounted(loadOfferings)
             <input data-testid="case-a-pdf" type="file" accept="application/pdf,.pdf" @change="chooseTranscript" />
           </label>
           <p v-if="transcript" class="case-a-success">✓ 已选择：{{ transcript.name }}</p>
-          <p class="case-a-secondary">Transcript source: user-uploaded SYSU transcript PDF</p>
+          <p class="case-a-secondary">成绩单用于核对你已修读的课程。</p>
         </div>
       </SectionCard>
 
@@ -599,18 +573,10 @@ onMounted(loadOfferings)
             @clear="clearSchedule"
           />
 
-          <!--
-            课表截图导入确认（第二步内的输入增强）。
-            ⚠️ 只在第二步新增入口：识别 → 候选 → **用户确认** → 进入当前课表。
-            ⛔ 不自动生成 CourseOffering、⛔ 不认定教学班身份、⛔ 不绕过人工确认。
-            确认后的条目 `data_source='mock'` 且 `source='image-recognition://…'`，
-            因此仍需人工确认（attestation）才能提交，⛔ 不会被当作已核验的真实教学班。
-          -->
+          <!-- 候选只进入待匹配列表；搜索并选择教学班后才加入当前课表。 -->
           <TimetableImageImport
             :semester="form.semester"
             :selected="form.currentSchedule"
-            @confirm="addRecognizedOffering"
-            @remove="removeOffering"
             @search="focusOfferingSearch"
           >
             <!--
@@ -618,6 +584,7 @@ onMounted(loadOfferings)
               ⚠️ 插在「识别结果」与「未识别/搜索教学班」之间，让用户确认后立即可见。
             -->
             <template #between>
+              <!-- 已确认加入的当前课表（实时状态）——只含 data_source=real 的真实教学班 -->
               <CurrentScheduleList
                 :current-schedule="form.currentSchedule"
                 :attestation-notice="attestationNotice"
@@ -676,13 +643,11 @@ onMounted(loadOfferings)
       </SectionCard>
 
       <div class="case-a-explainer" data-testid="case-a-planning-explainer">
-        <h2 class="case-a-explainer__title">系统将如何帮你规划</h2>
+        <h2 class="case-a-explainer__title">AI 如何帮助你规划</h2>
         <ul class="case-a-explainer__list">
           <li v-for="step in PLANNING_STEPS" :key="step">✓ {{ step }}</li>
         </ul>
-        <p class="case-a-explainer__note">
-          调整只会以<strong>建议</strong>形式给出：系统找到候选教学班后需要你确认，⛔ 不会自动替换你的课程。
-        </p>
+        <p class="case-a-explainer__note">系统会给出清晰的课程建议，需要你确认的内容会单独标出。</p>
       </div>
 
       <div class="case-a-submit-wrap">
@@ -697,15 +662,42 @@ onMounted(loadOfferings)
         <SectionCard :mock="false" title="成绩单识别结果" :badge-count="result.transcript.record_count">
           <p>
             已识别 {{ result.transcript.record_count }} 门已修课程，覆盖 {{ result.transcript.term_count }} 个学期。
-            成绩单未提供官方课程号时，系统不会自动伪造或强行认定课程身份。
+            需要你核对的课程已列在下方「课程建议与确认」中。
           </p>
         </SectionCard>
 
-        <SectionCard :mock="false" title="补修缺口分析" :badge-count="result.makeup_tasks.length">
-          <MakeupTaskList :tasks="result.makeup_tasks" />
+        <!--
+          ⚠️ 信息架构调整（本次）：
+            原来「补修缺口分析」是一张后台式大表格，与「课程建议与确认」功能重复
+            （同一门课两处出现、学生不知道该在哪操作）。
+            现在**合并为一个卡片式入口**：一门课程一张卡片，
+            卡片内含「课程识别 / 为什么需要确认 / 纳入后续规划」。
+            ⛔ 不再有重复的补修课程列表；⛔ 不改任何数据结构与接口。
+        -->
+        <SectionCard :mock="false" title="课程建议与确认" subtitle="转专业后需要你关注的课程，都在这里逐门确认。" tone="primary">
+          <PlanResultPanel
+            :plan-result="result.plan_result"
+            :course-name-by-id="resultCourseNames"
+            :makeup-tasks="result.makeup_tasks"
+            :confirmed-keys="confirmedPlanInputKeys"
+            @update:confirmed-keys="confirmedPlanInputKeys = $event"
+          />
         </SectionCard>
 
-        <SectionCard :mock="false" :title="'本学期推荐课表'" subtitle="按本次响应返回的教学班绘制；这是 Planner 的建议，不代表已经选上课。">
+        <!--
+          ⚠️ 顺序调整：先确认输入，再看规划结果。
+             用户勾选的课程（`confirmedPlanInputKeys`）会传给本区域读取，
+             用于展示「已选择课程将用于后续规划」。
+        -->
+        <SectionCard :mock="false" :title="'生成后的规划课表'" subtitle="根据培养要求、课程安排和你的选课偏好生成。最终选课结果请以学校教务系统为准。">
+          <p
+            v-if="confirmedPlanInputKeys.length > 0"
+            class="case-a-plan-linkage"
+            data-testid="case-a-plan-linkage"
+          >
+            已选择 <strong>{{ confirmedPlanInputKeys.length }}</strong> 门课程将用于后续规划；
+            调整选择后可重新生成以更新本课表。
+          </p>
           <WeeklyScheduleView
             :plan-result="result.plan_result"
             :offerings="result.course_offerings"
@@ -716,7 +708,7 @@ onMounted(loadOfferings)
           />
         </SectionCard>
 
-        <SectionCard :mock="false" title="待你确认的调整" subtitle="系统只提出建议；确认后才会生效。">
+        <SectionCard :mock="false" title="调整建议" subtitle="请核对建议的教学班安排，当前课表不会自动改变。">
           <PendingAdjustments :plan-result="result.plan_result" :course-name-by-id="resultCourseNames" />
         </SectionCard>
 
@@ -730,46 +722,30 @@ onMounted(loadOfferings)
           <FutureRoadmapView :roadmap="result.roadmap" />
         </SectionCard>
 
-        <SectionCard :mock="false" title="本次规划数据">
-          <div class="case-a-coverage" data-testid="case-a-coverage-summary">
-            <div><strong>{{ result.transcript.record_count }}</strong><span>成绩单课程</span></div>
-            <div><strong>{{ result.course_offerings.length }}</strong><span>{{ planCourseDataLabel }}</span></div>
-            <div><strong>南 + 深</strong><span>数据范围</span></div>
-            <div><strong>{{ result.provenance?.is_full_semester ? '是' : '否' }}</strong><span>全校完整学期数据</span></div>
+        <SectionCard
+          v-else
+          :mock="false"
+          title="未来学习路径规划"
+          subtitle="提前了解转入目标专业后的学习方向。"
+        >
+          <div class="case-a-path-intro">
+            <p>AI 将结合目标专业培养方案和课程安排，帮助你提前了解后续学习方向。</p>
+            <p>当前版本主要展示本学期规划，后续可扩展多学期路径优化。</p>
           </div>
-          <!--
-            ⚠️ 此前这里写死「4069 条教学班」——那是**神秘数字**，且与响应无关。
-            现在如实说明"候选池"这一语义，条数见上方由响应计算出的数字。
-          -->
-          <p class="case-a-secondary">
-            响应中的教学班仅作为规划候选池使用，不在页面中逐条铺开。
-          </p>
-          <!-- 来源照实展示后端 provenance（缺失时整行不渲染） -->
-          <p
-            v-if="planCourseDataSource"
-            class="case-a-secondary"
-            data-testid="case-a-plan-course-data-source"
-          >
-            教学班来源：<code class="mono">{{ planCourseDataSource }}</code>
-          </p>
+        </SectionCard>
+
+        <SectionCard :mock="false" title="本次规划依据">
+          <ul class="case-a-planning-basis" data-testid="case-a-planning-basis">
+            <li>✓ 我的成绩记录</li>
+            <li>✓ 目标专业培养方案</li>
+            <li>✓ 当前教学安排</li>
+            <li>✓ 可选教学班信息</li>
+          </ul>
+          <p class="case-a-secondary">具体课程认定与选课结果请以学校教务系统为准。</p>
         </SectionCard>
 
         <SectionCard :mock="false" title="我的选课需求">
           <PreferencePanel :preference="result.preference" :course-name-by-id="resultCourseNames" />
-        </SectionCard>
-
-        <SectionCard :mock="false" title="推荐方案" tone="primary">
-          <PlanResultPanel :plan-result="result.plan_result" :course-name-by-id="resultCourseNames" />
-        </SectionCard>
-
-        <SectionCard :mock="false" title="数据与计算说明">
-          <ul class="case-a-provenance">
-            <li>成绩单：用户上传的中山大学成绩单 PDF</li>
-            <li>培养方案：Case A 目标专业培养方案</li>
-            <li>教学班：南校园 + 深圳校区范围数据</li>
-            <li>规划器：RestrictedPlanner 实际执行</li>
-            <li>完整学期数据：否</li>
-          </ul>
         </SectionCard>
       </template>
     </main>
@@ -942,7 +918,25 @@ onMounted(loadOfferings)
 }
 
 .case-a-upload,
-.case-a-schedule,
+.case-a-schedule {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid #c7d2e0;
+  border-radius: 8px;
+  background: #f7f9fc;
+}
+
+/* 课程确认 → 规划课表的联动提示（只说明选择已传递，⛔ 不伪造算法结果） */
+.case-a-plan-linkage {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid #c7d2e0;
+  border-radius: 8px;
+  background: #f7f9fc;
+  color: #33404f;
+  font-size: 13px;
+}
+
 .case-a-manual,
 .case-a-selected {
   display: flex;
@@ -1222,38 +1216,25 @@ onMounted(loadOfferings)
   font-size: 12px;
 }
 
-.case-a-coverage {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
-  gap: 12px;
-  margin-bottom: 12px;
+.case-a-path-intro p {
+  margin: 0 0 8px;
+  color: #334155;
+  line-height: 1.7;
 }
 
-.case-a-coverage div {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: #f8fafc;
-}
-
-.case-a-coverage strong {
-  font-size: 22px;
-  color: var(--text);
-}
-
-.case-a-coverage span {
+.case-a-path-intro p:last-child {
+  margin-bottom: 0;
   color: var(--text-muted);
-  font-size: 12px;
 }
 
-.case-a-provenance {
-  margin: 0;
-  padding-left: 20px;
-  color: #475569;
-  line-height: 1.9;
+.case-a-planning-basis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 10px 18px;
+  margin: 0 0 12px;
+  padding: 0;
+  color: #334155;
+  list-style: none;
 }
 
 @media (max-width: 760px) {
@@ -1277,8 +1258,8 @@ onMounted(loadOfferings)
     flex: 1 1 130px;
   }
 
-  .case-a-coverage {
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
+  .case-a-planning-basis {
+    grid-template-columns: 1fr;
   }
 }
 </style>

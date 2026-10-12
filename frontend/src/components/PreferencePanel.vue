@@ -20,7 +20,7 @@ defineProps<{
     <div class="pref-card pref-card--full">
       <div class="pref-card__body">
         <p class="pref-card__hint">
-          本区块仅展示 Preference 输入；前端不判断这些偏好是否已被 Planner 作为硬/软约束执行。
+          这里是你填写的选课需求，实际安排请查看推荐方案。
         </p>
       </div>
     </div>
@@ -28,7 +28,7 @@ defineProps<{
     <div class="pref-card">
       <div class="pref-card__header">
         <span class="pref-card__icon">🎯</span>
-        <h4 class="pref-card__title">学期学分上限 (max_credit)</h4>
+        <h4 class="pref-card__title">学期学分上限</h4>
       </div>
       <div class="pref-card__body">
         <span class="pref-stat num">
@@ -42,7 +42,7 @@ defineProps<{
     <div class="pref-card">
       <div class="pref-card__header">
         <span class="pref-card__icon">🏫</span>
-        <h4 class="pref-card__title">跨校区偏好 (avoid_cross_campus)</h4>
+        <h4 class="pref-card__title">跨校区偏好</h4>
       </div>
       <div class="pref-card__body">
         <span
@@ -52,7 +52,7 @@ defineProps<{
           {{ preference.avoid_cross_campus ? '避免跨校区' : '允许跨校区选课' }}
         </span>
         <p class="pref-card__hint">
-          已记录用户的跨校区偏好；当前是否作为正式求解约束执行，以 PlanResult 输出为准。
+          已记录你的偏好，请核对推荐方案中的校区安排。
         </p>
       </div>
     </div>
@@ -61,7 +61,7 @@ defineProps<{
     <div class="pref-card">
       <div class="pref-card__header">
         <span class="pref-card__icon">⭐</span>
-        <h4 class="pref-card__title">优先选修意向 (preferred_courses)</h4>
+        <h4 class="pref-card__title">优先选修意向</h4>
       </div>
       <div class="pref-card__body">
         <div
@@ -84,7 +84,7 @@ defineProps<{
     <div class="pref-card">
       <div class="pref-card__header">
         <span class="pref-card__icon">⏰</span>
-        <h4 class="pref-card__title">回避时段 (avoid_times)</h4>
+        <h4 class="pref-card__title">回避时段</h4>
       </div>
       <div class="pref-card__body">
         <div
@@ -107,7 +107,7 @@ defineProps<{
     <div v-if="preference.notes" class="pref-card pref-card--full">
       <div class="pref-card__header">
         <span class="pref-card__icon">📝</span>
-        <h4 class="pref-card__title">学生偏好备注 (notes)</h4>
+        <h4 class="pref-card__title">学生偏好备注</h4>
       </div>
       <div class="pref-card__body">
         <blockquote class="pref-notes">

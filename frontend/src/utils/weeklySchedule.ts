@@ -181,11 +181,15 @@ export const NO_SCHEDULE_DATA_TEXT = EMPTY_MEETINGS_DATA_TEXT
  * `meetings = []` 时返回中性文案（⛔ 不写"无课"）。
  */
 export function compactMeetingSummary(meetings: readonly Meeting[]): string {
-  if (meetings.length === 0) return NO_SCHEDULE_DATA_TEXT
-  return meetings
-    .map(
-      (meeting) =>
-        `${formatWeekday(meeting.weekday)} ${meeting.start_section}-${meeting.end_section}节`,
-    )
-    .join('；')
+  return compactMeetingLines(meetings).join('；')
+}
+
+/**
+ * 当前课表使用的时间行。相同星期与节次只展示一次；原始 meetings 保持不变。
+ */
+export function compactMeetingLines(meetings: readonly Meeting[]): string[] {
+  if (meetings.length === 0) return [NO_SCHEDULE_DATA_TEXT]
+  return [...new Set(meetings.map(
+    (meeting) => `${formatWeekday(meeting.weekday)} ${meeting.start_section}-${meeting.end_section}节`,
+  ))]
 }

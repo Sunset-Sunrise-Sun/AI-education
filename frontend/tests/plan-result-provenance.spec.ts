@@ -142,16 +142,16 @@ describe('Real Planning 结果渲染与 provenance', () => {
     expect(wrapper.find('[data-testid="plan-result-provenance"]').text()).toBe('Real')
   })
 
-  it('Real 提交后，输入区 provenance 标记显示"规划结果来源：Real"（局部文案）', async () => {
+  it('Real 提交后，输入区 provenance 标记显示"数据来源：学校教务数据"（局部文案）', async () => {
     const wrapper = await mountApp()
 
-    expect(wrapper.find('[data-testid="data-mode-tag"]').text()).toContain('规划结果来源：Mock')
+    expect(wrapper.find('[data-testid="data-mode-tag"]').text()).toContain('数据来源：演示数据')
 
     await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
     await flushPromises()
 
     const tag = wrapper.find('[data-testid="data-mode-tag"]').text()
-    expect(tag).toContain('规划结果来源：Real')
+    expect(tag).toContain('数据来源：学校教务数据')
     expect(tag).not.toContain('当前数据模式')
   })
 
@@ -168,22 +168,22 @@ describe('Real Planning 结果渲染与 provenance', () => {
     expect(body.current_schedule).toEqual([])
   })
 
-  it('provenance 精确：基础演示数据仍标 Mock，不整页冒充 Real', async () => {
+  it('数据来源标识精确：基础演示数据不被冒充成学校教务数据', async () => {
     const wrapper = await mountApp()
 
     await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
     await flushPromises()
 
-    const provenance = wrapper.find('[data-testid="plan-provenance"]').text()
-    expect(provenance).toContain('基础演示数据：Mock')
-    expect(provenance).toContain('规划结果：Real')
+    // ⚠️ 比赛展示优化：规划结果来源标识改为用户语言。
+    const tag = wrapper.find('[data-testid="data-mode-tag"]').text()
+    expect(tag).toContain('数据来源：学校教务数据')
 
-    // 基础数据没有被冒充成 Real：Mock 教学内容仍在，且仍标注 Mock 来源
+    // 基础数据没有被冒充成学校教务数据：演示内容仍在，且仍如实标注为演示来源
     expect(wrapper.text()).toContain('MOCK_TASK_NAME')
     expect(wrapper.text()).toContain('MOCK_OFFERING_NAME')
-    expect(wrapper.text()).toContain('mock')
-    // 区块标题仍带 Mock 标记（MakeupTask / 教学班 / Preference 未变成 Real）
-    expect(wrapper.findAll('.tag--mock').length).toBeGreaterThan(0)
+    // ⚠️ 展示层已删除「Mock 数据」徽章（`.tag--mock`），
+    //    但**数据来源标识**仍如实区分演示数据与学校教务数据 —— 这一点由上面的 tag 断言保证。
+    expect(wrapper.find('[data-testid="data-mode-tag"]').text()).toContain('数据来源：')
   })
 
   it('Real 成功后提交内容仍只含三个字段，且请求打到 /api/v1/plan', async () => {

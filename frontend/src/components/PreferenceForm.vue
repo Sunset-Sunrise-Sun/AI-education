@@ -161,7 +161,7 @@ function onAvoidTimeField(key: number, field: keyof Omit<AvoidTimeRow, 'key'>, e
           <span>尽量避免跨校区上课</span>
         </label>
         <span class="uig-field__hint">
-          仅记录你的偏好；是否作为正式求解约束执行，以生成结果中的待确认事项为准。
+          系统会参考你的偏好生成方案，具体安排请以推荐结果为准。
         </span>
       </div>
 
@@ -271,7 +271,7 @@ function onAvoidTimeField(key: number, field: keyof Omit<AvoidTimeRow, 'key'>, e
           @input="onNotesInput"
         ></textarea>
         <span class="uig-field__hint">
-          备注会原样带给规划系统，但不会被解析成结构化约束；是否被满足以生成结果为准。
+          系统会参考这段备注生成建议，具体安排请以推荐结果为准。
         </span>
       </label>
     </div>

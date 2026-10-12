@@ -191,6 +191,22 @@ describe('批量加入评估（纯函数，fail closed）', () => {
 /* ------------------------------------------------------------------ 组件层 */
 
 describe('当前课表批量录入组件', () => {
+  it('当前课表相同上课时间只展示一次', () => {
+    const item = offering({
+      meetings: [
+        { weekday: 2, start_section: 7, end_section: 8, weeks: [1, 2], campus: '深圳校区', classroom: '东2-206' },
+        { weekday: 4, start_section: 1, end_section: 2, weeks: [1, 2], campus: '深圳校区', classroom: '东2-206' },
+        { weekday: 2, start_section: 7, end_section: 8, weeks: [3, 4], campus: '深圳校区', classroom: '东2-206' },
+      ],
+    })
+    const wrapper = mountEditor({ offerings: [], currentSchedule: [item] })
+    const text = wrapper.get('[data-testid="case-a-current-schedule-item"]').text()
+    expect(text.match(/周二 7-8节/g)).toHaveLength(1)
+    expect(text.match(/周四 1-2节/g)).toHaveLength(1)
+    expect(text).toContain('上课时间')
+    expect(text).toContain('上课地点')
+  })
+
   it('未输入关键词时不铺开结果', () => {
     const wrapper = mountEditor({ offerings: Array.from({ length: 40 }, (_, i) =>
       offering({ class_id: `CLASS-${i}` }),

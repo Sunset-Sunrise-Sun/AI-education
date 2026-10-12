@@ -16,7 +16,7 @@ import { computed, ref } from 'vue'
 
 import type { CourseOffering } from '../types/contracts'
 import { summarizeCredits } from '../utils/courseSearch'
-import { compactMeetingSummary } from '../utils/weeklySchedule'
+import { compactMeetingLines } from '../utils/weeklySchedule'
 
 const props = defineProps<{
   currentSchedule: readonly CourseOffering[]
@@ -76,7 +76,7 @@ function confirmClear(): void {
         以下课程<strong>已通过用户确认</strong>加入，将用于后续方案生成。
       </p>
       <p class="cse__summary-safe">
-        ⚠️ 识别候选不会自动进入课表，也不代表教学班身份已被认定；⛔ 不是系统自动认定。
+        请核对课程的教学班、时间和地点。
       </p>
       <p class="cse__summary" data-testid="case-a-schedule-summary">
         <template v-if="summary.total !== null">
@@ -103,7 +103,9 @@ function confirmClear(): void {
         <div class="cse__item-main">
           <strong>{{ item.course_name }}</strong>
           <span class="cse__item-id">{{ item.course_id }} · 教学班 {{ item.class_id }}</span>
-          <span class="cse__item-meta">{{ compactMeetingSummary(item.meetings) }}</span>
+          <span class="cse__item-label">上课时间</span>
+          <span v-for="line in compactMeetingLines(item.meetings)" :key="line" class="cse__item-meta">{{ line }}</span>
+          <span class="cse__item-label">上课地点</span>
           <span class="cse__item-meta">{{ placeText(item) }}</span>
           <span class="cse__item-meta">{{ teacherText(item) }}</span>
           <span v-if="isUserConfirmedSource(item)" class="cse__warn">
@@ -165,3 +167,18 @@ function confirmClear(): void {
     </div>
   </section>
 </template>
+
+<style scoped>
+.cse__current { margin-top: 20px; padding: 16px; border: 1px solid var(--border); border-radius: var(--radius); background: #f8fafc; }
+.cse__current-head h3 { margin: 0 0 10px; }
+.cse__summary-lead, .cse__summary-safe, .cse__summary, .cse__hint { font-size: 13px; line-height: 1.7; color: var(--text-muted); }
+.cse__list { display: grid; gap: 10px; list-style: none; padding: 0; }
+.cse__item { display: flex; flex-wrap: wrap; gap: 12px; align-items: start; justify-content: space-between; padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: #fff; }
+.cse__item-main { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 6px; overflow-wrap: anywhere; }
+.cse__item-id, .cse__item-meta { display: block; color: var(--text-muted); font-size: 13px; line-height: 1.7; }
+.cse__item-label { margin-top: 2px; color: var(--text); font-size: 12px; font-weight: 700; }
+.cse__actions, .cse__dialog-actions { display: flex; flex-wrap: wrap; gap: 14px; }
+.cse__link { background: none; border: 0; padding: 6px 0; color: #2563eb; cursor: pointer; }
+.cse__link--danger, .cse__warn { color: #92400e; }
+.cse__dialog { margin-top: 12px; padding: 14px; background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+</style>

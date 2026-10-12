@@ -152,7 +152,7 @@ describe('Gate E：Real 成功路径（success + provenance + 中性文案）', 
     expect(wrapper.find('[data-testid="plan-provenance"]').text()).toContain('Mock')
   })
 
-  it('Real 结果里的 schedule_unknown / manual_confirmation / missing_data 都被原样展示', async () => {
+  it('Real 结果里的不同待确认原因都以学生能执行的语言展示', async () => {
     vi.stubGlobal('fetch', routedFetch(() => jsonResponse(REAL_PLAN_RESULT)))
     const wrapper = await mountApp()
 
@@ -160,10 +160,11 @@ describe('Gate E：Real 成功路径（success + provenance + 中性文案）', 
     await flushPromises()
 
     const text = wrapper.text()
-    expect(text).toContain('排课信息未知') // schedule_unknown 的中性中文标签
-    expect(text).toContain('待人工确认')
-    expect(text).toContain('缺少数据')
-    expect(text).toContain('SNR'.replace('SNR', 'schedule_unknown')) // 原始 type 字段保留
+    expect(text).toContain('上课时间尚未确定，请核实后再生成方案')
+    expect(text).toContain('目标专业培养方案中包含该课程')
+    expect(text).toContain('课程信息不完整，请补充后再生成方案')
+    expect(text).toContain('查看详情')
+    expect(text).not.toMatch(/schedule_unknown|manual_confirmation|missing_data/)
   })
 
   it('⛔ 渲染结果里不出现"已选课" / "可直接执行" / 无冲突类推断词', async () => {
@@ -204,7 +205,7 @@ describe('Gate E：Real 成功路径（success + provenance + 中性文案）', 
 describe('Gate E：503 / 错误 / loading 状态', () => {
   afterEach(() => vi.unstubAllGlobals())
 
-  it('503 real_pipeline_not_configured → "尚未完成装配"且显示 HTTP 503 与错误码', async () => {
+  it('503 real_pipeline_not_configured → "规划服务正在准备中"且显示 HTTP 503 与错误码', async () => {
     vi.stubGlobal(
       'fetch',
       routedFetch(() =>
@@ -223,7 +224,7 @@ describe('Gate E：503 / 错误 / loading 状态', () => {
 
     const errorBox = wrapper.find('[data-testid="real-plan-error"]')
     expect(errorBox.exists()).toBe(true)
-    expect(wrapper.find('[data-testid="real-plan-error-title"]').text()).toContain('尚未完成装配')
+    expect(wrapper.find('[data-testid="real-plan-error-title"]').text()).toContain('规划服务正在准备中')
     expect(wrapper.find('[data-testid="real-plan-error-meta"]').text()).toContain('503')
     expect(wrapper.find('[data-testid="real-plan-error-code"]').text()).toContain(
       'real_pipeline_not_configured',
@@ -274,7 +275,7 @@ describe('Gate E：503 / 错误 / loading 状态', () => {
     expect(meta).toContain('500')
     expect(meta).toContain('server')
     // ⛔ 500 不得被写成"未装配"
-    expect(wrapper.find('[data-testid="real-plan-error-title"]').text()).not.toContain('尚未完成装配')
+    expect(wrapper.find('[data-testid="real-plan-error-title"]').text()).not.toContain('规划服务正在准备中')
   })
 
   it('loading 状态在组件层：submitting=true 时按钮文案与禁用同时成立', () => {
@@ -354,7 +355,7 @@ describe('Gate E：纯展示细节（meetings=[] / remaining_capacity=None）', 
     })
 
     const text = wrapper.text()
-    expect(text).toContain('未决事项为空')
+    expect(text).toContain('本次没有待确认事项')
     expect(text).not.toContain('可直接执行')
   })
 })
@@ -522,9 +523,9 @@ describe('Gate E：地点 / 空数组语义 / 偏好措辞 / 容量阈值', () =
     })
 
     const text = wrapper.text()
-    expect(text).toContain('未返回方案变更记录')
-    expect(text).toContain('未返回风险项')
-    expect(text).toContain('未决事项为空')
+    expect(text).toContain('未返回调整建议')
+    expect(text).toContain('未返回风险提示')
+    expect(text).toContain('本次没有待确认事项')
 
     const forbiddenClaims = [
       '无风险',
@@ -556,7 +557,7 @@ describe('Gate E：地点 / 空数组语义 / 偏好措辞 / 容量阈值', () =
     })
 
     const text = wrapper.text()
-    expect(text).toContain('以 PlanResult 输出为准')
+    expect(text).toContain('实际安排请查看推荐方案')
 
     const forbiddenClaims = [
       '已按偏好求解',

@@ -44,7 +44,7 @@ describe('课表截图导入确认', () => {
 
     expect(wrapper.find('[data-testid="case-a-image-error"]').text()).toContain('PNG')
     expect(wrapper.find('[data-testid="case-a-image-result"]').exists()).toBe(false)
-    expect(wrapper.emitted('confirm')).toBeUndefined()
+    expect(wrapper.emitted('recognize')).toBeUndefined()
   })
 
   it('超大图片被拒绝', async () => {
@@ -78,58 +78,76 @@ describe('课表截图导入确认', () => {
     const wrapper = mount(TimetableImageImport, { props: { semester: '2026-1', selected: [] } })
     await upload(wrapper, png())
     expect(wrapper.find('[data-testid="case-a-image-result"]').text()).toContain('识别候选')
-    expect(wrapper.find('[data-testid="case-a-image-result"]').text()).toContain('不含课程号与教学班号')
+    expect(wrapper.find('[data-testid="case-a-image-result"]').text()).toContain('不含官方课程号与教学班号')
   })
 
   it('确认前不发出任何 confirm（未经确认不进入当前课表）', async () => {
     const wrapper = mount(TimetableImageImport, { props: { semester: '2026-1', selected: [] } })
     await upload(wrapper, png())
-    expect(wrapper.emitted('confirm')).toBeUndefined()
+    expect(wrapper.emitted('recognize')).toBeUndefined()
   })
 
-  it('点击确认后才发出 confirm，且条目为未核验来源', async () => {
+  it('点击「确认识别结果」后才进入待匹配，⛔ 不产生任何 CourseOffering', async () => {
+    const wrapper = mount(TimetableImageImport, { props: { semester: '2026-1', selected: [] } })
+    await upload(wrapper, png())
+    // 未点击前：没有任何确认事件
+    expect(wrapper.emitted('recognize')).toBeUndefined()
+
+    await wrapper.find('[data-testid="case-a-image-confirm"]').trigger('click')
+
+    const emitted = wrapper.emitted('recognize')
+    expect(emitted).toBeTruthy()
+    const block = (emitted as unknown[][])[0][0] as Record<string, unknown>
+    // ⚠️ 方案 A：只传出**识别候选本身**（课程名 + 时间），
+    //    ⛔ 绝不产生 course_id / class_id / data_source 等 offering 字段。
+    expect(block.courseName).toBe('网络空间安全导论')
+    expect(block.courseId ?? null).toBeNull()
+    expect(block.classId ?? null).toBeNull()
+    expect(block.dataSource ?? null).toBeNull()
+    // 确认后显示「待匹配」态，并提供去真实教学班库搜索的入口
+    expect(wrapper.find('[data-testid="case-a-image-confirmed"]').text()).toContain('待匹配')
+    expect(wrapper.find('[data-testid="case-a-image-match"]').exists()).toBe(true)
+  })
+
+  it('「搜索教学班」只发出 search（课程名），⛔ 不产生 offering', async () => {
     const wrapper = mount(TimetableImageImport, { props: { semester: '2026-1', selected: [] } })
     await upload(wrapper, png())
     await wrapper.find('[data-testid="case-a-image-confirm"]').trigger('click')
+    await wrapper.find('[data-testid="case-a-image-match"]').trigger('click')
 
-    const emitted = wrapper.emitted('confirm')
-    expect(emitted).toBeTruthy()
-    const offering = (emitted as unknown[][])[0][0] as Record<string, unknown>
-    // ⛔ 不冒充学校来源、⛔ 不是 real，因此必须走人工确认才能提交。
-    expect(offering.source).toBe('image-recognition://timetable-screenshot')
-    expect(offering.data_source).toBe('mock')
-    expect(offering.course_name).toBe('网络空间安全导论')
-    // 确认后该条显示已确认态
-    expect(wrapper.find('[data-testid="case-a-image-confirmed"]').text()).toContain('已确认')
+    const search = wrapper.emitted('search') as unknown[][]
+    expect(search.length).toBe(1)
+    expect(search[0][0]).toBe('网络空间安全导论')
+    expect(wrapper.emitted('recognize') as unknown[][]).toHaveLength(1)
   })
 
-  it('确认后不再显示加入按钮（不会重复加入）', async () => {
+  it('确认后不再显示确认按钮（不会重复确认）', async () => {
     const wrapper = mount(TimetableImageImport, { props: { semester: '2026-1', selected: [] } })
     await upload(wrapper, png())
     const before = wrapper.findAll('[data-testid="case-a-image-confirm"]').length
     await wrapper.findAll('[data-testid="case-a-image-confirm"]')[0].trigger('click')
     expect(wrapper.findAll('[data-testid="case-a-image-confirm"]').length).toBe(before - 1)
-    expect((wrapper.emitted('confirm') as unknown[][]).length).toBe(1)
+    expect((wrapper.emitted('recognize') as unknown[][]).length).toBe(1)
   })
 
-  it('确认后可以撤回：已确认条目的忽略会发出 remove', async () => {
+  it('确认后可以撤回：发出 unrecognize（⛔ 不涉及课表移除）', async () => {
     const wrapper = mount(TimetableImageImport, { props: { semester: '2026-1', selected: [] } })
     await upload(wrapper, png())
     await wrapper.findAll('[data-testid="case-a-image-confirm"]')[0].trigger('click')
     expect(wrapper.find('[data-testid="case-a-image-confirmed"]').exists()).toBe(true)
 
     await wrapper.find('[data-testid="case-a-image-ignore"]').trigger('click')
-    expect((wrapper.emitted('remove') as unknown[][]).length).toBe(1)
+    expect((wrapper.emitted('unrecognize') as unknown[][]).length).toBe(1)
     expect(wrapper.find('[data-testid="case-a-image-confirmed"]').exists()).toBe(false)
-    expect((wrapper.emitted('confirm') as unknown[][]).length).toBe(1)
+    expect((wrapper.emitted('recognize') as unknown[][]).length).toBe(1)
   })
 
-  it('重新选择图片会撤回已确认条目并清空结果', async () => {
+  it('重新选择图片会取消待匹配标记并清空结果', async () => {
     const wrapper = mount(TimetableImageImport, { props: { semester: '2026-1', selected: [] } })
     await upload(wrapper, png())
     await wrapper.findAll('[data-testid="case-a-image-confirm"]')[0].trigger('click')
     await wrapper.find('[data-testid="case-a-image-clear"]').trigger('click')
-    expect((wrapper.emitted('remove') as unknown[][]).length).toBe(1)
+    expect((wrapper.emitted('unrecognize') as unknown[][]).length).toBe(1)
     expect(wrapper.find('[data-testid="case-a-image-result"]').exists()).toBe(false)
   })
 
@@ -150,7 +168,7 @@ describe('课表截图导入确认', () => {
     await confirms[0].trigger('click')
     // 只剩第二个候选的确认按钮
     expect(wrapper.findAll('[data-testid="case-a-image-confirm"]').length).toBe(confirms.length - 1)
-    expect((wrapper.emitted('confirm') as unknown[][]).length).toBe(1)
+    expect((wrapper.emitted('recognize') as unknown[][]).length).toBe(1)
   })
 
   // ------------------------------------------------ 未识别课程 → 引导搜索
@@ -198,8 +216,8 @@ describe('课表截图导入确认', () => {
     expect(emitted.length).toBe(1)
     expect(emitted[0][0]).toBe('数据库系统实验')
     // ⛔ 只是把关键词交给父级**已有**搜索；⛔ 不确认、⛔ 不加入课表
-    expect(wrapper.emitted('confirm')).toBeUndefined()
-    expect(wrapper.emitted('remove')).toBeUndefined()
+    expect(wrapper.emitted('recognize')).toBeUndefined()
+    expect(wrapper.emitted('unrecognize')).toBeUndefined()
   })
 
   it('第二个未识别课程发出自己的关键词', async () => {
@@ -216,7 +234,7 @@ describe('课表截图导入确认', () => {
     expect(wrapper.find('[data-testid="case-a-image-unresolved"]').exists()).toBe(true)
 
     await wrapper.find('[data-testid="case-a-image-ignore"]').trigger('click')
-    expect((wrapper.emitted('remove') as unknown[][]).length).toBe(1)
+    expect((wrapper.emitted('unrecognize') as unknown[][]).length).toBe(1)
     expect(wrapper.findAll('[data-testid="case-a-image-unresolved-item"]').length).toBe(2)
   })
 

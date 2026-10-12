@@ -207,7 +207,7 @@ describe('provenance 门禁：Mock 课表禁止提交 Real Planning', () => {
     // 明确提示
     const hint = wrapper.find('[data-testid="schedule-provenance-blocked-hint"]')
     expect(hint.exists()).toBe(true)
-    expect(hint.text()).toContain('当前课表来源为 Mock 教学班，不能提交到 Real Planning')
+    expect(hint.text()).toContain('当前课表包含演示数据，无法生成正式规划')
 
     // 点也点不动
     await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
@@ -323,7 +323,7 @@ describe('provenance 门禁：Mock 课表禁止提交 Real Planning', () => {
     const gate = evaluatePlanSubmission(form)
     expect(gate.allowed).toBe(false)
     // 提示必须明确说明"Mock 课表不能提交到 Real Planning"
-    expect(gate.reason).toContain('当前课表来源为 Mock 教学班，不能提交到 Real Planning')
+    expect(gate.reason).toContain('当前课表包含演示数据，无法生成正式规划')
     expect(gate.reason).toBe(MOCK_SCHEDULE_BLOCK_REASON)
   })
 

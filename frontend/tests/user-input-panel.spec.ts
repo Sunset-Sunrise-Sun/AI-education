@@ -103,10 +103,10 @@ describe('UserInputPanel 渲染', () => {
     expect(wrapper.find('[data-testid="grade-file-input"]').exists()).toBe(true)
   })
 
-  it('明确显示规划结果来源：Mock（局部 provenance，不是整页数据模式）', () => {
+  it('明确显示数据来源：演示数据（局部 provenance，不是整页数据模式）', () => {
     const { wrapper } = mountPanel()
     const tag = wrapper.find('[data-testid="data-mode-tag"]').text()
-    expect(tag).toContain('规划结果来源：Mock')
+    expect(tag).toContain('数据来源：演示数据')
     // 不得再使用"当前数据模式"这种全局说法
     expect(tag).not.toContain('当前数据模式')
   })

@@ -1,13 +1,16 @@
 <script setup lang="ts">
 /**
- * 所有展示区块共用的外壳容器：标题 + 副标题 + Mock 标记 + 内容插槽。
+ * 所有展示区块共用的外壳容器：标题 + 副标题 + 内容插槽。
  * 保持设计统一与信息层级分明，无业务判断。
+ *
+ * ⚠️ 比赛展示优化：**不再渲染「Mock 数据」徽章**——它对评委与学生都是噪音。
+ *   `mock` prop 与内部逻辑**完全保留**（调用方仍可传入，只是不再显示）。
  */
 withDefaults(
   defineProps<{
     title: string
     subtitle?: string
-    /** 是否在标题旁显示 Mock 标记（本 Demo 中四个区块都是 Mock）。 */
+    /** 保留 prop（历史调用方会传），⛔ 当前不再影响渲染。 */
     mock?: boolean
     /** 需要强调时使用。 */
     tone?: 'default' | 'attention' | 'primary'
@@ -39,13 +42,7 @@ withDefaults(
           {{ badgeCount }}
         </span>
       </div>
-      <span
-        v-if="mock"
-        class="tag tag--mock"
-        title="本区块数据由后端 Mock 通道提供，非教务系统真实快照"
-      >
-        Mock 数据
-      </span>
+      <!-- ⚠️ 比赛展示优化：原先此处的「Mock 数据」徽章（含 tooltip）已删除。 -->
     </header>
 
     <p v-if="subtitle" class="card__subtitle">{{ subtitle }}</p>

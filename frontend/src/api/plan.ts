@@ -192,6 +192,12 @@ export function classifyPlanError(input: {
 }
 
 /** 按状态码 + 已解析出的 code 生成面向用户的消息。 */
+/**
+ * 把错误分类翻译成**学生可理解**的提示。
+ *
+ * ⚠️ 比赛展示优化：⛔ 不再出现 `Real Planning`、接口地址、内部错误码等工程表达；
+ *   安全语义（不猜原因、不兜底、如实说明）完整保留。
+ */
 function messageFor(
   kind: PlanErrorKind,
   status: number | null,
@@ -200,27 +206,27 @@ function messageFor(
 ): string {
   switch (kind) {
     case 'not_configured':
-      return '真实规划运行时尚未完成装配（真实 Curriculum / Course Data / Planner 尚未接入）。'
+      return '规划服务正在准备中，暂时无法生成方案，请稍后再试。'
     case 'input':
       // ⚠️ 422 的**具体原因由后端给出**，前端不猜：
       // 既可能是学期非法，也可能是 current_schedule 来源不合法，还可能是 preference 形状错误。
-      return 'Real Planning 输入未通过校验（HTTP 422）。具体原因见下方后端返回的 code / detail。'
+      return '提交的信息未通过核对，暂时无法生成方案。具体原因见下方说明。'
     case 'server':
       // 503 被归为服务端错误时，必须说清"这不是未装配"，避免误报
       if (status === 503) {
         return (
-          'Real Planning 服务端错误（HTTP 503）' +
-          `${code ? `：${code}` : ''}。` +
-          '后端明确给出了其它错误原因，因此这**不是**"运行时尚未装配"。'
+          '规划服务暂时不可用' +
+          `${code ? `（错误码 ${code}）` : ''}。` +
+          '服务端给出了明确原因，因此这**不是**"服务尚未就绪"。'
         )
       }
-      return `Real Planning 服务端错误（HTTP ${status ?? '5xx'}）。`
+      return `规划服务暂时不可用（错误码 ${status ?? '5xx'}）。`
     case 'network':
-      return `无法连接 Real Planning 接口（请求地址：${PLAN_ENDPOINT}）。`
+      return '暂时无法连接规划服务，请检查网络后重试。'
     default:
       return (
-        `Real Planning 接口返回 HTTP ${status ?? '?'}` +
-        `${statusText ? ` ${statusText}` : ''}。`
+        `规划服务返回异常（错误码 ${status ?? '?'}` +
+        `${statusText ? ` ${statusText}` : ''}）。`
       )
   }
 }
@@ -253,8 +259,7 @@ export async function fetchRealPlan(
     }
     throw new PlanApiError(
       'network',
-      '无法连接 Real Planning 接口（请求地址：' +
-        `${PLAN_ENDPOINT}）。请确认后端已启动，且前端是通过 npm run dev / npm run preview 打开的。`,
+      '暂时无法连接规划服务，请检查网络后重试。',
     )
   }
 
@@ -277,7 +282,7 @@ export async function fetchRealPlan(
   } catch {
     throw new PlanApiError(
       'unexpected',
-      'Real Planning 接口返回的内容不是合法 JSON，无法解析为 PlanResult。',
+      '规划服务返回的数据无法识别，请稍后重试。',
       { status: response.status },
     )
   }
@@ -285,7 +290,7 @@ export async function fetchRealPlan(
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
     throw new PlanApiError(
       'unexpected',
-      'Real Planning 接口返回的数据结构不是预期对象，已停止渲染。',
+      '规划服务返回的数据格式异常，已停止展示。',
       { status: response.status },
     )
   }

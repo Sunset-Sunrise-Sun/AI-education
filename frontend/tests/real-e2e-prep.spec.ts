@@ -2,9 +2,9 @@
  * Real E2E 接线准备：错误状态、成功状态与 Real 提交开关。
  *
  * 覆盖本轮要求：
- * - **503 `real_pipeline_not_configured`** → 显示"真实规划运行时尚未完成装配"→ **不 fallback Mock**；
+ * - **503 `real_pipeline_not_configured`** → 显示"规划服务正在准备中"→ **不 fallback Mock**；
  * - **422** → 显示输入 / provenance 类错误（不笼统写成"系统错误"）；
- * - **500** → 显示服务端错误；
+ * - **500** → 显示规划服务暂时不可用；
  * - **network error** → 显示网络错误；
  * - **Real success** → 展示 real PlanResult 且 source = Real；
  * - `VITE_PLAN_API_ENABLED` false → Real submit disabled；true + provenance 合法 → 允许 submit。
@@ -148,7 +148,7 @@ describe('Real API 错误模型', () => {
     expect(apiError.code).toBe(REAL_PIPELINE_NOT_CONFIGURED)
     expect(apiError.detail).toContain('真实规划链路尚未配置')
     // 不得被笼统写成"请求失败"
-    expect(apiError.message).toContain('尚未完成装配')
+    expect(apiError.message).toContain('规划服务正在准备中')
   })
 
   it('503 但 body 不可解析 → 仍归为 not_configured（宁可如实说未装配）', async () => {
@@ -180,8 +180,8 @@ describe('Real API 错误模型', () => {
     expect(error.status).toBe(503)
     expect(error.code).toBe('planner_unavailable')
     // 消息必须说清这不是"未装配"
-    expect(error.message).toContain('服务端错误')
-    expect(error.message).not.toContain('尚未完成装配')
+    expect(error.message).toContain('规划服务暂时不可用')
+    expect(error.message).not.toContain('规划服务正在准备中')
   })
 
   it('503 且只给出可识别 detail 文本（无 code）→ 也归为 server', async () => {
@@ -190,7 +190,7 @@ describe('Real API 错误模型', () => {
     const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
     expect(error.kind).toBe('server')
     expect(error.detail).toBe('上游超时')
-    expect(error.message).not.toContain('尚未完成装配')
+    expect(error.message).not.toContain('规划服务正在准备中')
   })
 
   it('该 code 只有配合 HTTP 503 才算"未装配"；其它状态码按状态码分类', () => {
@@ -219,8 +219,8 @@ describe('Real API 错误模型', () => {
     expect(error.kind).toBe('server')
     expect(error.status).toBe(500)
     expect(error.code).toBe(REAL_PIPELINE_NOT_CONFIGURED)
-    expect(error.message).toContain('服务端错误')
-    expect(error.message).not.toContain('尚未完成装配')
+    expect(error.message).toContain('规划服务暂时不可用')
+    expect(error.message).not.toContain('规划服务正在准备中')
   })
 
   it('404 + real_pipeline_not_configured → kind = http，不报"未装配"', async () => {
@@ -230,7 +230,7 @@ describe('Real API 错误模型', () => {
     expect(error.kind).toBe('http')
     expect(error.status).toBe(404)
     expect(error.code).toBe(REAL_PIPELINE_NOT_CONFIGURED)
-    expect(error.message).not.toContain('尚未完成装配')
+    expect(error.message).not.toContain('规划服务正在准备中')
   })
 
   it('classifyPlanError：503 三态分类矩阵（code 只在 503 上才算未装配）', () => {
@@ -268,7 +268,7 @@ describe('Real API 错误模型', () => {
     expect(error.code).toBe('value_error')
     expect(error.detail).toContain('data_source 必须为 real')
     // 通用标题：只说"输入未通过校验"，不预设原因
-    expect(error.message).toContain('Real Planning 输入未通过校验')
+    expect(error.message).toContain('提交的信息未通过核对')
     expect(error.message).not.toContain('当前课表来源')
   })
 
@@ -283,7 +283,7 @@ describe('Real API 错误模型', () => {
     // ⛔ 不得把 semester 类 422 说成"当前课表来源问题"
     expect(error.detail).not.toContain('data_source')
     expect(error.message).not.toContain('当前课表来源')
-    expect(error.message).toContain('输入未通过校验')
+    expect(error.message).toContain('未通过核对')
   })
 
   it('500 → kind = server', async () => {
@@ -292,7 +292,7 @@ describe('Real API 错误模型', () => {
     const error = (await fetchRealPlan(request).catch((e: unknown) => e)) as PlanApiError
     expect(error.kind).toBe('server')
     expect(error.status).toBe(500)
-    expect(error.message).toContain('服务端错误')
+    expect(error.message).toContain('规划服务暂时不可用')
   })
 
   it('network error → kind = network 且 status = null', async () => {
@@ -351,26 +351,30 @@ describe('Real API 错误模型', () => {
 
   it('describePlanError：503 是"未装配"而不是系统故障', () => {
     const notConfigured = describePlanError('not_configured', 503)
-    expect(notConfigured.title).toContain('真实规划运行时尚未完成装配')
-    expect(notConfigured.hint).toContain('可继续使用 Mock Demo')
-    expect(notConfigured.hint).toContain('不会自动回退到 Mock')
+    expect(notConfigured.title).toContain('规划服务正在准备中')
+    // ⚠️ 比赛展示优化：不再出现 Mock Demo / 回退 等工程表达，
+    //    但「不冒充正式结果、稍后重试」的语义完整保留。
+    expect(notConfigured.hint).toContain('请稍后再试')
+    expect(notConfigured.hint).toContain('不会用演示数据冒充正式结果')
 
-    // 422 的标题是通用的"输入未通过校验"，不预设具体原因
+    // 422 的标题是通用的"输入未通过核对"，不预设具体原因
     const input422 = describePlanError('input', 422)
-    expect(input422.title).toContain('Real Planning 输入未通过校验')
+    expect(input422.title).toContain('提交的信息未通过核对')
     expect(input422.hint).not.toContain('只接受')
-    expect(input422.hint).toContain('code / detail')
-    expect(describePlanError('server', 500).title).toContain('服务端错误')
+    // ⚠️ 不再让用户看到 code / detail 字段名，改为「具体原因见下方说明」
+    expect(input422.hint).toContain('具体原因见下方说明')
+    expect(input422.hint).toContain('不会替你推断')
+    expect(describePlanError('server', 500).title).toContain('规划服务暂时不可用')
     expect(describePlanError('network', null).title).toContain('无法连接')
 
-    // 503 被归为 server 时必须导向服务端排查，且不得出现"尚未完成装配"这一未装配措辞
+    // 503 被归为 server 时必须导向服务端排查，且不得出现"规划服务正在准备中"这一未装配措辞
     const server503 = describePlanError('server', 503)
-    expect(server503.title).toContain('服务端错误')
+    expect(server503.title).toContain('规划服务暂时不可用')
     expect(server503.hint).toContain('服务端故障')
-    expect(server503.hint).not.toContain('尚未完成装配')
+    expect(server503.hint).not.toContain('规划服务正在准备中')
 
     // "未装配"这一措辞只属于 not_configured
-    expect(describePlanError('not_configured', 503).title).toContain('尚未完成装配')
+    expect(describePlanError('not_configured', 503).title).toContain('规划服务正在准备中')
 
     // 三类不得互相混同
     const titles = ['not_configured', 'input', 'server', 'network'].map(
@@ -389,14 +393,14 @@ describe('App 级：Real 失败状态展示', () => {
     vi.unstubAllGlobals()
   })
 
-  it('503 → 显示"真实规划运行时尚未完成装配"，且不 fallback 到 Mock 结果', async () => {
+  it('503 → 显示"规划服务正在准备中"，且不 fallback 到 Mock 结果', async () => {
     const wrapper = await mountAppWith(() => jsonResponse(NOT_CONFIGURED_BODY, 503))
 
     await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-testid="real-plan-error-title"]').text()).toContain(
-      '真实规划运行时尚未完成装配',
+      '规划服务正在准备中',
     )
     expect(wrapper.find('[data-testid="real-plan-error-meta"]').text()).toContain('503')
     expect(wrapper.find('[data-testid="real-plan-error-meta"]').text()).toContain(
@@ -411,7 +415,7 @@ describe('App 级：Real 失败状态展示', () => {
     expect(demoCalls).toHaveLength(1)
   })
 
-  it('503 但明确是其它错误 → 显示服务端错误，不误报"未装配"', async () => {
+  it('503 但明确是其它错误 → 显示规划服务暂时不可用，不误报"未装配"', async () => {
     const wrapper = await mountAppWith(() =>
       jsonResponse({ detail: { error: 'planner_unavailable', message: 'planner 崩溃' } }, 503),
     )
@@ -420,8 +424,8 @@ describe('App 级：Real 失败状态展示', () => {
     await flushPromises()
 
     const title = wrapper.find('[data-testid="real-plan-error-title"]').text()
-    expect(title).toContain('服务端错误')
-    expect(title).not.toContain('尚未完成装配')
+    expect(title).toContain('规划服务暂时不可用')
+    expect(title).not.toContain('规划服务正在准备中')
     expect(wrapper.find('[data-testid="real-plan-error-code"]').text()).toBe('planner_unavailable')
     expect(wrapper.find('[data-testid="debug-error-kind"]').text()).toBe('server')
   })
@@ -433,7 +437,7 @@ describe('App 级：Real 失败状态展示', () => {
     await flushPromises()
 
     const title = wrapper.find('[data-testid="real-plan-error-title"]').text()
-    expect(title).toContain('Real Planning 输入未通过校验')
+    expect(title).toContain('提交的信息未通过核对')
     expect(title).not.toContain('系统错误')
     expect(wrapper.find('[data-testid="real-plan-error-meta"]').text()).toContain('422')
     // 后端给出的具体原因仍然展示（provenance 类）
@@ -449,24 +453,24 @@ describe('App 级：Real 失败状态展示', () => {
     await flushPromises()
 
     const title = wrapper.find('[data-testid="real-plan-error-title"]').text()
-    expect(title).toContain('Real Planning 输入未通过校验')
+    expect(title).toContain('提交的信息未通过核对')
     // ⛔ UI 不得把 semester 类 422 归因到当前课表来源
     const hint = wrapper.find('[data-testid="real-plan-error-hint"]').text()
     expect(hint).not.toContain('只接受')
-    expect(hint).toContain('学期非法')
+    expect(hint).toContain('学期信息不正确')
     // 后端 detail 被保留
     expect(wrapper.find('[data-testid="real-plan-error-detail"]').text()).toContain(
       'semester 必须是非空字符串',
     )
   })
 
-  it('500 → 显示服务端错误', async () => {
+  it('500 → 显示规划服务暂时不可用', async () => {
     const wrapper = await mountAppWith(() => jsonResponse({ detail: 'boom' }, 500))
 
     await wrapper.find('[data-testid="real-plan-submit"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="real-plan-error-title"]').text()).toContain('服务端错误')
+    expect(wrapper.find('[data-testid="real-plan-error-title"]').text()).toContain('规划服务暂时不可用')
   })
 
   it('network error → 显示网络错误', async () => {
@@ -499,11 +503,13 @@ describe('App 级：Real 失败状态展示', () => {
 
     expect(wrapper.text()).toContain('REAL_PLAN_RESULT_MARKER')
     expect(wrapper.text()).not.toContain('MOCK_DEMO_PLAN_MARKER')
-    expect(wrapper.find('[data-testid="plan-result-provenance"]').text()).toBe('Real')
-    expect(wrapper.find('[data-testid="data-mode-tag"]').text()).toContain('规划结果来源：Real')
-    // 基础展示数据仍标 Mock，未被冒充成 Real
+    // ⚠️ 比赛展示优化：规划结果来源标识统一为「数据来源：学校教务数据」；
+    //    原独立的 `plan-result-provenance` 标签已并入该标识。
+    expect(wrapper.find('[data-testid="data-mode-tag"]').text()).toContain('数据来源：学校教务数据')
+    // 基础展示数据未被冒充成学校教务数据
     expect(wrapper.text()).toContain('MOCK_TASK_NAME')
-    expect(wrapper.findAll('.tag--mock').length).toBeGreaterThan(0)
+    // ⚠️ 展示层已删除「Mock 数据」徽章（`.tag--mock`），
+    //    来源区分改由 `data-mode-tag` 如实承担（见上一条断言）。
   })
 })
 
@@ -619,7 +625,7 @@ describe('Real 提交开关（VITE_PLAN_API_ENABLED）', () => {
         planApiEnabled: true,
         inputValid: false,
         submitting: false,
-        scheduleBlockReason: '当前课表来源为 Mock 教学班，不能提交到 Real Planning。',
+        scheduleBlockReason: '当前课表包含演示数据，无法生成正式规划。',
       },
     })
 

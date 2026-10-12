@@ -78,7 +78,7 @@ describe('App 级 provenance 门禁', () => {
     // 明确提示 + 按钮禁用（真实 App 的 provenance 门禁生效）
     const hint = wrapper.find('[data-testid="schedule-provenance-blocked-hint"]')
     expect(hint.exists()).toBe(true)
-    expect(hint.text()).toContain('当前课表来源为 Mock 教学班，不能提交到 Real Planning')
+    expect(hint.text()).toContain('当前课表包含演示数据，无法生成正式规划')
     expect(wrapper.find('[data-testid="real-plan-submit"]').attributes('disabled')).toBeDefined()
 
     // 点击不应发出任何请求

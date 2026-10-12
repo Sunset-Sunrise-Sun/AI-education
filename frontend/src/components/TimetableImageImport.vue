@@ -14,7 +14,6 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import {
   DEMO_RECOGNIZED_BLOCKS,
   DEMO_UNRESOLVED_COURSES,
-  blockToUnverifiedOffering,
   weekdayLabel,
   type DemoRecognizedBlock,
   type DemoUnresolvedCourse,
@@ -28,8 +27,12 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (event: 'confirm', offering: CourseOffering): void
-  (event: 'remove', offering: CourseOffering): void
+  /**
+   * 用户确认识别结果 → 该课程进入**待匹配**状态。
+   * ⚠️ 刻意**不**发出任何 `CourseOffering`：图片识别不产生课程身份。
+   */
+  (event: 'recognize', block: DemoRecognizedBlock): void
+  (event: 'unrecognize', block: DemoRecognizedBlock): void
   /**
    * 请求父组件把**已有**的教学班搜索定位到该课程。
    * ⚠️ 本组件⛔ 不自己实现搜索：搜索逻辑仍唯一存在于 `CurrentScheduleEditor.vue`。
@@ -98,16 +101,14 @@ function isConfirmed(block: DemoRecognizedBlock): boolean {
   return confirmedIds.value.includes(block.demoId)
 }
 
-function offeringFor(block: DemoRecognizedBlock): CourseOffering {
-  return blockToUnverifiedOffering(block, props.semester)
-}
-
 function confirmBlock(block: DemoRecognizedBlock): void {
   if (isConfirmed(block)) {
     return
   }
-  // 用户显式确认后才进入当前课表；条目 data_source='mock'，仍需人工确认(attestation)。
-  emit('confirm', offeringFor(block))
+  // ⚠️ 方案 A（缩小版）：确认识别结果**不写入当前课表**。
+  //    只把该候选标记为「待匹配」，随后由用户去**真实教学班库**搜索并选中真实教学班。
+  //    ⛔ 不产生任何 `CourseOffering`、⛔ 不让 IMAGE-RECOGNIZED-* 进入 planner。
+  emit('recognize', block)
   confirmedIds.value = [...confirmedIds.value, block.demoId]
 }
 
@@ -115,21 +116,21 @@ function undoBlock(block: DemoRecognizedBlock): void {
   if (!isConfirmed(block)) {
     return
   }
-  emit('remove', offeringFor(block))
+  // ⚠️ 因为确认时**没有**写入课表，撤回只是取消「待匹配」标记，⛔ 不涉及课表移除。
+  emit('unrecognize', block)
   confirmedIds.value = confirmedIds.value.filter((id) => id !== block.demoId)
 }
 
 /** 请求父组件用**已有**搜索定位到该课程（⛔ 本组件不实现搜索）。 */
-function requestSearch(course: DemoUnresolvedCourse): void {
-  emit('search', course.courseName)
+function requestSearch(courseName: string): void {
+  emit('search', courseName)
 }
 
 function clearAll(): void {
-  // ⚠️ 一致性：已经确认加入的条目必须同时**撤回**，否则当前课表里会留下用户看不到来源的条目。
-  //    这里逐条发出 remove，由父级按既有规则移除（并作废手工确认）。
+  // ⚠️ 确认态只是「待匹配」标记，未写入课表，因此清空时**不需要**移除任何课表条目。
   for (const block of blocks.value) {
     if (isConfirmed(block)) {
-      emit('remove', offeringFor(block))
+      emit('unrecognize', block)
     }
   }
   fileName.value = ''
@@ -139,17 +140,13 @@ function clearAll(): void {
   error.value = ''
   releasePreview()
 }
-
-function fileNameOnly(): string {
-  return fileName.value
-}
 </script>
 
 <template>
   <section class="tti" data-testid="case-a-image-import">
     <h4 class="tti__title">上传我的课表截图</h4>
     <p class="tti__hint">
-      上传课表截图后，系统会在本地给出**识别候选**；确认前不会进入当前课表。
+      课表截图导入当前使用演示识别候选。确认识别后，请搜索并选择对应教学班加入当前课表。
       图片仅在本机预览，不会上传到第三方服务。
     </p>
 
@@ -209,7 +206,7 @@ function fileNameOnly(): string {
         </dl>
 
         <p class="tti__block-note">
-          ⚠️ 以上为**识别候选**，未经学校课程信息核验；不含课程号与教学班号。
+          以上为识别候选，请核对后选择对应教学班。
         </p>
         <ul class="tti__block-unconfirmed">
           <li v-for="reason in block.unconfirmed" :key="reason">{{ reason }}</li>
@@ -223,16 +220,28 @@ function fileNameOnly(): string {
               data-testid="case-a-image-confirm"
               @click="confirmBlock(block)"
             >
-              确认加入
+              确认识别结果
             </button>
             <span class="tti__pending">待确认</span>
           </template>
           <template v-else>
             <span class="tti__confirmed" data-testid="case-a-image-confirmed">
-              ✓ 已确认 已加入当前课表
+              ✓ 已确认识别结果 · 待匹配教学班
             </span>
+            <!--
+              ⚠️ 方案 A：确认识别结果后**不写入课表**，而是引导用户去真实教学班库选择。
+                 ⛔ 本组件不产生 CourseOffering、⛔ 不让 IMAGE-RECOGNIZED-* 进入 planner。
+            -->
+            <button
+              class="button button--small"
+              type="button"
+              data-testid="case-a-image-match"
+              @click="requestSearch(block.courseName)"
+            >
+              搜索教学班
+            </button>
           </template>
-          <!-- 忽略：未确认时只是略过该候选；已确认时**撤回**该条目（发出 remove）。 -->
+          <!-- 忽略：未确认时略过该候选；已确认时取消「待匹配」标记（⛔ 不涉及课表移除）。 -->
           <button
             class="button button--small button--ghost"
             type="button"
@@ -285,7 +294,7 @@ function fileNameOnly(): string {
             class="button button--small"
             type="button"
             data-testid="case-a-image-search"
-            @click="requestSearch(course)"
+            @click="requestSearch(course.courseName)"
           >
             搜索教学班
           </button>

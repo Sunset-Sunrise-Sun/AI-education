@@ -127,7 +127,7 @@ describe('意向课程搜索（课程级）', () => {
     expect(button.text()).toContain('已加入意向')
   })
 
-  it('页面文案说明这是字面关键词搜索，不宣称智能语义推荐', () => {
+  it('页面使用学生语言说明课程搜索，不宣称智能语义推荐', () => {
     const wrapper = mount(IntentCourseSearch, {
       props: { offerings: OFFERINGS, selectedCourseIds: [] },
     })
@@ -135,8 +135,8 @@ describe('意向课程搜索（课程级）', () => {
     expect(wrapper.get('[data-testid="case-a-intent-input"]').attributes('placeholder')).toContain(
       '搜索课程名称、课程号或关键词',
     )
-    // 明确声明是字面搜索，且⛔ 不出现“智能语义推荐”式承诺
-    expect(wrapper.text()).toContain('字面关键词')
+    expect(wrapper.text()).toContain('输入课程名称、课程号或关键词进行查找')
+    expect(wrapper.text()).not.toContain('字面关键词')
     expect(wrapper.text()).not.toContain('智能推荐')
     expect(wrapper.text()).not.toContain('AI 智能')
   })
@@ -427,10 +427,9 @@ describe('待确认的调整', () => {
         courseNameById: {},
       },
     })
-    const card = wrapper.get('[data-testid="case-a-selection-required"]')
-    expect(card.text()).toContain('发现可调整的教学班')
-    // 确认提示（在校区块的说明里，不在单条卡片上）
-    expect(wrapper.text()).toContain('当前版本需要你确认后才能调整')
+    // 待确认事项只在推荐方案出现，调整建议不重复展示。
+    expect(wrapper.find('[data-testid="case-a-selection-required"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('发现可调整的教学班')
     // ⛔ 不得表现成系统已经替用户换班
     expect(wrapper.text()).not.toContain('已自动')
     expect(wrapper.text()).not.toContain('已替换')
@@ -535,20 +534,14 @@ describe('Case A 页面（Phase 1）', () => {
     expect(text).toContain('还有什么希望系统考虑？')
   })
 
-  it('规划说明卡如实描述“找候选 → 提建议 → 用户确认”，不承诺自动替换', async () => {
+  it('规划说明卡面向学生说明可获得的帮助，不展示算法过程', async () => {
     const wrapper = mount(CaseADemoView)
     await flushPromises()
     const card = wrapper.get('[data-testid="case-a-planning-explainer"]')
-    expect(card.text()).toContain('系统将如何帮你规划')
-    expect(card.text()).toContain('检查当前课表的时间冲突')
-    expect(card.text()).toContain('由你决定')
-    // 必须**明确否认**自动替换（当前真实语义：找候选 → 提建议 → 用户确认）。
-    // ⚠️ 断言方式必须是“没有把‘会自动替换’当作已发生的事实陈述”，
-    // 因此先要求存在“不会自动替换”，再确认不存在肯定式表述。
-    expect(card.text()).toContain('不会自动替换')
-    expect(card.text()).not.toContain('系统自动替换')
-    expect(card.text()).not.toContain('已经自动替换')
-    expect(card.text()).not.toContain('已自动替换')
+    expect(card.text()).toContain('AI 如何帮助你规划')
+    expect(card.text()).toContain('分析你的培养要求和已有课程')
+    expect(card.text()).toContain('帮助你了解后续学期的学习路径')
+    expect(card.text()).not.toMatch(/求解|约束|算法|Planner/i)
   })
 
   it('CTA 文案为“生成并优化我的转专业学业方案”', async () => {
@@ -590,7 +583,7 @@ describe('Case A 页面（Phase 1）', () => {
     expect(wrapper.findAll('[data-testid="case-a-search-result"]')).toHaveLength(20)
   })
 
-  it('结果渲染本学期推荐课表与待确认调整，且无 roadmap 时不显示未来学期区块', async () => {
+  it('结果渲染本学期推荐课表与待确认调整；无课程级路径时显示诚实说明', async () => {
     runCaseADemo.mockResolvedValue({
       transcript: {
         source_id: 's',
@@ -635,9 +628,20 @@ describe('Case A 页面（Phase 1）', () => {
     expect(wrapper.find('[data-testid="case-a-weekly-schedule"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="case-a-weekly-block"]')).toHaveLength(1)
     expect(wrapper.find('[data-testid="case-a-pending-adjustments"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="case-a-selection-required"]').exists()).toBe(true)
-    // ⛔ 后端未返回 roadmap → 整块不渲染
+    expect(wrapper.findAll('[data-testid="case-a-unresolved-row"]')).toHaveLength(1)
+    expect(wrapper.get('[data-testid="case-a-unresolved-row"]').text()).toContain('请选择对应课程或教学班后重新生成方案')
+    // 后端未返回 roadmap：不造课程，只展示后续规划说明。
     expect(wrapper.find('[data-testid="case-a-future-roadmap"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('本学期推荐课表')
+    expect(wrapper.text()).toContain('未来学习路径规划')
+    expect(wrapper.text()).toContain('当前版本主要展示本学期规划')
+    expect(wrapper.text()).toContain('本次规划依据')
+    expect(wrapper.text()).not.toContain('24成绩单课程')
+    // ⚠️ 信息架构调整：原「你的转专业学习建议」与「补修缺口分析」已**合并**为
+    //    单一的卡片式「课程建议与确认」；规划课表标题改为「生成后的规划课表」。
+    expect(wrapper.text()).toContain('课程建议与确认')
+    expect(wrapper.text()).toContain('生成后的规划课表')
+    // ⛔ 不再存在重复的后台式补修列表
+    expect(wrapper.text()).not.toContain('补修缺口分析')
+    expect(wrapper.text()).not.toMatch(/Planner|Case A|结构化约束|正式求解约束|字面关键词/i)
   })
 })

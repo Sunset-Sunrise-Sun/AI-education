@@ -42,16 +42,13 @@ export async function fetchDemo(signal?: AbortSignal): Promise<DemoResponse> {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw error
     }
-    throw new DemoApiError(
-      `无法连接后端（请求地址：${DEMO_ENDPOINT}）。` +
-        '请确认 FastAPI 已在 http://127.0.0.1:8000 启动，并且前端是通过 npm run dev / npm run preview 打开的。',
-    )
+    throw new DemoApiError('暂时无法连接服务，请检查网络后重试。')
   }
 
   if (!response.ok) {
     throw new DemoApiError(
-      `后端返回 HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}。` +
-        '这通常意味着后端服务异常，或接口路径发生了变化。',
+      `服务返回异常（错误码 ${response.status}${response.statusText ? ` ${response.statusText}` : ''}）。` +
+        '这通常意味着服务暂时不可用，请稍后重试。',
     )
   }
 

@@ -69,11 +69,11 @@ export const GRADE_FILE_PENDING_NOTICE =
  * 因此不能用"当前数据模式"这种全局说法。
  */
 export const PLAN_RESULT_SOURCE_LABEL: Record<'mock' | 'real', string> = {
-  mock: '规划结果来源：Mock',
-  real: '规划结果来源：Real',
+  mock: '数据来源：演示数据',
+  real: '数据来源：学校教务数据',
 }
 
-/** Real Planning 失败类型的**展示**文案（纯展示映射，不做业务判断）。 */
+/** 规划服务失败类型的**展示**文案（纯展示映射，不做业务判断）。 */
 export interface PlanErrorDisplay {
   /** 这一栏到底发生了什么。 */
   title: string
@@ -82,54 +82,52 @@ export interface PlanErrorDisplay {
 }
 
 /**
- * 把 Real Planning 的失败类型翻译成界面文案。
+ * 把规划服务的失败类型翻译成**学生可理解**的界面文案。
  *
- * 关键区分（本轮要求）：
- * `not_configured`（503 `real_pipeline_not_configured`）是**当前正确状态**，
- * ⛔ **不是**系统故障，也不能被笼统显示成"请求失败"。
+ * ⚠️ 比赛展示优化：⛔ 不再出现 `Real Planning` / `Mock Demo` /
+ *   `real_pipeline_not_configured` / 内部字段名等工程表达；
+ *   如实说明与"不兜底、不推断"的安全语义完整保留。
  */
 export function describePlanError(kind: string, status: number | null): PlanErrorDisplay {
   switch (kind) {
     case 'not_configured':
       return {
-        title: '真实规划运行时尚未完成装配',
+        title: '规划服务正在准备中',
         hint:
-          '真实 Curriculum / Course Data / Planner 尚未接入（后端返回 503 ' +
-          'real_pipeline_not_configured）。当前页面可继续使用 Mock Demo；' +
-          'Real Planning 暂不可用，前端也不会自动回退到 Mock。',
+          '当前版本暂时无法生成正式规划方案，请稍后再试。' +
+          '演示功能仍可正常浏览，页面不会用演示数据冒充正式结果。',
       }
     case 'input':
       return {
-        title: 'Real Planning 输入未通过校验',
+        title: '提交的信息未通过核对',
         hint:
-          `后端拒绝了本次请求${status !== null ? `（HTTP ${status}）` : ''}。` +
-          '422 只表示"输入未通过校验"，具体是哪一项由后端返回：' +
-          '可能是学期非法、当前课表来源不合规，或 preference 字段形状错误。' +
-          '请以下方后端返回的 code / detail 为准，前端不推断具体原因。',
+          `本次请求未通过核对${status !== null ? `（错误码 ${status}）` : ''}。` +
+          '可能的原因包括：学期信息不正确、当前课表的课程来源未确认，或选课需求填写有误。' +
+          '具体原因见下方说明，系统不会替你推断。',
       }
     case 'server':
       return {
-        title: 'Real Planning 服务端错误',
+        title: '规划服务暂时不可用',
         hint:
           status === 503
-            ? '后端返回 503，但响应体明确给出了**其它**错误原因：' +
-              '这属于服务端故障，**不是**"运行时未装配"这一状态。请查看后端日志或稍后重试。'
-            : `后端在处理本次请求时出错${status !== null ? `（HTTP ${status}）` : ''}。这不代表当前输入有问题；请稍后重试或查看后端日志。`,
+            ? '服务端返回了明确的错误原因，这属于服务端故障，' +
+              '**不是**"服务尚未就绪"。请稍后重试。'
+            : `服务在处理本次请求时出错${status !== null ? `（错误码 ${status}）` : ''}。这不代表你填写的信息有问题；请稍后重试。`,
       }
     case 'network':
       return {
-        title: '无法连接 Real Planning 接口',
-        hint: '请求没有到达后端（网络不可达或服务未启动）。Mock Demo 仍可正常使用。',
+        title: '暂时无法连接规划服务',
+        hint: '请求未能送达，请检查网络后重试。',
       }
     case 'unexpected':
       return {
-        title: 'Real Planning 返回了无法解析的结果',
-        hint: '响应不是合法的 PlanResult 对象，已停止渲染；不会用 Mock 数据顶替。',
+        title: '返回结果无法识别',
+        hint: '服务返回的数据格式异常，已停止展示；不会用演示数据顶替。',
       }
     default:
       return {
-        title: 'Real Planning 调用失败',
-        hint: `接口返回了非预期的状态${status !== null ? `（HTTP ${status}）` : ''}。Mock Demo 仍可正常使用。`,
+        title: '规划服务调用异常',
+        hint: `服务返回了非预期的状态${status !== null ? `（错误码 ${status}）` : ''}，请稍后重试。`,
       }
   }
 }
@@ -656,22 +654,24 @@ export function buildCurrentSchedule(form: UserInputForm): CourseOffering[] {
 }
 
 /**
- * 失败原因：当前课表里含有 **Mock 来源**（`data_source === 'mock'`）的教学班。
+ * 失败原因：当前课表里含有**演示来源**（`data_source === 'mock'`）的教学班。
  *
- * 在真实 `CourseOffering` 接入之前，Mock 教学班不得进入 Real Planning ——
- * 否则会把"演示用假教学班"当成学生真实已选课程提交给真实求解链路。
+ * ⚠️ 比赛展示优化：文案改为学生可理解的说法，⛔ 不再出现 `Mock` / `Real Planning`。
+ *   门禁语义（**fail closed**）一行未改。
  */
 export const MOCK_SCHEDULE_BLOCK_REASON =
-  '当前课表来源为 Mock 教学班，不能提交到 Real Planning。真实教学班接入前，请先清空当前课表中的 Mock 教学班。'
+  '当前课表包含演示数据，无法生成正式规划。请先清空当前课表，再重新加入真实教学班。'
 
 /**
  * 失败原因：当前课表中存在**来源未经确认**的教学班。
  *
  * 门禁是 **fail closed** 的：只有明确 `data_source === 'real'` 才放行，
  * 混合（real + mock）或来源未知（缺字段 / 其它取值 / 损坏）一律拒绝。
+ *
+ * ⚠️ 比赛展示优化：⛔ 不再让用户看到 `data_source = "real"` 这类字段写法。
  */
 export const UNVERIFIED_SCHEDULE_BLOCK_REASON =
-  '当前课表包含来源未经确认的教学班，不能提交到 Real Planning。请只保留明确为真实来源（data_source = "real"）的教学班，或清空当前课表。'
+  '当前课表有课程来源尚未确认，无法生成正式规划。请只保留来自学校教务数据的教学班，或清空当前课表。'
 
 /** 教学班是否含有**明确真实**的来源标记。 */
 export function isRealSourceOffering(offering: CourseOffering): boolean {

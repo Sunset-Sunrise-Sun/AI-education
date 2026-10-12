@@ -142,9 +142,9 @@ describe('R1：数据来源与加载状态如实展示', () => {
     expect(tag.classes()).not.toContain('tag--source-real')
 
     // 503 提示保留
-    expect(wrapper.text()).toContain('503')
-    expect(wrapper.text()).toContain('尚未配置')
-    expect(wrapper.text()).toContain('教学班数据运行时未配置')
+    expect(wrapper.text()).not.toContain('HTTP 503')
+    expect(wrapper.text()).toContain('尚未准备好')
+    expect(wrapper.text()).not.toContain('case_a_demo_not_configured')
     // 不得静默降级成 Mock
     expect(wrapper.text()).not.toContain('Mock 数据')
   })
@@ -162,7 +162,7 @@ describe('R1：数据来源与加载状态如实展示', () => {
     const tag = wrapper.find('[data-testid="case-a-offerings-tag"]')
     expect(tag.text()).toBe('教学班数据不可用')
     expect(tag.classes()).not.toContain('tag--source-real')
-    expect(wrapper.text()).toContain('无法连接后端')
+    expect(wrapper.text()).toContain('暂时无法加载教学班')
     expect(wrapper.text()).toContain('教学班数据加载失败')
   })
 
@@ -204,7 +204,11 @@ describe('R1：数据来源与加载状态如实展示', () => {
         selected_classes: [],
         changes: [],
         risks: [],
-        unsolved: [],
+        // ⚠️ 字段名修正：PlanResultPanel 读取的是 `unresolved`。此前这里是 `unsolved`，
+        //    导致该 mock 缺 `unresolved` → 结果页组件渲染时抛
+        //    「Cannot read properties of undefined (reading 'length')」
+        //    并被 vitest 记为 Unhandled Rejection（测试全绿但退出码为 1）。
+        unresolved: [],
       },
       provenance: {
         transcript: 'user-uploaded SYSU transcript PDF',
@@ -223,8 +227,8 @@ describe('R1：数据来源与加载状态如实展示', () => {
     await flushPromises()
 
     const source = wrapper.find('[data-testid="case-a-plan-course-data-source"]')
-    expect(source.exists()).toBe(true)
-    expect(source.text()).toContain('case-scoped:south+shenzhen')
+    expect(source.exists()).toBe(false)
+    expect(visibleText(wrapper)).not.toContain('case-scoped:south+shenzhen')
 
     // 即便有 provenance，也不出现前端自行加的真实性认定
     expect(visibleText(wrapper)).not.toContain('真实教学班')

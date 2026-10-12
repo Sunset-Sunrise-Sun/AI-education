@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import { studentText } from '../utils/displayLanguage'
 import type { MakeupStatus, MakeupTask } from '../types/contracts'
 import {
   MAKEUP_STATUS_HINT,
@@ -17,7 +18,52 @@ import {
  */
 const props = defineProps<{
   tasks: MakeupTask[]
+  compactConfirmations?: boolean
+  /**
+   * 已确认的课程键（与「推荐方案」共用同一份状态）。
+   *
+   * ⚠️ 产品流程合并：需要确认的课程**在本表直接勾选**，不再要求用户去推荐方案里找同一动作。
+   *   键格式与 `PlanResultPanel` 完全一致（`course:<courseId>`），因此两处显示同一份确认状态。
+   *   ⛔ 确认只表示「用户已核对该课程」，⛔ 不代表系统自动认定已修读或已满足要求。
+   */
+  confirmedKeys?: readonly string[]
 }>()
+
+const emit = defineEmits<{
+  'update:confirmedKeys': [keys: string[]]
+}>()
+
+/** 与 `PlanResultPanel` 一致的确认键。 */
+function taskKey(task: MakeupTask): string {
+  return `course:${task.course_id}`
+}
+
+const selected = ref<string[]>([])
+const localConfirmedKeys = ref<string[]>([])
+
+/** 父级未受控时退回本地状态（向后兼容既有用法与测试）。 */
+const effectiveConfirmedKeys = computed(() => props.confirmedKeys ?? localConfirmedKeys.value)
+const confirmedSet = computed(() => new Set(effectiveConfirmedKeys.value))
+
+const confirmableTasks = computed(() =>
+  visibleTasks.value.filter((task) => task.status === 'manual_confirmation'),
+)
+const hasConfirmableTasks = computed(() => confirmableTasks.value.length > 0)
+const confirmedCount = computed(
+  () => confirmableTasks.value.filter((task) => confirmedSet.value.has(taskKey(task))).length,
+)
+
+/** 用户主动确认：只记录「已核对」，⛔ 不改判定状态、⛔ 不自动认定。 */
+function confirmSelection(): void {
+  const next = [...new Set([...effectiveConfirmedKeys.value, ...selected.value])]
+  if (props.confirmedKeys === undefined) {
+    localConfirmedKeys.value = next
+  }
+  emit('update:confirmedKeys', next)
+  selected.value = []
+}
+
+const visibleTasks = computed(() => props.tasks)
 
 const activeFilter = ref<'all' | MakeupStatus>('all')
 
@@ -28,7 +74,7 @@ const stats = computed(() => {
     manual_confirmation: 0,
     satisfied: 0,
   }
-  for (const t of props.tasks) {
+  for (const t of visibleTasks.value) {
     if (counts[t.status] !== undefined) {
       counts[t.status]++
     }
@@ -38,9 +84,9 @@ const stats = computed(() => {
 
 const filteredTasks = computed(() => {
   if (activeFilter.value === 'all') {
-    return props.tasks
+    return visibleTasks.value
   }
-  return props.tasks.filter((t) => t.status === activeFilter.value)
+  return visibleTasks.value.filter((t) => t.status === activeFilter.value)
 })
 </script>
 
@@ -55,7 +101,7 @@ const filteredTasks = computed(() => {
           :class="{ 'filter-chip--active': activeFilter === 'all' }"
           @click="activeFilter = 'all'"
         >
-          全部任务 ({{ tasks.length }})
+          全部任务 ({{ visibleTasks.length }})
         </button>
         <button
           type="button"
@@ -67,6 +113,7 @@ const filteredTasks = computed(() => {
         </button>
         <button
           type="button"
+          v-if="!compactConfirmations"
           class="filter-chip filter-chip--manual"
           :class="{ 'filter-chip--active': activeFilter === 'manual_confirmation' }"
           @click="activeFilter = 'manual_confirmation'"
@@ -94,6 +141,14 @@ const filteredTasks = computed(() => {
       </div>
     </div>
 
+    <!--
+      ⚠️ 产品流程合并：需要确认的课程**直接在这里勾选确认**，
+         不再让用户跳到「推荐方案」里找同一个动作（此前两处重复、用户不清楚区别）。
+    -->
+    <p v-if="hasConfirmableTasks" class="section-desc">
+      下列课程需要你核对。<strong>勾选后点「确认选择」</strong>：确认只表示你已核对该课程，
+      系统不会因此自动认定你已修读或已满足培养要求。
+    </p>
     <!-- 任务表格 -->
     <div class="table-wrap">
       <table class="table">
@@ -102,9 +157,10 @@ const filteredTasks = computed(() => {
             <th scope="col" style="width: 220px;">课程名称与编号</th>
             <th scope="col" style="width: 70px;">学分</th>
             <th scope="col" style="width: 170px;">判定状态</th>
+            <th scope="col" style="width: 200px;">需要你确认</th>
             <th scope="col" style="width: 130px;">学期建议</th>
             <th scope="col" style="width: 130px;">先修依赖</th>
-            <th scope="col">认定说明与证据</th>
+            <th scope="col">课程说明</th>
           </tr>
         </thead>
         <tbody>
@@ -123,8 +179,31 @@ const filteredTasks = computed(() => {
                 <span class="tag" :class="`tag--status-${task.status}`">
                   {{ MAKEUP_STATUS_LABEL[task.status] }}
                 </span>
-                <span class="cell-hint">{{ MAKEUP_STATUS_HINT[task.status] }}</span>
+                <span v-if="!compactConfirmations || task.status !== 'manual_confirmation'" class="cell-hint">{{ MAKEUP_STATUS_HINT[task.status] }}</span>
               </div>
+            </td>
+            <!-- 需要确认列：仅 `manual_confirmation` 任务可勾选，其余留空 -->
+            <td class="cell-confirm">
+              <template v-if="task.status === 'manual_confirmation'">
+                <span
+                  v-if="confirmedSet.has(taskKey(task))"
+                  class="task-confirm__done"
+                  data-testid="case-a-makeup-confirmed"
+                >
+                  已确认
+                </span>
+                <label v-else class="task-confirm__label">
+                  <input
+                    v-model="selected"
+                    type="checkbox"
+                    :value="taskKey(task)"
+                    :aria-label="`确认核对 ${task.course_name}`"
+                    data-testid="case-a-makeup-checkbox"
+                  />
+                  <span>需要确认</span>
+                </label>
+              </template>
+              <span v-else class="text-muted">—</span>
             </td>
             <td>
               <div class="semester-cell">
@@ -151,20 +230,43 @@ const filteredTasks = computed(() => {
               <span v-else class="text-muted">—</span>
             </td>
             <td class="cell-reason">
-              <p class="reason-text">{{ displayOrDash(task.reason) }}</p>
-              <p v-if="task.source_evidence" class="evidence-text">
-                <span class="evidence-icon">📋 依据：</span>
-                {{ task.source_evidence }}
-              </p>
+              <!--
+                ⚠️ 产品流程合并：不再提示「请到推荐方案核对」——
+                   确认动作就在本表「需要你确认」列里完成。
+              -->
+              <p class="reason-text">{{ studentText(task.reason, MAKEUP_STATUS_HINT[task.status]) }}</p>
+              <details v-if="studentText(task.source_evidence)">
+                <summary>查看详情</summary>
+                <p>系统判断依据：{{ studentText(task.source_evidence) }}</p>
+              </details>
             </td>
           </tr>
           <tr v-if="filteredTasks.length === 0">
-            <td colspan="6" class="empty-state">
+            <td colspan="7" class="empty-state">
               <p>暂无符合当前筛选条件的补修任务。</p>
             </td>
           </tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- 确认动作：与「推荐方案」共用同一份确认状态 -->
+    <div v-if="hasConfirmableTasks" class="task-confirm-footer">
+      <span role="status" aria-live="polite" data-testid="case-a-makeup-confirm-count">
+        已选择 {{ selected.length }} 项 · 已确认 {{ confirmedCount }} / {{ confirmableTasks.length }} 项
+      </span>
+      <button
+        class="button"
+        type="button"
+        :disabled="!selected.length"
+        data-testid="case-a-makeup-confirm-selection"
+        @click="confirmSelection"
+      >
+        确认选择
+      </button>
+      <span class="task-confirm-note">
+        确认只表示你已核对这些课程，系统<strong>不会</strong>因此自动认定你已修读或已满足培养要求。
+      </span>
     </div>
   </div>
 </template>

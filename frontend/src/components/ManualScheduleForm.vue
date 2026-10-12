@@ -117,11 +117,10 @@ function onRemove(entry: ManualScheduleEntry): void {
   <div class="uig-manual-schedule">
     <p class="uig-form__note">
       若你已经在选课系统里选好了班，但上面列表里找不到（例如该教学班不在当前加载的教学班范围内），
-      可以在这里<strong>结构化录入</strong>：填好课程、星期、节次、周次后点「加入当前课表」。
-      <strong>不需要你写 JSON</strong>。
+      可以在这里<strong>手工填写</strong>：填好课程、星期、节次、周次后点「加入当前课表」。
     </p>
     <p class="uig-field__hint" data-testid="manual-schedule-provenance">
-      来源：{{ provenanceLabel }}
+      说明：{{ provenanceLabel }}
     </p>
 
     <div v-if="entries.length === 0" class="uig-field__hint">尚未添加手工录入行。</div>
@@ -281,7 +280,7 @@ function onRemove(entry: ManualScheduleEntry): void {
           加入当前课表
         </button>
         <span class="uig-field__hint">
-          只做录入与格式校验，<strong>不进行冲突检测、不判断可行性</strong>。
+          请确保填写内容与你的实际课表一致。
         </span>
       </div>
     </div>
@@ -326,7 +325,7 @@ function onRemove(entry: ManualScheduleEntry): void {
     <!--
       用户级确认（attestation）——本轮唯一的解锁入口。
 
-      ⛔ 默认不勾选：手工条目保持 data_source = mock，provenance 门禁阻断提交。
+      请核对手工录入的信息并勾选确认后再提交。
       ⛔ 文案不得出现"学校已核验 / 教务系统已确认"等含义。
     -->
     <div class="uig-manual-attestation" data-testid="manual-attestation">
@@ -343,8 +342,8 @@ function onRemove(entry: ManualScheduleEntry): void {
       </label>
 
       <p class="uig-field__hint" data-testid="manual-attestation-note">
-        该课表<strong>由本人提供，未经学校系统核验</strong>；它不是 Course Data 来源证明，
-        也不代表学校已完成选课或审批。未勾选时，手工录入的课表<strong>不会</strong>提交到 Real Planning。
+        该课表<strong>由本人提供，未经学校系统核验</strong>，也不代表学校已完成选课或审批。
+        未勾选时，手工填写的课程<strong>不会</strong>用于生成方案。
       </p>
 
       <p
@@ -353,7 +352,7 @@ function onRemove(entry: ManualScheduleEntry): void {
         data-testid="manual-attestation-invalidated"
         role="alert"
       >
-        当前课表在上次确认之后被改动，之前的确认已作废；请重新确认后再提交 Real Planning。
+        当前课表在上次确认之后被改动，之前的确认已作废；请重新确认后再生成方案。
       </p>
 
       <p
@@ -365,7 +364,7 @@ function onRemove(entry: ManualScheduleEntry): void {
           状态：<strong>已确认</strong>（手工录入 {{ manualCount }} 个教学班可作为本人自述输入进入规划）。
         </template>
         <template v-else>
-          状态：<strong>未确认</strong>（手工录入 {{ manualCount }} 个教学班会被 provenance 门禁阻止提交）。
+          状态：<strong>未确认</strong>（请先核对并确认手工录入的 {{ manualCount }} 个教学班）。
         </template>
       </p>
     </div>

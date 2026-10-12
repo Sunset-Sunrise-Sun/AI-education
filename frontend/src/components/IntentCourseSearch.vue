@@ -54,7 +54,7 @@ function add(match: CourseLevelMatch): void {
         placeholder="搜索课程名称、课程号或关键词，例如 Python、人工智能"
       />
       <span class="intent__hint">
-        按课程名称或课程号的<strong>字面关键词</strong>搜索（不是智能语义推荐）；同一门课只显示一条结果。
+        输入课程名称、课程号或关键词进行查找；同一门课只显示一条结果。
       </span>
     </label>
 
