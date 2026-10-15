@@ -395,6 +395,10 @@ def _exact_rule_candidates(
         return (), "修读来源引用重复，无法唯一定位记录，待人工核对。"
     if any(record.course_id_status is CourseIdStatus.PENDING for record in named):
         return (), "匹配候选的课程号仍待确认，不能自动抵认。"
+    # ⚠️ 上面这条 return 是**刻意的 fail-closed**：成绩单不带官方课程号 ⇒ 全部
+    #   记录为 pending ⇒ 即使打开 allow_exact_match 也无法自动抵认。
+    #   该事实已由 `tests/test_case_a_real_matching.py` 锁定，防止有人误以为
+    #   "打开开关就能自动判定"。改动本行为前请先读那份测试。
     passed = tuple(record for record in identity if record.passed)
     if any(_name(record.course_name) != _name(target.course_name) for record in passed):
         return (), "相同课程号存在课程名称冲突，待人工核对。"
@@ -466,6 +470,232 @@ def _group_scope_decisions(
             )
         result[value.group_id] = value
     return result
+
+
+# --------------------------------------------------------------------------- #
+# 判定不确定性的**解释层**（B1 / B2）
+#
+# ⚠️ 边界（很重要）：本节的函数**只解释**已经作出的判定，
+#   ⛔ 不参与任何 status 判定、⛔ 不产生或消费 course id、⛔ 不做课程等价认定。
+#   `project_makeup_tasks()` 的 status 逻辑一行未改，所以
+#   「谁满足、谁缺失」的结论与本节无关。
+#
+# 为什么需要它：成绩单 PDF **不携带官方课程号**，因此所有已修记录的
+#   `course_id_status` 都是 `pending`。`_exact_rule_candidates()` 在这种情况下
+#   刻意返回「不能自动抵认」，于是全部要求都落在 `manual_confirmation`。
+#   这是正确的 fail-closed 行为，但原来的 reason 过于笼统，学生看不出
+#   **哪门成绩单课程**对应**哪门培养方案要求**、以及**为什么不能自动确认**。
+# --------------------------------------------------------------------------- #
+
+#: 不确定性分类（⛔ 不是公共契约值，只用于解释与前端分组展示）。
+UNCERTAINTY_COURSE_ID_MISSING = "course_id_missing"
+UNCERTAINTY_NAME_MISMATCH = "name_mismatch"
+UNCERTAINTY_CREDIT_MISMATCH = "credit_mismatch"
+UNCERTAINTY_MANUAL_RULE_REQUIRED = "manual_rule_required"
+
+UNCERTAINTY_CODES = (
+    UNCERTAINTY_COURSE_ID_MISSING,
+    UNCERTAINTY_NAME_MISMATCH,
+    UNCERTAINTY_CREDIT_MISMATCH,
+    UNCERTAINTY_MANUAL_RULE_REQUIRED,
+)
+
+#: 分类的中文说明（供 reason 与 UI 使用）。
+UNCERTAINTY_LABELS: dict[str, str] = {
+    UNCERTAINTY_COURSE_ID_MISSING: "成绩单未包含官方课程号",
+    UNCERTAINTY_NAME_MISMATCH: "课程名称与培养方案不一致",
+    UNCERTAINTY_CREDIT_MISMATCH: "学分与培养方案要求不一致",
+    UNCERTAINTY_MANUAL_RULE_REQUIRED: "该要求需要人工确认规则",
+}
+
+_NAME_CONTAINMENT_MIN_LENGTH = 2
+
+
+def _related_name_candidates(
+    target: CurriculumCourse,
+    completed: Sequence[CompletedCourse],
+) -> tuple[CompletedCourse, ...]:
+    """名称与目标**相关但不等同**的已修记录 —— 仅供解释使用。
+
+    ⚠️ 「相关」的口径是刻意保守的：只接受**一方完整包含另一方**的归一化名称，
+    且较短名称至少 2 个字符（避免「I」这类单字符噪声）。
+    ⛔ 本函数的结果**不进入** `_candidate_records()`、⛔ 不影响任何 status；
+    它只回答「成绩单里有没有一门听起来像的课」，用于向学生解释为什么需要确认。
+
+    例：成绩单「大学英语」与要求「大学外语（I）」互不包含（外语≠英语），
+    因此**不会**被本函数发现 —— 这类关联只有人工/规则才能建立，
+    ⛔ 系统不得自行推断。
+    """
+
+    target_name = _name(target.course_name)
+    if len(target_name) < _NAME_CONTAINMENT_MIN_LENGTH:
+        return ()
+    related: list[CompletedCourse] = []
+    for record in completed:
+        if not record.passed:
+            continue
+        candidate_name = _name(record.course_name)
+        if len(candidate_name) < _NAME_CONTAINMENT_MIN_LENGTH:
+            continue
+        if candidate_name == target_name:
+            # 完全同名由 `_candidate_records()` 负责，这里不重复。
+            continue
+        if target_name in candidate_name or candidate_name in target_name:
+            related.append(record)
+    return tuple(related)
+
+
+def uncertainty_of_match(
+    match: CourseMatch,
+    completed: Sequence[CompletedCourse],
+) -> tuple[str, str]:
+    """Return the uncertainty classification and a human explanation for ONE match.
+
+    ⛔ 只读：不重新判定、不改变 `match.status`。返回 `(code, explanation)`，
+    `explanation` 只描述**事实**（成绩单课程名 / 培养方案课程 / 缺什么），
+    ⛔ 不声称两门课等价、⛔ 不建议系统自动认定。
+    """
+
+    target = match.target
+    pending_named = tuple(
+        record for record in match.candidates
+        if record.course_id_status is CourseIdStatus.PENDING
+    )
+    if pending_named:
+        # 名称已对上，唯一缺的是官方课程号 —— 这是本样本最常见的情况。
+        names = tuple(dict.fromkeys(record.course_name for record in pending_named))
+        listed = "、".join(f"「{name}」" for name in names)
+        return (
+            UNCERTAINTY_COURSE_ID_MISSING,
+            f"成绩单课程 {listed} 与培养方案要求「{target.course_name}」名称一致，"
+            "但成绩单未包含官方课程号，无法自动确认两者是同一门课程。",
+        )
+
+    mismatched = tuple(
+        record for record in match.candidates
+        if _name(record.course_name) != _name(target.course_name)
+    )
+    if mismatched:
+        record = mismatched[0]
+        if record.credit != target.credit:
+            return (
+                UNCERTAINTY_CREDIT_MISMATCH,
+                f"成绩单课程「{record.course_name}」（{record.credit} 学分）"
+                f"可能对应培养方案要求「{target.course_name}」（{target.credit} 学分），"
+                "但课程名称与学分均不一致，需要人工确认。",
+            )
+        return (
+            UNCERTAINTY_NAME_MISMATCH,
+            f"成绩单课程「{record.course_name}」"
+            f"可能对应培养方案要求「{target.course_name}」，"
+            "但两者课程名称不一致，需要人工确认。",
+        )
+
+    related = _related_name_candidates(target, completed)
+    if related:
+        names = tuple(dict.fromkeys(record.course_name for record in related))
+        listed = "、".join(f"「{name}」" for name in names)
+        return (
+            UNCERTAINTY_NAME_MISMATCH,
+            f"培养方案要求「{target.course_name}」，成绩单中没有同名课程，"
+            f"但存在名称相近的课程 {listed}，是否可抵扣需要人工确认。",
+        )
+
+    # 规则未启用时，系统**不能**断定"学生没修过"：已修记录缺少官方课程号，
+    # 等价关系无法判定。因此这里如实说明事实，⛔ 不冒充缺课结论。
+    return (
+        UNCERTAINTY_MANUAL_RULE_REQUIRED,
+        f"培养方案要求「{target.course_name}」，"
+        "在成绩单中未发现同名或名称相近的课程记录；"
+        "由于成绩单不含官方课程号，该要求的完成情况需要人工确认。",
+    )
+
+
+def uncertainty_of_match(
+    target: CurriculumCourse,
+    candidates: Sequence[CompletedCourse],
+    completed: Sequence[CompletedCourse],
+) -> tuple[str, str]:
+    """Return the uncertainty classification and a human explanation for ONE requirement.
+
+    ⛔ 只读：不判定、不改变任何 status。返回 `(code, explanation)`，
+    `explanation` 只描述**事实**（成绩单课程名 / 培养方案课程 / 缺什么），
+    ⛔ 不声称两门课等价、⛔ 不建议系统自动认定。
+
+    分类口径（按优先级）：
+      1. 已有同名候选，只是缺官方课程号      -> `course_id_missing`
+      2. 已有候选但名称不一致（学分也不同）  -> `credit_mismatch` / `name_mismatch`
+      3. 成绩单有名称相近的课程              -> `name_mismatch`
+      4. 完全没有线索                        -> `manual_rule_required`
+    """
+
+    pending_named = tuple(
+        record for record in candidates
+        if record.course_id_status is CourseIdStatus.PENDING
+    )
+    if pending_named:
+        # 名称已对上，唯一缺的是官方课程号 —— 这是成绩单数据类最常见的情况。
+        names = tuple(dict.fromkeys(record.course_name for record in pending_named))
+        listed = "、".join(f"「{name}」" for name in names)
+        return (
+            UNCERTAINTY_COURSE_ID_MISSING,
+            f"成绩单课程 {listed} 与培养方案要求「{target.course_name}」名称一致，"
+            "但成绩单未包含官方课程号，等价关系待人工确认，"
+            "不能自动认定两者是同一门课程。",
+        )
+
+    mismatched = tuple(
+        record for record in candidates
+        if _name(record.course_name) != _name(target.course_name)
+    )
+    if mismatched:
+        record = mismatched[0]
+        if record.credit != target.credit:
+            return (
+                UNCERTAINTY_CREDIT_MISMATCH,
+                f"成绩单课程「{record.course_name}」（{record.credit} 学分）"
+                f"可能对应培养方案要求「{target.course_name}」（{target.credit} 学分），"
+                "但课程名称与学分均不一致，等价关系待人工确认。",
+            )
+        return (
+            UNCERTAINTY_NAME_MISMATCH,
+            f"成绩单课程「{record.course_name}」"
+            f"可能对应培养方案要求「{target.course_name}」，"
+            "但两者课程名称不一致，等价关系待人工确认。",
+        )
+
+    related = _related_name_candidates(target, completed)
+    if related:
+        names = tuple(dict.fromkeys(record.course_name for record in related))
+        listed = "、".join(f"「{name}」" for name in names)
+        return (
+            UNCERTAINTY_NAME_MISMATCH,
+            f"培养方案要求「{target.course_name}」，成绩单中没有同名课程，"
+            f"但存在名称相近的课程 {listed}，是否可以抵扣待人工确认。",
+        )
+
+    # 规则未启用时，系统**不能**断定"学生没修过"：已修记录缺少官方课程号，
+    # 等价关系无法判定。因此这里如实说明事实，⛔ 不冒充缺课结论。
+    return (
+        UNCERTAINTY_MANUAL_RULE_REQUIRED,
+        f"培养方案要求「{target.course_name}」，"
+        "在成绩单中未发现同名或名称相近的课程记录；"
+        "由于成绩单不含官方课程号，该要求是否已完成待人工确认。",
+    )
+
+
+def explain_match(
+    target: CurriculumCourse,
+    candidates: Sequence[CompletedCourse],
+    completed: Sequence[CompletedCourse],
+) -> str:
+    """Compose the student-facing reason: 目标课程 + 不确定性分类 + 下一步。
+
+    ⛔ 纯文案层：调用方用它**替换** reason 时不得改变任何 status。
+    """
+
+    code, explanation = uncertainty_of_match(target, candidates, completed)
+    return f"{explanation}（原因分类：{code} — {UNCERTAINTY_LABELS[code]}）"
 
 
 def build_curriculum_diff(
@@ -558,6 +788,8 @@ def build_curriculum_diff(
         missing[decision.target_course_id].append(decision)
 
     automatic: dict[str, tuple[tuple[CompletedCourse, ...], str | None]] = {}
+    # 规则冲突时的**不确定性分类**（B2）。⛔ 只用于解释，不参与判定。
+    automatic_uncertainty: dict[str, str] = {}
     # Source references of completed records that a deterministic exact/identity
     # match has already used. They are removed from the later fuzzy name-candidate
     # pool so one confirmed record cannot also be reported as a possible
@@ -568,6 +800,17 @@ def build_curriculum_diff(
             identity, named = _candidate_records(target, completed)
             exact, conflict = _exact_rule_candidates(target, identity, named, by_ref)
             automatic[target.course_id] = exact if rules.allow_exact_match else (), conflict
+            if conflict is not None:
+                # 「有名称候选但课程号缺失」是本样本的预期冲突：它不是错误，
+                # 而是成绩单数据类本身的限制。分类按候选的真实状态给出，
+                # ⛔ 不改变 conflict 文案、⛔ 不改变 status。
+                automatic_uncertainty[target.course_id] = (
+                    UNCERTAINTY_COURSE_ID_MISSING
+                    if named and all(
+                        record.course_id_status is CourseIdStatus.PENDING for record in named
+                    )
+                    else UNCERTAINTY_MANUAL_RULE_REQUIRED
+                )
             if (rules.allow_exact_match and target_counts[target.course_id] == 1
                     and target.requirement is not RequirementKind.UNKNOWN
                     and not granted[target.course_id] and not missing[target.course_id]):
@@ -579,6 +822,28 @@ def build_curriculum_diff(
         record.passed and record.course_id_status is CourseIdStatus.PENDING for record in completed
     )
     matches: list[CourseMatch] = []
+
+    def explained(
+        target: CurriculumCourse,
+        named_now: tuple[CompletedCourse, ...],
+        base: str,
+    ) -> str:
+        """B1/B2：给出「成绩单哪门课 / 培养方案哪门要求 / 为什么不能自动确认」。
+
+        ⚠️ 只在**判定已落在 manual_confirmation 一类**的分支里调用。
+        ⛔ 本函数只改文案，⛔ 绝不碰 status。
+
+        优先级：
+          1. `automatic_uncertainty` —— 规则已启用时由真实冲突算出的分类；
+          2. 否则现场按候选事实分类（`explain_match`），
+             它会用 `completed` 找出「名称相近」的成绩单课程。
+        """
+
+        if target.course_id in automatic_uncertainty:
+            code = automatic_uncertainty[target.course_id]
+            return f"{base}（原因分类：{code} — {UNCERTAINTY_LABELS[code]}）"
+        return explain_match(target, named_now, completed)
+
     for target in new.courses:
         identity, named = _candidate_records(target, completed, frozenset(consumed_refs))
         candidates = identity + named
@@ -634,7 +899,7 @@ def build_curriculum_diff(
         elif missing_decisions and any(record.passed for record in candidates):
             reason = "缺课确认与已修候选相互冲突，待人工核对。"
         elif rule_conflict is not None:
-            reason = rule_conflict
+            reason = explained(target, named, rule_conflict)
         elif exact:
             if any(len(ref_uses[(record.source_id, record.source_record)]) > 1 for record in exact):
                 reason = "同一修读记录被用于多门目标课程，认定分配待确认。"
@@ -650,11 +915,11 @@ def build_curriculum_diff(
             reason = "课程号相同，正式抵认尚未确认。"
         elif named:
             status = MakeupStatus.POSSIBLY_EQUIVALENT
-            reason = "发现名称候选，等价关系待人工确认。"
+            reason = explained(target, named, "发现名称候选，等价关系待人工确认。")
         elif not new.complete or not completed_complete:
             reason = "输入范围未确认完整，不能确定缺课。"
         elif has_unknown_passed_identity:
-            reason = "仍有课程号待确认的已修记录，不能确定缺课。"
+            reason = explained(target, named, "仍有课程号待确认的已修记录，不能确定缺课。")
         elif missing_decisions and any(decision.completed_source_id != completed_source_id for decision in missing_decisions):
             reason = "缺课确认与已修数据来源不匹配，待人工核对。"
         elif len(missing_decisions) == 1:
@@ -800,6 +1065,105 @@ def build_curriculum_diff(
 def _require_built_diff(diff: object) -> None:
     if not isinstance(diff, CurriculumDiff) or diff._build_token is not _BUILD_TOKEN:
         raise CurriculumNormalizationError("diff: rebuild before projecting planning results")
+
+
+@dataclass(frozen=True, slots=True)
+class GroupCreditProgress:
+    """一个课程组的**学分进度**（只读投影，⛔ 不改变任何判定）。
+
+    ```text
+    required_credit   该组要求的学分下限（historical 口径）
+    earned_credit     已**认定满足**的学分
+    remaining_credit  还差多少（= max(required - earned, 0)）
+    undecided         bar 无法确定（混合组历史额度未确认）⇒ 三个数字不可信
+    scope_note        为什么 required 与培养方案写明的下限不同（可读说明）
+    ```
+
+    ⚠️ 语义边界（很重要）：
+    - `earned_credit` **只统计 `status is SATISFIED`** 的成员 —— 即真正"已认定满足"的学分；
+    - 学生**已表达的选修计划**（`elective_selections`）⛔ **不计入** earned：
+      它是未来意图，不是已获得的学分。这一点与 `group_plan_covers_requirement()`
+      的口径不同（后者回答"计划是否够覆盖"，那是另一个问题）。
+    - `undecided=True` 时 `required_credit` 是**保守上界**，页面必须如实说明，
+      ⛔ 不得当成确定数字展示。
+    - `required_credit` 可能与培养方案写明的 `minimum_credit` **不同**：
+      它按 historical 口径计算（只统计转专业时点之前安排的成员），
+      两者差异由 `scope_note` 如实解释，⛔ 不得静默呈现为矛盾数字。
+    """
+
+    group_id: str
+    required_credit: float | None
+    earned_credit: float | None
+    remaining_credit: float | None
+    undecided: bool
+    scope_note: str | None = None
+
+
+def group_credit_progress(diff: CurriculumDiff) -> tuple[GroupCreditProgress, ...]:
+    """按课程组给出学分进度（复用与判定**完全相同**的额度口径）。
+
+    ⚠️ 本函数**不重新实现**学分口径：它调用判定逻辑本身使用的
+    `_group_historical_bar()`，因此页面上的 `required/earned/remaining`
+    与后端"谁该补修"的结论**必然一致**，⛔ 不会出现两套算法对不上的情况。
+    """
+
+    _require_built_diff(diff)
+    progress: list[GroupCreditProgress] = []
+    buckets = diff.scope_buckets_by_entry()
+    for group in diff.new.groups:
+        members = tuple(
+            match for match in diff.matches if match.target.group_id == group.group_id
+        )
+        if group.minimum_credit is None:
+            progress.append(
+                GroupCreditProgress(group.group_id, None, None, None, True)
+            )
+            continue
+        resolved = _group_historical_bar(diff, group.group_id, group.minimum_credit)
+        if resolved is None:
+            # 混合组的历史额度未确认 ⇒ 三个数字都不可靠，如实标记。
+            progress.append(
+                GroupCreditProgress(group.group_id, None, None, None, True)
+            )
+            continue
+        bar, eligible = resolved
+        try:
+            earned = math.fsum(
+                match.target.credit
+                for match in eligible
+                if match.status is MakeupStatus.SATISFIED
+            )
+        except OverflowError:
+            raise CurriculumNormalizationError("group credits: total is not finite") from None
+        if not math.isfinite(earned):
+            raise CurriculumNormalizationError("group credits: total is not finite")
+
+        # ⚠️ required 与培养方案写明的下限可能不同：解释差异，⛔ 不静默。
+        scope_note: str | None = None
+        member_buckets = {buckets.get(match.target.source_record) for match in members}
+        if bar == 0 and group.minimum_credit > 0 and SCOPE_HISTORICAL not in member_buckets:
+            scope_note = (
+                f"本组课程全部安排在转专业时点之后，因此在转专业时点上"
+                f"没有历史学分要求（{group.minimum_credit} 学分为整份培养方案的额度，"
+                "将在转专业后的学期完成）。"
+            )
+        elif abs(bar - group.minimum_credit) > 1e-9:
+            scope_note = (
+                f"按转专业时点口径计算的额度为 {bar} 学分，"
+                f"培养方案写明的整份额度为 {group.minimum_credit} 学分。"
+            )
+
+        progress.append(
+            GroupCreditProgress(
+                group_id=group.group_id,
+                required_credit=bar,
+                earned_credit=earned,
+                remaining_credit=max(bar - earned, 0.0),
+                undecided=False,
+                scope_note=scope_note,
+            )
+        )
+    return tuple(progress)
 
 
 def selected_elective_course_ids(diff: CurriculumDiff) -> tuple[str, ...]:

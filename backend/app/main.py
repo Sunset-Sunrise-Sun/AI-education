@@ -15,7 +15,16 @@ from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from app import __version__
-from app.api import case_a_demo, completed_courses, completed_courses_pdf, health, mock, plan
+from app.api import (
+    case_a_demo,
+    completed_courses,
+    completed_courses_pdf,
+    health,
+    mock,
+    plan,
+    study_plan,
+    transcript_images,
+)
 from app.api.mock import MOCK_DATA_SOURCE_HEADER, MOCK_DATA_SOURCE_VALUE
 from app.course_data import CourseDataAcceptanceError
 from app.services.mock_service import MockDataError
@@ -122,3 +131,13 @@ app.include_router(completed_courses_pdf.router, prefix=API_V1_PREFIX)
 
 # Distinct Case A competition/demo path. It never changes or falls back from production /plan.
 app.include_router(case_a_demo.router, prefix=API_V1_PREFIX)
+
+# 专业 / 培养方案只读资源（⛔ 不绑定 case-a-demo，⛔ 不做范围裁定）：
+#   GET /api/v1/majors
+#   GET /api/v1/study-plans/{major_id}
+# 未配置专业注册表时返回 503，⛔ 不用演示数据补齐。
+app.include_router(study_plan.router, prefix=API_V1_PREFIX)
+
+# 成绩单图片识别（只产出课程候选，⛔ 不做课程认定、⛔ 不触发匹配、⛔ 不联网）：
+#   POST /api/v1/transcript-images/recognize
+app.include_router(transcript_images.router, prefix=API_V1_PREFIX)

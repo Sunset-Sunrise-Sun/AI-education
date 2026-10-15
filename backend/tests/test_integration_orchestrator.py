@@ -496,6 +496,13 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
     `POST /api/v1/completed-courses/import-pdf`（见 `docs/curriculum/PDF_TRANSCRIPT_INPUT.md`），
     同样⛔ 不改 `/api/v1/plan` 契约、⛔ 不接入 Case A fixed-case runtime；
     XLSX 入口保持原样，仍是兼容的次要路径。
+    最后是专业 / 培养方案只读资源（本轮授权新增）：
+    `GET /api/v1/majors` 与 `GET /api/v1/study-plans/{major_id}`，
+    它们⛔ 不是 integration 数据通道、⛔ 不改 `/api/v1/plan` 契约、
+    ⛔ 不接入 Case A fixed-case runtime，只是按 `major_id` 读取培养方案事实。
+    成绩单图片识别（Phase 5）再新增一条：
+    `POST /api/v1/transcript-images/recognize`，它只产出**待用户确认的课程候选**，
+    ⛔ 不推断课程号、⛔ 不产生任何 MakeupStatus、⛔ 不触发匹配、⛔ 不联网。
     """
 
     paths = set(client.get("/openapi.json").json()["paths"])
@@ -519,4 +526,11 @@ def test_real_plan_endpoint_is_the_only_new_integration_api(client: TestClient) 
         # Distinct Case A demo path; it never changes production /api/v1/plan.
         "/api/v1/case-a-demo/offerings",
         "/api/v1/case-a-demo/plan",
+        # 专业 / 培养方案只读资源（本轮授权新增）：⛔ 不绑定 case-a-demo、
+        # ⛔ 不做范围裁定、⛔ 不参与判定，只读培养方案事实。
+        "/api/v1/majors",
+        "/api/v1/study-plans/{major_id}",
+        # 成绩单图片识别（Phase 5 授权新增）：只产出课程**候选**，
+        # ⛔ 不做课程认定、⛔ 不产生 MakeupStatus、⛔ 不触发匹配、⛔ 不联网。
+        "/api/v1/transcript-images/recognize",
     }

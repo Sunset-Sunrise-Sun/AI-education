@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 from collections.abc import Mapping
@@ -18,12 +20,18 @@ from app.curriculum import (
     CurriculumNormalizationError,
     load_curriculum_case,
 )
+from app.curriculum.completed_courses import (
+    CompletedCourse,
+    CourseIdStatus,
+    normalize_completed_courses,
+)
 from app.curriculum.case_a_decisions import (
     AS_OF_TERM,
     CASE_TARGET_VERSION_ID,
     confirmed_scope_decisions,
     is_supported_scope_decision_set,
 )
+from app.curriculum.matching import GroupCreditProgress, group_credit_progress
 from app.integration import PlanningOrchestrator
 from app.models.contracts import CourseOffering, DataSource, MakeupTask, PlanResult, Preference
 from app.planner import RestrictedPlannerProvider
@@ -50,12 +58,26 @@ class CaseADemoInputError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class TranscriptSummary:
+    """成绩单输入的**计数摘要**（两条入口共用，⛔ 不含课程级明细）。"""
+
+    source_id: str
+    artifact_sha256: str
+    record_count: int
+    term_count: int
+    terms: tuple[str, ...]
+    pending_course_id_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class CaseADemoRun:
-    transcript: CompletedCoursesPdfImport
+    transcript: TranscriptSummary
     makeup_tasks: list[MakeupTask]
     offerings: list[CourseOffering]
     preference: Preference
     plan_result: PlanResult
+    #: 课程组学分进度（由 matching 层计算，⛔ 不在 API 层重算）。
+    elective_progress: tuple[GroupCreditProgress, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,17 +86,27 @@ class CaseADemoRuntime:
     course_data: CaseAScopedCourseDataProvider
     planner: RestrictedPlannerProvider
 
-    def _curriculum(self, imported: CompletedCoursesPdfImport) -> CurriculumCaseProvider:
+    def _curriculum(
+        self,
+        courses: tuple[CompletedCourse, ...],
+        source_id: str,
+        completeness_evidence: str,
+    ) -> CurriculumCaseProvider:
+        """把**已归一化的已修课程事实**装进 case（⛔ 不接触任何未确认的识别结果）。
+
+        ⚠️ 两条入口（成绩单 PDF / 用户确认后的图片识别记录）走的是**同一个**方法，
+        因此图片与 PDF 必然进入**同一个**匹配引擎。
+        """
+
         dynamic = replace(
             self.base_case,
-            completed=imported.courses,
-            completed_source_id=imported.source_id,
+            completed=courses,
+            completed_source_id=source_id,
             completed_complete=True,
-            completed_completeness_evidence=(
-                f"user-uploaded-sysu-transcript-pdf:sha256:{imported.artifact_sha256}"
-            ),
+            completed_completeness_evidence=completeness_evidence,
             # Rules/decisions carrying the old completed_source_id or source_record
-            # are deliberately not retargeted. No implicit pdf:N mapping is permitted.
+            # are deliberately not retargeted. No implicit pdf:N / img:N mapping is
+            # permitted: 识别结果不携带课程号，任何"隐式映射"都是伪造认定。
             rules=None,
             recognitions=(),
             missing_requirements=(),
@@ -109,24 +141,64 @@ class CaseADemoRuntime:
     def run(
         self,
         *,
-        pdf_bytes: bytes,
+        pdf_bytes: bytes | None = None,
+        confirmed_records: list[dict[str, object]] | None = None,
         semester: str,
         current_schedule: list[CourseOffering],
         preference: Preference,
         manual_schedule_attested: bool,
     ) -> CaseADemoRun:
+        """执行一次 Case A 规划。
+
+        ⚠️ 成绩单输入**恰好提供一个**（由 API 层做互斥校验，这里再兜底一次）：
+
+        ```text
+        pdf_bytes          成绩单 PDF 字节        （主路径，行为完全不变）
+        confirmed_records  **用户已确认**的图片识别记录
+        ```
+
+        ⛔ 识别原始结果**不得**从这条入口进入：本方法只接受
+        `CompletedCourse` 输入形状的记录，且归一化层会拒绝未知字段
+        （因此"OCR 原始 JSON"进不来）。
+        """
+
+        if (pdf_bytes is None) == (confirmed_records is None):
+            raise CaseADemoInputError(
+                "provide exactly one of pdf_bytes or confirmed_records"
+            )
         if semester != self.course_data.scope.semester:
             raise CaseADemoInputError("semester does not match the configured Case A scope")
         self._validate_schedule(
             current_schedule, manual_schedule_attested=manual_schedule_attested
         )
-        imported = import_completed_courses_pdf_bytes(
-            pdf_bytes,
-            declared_length=len(pdf_bytes),
-            media_type=PDF_MEDIA_TYPE,
-        )
-        curriculum = self._curriculum(imported)
+
+        if pdf_bytes is not None:
+            imported = import_completed_courses_pdf_bytes(
+                pdf_bytes,
+                declared_length=len(pdf_bytes),
+                media_type=PDF_MEDIA_TYPE,
+            )
+            courses = imported.courses
+            source_id = imported.source_id
+            digest = imported.artifact_sha256
+            evidence = f"user-uploaded-sysu-transcript-pdf:sha256:{digest}"
+            summary = TranscriptSummary(
+                source_id=source_id,
+                artifact_sha256=digest,
+                record_count=imported.record_count,
+                term_count=imported.term_count,
+                terms=tuple(imported.terms),
+                pending_course_id_count=imported.pending_course_id_count,
+            )
+        else:
+            courses, source_id, digest, summary = self._confirmed_input(confirmed_records or [])
+            evidence = f"user-confirmed-transcript-image:sha256:{digest}"
+
+        curriculum = self._curriculum(courses, source_id, evidence)
         tasks = curriculum.get_makeup_tasks()
+        # ⚠️ 学分进度必须从**同一个 diff** 读取：这样页面数字与判定结论同源，
+        #    ⛔ 不会出现"两套算法各算一次"的不一致。
+        credit_progress = group_credit_progress(curriculum.get_curriculum_diff())
         offerings = self.course_data.get_course_offerings(semester)
         orchestrator = PlanningOrchestrator(
             curriculum=curriculum,
@@ -138,7 +210,44 @@ class CaseADemoRuntime:
             current_schedule=current_schedule,
             preference=preference,
         )
-        return CaseADemoRun(imported, tasks, offerings, preference, result)
+        return CaseADemoRun(
+            summary, tasks, offerings, preference, result, credit_progress
+        )
+
+    def _confirmed_input(
+        self, records: list[dict[str, object]]
+    ) -> tuple[tuple[CompletedCourse, ...], str, str, TranscriptSummary]:
+        """把**用户已确认**的图片识别记录归一化成 `CompletedCourse`。
+
+        ⚠️ 硬边界：
+
+        - 输入必须是 `completed.records` 形状；未知字段一律拒绝
+          ⇒ ⛔ OCR 原始候选（含 `row_id` / `confidence` / `unconfirmed`）**进不来**；
+        - `source_id` 由**内容摘要**派生（⛔ 不接受调用方字符串，⛔ 不信任文件名）；
+        - 归一化层会强制 `course_id_status="pending"` 时 `course_id is None`，
+          ⇒ ⛔ 不可能借这条入口伪造课程号认定。
+        """
+
+        stable = json.dumps(records, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        digest = hashlib.sha256(stable).hexdigest()
+        source_id = f"upload:image:sha256:{digest[:16]}"
+        try:
+            courses = normalize_completed_courses(records, source_id=source_id)
+        except CurriculumNormalizationError as exc:
+            # ⛔ 不回显记录内容（可能含个人信息）。
+            raise CaseADemoInputError(f"confirmed records rejected: {exc}") from None
+        if not courses:
+            raise CaseADemoInputError("confirmed records must not be empty")
+        pending = sum(1 for course in courses if course.course_id_status is CourseIdStatus.PENDING)
+        summary = TranscriptSummary(
+            source_id=source_id,
+            artifact_sha256=digest,
+            record_count=len(courses),
+            term_count=len({course.semester for course in courses}),
+            terms=tuple(dict.fromkeys(course.semester for course in courses)),
+            pending_course_id_count=pending,
+        )
+        return courses, source_id, digest, summary
 
 
 def _with_approved_scope_decisions(base_case: CurriculumCase) -> CurriculumCase:
