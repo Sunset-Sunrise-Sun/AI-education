@@ -19,7 +19,9 @@ import {
   type ManualScheduleEntry,
 } from '../state/userInput'
 import { studentText } from '../utils/displayLanguage'
-import { SAMPLE_MAJOR_OPTIONS } from '../config'
+import { SAMPLE_MAJOR_OPTIONS, type MajorOption } from '../config'
+import { loadMajors as loadMajorsApi, loadStudyPlan as loadStudyPlanApi } from '../api/studyPlan'
+import { StudyPlanApiError, type MajorSummary, type StudyPlan } from '../types/studyPlan'
 import {
   bothPlanYearsSupported,
   describePlanYearPair,
@@ -36,8 +38,30 @@ import TimetableImageImport from './TimetableImageImport.vue'
 import FutureRoadmapView from './FutureRoadmapView.vue'
 import IntentCourseSearch from './IntentCourseSearch.vue'
 import ManualScheduleForm from './ManualScheduleForm.vue'
-import PendingAdjustments from './PendingAdjustments.vue'
-import PlanResultPanel from './PlanResultPanel.vue'
+import MakeupGapAnalysis from './MakeupGapAnalysis.vue'
+import RecommendedCourses from './RecommendedCourses.vue'
+import StudyPlanPanel from './StudyPlanPanel.vue'
+import TranscriptImageImport from './TranscriptImageImport.vue'
+import type { ConfirmedCompletedCourseRecord } from '../api/transcriptImages'
+import { ACCEPTED_IMAGE_TYPES } from '../api/transcriptImages'
+import { DEMO_RECOGNIZED_BLOCKS } from '../mock/demoTimetableRecognition'
+import { deriveFutureRoadmap, termLabel } from '../utils/futureRoadmap'
+import type {
+  CompletedCourseRecord,
+  CourseState,
+  FutureRoadmapResult,
+} from '../utils/futureRoadmap'
+import { loadCompletedCourses as loadCompletedCoursesApi } from '../api/completedCourses'
+import {
+  isCrossCampus,
+  isEarlyMorning,
+} from '../config/caseAStudyPlan'
+import {
+  groupByStatus,
+  missingCourseIds,
+  toMakeupAnalysis,
+  type MakeupAnalysisItem,
+} from '../utils/makeupAnalysis'
 import PreferenceForm from './PreferenceForm.vue'
 import PreferencePanel from './PreferencePanel.vue'
 import SectionCard from './SectionCard.vue'
@@ -152,6 +176,16 @@ function onMajorChange(field: 'originMajor' | 'targetMajor', event: Event): void
 }
 const offerings = ref<CourseOffering[]>([])
 const transcript = ref<File | null>(null)
+/**
+ * **用户已在确认页确认**的成绩单图片课程记录（Phase 5）。
+ *
+ * ⚠️ 与成绩单 PDF **二选一**（后端强制）：
+ *   - 上传 PDF ⇒ 走 `transcript_pdf_base64`；
+ *   - 只上传图片并确认 ⇒ 走 `confirmed_completed_courses`；
+ *   - ⛔ 两者同时提供会被后端拒绝（`case_a_demo_transcript_input_ambiguous`）。
+ * ⛔ 未确认的 OCR 候选**不会**出现在这里。
+ */
+const confirmedImageCourses = ref<ConfirmedCompletedCourseRecord[]>([])
 const result = ref<CaseADemoResponse | null>(null)
 // 学生已核对的课程作为页面级输入状态保存；只用于前端连续规划体验，不改写 API 请求。
 const confirmedPlanInputKeys = ref<string[]>([])
@@ -159,7 +193,17 @@ const loading = ref(false)
 const error = ref('')
 
 // 编辑规划输入后旧结果作废；课程核对状态保留，供下一次生成结果恢复展示。
-watch(form, () => { result.value = null }, { deep: true })
+// ⚠️ 修复：此前 `watch(form, …, { deep: true })` 会在**任何**深层变化时清空
+//   `result` —— 包括学生点「加入当前课表 / 移除」。那会让补修分析、推荐选课、
+//   课表一起消失，动态交互链路直接断掉。
+// 现在只有**会改变后端请求语义**的字段变化才作废结果。
+const resultInvalidatingInputs = computed(() => ({
+  studentContext: form.value.studentContext,
+  semester: form.value.semester,
+  preference: form.value.preference,
+  manualScheduleEntries: form.value.manualScheduleEntries,
+}))
+watch(resultInvalidatingInputs, () => { result.value = null }, { deep: true })
 // 转专业上下文本身变化时，之前目标专业下的课程核对不再沿用。
 watch(() => form.value.studentContext, () => { confirmedPlanInputKeys.value = [] }, { deep: true })
 
@@ -211,6 +255,521 @@ const resultCourseNames = computed(() => {
   return map
 })
 
+/* ====================================================================== *
+ * 动态交互状态链（**后端驱动**）
+ *
+ * 后端 `makeup_tasks`（真实匹配结果：status + reason + source_evidence）
+ *   ↓ toMakeupAnalysis(..., confirmedMakeupCourses)   [utils/makeupAnalysis.ts]
+ * makeupAnalysis（satisfied / need_confirmation / missing）
+ *   ↓ 用户点【确认可转换】
+ * confirmedMakeupCourses（学生本人确认，⛔ 不是系统自动认定）
+ *   ↓ 重新分组 + 推荐池重算
+ * recommendedCandidates
+ *   ↓ 用户点【加入本学期方案】
+ * selectedSemesterCourses
+ *   ↓
+ * 课表 = currentSchedule + selectedSemesterCourses
+ *
+ * ⚠️ 与旧实现的区别（本轮修正）：
+ *   旧实现用前端 `caseAStudyPlan.ts` 的演示培养方案 + 硬编码成绩单课程名
+ *   自行计算三状态。那套配置里的课程号/学分与学校真实培养方案并不一致，
+ *   因此页面展示的"已满足/缺失"是与后端真实判定无关的另一套结果。
+ *   现在三状态**完全来自后端**，前端只做 `status → 分组` 的映射。
+ * ====================================================================== */
+
+/** 推荐池大小上限。 */
+const RECOMMEND_POOL_SIZE = 8
+
+/** 本学期**确实有教学班**的课程号集合（由真实教学班数据算出，⛔ 不硬编码）。 */
+const offeredCourseIds = computed(
+  () => new Set((result.value?.course_offerings ?? []).map((offering) => offering.course_id)),
+)
+
+/** 当前课表的主校区（用于"避免跨校区"偏好判断）。 */
+const primaryCampus = computed<string | null>(() => {
+  for (const offering of form.value.currentSchedule) {
+    for (const meeting of offering.meetings) {
+      if (meeting.campus) return meeting.campus
+    }
+  }
+  return null
+})
+
+/** 当前课表已占用的 (weekday, section) 集合，用于**时间冲突**判断。 */
+const occupiedSlots = computed<Set<string>>(() => {
+  const slots = new Set<string>()
+  for (const offering of form.value.currentSchedule) {
+    for (const meeting of offering.meetings) {
+      for (let section = meeting.start_section; section <= meeting.end_section; section += 1) {
+        slots.add(`${meeting.weekday}:${section}`)
+      }
+    }
+  }
+  return slots
+})
+
+/** 教学班是否与当前课表时间冲突。 */
+function conflictsWithSchedule(offering: CourseOffering): boolean {
+  for (const meeting of offering.meetings) {
+    for (let section = meeting.start_section; section <= meeting.end_section; section += 1) {
+      if (occupiedSlots.value.has(`${meeting.weekday}:${section}`)) return true
+    }
+  }
+  return false
+}
+
+/** 用户已确认「可转换」的补修课程号（核心状态 ①，**学生本人确认**）。 */
+const confirmedMakeupCourses = ref<string[]>([])
+
+/**
+ * **补修分析条目** —— 完全由后端真实 `makeup_tasks` 派生。
+ *
+ * ⛔ 组件内不做匹配、⛔ 不读前端演示培养方案；
+ *   三状态映射集中在 `utils/makeupAnalysis.ts` 的 `toViewStatus()`。
+ *
+ * ⚠️ `confirmedMakeupCourses` 变化会重新映射：学生已确认的课程归入 `satisfied`，
+ *   于是从待确认列表与推荐列表中同时消失（⛔ 不重新请求后端）。
+ */
+const makeupAnalysis = computed<MakeupAnalysisItem[]>(() =>
+  toMakeupAnalysis(
+    result.value?.makeup_tasks ?? [],
+    offeredCourseIds.value,
+    confirmedMakeupCourses.value,
+  ),
+)
+
+/** 按三状态分组。 */
+const analysisGroups = computed(() => groupByStatus(makeupAnalysis.value))
+
+/** 已满足 —— ⛔ 不进推荐。 */
+const satisfiedMatches = computed(() => analysisGroups.value.satisfied)
+
+/** 待确认。 */
+const confirmationMatches = computed(() => analysisGroups.value.needConfirmation)
+
+/** 缺失（后端 `status === 'required'`）—— 推荐的**唯一**补修来源。 */
+const missingMatches = computed(() => analysisGroups.value.missing)
+
+/**
+ * 推荐选课的候选池 —— 来源（⛔ 不是任意课程列表）：
+ *   1. **缺失（missing）** 的培养要求 —— 必须补修；
+ *   2. 目标的专业选修池 —— 本轮未接入（见报告「未完成」）。
+ *
+ * 过滤：时间冲突、已在当前课表、同课程只留一个教学班；
+ * 排序：先补修、再按偏好（不早课 / 不跨校区），无排课信息排最后。
+ *
+ * ⛔ `satisfied`、`need_confirmation`（确认前）**绝不进入**推荐；
+ * ⛔ 每个候选项都是**真实 CourseOffering 对象**。
+ */
+
+/* ---------------------------------------------------------------------- *
+ * 推荐的两个来源（⛔ 严格分离，不混为一个列表）
+ *
+ *   A. 必须补修   来源 = 后端 makeup_tasks 中 status='required'（缺失）
+ *                 含义 = 培养方案要求尚未完成 → 必须补
+ *   B. 专业选修   来源 = 培养方案选修池（GET /api/v1/study-plans/{id}）
+ *                 含义 = 属于目标专业选修池，帮助完成培养方向
+ *
+ * ⛔ B 不得被标成"补修课程"；⛔ 两者不得合并渲染。
+ * ---------------------------------------------------------------------- */
+
+/** 某课程号是否在本学期教学班数据中（真实教学班的课程号集合）。 */
+function isOffered(courseId: string): boolean {
+  return offeredCourseIds.value.has(courseId)
+}
+
+/** 教学班是否可用作推荐候选（未进当前课表 + 不冲突 + 本学期确实有班）。 */
+function isUsableCandidate(offering: CourseOffering): boolean {
+  const key = `${offering.course_id}::${offering.class_id}`
+  if (inCurrentSchedule.value.has(key)) return false
+  if (!isOffered(offering.course_id)) return false
+  if (conflictsWithSchedule(offering)) return false
+  return true
+}
+
+/** 当前课表里已占用的教学班身份。 */
+const inCurrentSchedule = computed(
+  () => new Set(form.value.currentSchedule.map((item) => `${item.course_id}::${item.class_id}`)),
+)
+
+/** 按偏好打分（越小越靠前；无排课信息排最后）。 */
+function preferenceScore(offering: CourseOffering): number {
+  if (offering.meetings.length === 0) return 99
+  const meeting = offering.meetings[0]
+  let value = 0
+  if (isEarlyMorning(meeting.start_section)) value += 1
+  if (isCrossCampus(meeting.campus ?? null, primaryCampus.value)) value += 1
+  return value
+}
+
+/**
+ * 从**指定课程号集合**里挑出推荐教学班（每个课程号只保留一个）。
+ *
+ * ⚠️ 只做"教学班层面的可用性筛选与排序"，
+ *   ⛔ 不决定哪些课程号该进推荐 —— 那由调用方按来源给出。
+ */
+function pickOfferings(courseIds: ReadonlySet<string>): CourseOffering[] {
+  if (courseIds.size === 0) return []
+  const candidates = (result.value?.course_offerings ?? [])
+    .filter((offering) => courseIds.has(offering.course_id))
+    .filter(isUsableCandidate)
+    .sort((left, right) => preferenceScore(left) - preferenceScore(right))
+
+  const chosen = new Map<string, CourseOffering>()
+  for (const offering of candidates) {
+    if (chosen.size >= RECOMMEND_POOL_SIZE) break
+    if (!chosen.has(offering.course_id)) chosen.set(offering.course_id, offering)
+  }
+  return [...chosen.values()]
+}
+
+/** A. 必须补修：只来自后端 `missing`。 */
+const requiredMakeupRecommendations = computed<CourseOffering[]>(() =>
+  pickOfferings(new Set(missingCourseIds(makeupAnalysis.value))),
+)
+
+/**
+ * B. 专业选修推荐：只来自**培养方案选修池**。
+ *
+ * ⚠️ 仅当该培养方案确实提供了选修池时才给出；⛔ 不用演示配置补一份。
+ * ⛔ 这些课程**不是**补修要求，页面必须分开标注。
+ */
+const electivePoolRecommendations = computed<CourseOffering[]>(() => {
+  const plan = studyPlan.value
+  if (!plan) return []
+  const poolIds = new Set(plan.elective_pool.courses.map((course) => course.course_id))
+  // 已满足 / 已在推荐 A 中出现的课程不重复出现在选修里。
+  for (const item of makeupAnalysis.value) {
+    if (item.status === 'satisfied') poolIds.delete(item.courseId)
+  }
+  for (const courseId of missingCourseIds(makeupAnalysis.value)) poolIds.delete(courseId)
+  return pickOfferings(poolIds)
+})
+
+/** 兼容旧命名：推荐主列表 = 必须补修。 */
+const recommendedCandidates = requiredMakeupRecommendations
+
+/**
+ * **合并后的推荐列表**（Phase 6，任务 2）。
+ *
+ * ⚠️ 只是把两个**已经算好**的列表拼在一起并保持顺序：
+ *   A 必须补修在前，B 建议选修在后。
+ * ⛔ 不改变任何来源、过滤条件或排序算法。
+ */
+const mergedRecommendations = computed<CourseOffering[]>(() => [
+  ...requiredMakeupRecommendations.value,
+  ...electivePoolRecommendations.value,
+])
+
+/** 某门推荐课的来源标签（供子组件渲染 A / B 标签，⛔ 子组件不猜）。 */
+function recommendationTagOf(offering: CourseOffering): 'required' | 'elective' {
+  return requiredMakeupRecommendations.value.some(
+    (item) => item.course_id === offering.course_id && item.class_id === offering.class_id,
+  )
+    ? 'required'
+    : 'elective'
+}
+
+/** 当前培养方案选修池的课程号集合（⛔ 不是"缺口"，只是"池子里有什么"）。 */
+const electivePoolCourseIds = computed(
+  () => new Set((studyPlan.value?.elective_pool.courses ?? []).map((course) => course.course_id)),
+)
+
+/** 用户已加入本学期方案的真实教学班（核心状态 ③）。 */
+const selectedSemesterCourses = ref<CourseOffering[]>([])
+
+/**
+ * **已修课程**（成绩单事实）—— 未来路径判定 `satisfied` 的**唯一**依据。
+ *
+ * ⚠️ 存在的理由（Phase 7 Review 修正）：`/case-a-demo/plan` 只返回成绩单**摘要**，
+ *   不返回已修课程明细；不读这份明细，已修课就会**重复出现在未来规划**里。
+ * 数据来自**既有**接口 `POST /api/v1/completed-courses/import-pdf`（⛔ 未新增后端能力）。
+ */
+const completedCourses = ref<CompletedCourseRecord[]>([])
+const completedStatus = ref<'idle' | 'loading' | 'success' | 'error'>('idle')
+
+/**
+ * **未来学习路径规划**（Phase 7 任务 2）—— 由**已有后端数据前端派生**。
+ *
+ * 数据来源（⛔ 前端不新增任何判定）：
+ *   - 培养方案 `studyPlan`（含 `requirements[].recommended_term_text` 推荐学期）
+ *   - 后端匹配结果 `result.makeup_tasks`（status）
+ *   - **学生已修课程 `completedCourses`**（成绩单明细；⛔ 缺失时不排期）
+ *   - 后端选修组进度 `result.elective_progress`（专业选修学分要求）
+ *   - 当前学期 `form.semester`
+ *
+ * ⛔ 不是未来选课预测：不含教师 / 时间 / 地点 / 教学班。
+ * ⛔ 不改 `matching` / `recommendation` / OCR，⛔ 不改后端 schema。
+ */
+const futureRoadmap = computed<FutureRoadmapResult>(() =>
+  deriveFutureRoadmap(
+    studyPlan.value,
+    result.value?.makeup_tasks ?? [],
+    result.value?.elective_progress ?? [],
+    form.value.semester,
+    completedCourses.value,
+    // ⛔ 正在修（已在本学期课表里）的课不得排进未来学期 —— 实测踩过
+    form.value.currentSchedule,
+    // ✅ 状态闭环：学生在「补修缺口分析」里确认可转换后，未来路径**立即重算**
+    //    （与 `makeupAnalysis` 共用**同一个**本地确认状态源，⛔ 不重新请求后端）
+    confirmedMakeupCourses.value,
+  ),
+)
+
+/**
+ * 未来路径是否可以展示。
+ *
+ * ⚠️ **没有成绩单明细就不排期**：否则会把学生已修的课排进未来学期
+ *   —— 那正是 Review 发现的错误。宁可如实说"读不到已修课程"。
+ */
+const futureRoadmapReady = computed(
+  () =>
+    completedStatus.value === 'success' &&
+    studyPlan.value !== null &&
+    futureRoadmap.value.semesters.length > 0,
+)
+
+/**
+ * 是否已具备**完成度分析**的前提（成绩单明细 + 培养方案）。
+ *
+ * ⚠️ 与 `futureRoadmapReady` 分开：即使**一个学期都排不出来**
+ *   （例如所有未确定课程都还在"待确认"），也必须显示"已完成什么 / 正在修什么 /
+ *   还缺什么"——这正是本次要解决的"用户不知道整体完成到哪一步"的问题。
+ */
+const futureRoadmapAnalysed = computed(
+  () => completedStatus.value === 'success' && studyPlan.value !== null,
+)
+
+/** 五状态里的某一类课程数（⛔ 组件内不判定，只读派生结果）。 */
+function stateCount(state: CourseState): number {
+  return futureRoadmap.value.states.find((item) => item.state === state)?.courseCount ?? 0
+}
+
+/** 学分展示：`null` 表示**学分待核验**，⛔ 不用 0 冒充。 */
+function formatCredit(value: number | null): string {
+  return value === null ? '待核验' : String(value)
+}
+
+/** 培养方案里是否列出了毕业设计（决定摘要那一行怎么措辞）。 */
+const hasGraduationProject = computed(() =>
+  (studyPlan.value?.requirements ?? []).some((item) => item.course_name.includes('毕业论文')),
+)
+
+/**
+ * 图片路径下的"已修课程"= 用户**逐条确认**的记录（⛔ 不用 OCR 原始候选）。
+ *
+ * ⚠️ 与 PDF 路径共用同一份 `completedCourses`，未来路径因此对两条入口一致地扣除已修课程。
+ */
+watch(confirmedImageCourses, (records) => {
+  if (transcript.value) return
+  completedCourses.value = records.map((record) => ({
+    course_name: record.course_name,
+    credit: record.credit,
+    passed: record.passed,
+  }))
+  completedStatus.value = records.length > 0 ? 'success' : 'idle'
+})
+
+/** 读取已修课程明细（仅供未来路径扣除已满足课程）。 */
+async function loadCompletedCoursesFor(file: File): Promise<void> {
+  completedStatus.value = 'loading'
+  try {
+    completedCourses.value = await loadCompletedCoursesApi(file)
+    completedStatus.value = 'success'
+  } catch {
+    // ⛔ 失败时不猜测、⛔ 不用演示数据顶替：清空并按"读不到"如实降级。
+    completedCourses.value = []
+    completedStatus.value = 'error'
+  }
+}
+
+/**
+ * 确认补修可转换（核心交互 ①）。
+ * ⛔ 只更新前端状态；⛔ 不写 currentSchedule、⛔ 不发请求、⛔ 不做课程认定。
+ */
+function confirmMakeupConversion(courseIds: readonly string[]): void {
+  if (courseIds.length === 0) return
+  confirmedMakeupCourses.value = [...new Set([...confirmedMakeupCourses.value, ...courseIds])]
+}
+
+/** 撤销补修确认（课程回到待确认列表）。 */
+function undoMakeupConversion(courseId: string): void {
+  confirmedMakeupCourses.value = confirmedMakeupCourses.value.filter((id) => id !== courseId)
+}
+
+/**
+ * 确认「加入本学期方案」（核心交互 ②）。
+ * ⚠️ 存入真实 CourseOffering；⛔ **不写入** `form.currentSchedule`。
+ */
+function confirmSemesterCourses(items: readonly CourseOffering[]): void {
+  if (items.length === 0) return
+  const existing = new Set(
+    selectedSemesterCourses.value.map((item) => `${item.course_id}::${item.class_id}`),
+  )
+  const merged = [...selectedSemesterCourses.value]
+  for (const item of items) {
+    const key = `${item.course_id}::${item.class_id}`
+    if (existing.has(key)) continue
+    existing.add(key)
+    merged.push(item)
+  }
+  selectedSemesterCourses.value = merged
+}
+
+/** 取消某门已加入本学期方案的课程（课表同步移除）。 */
+function removeSemesterCourse(offering: CourseOffering): void {
+  const key = `${offering.course_id}::${offering.class_id}`
+  selectedSemesterCourses.value = selectedSemesterCourses.value.filter(
+    (item) => `${item.course_id}::${item.class_id}` !== key,
+  )
+}
+
+/**
+ * 某门推荐课的推荐理由 —— 按**事实**生成，并引用后端给出的缺口理由。
+ *
+ * ⚠️ 两类来源的措辞必须不同（⛔ 不得把选修说成补修）：
+ *   - 必修缺口：引用后端对该缺口的判定说明；
+ *   - 专业选修：说明它来自培养方案选修池。
+ */
+function reasonFor(offering: CourseOffering): string {
+  const item = missingMatches.value.find((entry) => entry.courseId === offering.course_id)
+  const inElectivePool = electivePoolCourseIds.value.has(offering.course_id)
+  const meeting = offering.meetings[0]
+  const parts: string[] = []
+
+  if (item) {
+    parts.push('该课程属于目标专业培养要求中你尚未完成的缺口')
+  } else if (inElectivePool) {
+    parts.push('该课程属于目标专业培养方案的专业选修池，可用于完成选修学分方向')
+  } else {
+    parts.push('该课程已纳入本学期规划候选')
+  }
+  parts.push(
+    isOffered(offering.course_id) ? '本学期已有可用教学班' : '本学期暂无可用教学班',
+  )
+  if (meeting && isEarlyMorning(meeting.start_section)) {
+    parts.push('⚠️ 该教学班为第 1-2 节，与你"避免早课"的偏好不一致')
+  }
+  if (meeting && isCrossCampus(meeting.campus ?? null, primaryCampus.value)) {
+    parts.push('⚠️ 该教学班在其他校区，与你"避免跨校区"的偏好不一致')
+  }
+  const base = `${parts.join('；')}。`
+  // 必修缺口附带后端原始判定说明，便于学生核对为什么必须补修。
+  return item?.reason ? `${base}培养方案判定说明：${item.reason}` : base
+}
+
+/* ====================================================================== *
+ * 专业选择链（MajorSelector → 加载 StudyPlan → 决定匹配上下文）
+ *
+ * `GET /api/v1/majors`           → 下拉选项（专业名 + major_id）
+ * `GET /api/v1/study-plans/{id}` → 该专业培养方案（要求 + 选修池）
+ *
+ * ⚠️ 这两个接口**不属于 case-a-demo**，也⛔ 不读前端演示配置。
+ *   组件内⛔ 不按专业名分叉；专业名 → major_id 的对应关系由后端列表给出。
+ * ====================================================================== */
+
+/** 后端可用专业列表。 */
+const majors = ref<MajorSummary[]>([])
+/** 专业列表的加载状态（用于如实展示"未配置"）。 */
+const majorsStatus = ref<'idle' | 'loading' | 'success' | 'error' | 'not_configured'>('idle')
+
+/** 当前已加载的培养方案。 */
+const studyPlan = ref<StudyPlan | null>(null)
+const studyPlanStatus = ref<'idle' | 'loading' | 'success' | 'error' | 'not_configured'>('idle')
+const studyPlanError = ref('')
+
+/**
+ * 下拉选项。
+ *
+ * ⚠️ 优先使用后端返回的专业；后端不可用时**回退到静态选项层**
+ *   （`SAMPLE_MAJOR_OPTIONS`，仅用于离线演示），并如实提示。
+ */
+const majorChoices = computed<readonly MajorOption[]>(() =>
+  majors.value.length > 0
+    ? majors.value.map((m) => ({ value: m.name, label: m.name, majorId: m.major_id }))
+    : MAJOR_CHOICES,
+)
+
+/** 把专业名解析为 `major_id`；找不到返回 `null`（⛔ 不猜测）。 */
+function majorIdOf(majorName: string): string | null {
+  return majorChoices.value.find((option) => option.value === majorName)?.majorId ?? null
+}
+
+/** 当前目标专业对应的 `major_id`。 */
+const selectedMajorId = computed(() => majorIdOf(form.value.studentContext.targetMajor))
+
+/** 当前所选专业是否有后端培养方案支撑。 */
+const studyPlanAvailable = computed(() => studyPlan.value !== null)
+
+/** 专业列表是否来自后端（用于页面上如实标注来源）。 */
+const majorsFromBackend = computed(() => majors.value.length > 0)
+
+/** 把专业/培养方案接口失败翻译为学生可读文案（⛔ 不隐藏、⛔ 不兜底到演示数据）。 */
+function describeStudyPlanError(cause: unknown, subject: string): string {
+  if (cause instanceof StudyPlanApiError) {
+    if (cause.isNotConfigured) {
+      return `${subject}尚未准备好（后端未配置专业注册表）。当前仅提供离线演示选项，不会用演示数据参与匹配。`
+    }
+    if (cause.isUnknownMajor) {
+      return `该专业不在后端可用专业列表中，无法加载${subject}。`
+    }
+    if (cause.isNetworkFailure) {
+      return `暂时无法连接后端，未能加载${subject}。`
+    }
+    return `${subject}加载失败：${cause.message}`
+  }
+  return `${subject}加载失败。`
+}
+
+async function loadMajors(): Promise<void> {
+  majorsStatus.value = 'loading'
+  try {
+    // ⚠️ 防御：接口理论上返回数组，但⛔ 不让异常形状把渲染打崩。
+    const loaded = await loadMajorsApi()
+    majors.value = Array.isArray(loaded) ? loaded : []
+    majorsStatus.value = 'success'
+  } catch {
+    majors.value = []
+    majorsStatus.value = 'error'
+  }
+}
+
+async function loadStudyPlanFor(majorName: string): Promise<void> {
+  // ⚠️ 后端专业注册表不可用时**没有 major_id 可用**，因此直接进入 error 态。
+  //    这一步必须显式发生，否则面板会停在"请先选择目标专业"的空状态，
+  //    掩盖"后端未配置"这一真实原因。
+  if (majorsStatus.value !== 'success') {
+    studyPlan.value = null
+    studyPlanStatus.value = 'error'
+    studyPlanError.value = '后端专业注册表不可用，无法加载培养方案；⛔ 离线演示选项不参与匹配。'
+    return
+  }
+  const majorId = majorIdOf(majorName)
+  if (!majorId) {
+    // ⛔ 没有对应 major_id 时**不猜测、不伪造**培养方案。
+    studyPlan.value = null
+    studyPlanStatus.value = 'error'
+    studyPlanError.value = `「${majorName}」没有对应的培养方案数据，无法加载要求列表。`
+    return
+  }
+  studyPlanStatus.value = 'loading'
+  studyPlanError.value = ''
+  try {
+    studyPlan.value = await loadStudyPlanApi(majorId)
+    studyPlanStatus.value = 'success'
+  } catch (cause) {
+    studyPlan.value = null
+    studyPlanStatus.value = 'error'
+    studyPlanError.value = describeStudyPlanError(cause, '培养方案')
+  }
+}
+
+// 切换目标专业 → 重新加载培养方案（匹配上下文随之改变）。
+watch(
+  () => form.value.studentContext.targetMajor,
+  (name) => { void loadStudyPlanFor(name) },
+)
+
 async function loadOfferings(): Promise<void> {
   error.value = ''
   offeringsStatus.value = 'loading'
@@ -219,6 +778,9 @@ async function loadOfferings(): Promise<void> {
     // ⚠️ 空列表也是**成功**：接口确实答复了，只是该学期没有教学班。
     //    ⛔ 不得把"空"当成"未加载/不可用"。
     offeringsStatus.value = 'success'
+    // ✅ 教学班数据一到就载入「原始课表」：让课表开页即包含学生已有的课程，
+    //    ⛔ 不要求用户先点一次"生成方案"。
+    loadOriginalSchedule()
   } catch (cause) {
     offerings.value = []
     if (cause instanceof CaseAApiError && cause.isNotConfigured) {
@@ -270,13 +832,177 @@ const scheduleSubtitle = computed(() => {
   }
 })
 
-function chooseTranscript(event: Event): void {
+/** 统一入口的 file input 引用（用于清空 / 重新选择）。 */
+const transcriptFileInput = ref<HTMLInputElement | null>(null)
+/** 图片识别子组件引用（把图片文件派发给它，复用其唯一识别路径）。 */
+const transcriptImageImport = ref<InstanceType<typeof TranscriptImageImport> | null>(null)
+
+/**
+ * **统一成绩单入口**（Phase 6）：一个控件同时接受 PDF 与图片。
+ *
+ * ```text
+ * 选择文件
+ *   ├─ PDF   → 原流程（transcript_pdf_base64）
+ *   └─ 图片  → 派发给图片识别组件（本机预览 → OCR → 确认页）
+ * ```
+ *
+ * ⚠️ 后端接口与匹配逻辑**完全未改**：两条分支只是各自填写自己的输入字段。
+ */
+
+/* ====================================================================== *
+ * 原始课表（demo：来自课表截图识别演示数据）
+ *
+ * ## 需求
+ *
+ * 课表必须包含**用户上传的原始课表**里的课程 —— 也就是「上传我的课表截图」
+ * 识别出来的那些格位。此前那条链路只把识别结果挂成"待匹配候选"，
+ * **从不写进 `currentSchedule`**，所以课表里看不到原始课表。
+ *
+ * ## 做法
+ *
+ * 把识别块的**课程名 + 星期**匹配到 `offerings`（后端下发的真实教学班）：
+ *
+ * ```text
+ * 识别块 courseName + weekday
+ *   ↓ 在 offerings 中找 course_name 完全同名、且有一个 meeting 落在该星期的教学班
+ *   ↓ 命不中（该课本学期无教学班 / 多义）⇒ **跳过并如实记录**，⛔ 不猜
+ * 真实 CourseOffering（原样使用，⛔ 一个字段都不改）
+ *   ↓
+ * currentSchedule（课表即可绘制，来源标注为"当前课表"）
+ * ```
+ *
+ * ⚠️ 边界：
+ *   - 课程对象**全部是后端下发的真实教学班**，⛔ 不伪造课号/时间/地点/教师；
+ *   - 识别数据本身是**演示固定数据**（`mock/demoTimetableRecognition.ts`），
+ *     页面上如实标注，⛔ 不冒充真实 OCR；
+ *   - 匹配不上的课**不猜**：列在"未能定位"里交回用户；
+ *   - ⛔ 不改断任何课程对象字段（后端会做逐字段一致性校验）。
+ * ====================================================================== */
+
+/** 是否已载入原始课表（只做一次，⛔ 不覆盖用户操作）。 */
+const originalScheduleLoaded = ref(false)
+/** 原始课表中**未能定位到真实教学班**的课程名（如实展示，⛔ 不猜）。 */
+const unresolvedOriginalCourses = ref<string[]>([])
+
+/**
+ * 把「原始课表」写入 `currentSchedule`（开页执行一次）。
+ *
+ * ## 匹配口径（重要）
+ *
+ * 原始课表里**同一门课可能占多个格位**（例：`数据结构与算法`
+ * 既在周一 3-4 又在周三 5-6）。因此不能"一个格位挑一个教学班"——
+ * 那会给同一课程号挑出**两个不同教学班**，课表就画错了。
+ *
+ * 正确做法：先按**课程名**把格位合并成"这门课要占哪些时段"，
+ * 再在 `offerings` 里挑**覆盖这些时段最多**的那个教学班：
+ *
+ * ```text
+ * 课程名 → 需要的时段集合 {(weekday, start, end), …}
+ *   ↓ 对每个同名教学班计算覆盖数（meeting 与所需时段重叠）
+ *   ↓ 取覆盖数最大、且课程号唯一者
+ * 该课程号的一个真实教学班（原样使用，⛔ 一个字段都不改）
+ * ```
+ *
+ * ⛔ 不做课程号推断、⛔ 不做等价性判断；同名课程号不唯一时**不猜**，交回用户。
+ *
+ * ⚠️ 用**就地追加**而不是 `invalidateManualAttestation()`：
+ *   后者会生成新 form 对象，触发 `resultInvalidatingInputs` 侦听器把结果清空。
+ */
+function loadOriginalSchedule(): void {
+  if (originalScheduleLoaded.value) return
+  if (form.value.currentSchedule.length > 0) return
+  if (offerings.value.length === 0) return
+
+  // ① 按课程名合并格位 → 「这门课需要占哪些时段」
+  const wanted = new Map<string, { weekday: number; start: number; end: number }[]>()
+  for (const block of DEMO_RECOGNIZED_BLOCKS) {
+    const list = wanted.get(block.courseName) ?? []
+    list.push({ weekday: block.weekday, start: block.startSection, end: block.endSection })
+    wanted.set(block.courseName, list)
+  }
+
+  const picked: CourseOffering[] = []
+  const unresolved: string[] = []
+
+  for (const [courseName, slots] of wanted) {
+    const sameName = offerings.value.filter((item) => item.course_name === courseName)
+    if (sameName.length === 0) {
+      unresolved.push(courseName)
+      continue
+    }
+
+    /** 该教学班的 meetings 覆盖了几个所需时段。 */
+    const coverage = (offering: CourseOffering): number =>
+      slots.filter((slot) =>
+        offering.meetings.some(
+          (meeting) =>
+            meeting.weekday === slot.weekday &&
+            !(meeting.end_section < slot.start || meeting.start_section > slot.end),
+        ),
+      ).length
+
+    const scored = sameName
+      .map((offering) => ({ offering, score: coverage(offering) }))
+      .filter((entry) => entry.score > 0)
+      .sort((a, b) => b.score - a.score)
+
+    if (scored.length === 0) {
+      // 该课名在本学期教学班库中存在，但没有任何班落在图上的时段 ⇒ ⛔ 不猜
+      unresolved.push(courseName)
+      continue
+    }
+
+    const best = scored[0].offering
+    // 同一课程号只保留一个教学班（同一门课的多个班不可同时选）
+    if (picked.some((item) => item.course_id === best.course_id)) continue
+    picked.push(best)
+  }
+
+  originalScheduleLoaded.value = true
+  unresolvedOriginalCourses.value = unresolved
+  if (picked.length === 0) return
+  form.value.currentSchedule = [...form.value.currentSchedule, ...picked]
+}
+
+async function chooseTranscript(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0] ?? null
-  transcript.value = file && file.name.toLowerCase().endsWith('.pdf') ? file : null
-  error.value = file && transcript.value === null ? '请上传 PDF 格式的中山大学成绩单。' : ''
+  error.value = ''
   result.value = null
   confirmedPlanInputKeys.value = []
+
+  if (!file) {
+    transcript.value = null
+    // 清空输入 ⇒ 已修课程也随之清空（⛔ 不让上一次的成绩单残留影响未来路径）
+    completedCourses.value = []
+    completedStatus.value = 'idle'
+    return
+  }
+
+  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+  if (isPdf) {
+    transcript.value = file
+    // 切到 PDF 路径：清掉图片侧状态，避免两种输入同时存在
+    await transcriptImageImport.value?.acceptFile(null)
+    // ✅ 读取**已修课程明细**（未来路径扣除已满足课程的唯一依据）。
+    //    ⚠️ 与 `/plan` 请求并行，⛔ 不阻塞生成；失败时如实降级（不排期）。
+    void loadCompletedCoursesFor(file)
+    return
+  }
+
+  const isImage = ACCEPTED_IMAGE_TYPES.split(',').includes(file.type)
+  if (!isImage) {
+    transcript.value = null
+    error.value = '请上传 PDF 或 PNG / JPEG / WebP 格式的成绩单。'
+    return
+  }
+
+  // 图片路径：清掉 PDF 状态，交给图片组件走它唯一的识别链路
+  transcript.value = null
+  // 图片路径下的已修课程 = 用户**逐条确认**的记录（⛔ 不用 OCR 原始候选）
+  completedCourses.value = []
+  completedStatus.value = 'idle'
+  await transcriptImageImport.value?.acceptFile(file)
 }
 
 /** 当前课表变更的唯一入口：改课表 + 作废既有手工确认（⛔ 旧确认不得覆盖新数据）。 */
@@ -340,8 +1066,16 @@ function removePreferred(courseId: string): void {
 }
 
 async function submit(): Promise<void> {
-  if (!transcript.value) {
-    error.value = '请先上传成绩单 PDF。'
+  const hasPdf = transcript.value !== null
+  const hasConfirmed = confirmedImageCourses.value.length > 0
+  // ⚠️ 成绩单输入二选一（后端强制）。这里先给出可操作的前端提示。
+  if (hasPdf && hasConfirmed) {
+    error.value =
+      '请只提供一种成绩单输入：上传 PDF，或使用图片识别的确认结果（二者不能同时提交）。'
+    return
+  }
+  if (!hasPdf && !hasConfirmed) {
+    error.value = '请先上传成绩单 PDF，或上传成绩单图片并确认识别结果。'
     return
   }
   if (manualCount.value > 0 && !form.value.manualAttestation.attested) {
@@ -354,7 +1088,9 @@ async function submit(): Promise<void> {
   try {
     const request = buildRealPlanRequest(form.value)
     result.value = await runCaseADemo({
-      file: transcript.value,
+      // ⛔ 两条入口互斥：只填其中一条。
+      file: hasPdf ? transcript.value : null,
+      confirmedCourses: hasPdf ? null : confirmedImageCourses.value,
       semester: request.semester,
       currentSchedule: request.current_schedule,
       manualScheduleAttested: form.value.manualAttestation.attested,
@@ -367,7 +1103,13 @@ async function submit(): Promise<void> {
   }
 }
 
-onMounted(loadOfferings)
+onMounted(async () => {
+  // 专业列表必须先于培养方案加载：它是 major_id 的唯一来源。
+  // 两者都 await，使错误态在挂载后即确定（不依赖 watcher 的刷新时机）。
+  await loadMajors()
+  await loadStudyPlanFor(form.value.studentContext.targetMajor)
+  await loadOfferings()
+})
 </script>
 
 <template>
@@ -422,7 +1164,7 @@ onMounted(loadOfferings)
               @change="onMajorChange('originMajor', $event)"
             >
               <option
-                v-for="major in MAJOR_CHOICES"
+                v-for="major in majorChoices"
                 :key="major.value"
                 :value="major.value"
                 :disabled="isMajorDisabled('originMajor', major.value)"
@@ -441,7 +1183,7 @@ onMounted(loadOfferings)
               @change="onMajorChange('targetMajor', $event)"
             >
               <option
-                v-for="major in MAJOR_CHOICES"
+                v-for="major in majorChoices"
                 :key="major.value"
                 :value="major.value"
                 :disabled="isMajorDisabled('targetMajor', major.value)"
@@ -492,8 +1234,9 @@ onMounted(loadOfferings)
         </div>
 
         <p class="case-a-majors__hint" data-testid="case-a-majors-scope">
-          当前仅提供<strong>两个样本专业</strong>（网络空间安全 / 遥感科学与技术）；
+          专业选项来自后端专业注册表（当前 {{ majorChoices.length }} 个）；
           <strong>原专业与目标专业不能相同</strong>。
+          ⛔ 演示或离线选项不参与匹配。
         </p>
         <p
           v-if="sameMajorSelected"
@@ -532,21 +1275,83 @@ onMounted(loadOfferings)
             ⛔ 不会按所选年级生成结果。
           </p>
         </div>
+
+        <!--
+          ⚠️ 专业选择链：MajorSelector（上方目标专业下拉）
+             → 加载 StudyPlan（本面板）
+             → 匹配（下方「补修缺口分析」，由后端在 /plan 中执行）
+          ⛔ 面板只呈现培养方案**要求**，不判定谁该补修。
+        -->
+        <div class="case-a-study-plan-wrap">
+          <h4 class="case-a-study-plan-title">目标专业培养方案</h4>
+          <p class="case-a-secondary" data-testid="case-a-majors-source">
+            <template v-if="majorsFromBackend">
+              专业选项来自后端专业注册表（{{ majors.length }} 个专业）。
+            </template>
+            <template v-else>
+              后端专业注册表不可用，当前仅显示离线演示选项；⛔ 演示选项不参与匹配。
+            </template>
+          </p>
+          <StudyPlanPanel
+            :plan="studyPlan"
+            :loading="studyPlanStatus === 'loading'"
+            :error="studyPlanError"
+            :major-name="form.studentContext.targetMajor"
+            :elective-progress="result?.elective_progress ?? []"
+          />
+        </div>
       </SectionCard>
 
+      <!--
+        ⚠️ **统一成绩单入口**（Phase 6，任务 1）：
+           原来 PDF 与图片是两个并列入口，用户要在两处各选一次。
+           现在只有**一个**「上传成绩单」控件，按文件类型自动分流：
+             · PDF   → 原流程（后端 `transcript_pdf_base64`）
+             · 图片  → 本机 OCR → 确认页（后端 `confirmed_completed_courses`）
+           ⛔ 后端接口未改；⛔ 匹配逻辑未改。
+      -->
       <SectionCard
         :mock="false"
         title="第一步：上传成绩单"
-        subtitle="上传中山大学成绩单 PDF，用于识别已修课程。"
+        subtitle="支持 PDF 成绩单，或成绩单图片（图片在本机识别，需你确认识别结果）。"
       >
         <div class="case-a-upload">
           <label class="case-a-file">
-            <span>选择成绩单 PDF</span>
-            <input data-testid="case-a-pdf" type="file" accept="application/pdf,.pdf" @change="chooseTranscript" />
+            <span>选择成绩单文件</span>
+            <input
+              ref="transcriptFileInput"
+              data-testid="case-a-pdf"
+              type="file"
+              :accept="`application/pdf,.pdf,${ACCEPTED_IMAGE_TYPES}`"
+              @change="chooseTranscript"
+            />
           </label>
-          <p v-if="transcript" class="case-a-success">✓ 已选择：{{ transcript.name }}</p>
-          <p class="case-a-secondary">成绩单用于核对你已修读的课程。</p>
+          <p v-if="transcript" class="case-a-success" data-testid="case-a-transcript-pdf-selected">
+            ✓ 已选择 PDF：{{ transcript.name }}
+          </p>
+          <p
+            v-else-if="confirmedImageCourses.length === 0"
+            class="case-a-secondary"
+            data-testid="case-a-transcript-hint"
+          >
+            选择 PDF 将直接读取成绩单；选择图片会先在本机识别，再由你逐条确认。
+          </p>
         </div>
+
+        <!-- 图片识别结果与确认页：只在选择了图片时展开 -->
+        <TranscriptImageImport
+          ref="transcriptImageImport"
+          @update:confirmed="confirmedImageCourses = $event"
+        />
+
+        <p
+          v-if="confirmedImageCourses.length > 0 && !transcript"
+          class="case-a-secondary"
+          data-testid="case-a-transcript-image-confirmed-count"
+        >
+          已确认为成绩单课程 <strong>{{ confirmedImageCourses.length }}</strong> 门，
+          将用于生成方案。
+        </p>
       </SectionCard>
 
       <SectionCard
@@ -588,6 +1393,7 @@ onMounted(loadOfferings)
               <CurrentScheduleList
                 :current-schedule="form.currentSchedule"
                 :attestation-notice="attestationNotice"
+                :unresolved-course-names="unresolvedOriginalCourses"
                 @remove="removeOffering"
                 @clear="clearSchedule"
               />
@@ -658,11 +1464,45 @@ onMounted(loadOfferings)
       </div>
       <p v-if="error" class="state state--error" role="alert">{{ error }}</p>
 
+      <!--
+        ⚠️ 补修确认流程（P1）：提示学生本轮有若干条需要**人工确认**，
+           并说明确认会带来什么变化（→ 已满足 → 从推荐消失），
+           以及确认**不会**重新请求规划服务。⛔ 不伪造"缺失"。
+      -->
+      <p
+        v-if="result && confirmationMatches.length > 0"
+        class="case-a-confirm-notice"
+        data-testid="case-a-confirm-notice"
+      >
+        本次匹配有 <strong>{{ confirmationMatches.length }}</strong> 条培养要求需要你人工确认：
+        请核对它们在「补修缺口分析」中给出的判定理由，判断能否用成绩单课程抵扣。
+        确认后该要求会转为<strong>已满足</strong>并从推荐中移除；
+        ⛔ 确认只更新本页状态，不会重新请求规划服务。
+      </p>
+      <p
+        v-else-if="result && makeupAnalysis.length > 0"
+        class="case-a-confirm-done"
+        data-testid="case-a-confirm-done"
+      >
+        ✓ 本次匹配没有待确认项。
+      </p>
+
       <template v-if="result">
+        <!--
+          ⚠️ 数据来源如实标注（本轮）。
+             「补修缺口分析」的三状态与推荐候选**全部来自后端真实匹配结果**，
+             不再是前端演示配置。这里把该事实明确写在页面上，便于答辩时核对。
+        -->
+        <p class="case-a-source-note" data-testid="case-a-analysis-source">
+          补修分析与推荐基于<strong>学校培养方案匹配结果</strong>生成：
+          {{ result.makeup_tasks?.length ?? 0 }} 条培养要求判定，每条均附带判定理由与可审计依据
+          （培养方案表格行号 + 成绩单行号）。
+        </p>
+
         <SectionCard :mock="false" title="成绩单识别结果" :badge-count="result.transcript.record_count">
           <p>
             已识别 {{ result.transcript.record_count }} 门已修课程，覆盖 {{ result.transcript.term_count }} 个学期。
-            需要你核对的课程已列在下方「课程建议与确认」中。
+            需要你核对的课程已列在下方「补修缺口分析」中。
           </p>
         </SectionCard>
 
@@ -674,13 +1514,48 @@ onMounted(loadOfferings)
             卡片内含「课程识别 / 为什么需要确认 / 纳入后续规划」。
             ⛔ 不再有重复的补修课程列表；⛔ 不改任何数据结构与接口。
         -->
-        <SectionCard :mock="false" title="课程建议与确认" subtitle="转专业后需要你关注的课程，都在这里逐门确认。" tone="primary">
-          <PlanResultPanel
-            :plan-result="result.plan_result"
-            :course-name-by-id="resultCourseNames"
-            :makeup-tasks="result.makeup_tasks"
-            :confirmed-keys="confirmedPlanInputKeys"
-            @update:confirmed-keys="confirmedPlanInputKeys = $event"
+        <!--
+          ⚠️ 信息架构：拆成三个**独立阶段**，全部位于课表之前。
+            ① 补修缺口分析 —— 我转专业后哪些课需要补修 / 哪些历史课能转换
+            ② 推荐选课     —— 根据剩余培养要求，本学期应该学哪些课程
+            ③ 生成后的规划课表 —— 当前课表 + 本学期方案课程，实时合并
+          ⛔ 两者都需要用户操作，但含义完全不同，不再混在一个模块里。
+        -->
+        <SectionCard
+          :mock="false"
+          title="补修缺口分析"
+          subtitle="系统根据培养方案和成绩单，判断哪些课程可能需要补修、哪些历史课程可以转换。"
+          :badge-count="result.makeup_tasks.length"
+        >
+          <MakeupGapAnalysis
+            :items="makeupAnalysis"
+            :confirmed-courses="confirmedMakeupCourses"
+            @confirm="confirmMakeupConversion"
+            @undo="undoMakeupConversion"
+          />
+        </SectionCard>
+
+        <!--
+          ⚠️ **推荐选课（合并）**（Phase 6，任务 2）：
+             原来拆成「必须补修」与「专业选修」两张卡，用户要来回看两处。
+             现在合并为**一个**列表，内部用标签 + 颜色区分来源：
+               A 必须补修 = 后端 `missing`
+               B 建议选修 = 培养方案 `elective_pool`
+             ⛔ 推荐算法、来源、过滤条件**一行未改**；只是展示层合并。
+        -->
+        <SectionCard
+          :mock="false"
+          title="推荐选课"
+          subtitle="按来源分为两类：A 必须补修（培养要求缺口）与 B 建议选修（专业选修池）。"
+          :badge-count="mergedRecommendations.length"
+        >
+          <RecommendedCourses
+            :courses="mergedRecommendations"
+            :selected-courses="selectedSemesterCourses"
+            :reason-for="reasonFor"
+            :tag-for="recommendationTagOf"
+            @confirm="confirmSemesterCourses"
+            @remove="removeSemesterCourse"
           />
         </SectionCard>
 
@@ -691,47 +1566,243 @@ onMounted(loadOfferings)
         -->
         <SectionCard :mock="false" :title="'生成后的规划课表'" subtitle="根据培养要求、课程安排和你的选课偏好生成。最终选课结果请以学校教务系统为准。">
           <p
-            v-if="confirmedPlanInputKeys.length > 0"
+            v-if="selectedSemesterCourses.length > 0"
             class="case-a-plan-linkage"
             data-testid="case-a-plan-linkage"
           >
-            已选择 <strong>{{ confirmedPlanInputKeys.length }}</strong> 门课程将用于后续规划；
-            调整选择后可重新生成以更新本课表。
+            已加入本学期方案 <strong>{{ selectedSemesterCourses.length }}</strong> 门课程，
+            课表已实时更新（⛔ 不需要重新生成方案）。
           </p>
           <WeeklyScheduleView
             :plan-result="result.plan_result"
             :offerings="result.course_offerings"
             :semester="form.semester"
             :current-schedule="form.currentSchedule"
+            :selected-semester-courses="selectedSemesterCourses"
             :makeup-tasks="result.makeup_tasks"
             :preferred-courses="preferredCourses"
           />
         </SectionCard>
 
-        <SectionCard :mock="false" title="调整建议" subtitle="请核对建议的教学班安排，当前课表不会自动改变。">
-          <PendingAdjustments :plan-result="result.plan_result" :course-name-by-id="resultCourseNames" />
-        </SectionCard>
+        <!--
+          ⛔ Phase 7 任务 1：**已删除**「调整建议」展示模块。
+             原因：当前版本**没有实现**教学班调整 / 冲突修复建议
+             （实测 `plan_result.changes` 恒为空 ⇒ 该区块只会显示"本次未返回调整建议"），
+             留着会让评委以为存在未实现的能力。
+             ⚠️ 只删前端展示：⛔ 后端能力（`plan_result.changes` / Path Repair）一行未动，
+             也⛔ 不删 `PendingAdjustments.vue` 组件本身（仍可被其它面板复用）。
+        -->
 
-        <!-- 未来学期：只有后端真的返回 roadmap 时才渲染（⛔ 不补假数据） -->
+        <!--
+          未来学习路径规划（Phase 7 任务 2 · Review 修正）：
+          ⚠️ 由**培养方案推荐学期 + 匹配结果 + 成绩单已修课程**在前端派生
+             （`deriveFutureRoadmap`）。
+          ⛔ 不是未来选课预测：不含教师 / 时间 / 地点 / 教学班。
+          ⛔ 已满足课程**禁止**进入本区块（Review 修正的业务规则）。
+        -->
         <SectionCard
-          v-if="result.roadmap && result.roadmap.semesters.length > 0"
           :mock="false"
-          title="未来学期修读路径"
-          subtitle="课程级规划，不含具体教学班。"
+          title="未来学习路径规划（基于培养方案）"
+          subtitle="根据目标专业培养要求和当前学习状态生成建议修读顺序。不代表未来实际开课安排，不预测教师、时间和教学班。"
         >
-          <FutureRoadmapView :roadmap="result.roadmap" />
-        </SectionCard>
+          <!-- 已修课程读取失败 ⇒ ⛔ 不排期，如实说明（否则会把已修课排进未来） -->
+          <p
+            v-if="completedStatus === 'error'"
+            class="case-a-secondary"
+            data-testid="case-a-roadmap-completed-unavailable"
+          >
+            ⛔ 未能读取成绩单中的<strong>已修课程明细</strong>，因此无法判断哪些培养要求已满足。
+            为避免把已修课程重复排进未来学期，本区块<strong>暂不生成排期</strong>。
+          </p>
 
-        <SectionCard
-          v-else
-          :mock="false"
-          title="未来学习路径规划"
-          subtitle="提前了解转入目标专业后的学习方向。"
-        >
-          <div class="case-a-path-intro">
-            <p>AI 将结合目标专业培养方案和课程安排，帮助你提前了解后续学习方向。</p>
-            <p>当前版本主要展示本学期规划，后续可扩展多学期路径优化。</p>
-          </div>
+          <p
+            v-else-if="completedStatus === 'loading'"
+            class="case-a-secondary"
+            data-testid="case-a-roadmap-completed-loading"
+          >
+            正在读取成绩单中的已修课程…
+          </p>
+
+          <template v-else-if="futureRoadmapAnalysed">
+            <!--
+              ⚠️ 课程完成度五状态（Task 3）。
+                 数字全部来自 `deriveFutureRoadmap` 的状态分类，⛔ 组件内不再判定。
+                 ⚠️ 「进行中」与「已完成」**必须分开**：正在修 ≠ 已经修完。
+            -->
+            <div class="case-a-roadmap-states" data-testid="case-a-roadmap-states">
+              <span class="case-a-roadmap-state case-a-roadmap-state--completed">
+                已完成 <strong>{{ stateCount('completed') }}</strong> 门
+              </span>
+              <span class="case-a-roadmap-state case-a-roadmap-state--in-progress">
+                进行中 <strong>{{ stateCount('in_progress') }}</strong> 门
+              </span>
+              <span class="case-a-roadmap-state case-a-roadmap-state--missing">
+                明确缺口 <strong>{{ stateCount('missing') }}</strong> 门
+              </span>
+              <span class="case-a-roadmap-state case-a-roadmap-state--confirm">
+                待确认 <strong>{{ stateCount('need_confirmation') }}</strong> 门
+              </span>
+              <span class="case-a-roadmap-state case-a-roadmap-state--coverage">
+                培养要求待覆盖 <strong>{{ stateCount('pending_coverage') }}</strong> 门
+              </span>
+            </div>
+
+            <!--
+              ⚠️ 语义收敛（本轮）：以下说明必须逐字展示，避免用户把"待覆盖"误解为
+                 "系统已判断我缺这些课"。
+            -->
+            <p class="case-a-secondary" data-testid="case-a-roadmap-coverage-explain">
+              <strong>培养要求待覆盖</strong>：目标培养方案要求存在，
+              但当前成绩单 / 课表 / 匹配结果<strong>不足以判断是否需要补修</strong>。
+              ⛔ 这不代表系统已判断你缺这些课。
+            </p>
+            <p class="case-a-secondary" data-testid="case-a-roadmap-term-scope">
+              未来规划从 <strong>{{ termLabel(futureRoadmap.startsFromTerm ?? '') }}</strong> 起
+              （当前学期 {{ termLabel(futureRoadmap.currentTerm) }} 已在修课程按「进行中」处理，
+              ⛔ 不重复排入未来学期）。
+            </p>
+
+            <!--
+              毕业要求闭环摘要（Task 2）。
+              ⚠️ 「专业选修」按**学分**给（培养方案给的是学分下限）；
+                 「专业必修 / 公共必修」按**门数 + 学分**给。
+              ⛔ 数字全部来自后端已有字段，前端只做分组统计，⛔ 不计算毕业缺口。
+            -->
+            <div class="case-a-roadmap-summary" data-testid="case-a-roadmap-summary">
+              <p class="case-a-roadmap-summary__title">培养完成情况（依据后端培养方案与匹配结果）</p>
+              <ul class="case-a-roadmap-summary__list">
+                <li
+                  v-for="category in futureRoadmap.categories"
+                  :key="category.key"
+                  :data-testid="`case-a-roadmap-category-${category.key}`"
+                >
+                  <span class="case-a-roadmap-summary__label">{{ category.label }}</span>
+                  <span v-if="category.key === 'elective'">
+                    已完成
+                    <strong>{{ formatCredit(category.completedCredit) }}</strong> 学分 /
+                    要求 <strong>{{ formatCredit(category.requiredCredit) }}</strong> 学分
+                    <span v-if="category.requiredCredit === null" class="case-a-secondary">
+                      （后端未提供选修学分要求）
+                    </span>
+                  </span>
+                  <span v-else>
+                    已完成 <strong>{{ category.completedCount }}</strong> /
+                    总要求 <strong>{{ category.totalCount }}</strong> 门
+                    <span class="case-a-secondary">
+                      （学分 {{ formatCredit(category.completedCredit) }} /
+                      {{ formatCredit(category.requiredCredit) }}）
+                    </span>
+                  </span>
+                </li>
+                <li data-testid="case-a-roadmap-graduation">
+                  <span class="case-a-roadmap-summary__label">毕业设计</span>
+                  <span v-if="hasGraduationProject">待安排（已列入下方学期路径）</span>
+                  <span v-else class="case-a-secondary">培养方案未列出毕业设计</span>
+                </li>
+                <li data-testid="case-a-roadmap-expected-term">
+                  <span class="case-a-roadmap-summary__label">预计培养要求完成时间</span>
+                  <span v-if="futureRoadmap.expectedCompletionTerm">
+                    <strong>{{ termLabel(futureRoadmap.expectedCompletionTerm) }}</strong>
+                    <span class="case-a-secondary">
+                      （按当前培养要求排完的学期估算，⛔ 不是毕业时间预测、
+                      ⛔ 不代表学校实际开课安排）
+                    </span>
+                  </span>
+                  <span v-else class="case-a-secondary">无可排期的培养要求</span>
+                </li>
+              </ul>
+              <p class="case-a-secondary" data-testid="case-a-roadmap-reconciliation">
+                学分对账（仅内部一致性核对，⛔ 不代表学校认可的毕业结论）：
+                必修总量 {{ formatCredit(futureRoadmap.reconciliation.requiredTotalCredit) }} ·
+                已完成 {{ formatCredit(futureRoadmap.reconciliation.completedCredit) }} ·
+                进行中 {{ formatCredit(futureRoadmap.reconciliation.inProgressCredit) }} ·
+                明确缺口 {{ formatCredit(futureRoadmap.reconciliation.missingCredit) }} ·
+                待确认 {{ formatCredit(futureRoadmap.reconciliation.needConfirmationCredit) }} ·
+                培养要求待覆盖 {{ formatCredit(futureRoadmap.reconciliation.pendingCoverageCredit) }}
+                <template v-if="futureRoadmap.reconciliation.balanced">✔ 对账一致</template>
+                <template v-else-if="futureRoadmap.reconciliation.note">
+                  · {{ futureRoadmap.reconciliation.note }}
+                </template>
+                <br />
+                其中本轮已排入未来学期：{{ formatCredit(futureRoadmap.reconciliation.plannedCredit) }} 学分
+                （明确缺口 + 培养要求待覆盖；⛔ 待确认不排期）。
+              </p>
+              <p class="case-a-secondary" data-testid="case-a-roadmap-ordering-note">
+                {{ futureRoadmap.orderingNote }}
+              </p>
+              <p class="case-a-secondary" data-testid="case-a-roadmap-credit-note">
+                {{ futureRoadmap.creditNote }}
+              </p>
+            </div>
+
+            <FutureRoadmapView v-if="futureRoadmapReady" :roadmap="futureRoadmap" />
+
+            <p
+              v-else
+              class="case-a-secondary"
+              data-testid="case-a-roadmap-no-term"
+            >
+              当前没有可排入未来学期的培养要求（未完成的条目都在「待确认」或「待判定」中，
+              需先确认课程认定结果）。
+            </p>
+
+            <!--
+              ⛔ 规则 2：待人工确认的课程**标注但不安排学期**。
+                 这些课既没有成绩单"已通过"证据，后端也没判定为缺失，
+                 因此不能替学生排进任何一个学期。
+            -->
+            <div
+              v-if="futureRoadmap.needConfirmationCourses.length > 0"
+              class="case-a-roadmap-pending"
+              data-testid="case-a-roadmap-need-confirmation"
+            >
+              <p class="case-a-roadmap-pending__head">
+                待人工确认 {{ futureRoadmap.needConfirmationCourses.length }} 门
+                （⛔ 暂不安排学期，需先确认课程认定结果）
+              </p>
+              <ul class="case-a-roadmap-pending__list">
+                <li
+                  v-for="course in futureRoadmap.needConfirmationCourses"
+                  :key="course.course_id"
+                >
+                  {{ course.course_name }}
+                  <span v-if="course.credit !== null">· {{ course.credit }} 学分</span>
+                </li>
+              </ul>
+            </div>
+
+            <!--
+              「培养要求待覆盖」：培养方案要求存在，但依据不足以判断是否需要补修。
+              ⚠️ 这些课**已排入**下方学期路径（需按方案完成），
+                 这里单独列出来是为了让"尚无依据"这件事**保持可见**。
+            -->
+            <div
+              v-if="futureRoadmap.pendingCoverageCourses.length > 0"
+              class="case-a-roadmap-pending case-a-roadmap-pending--coverage"
+              data-testid="case-a-roadmap-pending-coverage"
+            >
+              <p class="case-a-roadmap-pending__head">
+                培养要求待覆盖 {{ futureRoadmap.pendingCoverageCourses.length }} 门
+              </p>
+              <p class="case-a-roadmap-pending__note">
+                目标培养方案要求存在，但当前成绩单 / 课表 / 匹配结果不足以判断是否需要补修。
+                已按培养方案排入下方学期；⛔ 不代表系统已判断你缺这些课。
+              </p>
+              <ul class="case-a-roadmap-pending__list">
+                <li
+                  v-for="course in futureRoadmap.pendingCoverageCourses"
+                  :key="course.course_id"
+                >
+                  {{ course.course_name }}
+                  <span v-if="course.credit !== null">· {{ course.credit }} 学分</span>
+                </li>
+              </ul>
+            </div>
+          </template>
+
+          <p v-else class="case-a-secondary" data-testid="case-a-roadmap-empty">
+            暂无未来学期排期依据（未上传成绩单，或培养方案无可排期的培养要求）。
+          </p>
         </SectionCard>
 
         <SectionCard :mock="false" title="本次规划依据">
@@ -854,6 +1925,59 @@ onMounted(loadOfferings)
   border-radius: var(--radius);
   padding: 8px 10px;
   font-size: 12px;
+}
+
+/* 数据来源如实标注（本轮）：说明补修分析来自后端真实匹配结果 */
+/* 专业选择链：目标专业培养方案面板 */
+.case-a-study-plan-wrap {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.case-a-study-plan-title {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.case-a-source-note,
+.case-a-confirm-notice {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid #bfdbfe;
+  border-radius: var(--radius);
+  background: #f2f7ff;
+  color: #1e293b;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* 补修确认提示：需要用户操作的项，用暖色与"来源说明"区分开 */
+.case-a-confirm-notice {
+  border-color: #f3d9a4;
+  background: #fffbeb;
+  color: #7c4a03;
+}
+
+.case-a-confirm-done {
+  margin: 0;
+  color: #15803d;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* 推荐来源说明：让"必须补修"与"专业选修"在视觉上不可混淆 */
+.case-a-recommend-scope {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border-left: 3px solid #3276df;
+  border-radius: 6px;
+  background: #f7f9fc;
+  color: #33404f;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .case-a-page {
@@ -1216,15 +2340,118 @@ onMounted(loadOfferings)
   font-size: 12px;
 }
 
-.case-a-path-intro p {
+/* 「待人工确认」/「待判定」清单（Phase 7）：⛔ 不安排学期，只如实列出 */
+.case-a-roadmap-states {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.case-a-roadmap-state {
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.case-a-roadmap-state--completed {
+  color: #166534;
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.case-a-roadmap-state--in-progress {
+  color: #1e40af;
+  background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.case-a-roadmap-state--missing {
+  color: #9a3412;
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.case-a-roadmap-state--confirm,
+.case-a-roadmap-state--coverage {
+  color: #7c4a03;
+  background: #fffbeb;
+  border-color: #f3d9a4;
+}
+
+.case-a-roadmap-summary {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #f8fafc;
+}
+
+.case-a-roadmap-summary__title {
   margin: 0 0 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.case-a-roadmap-summary__list {
+  margin: 0 0 8px;
+  padding-left: 0;
+  list-style: none;
   color: #334155;
+  font-size: 12px;
+  line-height: 1.9;
+}
+
+.case-a-roadmap-summary__label {
+  display: inline-block;
+  min-width: 72px;
+  color: #475569;
+  font-weight: 700;
+}
+
+.case-a-roadmap-pending {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border: 1px solid #f3d9a4;
+  border-radius: var(--radius-sm);
+  background: #fffbeb;
+}
+
+.case-a-roadmap-pending--coverage {
+  border-color: var(--border);
+  background: #f8fafc;
+}
+
+.case-a-roadmap-pending__head {
+  margin: 0 0 6px;
+  color: #7c4a03;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.case-a-roadmap-pending__note {
+  margin: 0 0 6px;
+  color: #64748b;
+  font-size: 11px;
   line-height: 1.7;
 }
 
-.case-a-path-intro p:last-child {
-  margin-bottom: 0;
-  color: var(--text-muted);
+.case-a-roadmap-pending--coverage .case-a-roadmap-pending__head {
+  color: #475569;
+}
+
+.case-a-roadmap-pending__list {
+  margin: 0;
+  padding-left: 20px;
+  color: #7c4a03;
+  font-size: 12px;
+  line-height: 1.8;
+}
+
+.case-a-roadmap-pending--coverage .case-a-roadmap-pending__list {
+  color: #475569;
 }
 
 .case-a-planning-basis {

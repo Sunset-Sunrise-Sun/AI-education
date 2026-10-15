@@ -30,6 +30,46 @@ export const CASE_A_DEMO_OFFERINGS_ENDPOINT = `${API_BASE_URL}/api/v1/case-a-dem
 export const CASE_A_DEMO_PLAN_ENDPOINT = `${API_BASE_URL}/api/v1/case-a-demo/plan`
 
 /**
+ * 专业 / 培养方案只读接口（**⛔ 不属于 case-a-demo**）。
+ *
+ * ```text
+ * GET /api/v1/majors                    可用专业列表
+ * GET /api/v1/study-plans/{major_id}    某专业的培养方案
+ * ```
+ *
+ * 未配置专业注册表时后端返回 503 `majors_not_configured`；
+ * 前端按该状态**如实展示**，⛔ 不用演示数据顶替。
+ */
+export const MAJORS_ENDPOINT = `${API_BASE_URL}/api/v1/majors`
+export const STUDY_PLANS_ENDPOINT = `${API_BASE_URL}/api/v1/study-plans`
+
+/**
+ * 成绩单**图片**识别接口（Phase 5）。
+ *
+ * ```text
+ * POST /api/v1/transcript-images/recognize
+ * ```
+ *
+ * ⚠️ 只产出课程**候选**：⛔ 不推断课程号、⛔ 不产生任何 satisfied。
+ * 识别在**本地**完成，图片⛔ 不发往任何第三方。
+ */
+export const TRANSCRIPT_IMAGES_ENDPOINT = `${API_BASE_URL}/api/v1/transcript-images/recognize`
+
+/**
+ * 成绩单 PDF 的**已修课程明细**读取（Phase 7 Review 修正）。
+ *
+ * ```text
+ * POST /api/v1/completed-courses/import-pdf
+ * ```
+ *
+ * ⚠️ 这是**既有**的通用摄取接口（⛔ 不是本轮新增、⛔ 不属于 case-a-demo）。
+ * 存在的理由：`/case-a-demo/plan` 只返回成绩单**摘要**，不返回已修课程明细，
+ * 而未来学习路径必须扣除已修课程，否则已满足的课会重复出现在未来规划里。
+ * ⛔ 该接口不做任何课程认定，只回传成绩单事实。
+ */
+export const COMPLETED_COURSES_PDF_ENDPOINT = `${API_BASE_URL}/api/v1/completed-courses/import-pdf`
+
+/**
  * Real Planning 通道开关。
  *
  * 默认 **关闭**：这只是**演示默认值**（比赛演示不依赖后端已装配的真实输入），
@@ -80,6 +120,16 @@ export const CASE_A_CONTEXT: CaseContext = {
 export interface MajorOption {
   value: string
   label: string
+  /**
+   * **后端专业注册表里的 major_id**（`GET /api/v1/majors` 的 `major_id`）。
+   *
+   * ⚠️ 存在的理由：选项进 `StudentContext` 的是**专业名**（用于展示与
+   *   `studentContext.targetMajor`），而培养方案是按 `major_id` 寻址的。
+   *   两者必须显式对应，⛔ 组件内不得按专业名分叉判断。
+   *
+   * 可选：没有对应培养方案的专业（例如只作为"原专业"出现的专业）不填。
+   */
+  majorId?: string
 }
 
 /**

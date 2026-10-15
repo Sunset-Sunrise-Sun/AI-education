@@ -29,11 +29,21 @@ const props = defineProps<{
    */
   semester: string
   currentSchedule: readonly CourseOffering[]
+  /** 学生本次主动加入「本学期方案」的真实教学班（本地状态）。 */
+  selectedSemesterCourses?: readonly CourseOffering[]
   makeupTasks: readonly MakeupTask[]
   preferredCourses: readonly string[]
 }>()
 
-const view = computed(() => buildWeeklySchedule(props.planResult, props.offerings, props.semester))
+const view = computed(() =>
+  buildWeeklySchedule(
+    props.planResult,
+    props.offerings,
+    props.semester,
+    props.currentSchedule,
+    props.selectedSemesterCourses ?? [],
+  ),
+)
 const isEmpty = computed(() => weeklyScheduleIsEmpty(view.value))
 
 function tagsFor(block: ScheduleBlock): CourseTag[] {
@@ -109,6 +119,31 @@ function blockAt(weekday: number, section: number): ScheduleBlock | null {
               >
                 <div class="weekly__block-head">
                   <strong>{{ blockAt(day.weekday, section)!.courseName }}</strong>
+                  <!--
+                    ⚠️ 修复（P0）：如实标注课块来源。两块都画，但语义不同：
+                       当前课表 = 学生已确认加入的真实教学班；
+                       规划建议 = 后端 selected_classes 返回的建议。
+                       ⛔ 不把"建议"渲染成"已选上"。
+                  -->
+                  <span
+                    :class="[
+                      'weekly__origin',
+                      blockAt(day.weekday, section)!.origin === 'current'
+                        ? 'weekly__origin--current'
+                        : blockAt(day.weekday, section)!.origin === 'planned'
+                          ? 'weekly__origin--planned'
+                          : 'weekly__origin--selected',
+                    ]"
+                    data-testid="case-a-weekly-origin"
+                  >
+                    {{
+                      blockAt(day.weekday, section)!.origin === 'current'
+                        ? '当前课表'
+                        : blockAt(day.weekday, section)!.origin === 'planned'
+                          ? '本学期方案'
+                          : '规划建议'
+                    }}
+                  </span>
                   <span
                     v-for="tag in tagsFor(blockAt(day.weekday, section)!)"
                     :key="tag"
@@ -149,6 +184,37 @@ function blockAt(weekday: number, section: number): ScheduleBlock | null {
 </template>
 
 <style scoped>
+/* ---- 课块来源标签：当前课表 / 本学期方案 / 规划建议（如实区分，三色语义） ----
+   ⚠️ 修复（P0）：这三组规则此前被写在 `</template>` 与 `<style scoped>` **之间**，
+   不属于任何 `<style>` 块，因此从未进入样式表 —— 「来源徽标」在页面上是
+   无颜色、无边框的裸文字，三态视觉语义完全丢失。
+   现已移入本 scoped 样式块。 */
+.weekly__origin {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.weekly__origin--current {
+  border: 1px solid #2e7d32;
+  background: #e8f5e9;
+  color: #1b5e20;
+}
+
+.weekly__origin--planned {
+  border: 1px solid #1a5fb4;
+  background: #e8f0fb;
+  color: #10407a;
+}
+
+.weekly__origin--selected {
+  border: 1px solid #c7d2e0;
+  background: #eef3fa;
+  color: #33404f;
+}
+
 .weekly {
   display: flex;
   flex-direction: column;

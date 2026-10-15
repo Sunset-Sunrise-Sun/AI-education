@@ -355,7 +355,7 @@ describe('Gate E：纯展示细节（meetings=[] / remaining_capacity=None）', 
     })
 
     const text = wrapper.text()
-    expect(text).toContain('本次没有待确认事项')
+    expect(text).toContain('本次没有需要你确认的课程')
     expect(text).not.toContain('可直接执行')
   })
 })
@@ -525,7 +525,7 @@ describe('Gate E：地点 / 空数组语义 / 偏好措辞 / 容量阈值', () =
     const text = wrapper.text()
     expect(text).toContain('未返回调整建议')
     expect(text).toContain('未返回风险提示')
-    expect(text).toContain('本次没有待确认事项')
+    expect(text).toContain('本次没有需要你确认的课程')
 
     const forbiddenClaims = [
       '无风险',

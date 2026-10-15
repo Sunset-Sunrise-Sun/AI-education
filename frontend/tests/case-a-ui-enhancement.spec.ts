@@ -168,13 +168,18 @@ describe('§1 原专业 / 目标专业下拉框', () => {
     expect(step1Index).toBeGreaterThan(majorsIndex)
   })
 
-  it('如实说明范围与"不能相同"', async () => {
+  it('如实说明专业来源与"不能相同"', async () => {
     const wrapper = mountView()
     await flushPromises()
     const note = wrapper.find('[data-testid="case-a-majors-scope"]')
     expect(note.exists()).toBe(true)
-    expect(note.text()).toContain('两个样本专业')
+    // ⚠️ 本轮更新：专业选项改为来自**后端专业注册表**，
+    //    因此旧断言「两个样本专业」已不再成立（那句话现在与实现不符）。
+    //    改为断言"如实说明来源"与"不能相同"这两条**仍然成立**的语义。
+    expect(note.text()).toContain('专业注册表')
     expect(note.text()).toContain('不能相同')
+    // ⛔ 演示/离线选项不得参与匹配，必须在页面上写明
+    expect(note.text()).toContain('不参与匹配')
   })
 
   it('⛔ 未破坏三步向导与手工添加入口', async () => {

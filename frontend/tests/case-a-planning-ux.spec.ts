@@ -30,10 +30,29 @@ import type { CourseOffering, MakeupTask, PlanResult } from '@/types/contracts'
 
 const loadCaseAOfferings = vi.fn()
 const runCaseADemo = vi.fn()
+const loadStudyPlanMock = vi.fn()
+const loadMajorsMock = vi.fn()
+const loadCompletedCoursesMock = vi.fn()
 
 vi.mock('@/api/caseADemo', () => ({
   loadCaseAOfferings: (...args: unknown[]) => loadCaseAOfferings(...args),
   runCaseADemo: (...args: unknown[]) => runCaseADemo(...args),
+}))
+
+// ⛔ 本 spec 不联网：培养方案与成绩单明细全部走 mock
+//    （否则未来学习路径会依赖真实后端，测试既慢又不稳定）。
+vi.mock('@/api/studyPlan', async () => {
+  const actual = await vi.importActual<typeof import('@/api/studyPlan')>('@/api/studyPlan')
+  return {
+    ...actual,
+    loadMajors: (...args: unknown[]) => loadMajorsMock(...args),
+    loadStudyPlan: (...args: unknown[]) => loadStudyPlanMock(...args),
+  }
+})
+
+vi.mock('@/api/completedCourses', () => ({
+  CompletedCoursesApiError: class extends Error {},
+  loadCompletedCourses: (...args: unknown[]) => loadCompletedCoursesMock(...args),
 }))
 
 function offering(
@@ -495,19 +514,436 @@ describe('未来学期修读路径（可接入壳）', () => {
         },
       },
     })
+    // ⚠️ 免责说明（Phase 7 任务 2）：必须写明"基于培养方案要求生成、不代表实际开课安排"
     expect(wrapper.get('[data-testid="case-a-roadmap-disclaimer"]').text()).toContain(
-      '未来学期为基于培养方案的课程级规划',
+      '以上规划基于培养方案要求生成，不代表实际开课安排',
     )
     expect(wrapper.text()).toContain('操作系统 3 学分')
     expect(wrapper.text()).toContain('预计学分：11')
+    // 学期以中文标签展示（2026-2 → 2026秋），并保留原始学期码
+    expect(wrapper.get('[data-testid="case-a-roadmap-term-title"]').text()).toContain('2026秋')
     // ⛔ 未来学期**课程条目**里不得出现任何教学班 / 排课信息
-    // （disclaimer 里那句“具体教学班需以届时教务系统实际开课为准”是允许且要求的）
+    // （disclaimer 里"不预测教师、时间与地点"是允许且要求的）
     const terms = wrapper.findAll('[data-testid="case-a-roadmap-term"]')
     expect(terms).toHaveLength(1)
     const termText = terms[0].text()
     for (const forbidden of ['教学班', '星期', '教室', '容量', '任课教师']) {
       expect(termText).not.toContain(forbidden)
     }
+  })
+
+  it('渲染完成目标（completion_goals），且缺数据时该段不渲染', () => {
+    const wrapper = mount(FutureRoadmapView, {
+      props: {
+        roadmap: {
+          semesters: [
+            {
+              semester: '2026-2',
+              required: [{ course_id: 'CSE310', course_name: '操作系统', credit: 3 }],
+              completion_goals: ['完成 1 门培养要求缺口课程', '修读约 3 学分'],
+            },
+          ],
+        },
+      },
+    })
+    expect(wrapper.get('[data-testid="case-a-roadmap-goals"]').text()).toContain(
+      '完成 1 门培养要求缺口课程',
+    )
+
+    const noGoals = mount(FutureRoadmapView, {
+      props: {
+        roadmap: {
+          semesters: [
+            { semester: '2026-2', required: [{ course_id: 'CSE310', course_name: '操作系统', credit: 3 }] },
+          ],
+        },
+      },
+    })
+    expect(noGoals.find('[data-testid="case-a-roadmap-goals"]').exists()).toBe(false)
+  })
+})
+
+/* -------------------------------------------------------------------------- *
+ * 🔴 Review 回归：已满足课程禁止进入未来规划（页面级）
+ * -------------------------------------------------------------------------- */
+
+describe('🔴 Review 回归：未来规划必须扣除成绩单已修课程', () => {
+  /** 培养方案：线性代数 / 体育（都会被成绩单覆盖）+ 操作系统（真缺口）。 */
+  function roadmapPlan() {
+    const requirement = (
+      courseId: string,
+      courseName: string,
+      credit: number,
+      term: string,
+    ) => ({
+      course_id: courseId,
+      course_name: courseName,
+      credit,
+      requirement: 'required' as const,
+      course_type: '公必',
+      group_id: null,
+      recommended_term_text: term,
+      prerequisites: null,
+      prerequisites_known: false,
+      source_record: `table:1!row:${courseId}`,
+    })
+    return {
+      major_id: 'network-security',
+      name: '网络空间安全',
+      cohort: '2025',
+      version_id: 'major-network-security',
+      source_id: 'case-owner-confirmed://majors/network-security/plan',
+      complete: true,
+      completeness_evidence: null,
+      total_credit: null,
+      counts: { total: 3, required: 3, elective: 0, unknown: 0, prerequisites_unknown: 3 },
+      requirements: [
+        requirement('MA179', '线性代数', 3, '2026-2'),
+        requirement('PE101', '体育', 1, '2026-2'),
+        requirement('CSE301', '操作系统', 3, '2026-2'),
+      ],
+      elective_pool: { groups: [], courses: [] },
+    }
+  }
+
+  beforeEach(() => {
+    loadCaseAOfferings.mockReset().mockResolvedValue([])
+    loadMajorsMock.mockReset().mockResolvedValue([
+      {
+        major_id: 'network-security',
+        name: '网络空间安全',
+        cohort: '2025',
+        version_id: 'major-network-security',
+        source_id: 'case-owner-confirmed://majors/network-security/plan',
+      },
+    ])
+    loadStudyPlanMock.mockReset().mockResolvedValue(roadmapPlan() as never)
+    loadCompletedCoursesMock.mockReset()
+  })
+
+  it('成绩单含线性代数、体育 ⇒ 未来规划**不包含**线性代数与体育', async () => {
+    loadCompletedCoursesMock.mockResolvedValue([
+      { course_name: '线性代数', credit: 3, passed: true },
+      { course_name: '体育', credit: 1, passed: true },
+    ])
+    runCaseADemo.mockResolvedValue({
+      transcript: {
+        source_id: 's',
+        artifact_sha256: 'a'.repeat(64),
+        record_count: 2,
+        term_count: 1,
+        terms: [],
+        pending_course_id_count: 2,
+      },
+      // ⚠️ 关键：后端把**已修**与**未修**都标成 manual_confirmation
+      makeup_tasks: [
+        { course_id: 'MA179', course_name: '线性代数', credit: 3, status: 'manual_confirmation', reason: 'r', source_evidence: 'e' },
+        { course_id: 'PE101', course_name: '体育', credit: 1, status: 'manual_confirmation', reason: 'r', source_evidence: 'e' },
+        { course_id: 'CSE301', course_name: '操作系统', credit: 3, status: 'required', reason: 'r', source_evidence: 'e' },
+      ],
+      course_offerings: [],
+      preference: { preferred_courses: [], avoid_times: [], avoid_cross_campus: false },
+      plan_result: { status: 'partially_feasible', selected_classes: [], changes: [], risks: [], unresolved: [] },
+      provenance: {},
+    } as never)
+
+    const wrapper = mount(CaseADemoView)
+    await flushPromises()
+
+    // 上传 PDF（触发已修课程读取）
+    const pdfInput = wrapper.get('[data-testid="case-a-pdf"]')
+    Object.defineProperty(pdfInput.element, 'files', {
+      value: [new File(['%PDF'], 'transcript.pdf', { type: 'application/pdf' })],
+      configurable: true,
+    })
+    await pdfInput.trigger('change')
+    await flushPromises()
+    expect(loadCompletedCoursesMock).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+    await flushPromises()
+
+    // 🔴 核心断言：已满足课程不得出现在任何未来学期
+    const roadmap = wrapper.get('[data-testid="case-a-future-roadmap"]')
+    const termsText = roadmap.findAll('[data-testid="case-a-roadmap-term"]').map((node) => node.text())
+    for (const termText of termsText) {
+      expect(termText).not.toContain('线性代数')
+      expect(termText).not.toContain('体育')
+    }
+    // ✅ 真缺口仍然排期
+    expect(termsText.join(' ')).toContain('操作系统')
+    // 五状态如实展示：已完成 2 门（线性代数、体育）
+    expect(wrapper.get('[data-testid="case-a-roadmap-states"]').text()).toContain('已完成 2 门')
+  })
+
+  it('✅ 语义收敛：状态标签为「明确缺口 / 待确认 / 培养要求待覆盖」，且带固定说明', async () => {
+    loadCompletedCoursesMock.mockResolvedValue([
+      { course_name: '线性代数', credit: 3, passed: true },
+    ])
+    runCaseADemo.mockResolvedValue({
+      transcript: {
+        source_id: 's',
+        artifact_sha256: 'a'.repeat(64),
+        record_count: 1,
+        term_count: 1,
+        terms: [],
+        pending_course_id_count: 1,
+      },
+      makeup_tasks: [
+        { course_id: 'CSE301', course_name: '操作系统', credit: 3, status: 'manual_confirmation', reason: 'r', source_evidence: 'e' },
+      ],
+      course_offerings: [],
+      preference: { preferred_courses: [], avoid_times: [], avoid_cross_campus: false },
+      plan_result: { status: 'partially_feasible', selected_classes: [], changes: [], risks: [], unresolved: [] },
+      provenance: {},
+    } as never)
+
+    const wrapper = mount(CaseADemoView)
+    await flushPromises()
+    const pdfInput = wrapper.get('[data-testid="case-a-pdf"]')
+    Object.defineProperty(pdfInput.element, 'files', {
+      value: [new File(['%PDF'], 'transcript.pdf', { type: 'application/pdf' })],
+      configurable: true,
+    })
+    await pdfInput.trigger('change')
+    await flushPromises()
+    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+    await flushPromises()
+
+    const states = wrapper.get('[data-testid="case-a-roadmap-states"]').text()
+    expect(states).toContain('明确缺口')
+    expect(states).toContain('待确认')
+    expect(states).toContain('培养要求待覆盖')
+    // ⛔ 不得再出现旧的暗示性措辞
+    expect(states).not.toContain('待判定')
+    expect(states).not.toContain('待补修')
+
+    // ④ 固定说明必须逐字出现
+    const explain = wrapper.get('[data-testid="case-a-roadmap-coverage-explain"]').text()
+    expect(explain).toContain('培养要求待覆盖')
+    expect(explain).toContain('目标培养方案要求存在')
+    expect(explain).toContain('不足以判断是否需要补修')
+    expect(explain).toContain('不代表系统已判断你缺这些课')
+
+    // ⑤ 当前学期语义说明
+    const scope = wrapper.get('[data-testid="case-a-roadmap-term-scope"]').text()
+    expect(scope).toContain('未来规划从')
+    expect(scope).toContain('2026秋')
+    expect(scope).toContain('进行中')
+
+    // ③ 学分摘要：待确认与待覆盖分开列出
+    const recon = wrapper.get('[data-testid="case-a-roadmap-reconciliation"]').text()
+    expect(recon).toContain('待确认')
+    expect(recon).toContain('培养要求待覆盖')
+    expect(recon).toContain('明确缺口')
+
+    // Review 优化 ①：预计完成**不得**表达为毕业预测
+    const expected = wrapper.get('[data-testid="case-a-roadmap-expected-term"]').text()
+    expect(expected).toContain('预计培养要求完成时间')
+    expect(expected).toContain('不是毕业时间预测')
+    // ⛔ 全页不得出现"预计毕业"
+    expect(wrapper.text()).not.toContain('预计毕业')
+
+    // Review 优化 ②：学分口径说明
+    expect(wrapper.get('[data-testid="case-a-roadmap-credit-note"]').text()).toContain(
+      '未做四舍五入',
+    )
+
+    // Review 优化 ③：排序说明只按课程类型，⛔ 无先修假设
+    const ordering = wrapper.get('[data-testid="case-a-roadmap-ordering-note"]').text()
+    expect(ordering).toContain('未提供先修关系')
+    expect(ordering).toContain('仅按课程类型优化顺序')
+  })
+
+  it('✅ 页面文案：标题含「基于培养方案」，且明确不预测教师/时间/教学班', async () => {
+    loadCompletedCoursesMock.mockResolvedValue([
+      { course_name: '线性代数', credit: 3, passed: true },
+    ])
+    runCaseADemo.mockResolvedValue({
+      transcript: {
+        source_id: 's',
+        artifact_sha256: 'a'.repeat(64),
+        record_count: 1,
+        term_count: 1,
+        terms: [],
+        pending_course_id_count: 1,
+      },
+      makeup_tasks: [
+        { course_id: 'CSE301', course_name: '操作系统', credit: 3, status: 'required', reason: 'r', source_evidence: 'e' },
+      ],
+      course_offerings: [],
+      preference: { preferred_courses: [], avoid_times: [], avoid_cross_campus: false },
+      plan_result: { status: 'partially_feasible', selected_classes: [], changes: [], risks: [], unresolved: [] },
+      provenance: {},
+    } as never)
+
+    const wrapper = mount(CaseADemoView)
+    await flushPromises()
+    const pdfInput = wrapper.get('[data-testid="case-a-pdf"]')
+    Object.defineProperty(pdfInput.element, 'files', {
+      value: [new File(['%PDF'], 'transcript.pdf', { type: 'application/pdf' })],
+      configurable: true,
+    })
+    await pdfInput.trigger('change')
+    await flushPromises()
+    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+    await flushPromises()
+
+    const text = wrapper.text()
+    expect(text).toContain('未来学习路径规划（基于培养方案）')
+    expect(text).toContain('不代表未来实际开课安排，不预测教师、时间和教学班')
+    // 毕业要求闭环摘要
+    expect(wrapper.find('[data-testid="case-a-roadmap-summary"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="case-a-roadmap-graduation"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="case-a-roadmap-expected-term"]').exists()).toBe(true)
+    // 先修信息缺失必须如实说明
+    expect(wrapper.get('[data-testid="case-a-roadmap-ordering-note"]').text()).toContain(
+      '未提供先修关系',
+    )
+    // ⛔ 未来学期区块内不得出现教学班 / 教师 / 星期 / 教室
+    const termText = wrapper
+      .findAll('[data-testid="case-a-roadmap-term"]')
+      .map((node) => node.text())
+      .join(' ')
+    for (const forbidden of ['教学班', '星期', '教室', '任课教师']) {
+      expect(termText).not.toContain(forbidden)
+    }
+  })
+
+  it('⛔ 读不到已修课程明细时不排期（避免把已修课排进未来）', async () => {
+    loadCompletedCoursesMock.mockRejectedValue(new Error('boom'))
+    runCaseADemo.mockResolvedValue({
+      transcript: {
+        source_id: 's',
+        artifact_sha256: 'a'.repeat(64),
+        record_count: 0,
+        term_count: 0,
+        terms: [],
+        pending_course_id_count: 0,
+      },
+      makeup_tasks: [
+        { course_id: 'MA179', course_name: '线性代数', credit: 3, status: 'required', reason: 'r', source_evidence: 'e' },
+      ],
+      course_offerings: [],
+      preference: { preferred_courses: [], avoid_times: [], avoid_cross_campus: false },
+      plan_result: { status: 'partially_feasible', selected_classes: [], changes: [], risks: [], unresolved: [] },
+      provenance: {},
+    } as never)
+
+    const wrapper = mount(CaseADemoView)
+    await flushPromises()
+    const pdfInput = wrapper.get('[data-testid="case-a-pdf"]')
+    Object.defineProperty(pdfInput.element, 'files', {
+      value: [new File(['%PDF'], 'transcript.pdf', { type: 'application/pdf' })],
+      configurable: true,
+    })
+    await pdfInput.trigger('change')
+    await flushPromises()
+    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(
+      wrapper.get('[data-testid="case-a-roadmap-completed-unavailable"]').text(),
+    ).toContain('已修课程明细')
+    expect(wrapper.find('[data-testid="case-a-future-roadmap"]').exists()).toBe(false)
+  })
+
+  it('🔴 状态闭环：确认可转换后未来路径**立即重算**（不留旧规划）', async () => {
+    loadCompletedCoursesMock.mockResolvedValue([])
+    runCaseADemo.mockResolvedValue({
+      transcript: {
+        source_id: 's',
+        artifact_sha256: 'a'.repeat(64),
+        record_count: 1,
+        term_count: 1,
+        terms: [],
+        pending_course_id_count: 1,
+      },
+      makeup_tasks: [
+        // 待确认：成绩单有记录但无法自动确认
+        { course_id: 'MA179', course_name: '线性代数', credit: 3, status: 'manual_confirmation', reason: 'r', source_evidence: 'e' },
+      ],
+      course_offerings: [],
+      preference: { preferred_courses: [], avoid_times: [], avoid_cross_campus: false },
+      plan_result: { status: 'partially_feasible', selected_classes: [], changes: [], risks: [], unresolved: [] },
+      provenance: {},
+    } as never)
+
+    const wrapper = mount(CaseADemoView)
+    await flushPromises()
+    const pdfInput = wrapper.get('[data-testid="case-a-pdf"]')
+    Object.defineProperty(pdfInput.element, 'files', {
+      value: [new File(['%PDF'], 'transcript.pdf', { type: 'application/pdf' })],
+      configurable: true,
+    })
+    await pdfInput.trigger('change')
+    await flushPromises()
+    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+    await flushPromises()
+
+    // ① 确认前：待确认 1 门；线性代数**不在**任何未来学期
+    expect(wrapper.get('[data-testid="case-a-roadmap-states"]').text()).toContain('待确认 1 门')
+    const termsText = () =>
+      wrapper.findAll('[data-testid="case-a-roadmap-term"]').map((n) => n.text()).join(' ')
+    expect(termsText()).not.toContain('线性代数')
+    // 「方案要求但无依据」的课仍会排期（见 utils/futureRoadmap.ts 文件头说明）
+    expect(termsText()).toContain('操作系统')
+
+    // ② 用户在「补修缺口分析」里确认可转换
+    await wrapper.get('[data-testid="case-a-makeup-convert"]').trigger('click')
+    await flushPromises()
+
+    // ③ 未来路径**立即重算**：待确认 → 已完成，且该课**仍然不进**未来学期
+    const states = wrapper.get('[data-testid="case-a-roadmap-states"]').text()
+    expect(states).toContain('已完成 1 门')
+    expect(states).toContain('待确认 0 门')
+    expect(termsText()).not.toContain('线性代数')
+  })
+
+  it('🔴 状态闭环：待确认课程在确认后**不再**出现在未来学期（对比：未确认时也不出现）', async () => {
+    // 两门课：一门待确认、一门"方案要求但无依据"（会进未来学期）
+    loadCompletedCoursesMock.mockResolvedValue([])
+    runCaseADemo.mockResolvedValue({
+      transcript: {
+        source_id: 's',
+        artifact_sha256: 'a'.repeat(64),
+        record_count: 1,
+        term_count: 1,
+        terms: [],
+        pending_course_id_count: 1,
+      },
+      makeup_tasks: [
+        { course_id: 'MA179', course_name: '线性代数', credit: 3, status: 'manual_confirmation', reason: 'r', source_evidence: 'e' },
+      ],
+      course_offerings: [],
+      preference: { preferred_courses: [], avoid_times: [], avoid_cross_campus: false },
+      plan_result: { status: 'partially_feasible', selected_classes: [], changes: [], risks: [], unresolved: [] },
+      provenance: {},
+    } as never)
+
+    const wrapper = mount(CaseADemoView)
+    await flushPromises()
+    const pdfInput = wrapper.get('[data-testid="case-a-pdf"]')
+    Object.defineProperty(pdfInput.element, 'files', {
+      value: [new File(['%PDF'], 'transcript.pdf', { type: 'application/pdf' })],
+      configurable: true,
+    })
+    await pdfInput.trigger('change')
+    await flushPromises()
+    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+    await flushPromises()
+
+    const roadmapText = () =>
+      wrapper.findAll('[data-testid="case-a-roadmap-term"]').map((n) => n.text()).join(' ')
+    // 未确认：待确认 ⇒ 不排期 ⇒ 学期区块不含线性代数
+    expect(roadmapText()).not.toContain('线性代数')
+
+    await wrapper.get('[data-testid="case-a-makeup-convert"]').trigger('click')
+    await flushPromises()
+
+    // 已确认：仍然不含（状态从"待确认"变为"已完成"，两者都不排期）
+    expect(roadmapText()).not.toContain('线性代数')
+    expect(wrapper.get('[data-testid="case-a-roadmap-states"]').text()).toContain('已完成 1 门')
   })
 })
 
@@ -627,21 +1063,23 @@ describe('Case A 页面（Phase 1）', () => {
 
     expect(wrapper.find('[data-testid="case-a-weekly-schedule"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="case-a-weekly-block"]')).toHaveLength(1)
-    expect(wrapper.find('[data-testid="case-a-pending-adjustments"]').exists()).toBe(true)
-    expect(wrapper.findAll('[data-testid="case-a-unresolved-row"]')).toHaveLength(1)
-    expect(wrapper.get('[data-testid="case-a-unresolved-row"]').text()).toContain('请选择对应课程或教学班后重新生成方案')
-    // 后端未返回 roadmap：不造课程，只展示后续规划说明。
-    expect(wrapper.find('[data-testid="case-a-future-roadmap"]').exists()).toBe(false)
+    // ⛔ Phase 7 任务 1：「调整建议」展示模块已删除（当前无教学班调整能力）。
+    //    ⚠️ 只删展示：后端 `plan_result.changes` 能力未动。
+    expect(wrapper.find('[data-testid="case-a-pending-adjustments"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('调整建议')
+    // ⚠️ 信息架构调整（本次任务）：拆成三个独立阶段，全部位于课表之前。
+    //    `unresolved` 的课程级确认已并入「补修缺口分析」（数据源 makeup_tasks），
+    //    不再由旧的结果面板渲染。
+    expect(wrapper.find('[data-testid="case-a-makeup-gap"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="case-a-recommend"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('补修缺口分析')
+    expect(wrapper.text()).toContain('推荐选课')
+    // ⚠️ Phase 7 任务 2：未来学习路径改为**前端派生**（培养方案推荐学期 + 匹配结果），
+    //    因此它是否渲染取决于培养方案数据是否可用，而不再取决于后端是否返回 roadmap。
     expect(wrapper.text()).toContain('未来学习路径规划')
-    expect(wrapper.text()).toContain('当前版本主要展示本学期规划')
     expect(wrapper.text()).toContain('本次规划依据')
     expect(wrapper.text()).not.toContain('24成绩单课程')
-    // ⚠️ 信息架构调整：原「你的转专业学习建议」与「补修缺口分析」已**合并**为
-    //    单一的卡片式「课程建议与确认」；规划课表标题改为「生成后的规划课表」。
-    expect(wrapper.text()).toContain('课程建议与确认')
     expect(wrapper.text()).toContain('生成后的规划课表')
-    // ⛔ 不再存在重复的后台式补修列表
-    expect(wrapper.text()).not.toContain('补修缺口分析')
     expect(wrapper.text()).not.toMatch(/Planner|Case A|结构化约束|正式求解约束|字面关键词/i)
   })
 })

@@ -149,69 +149,116 @@ function confirmSelection(): void {
       </div>
     </div>
 
-    <!-- 推荐课程与待确认课程共用一个学生任务区。 -->
+    <!--
+      ⚠️ 产品语义拆分（P0）：
+        原来把「推荐课程」与「需要你确认」混在一个网格里，学生分不清两类。
+        现在拆成**两个子模块**（保持卡片形式与整体 UI 风格不变）：
+          ① 推荐课程   —— AI 建议未来要学的课（有推荐原因 + 纳入规划操作）
+          ② 需要你确认 —— 系统无法判定你是否已修（有确认原因 + 已完成/纳入核对记录）
+        ⛔ 二者都不做自动认定、不自动安排补修。
+    -->
     <section class="plan-section" data-testid="case-a-confirmations">
-      <div class="plan-section__header">
-        <h3 class="plan-section__title">
-          <span class="section-icon">✅</span>
-          课程建议与确认
-        </h3>
-        <span class="plan-section__badge">{{ planResult.selected_classes.length }} 门推荐 · {{ remainingCount }} 项待确认</span>
-      </div>
-      <p class="section-desc">推荐课程和需要你确认的课程统一列在这里。确认不会自动认定课程，也不会自动安排补修。</p>
+      <!-- ① 推荐课程 -->
+      <div class="advice-block" data-testid="case-a-recommended">
+        <div class="plan-section__header">
+          <h3 class="plan-section__title">
+            <span class="section-icon">✅</span>
+            推荐课程
+          </h3>
+          <span class="plan-section__badge">{{ planResult.selected_classes.length }} 门</span>
+        </div>
+        <p class="section-desc">
+          AI 根据你的目标专业培养方案和课程安排，建议你未来需要学习的课程。
+        </p>
 
-      <div v-if="planResult.selected_classes.length || unresolvedItems.length" class="course-advice-grid" data-testid="case-a-course-advice">
-        <article
-          v-for="item in planResult.selected_classes"
-          :key="`${item.course_id}-${item.class_id}`"
-          class="selected-card course-advice-card"
+        <div
+          v-if="planResult.selected_classes.length"
+          class="course-advice-grid"
+          data-testid="case-a-course-advice"
         >
-          <div class="selected-card__meta">
-            <span class="selected-card__course">{{ courseLabel(item.course_id) }}</span>
-            <span class="mono selected-card__class">班号：{{ item.class_id }}</span>
-            <span class="selected-card__reason"><strong>推荐说明：</strong>该课程已进入本次推荐方案，请结合培养要求和当前课表核对教学班安排。</span>
-          </div>
-          <span class="tag tag--selected">推荐课程</span>
-        </article>
-
-        <article
-          v-for="item in unresolvedItems"
-          :key="item.key"
-          class="unresolved-row course-advice-card course-advice-card--confirmation"
-          data-testid="case-a-unresolved-row"
-        >
-          <div class="unresolved-row__main">
-            <strong class="unresolved-row__name" data-testid="case-a-unresolved-name">{{ item.courseName }}</strong>
-            <span v-if="item.courseId" class="unresolved-row__course-id">课程编号：{{ item.courseId }}</span>
-            <span v-if="confirmedSet.has(item.key)" class="unresolved-row__status" data-testid="case-a-unresolved-status">已确认</span>
-          </div>
-          <div class="unresolved-row__reason">
-            <strong>为什么需要确认：</strong>
-            <p>{{ confirmationReason(item.type) }}</p>
-          </div>
-          <label class="confirmation-label">
-            <input v-model="selected" type="checkbox" :value="item.key" :disabled="confirmedSet.has(item.key)" :aria-label="`核对${item.title}`" data-testid="case-a-confirmation-checkbox">
-            <span>{{ confirmedSet.has(item.key) ? '已纳入本次核对记录' : '纳入后续规划' }}</span>
-          </label>
-          <details class="unresolved-row__details">
-            <summary data-testid="case-a-unresolved-details-toggle">查看详情</summary>
-            <p class="unresolved-row__detail">{{ item.message || unresolvedTypeHint(item.type) }}</p>
-            <template v-if="item.evidence.length">
-              <p>系统判断依据</p>
-              <ul><li v-for="(text, i) in item.evidence" :key="i">{{ text }}</li></ul>
-            </template>
-          </details>
-        </article>
+          <article
+            v-for="item in planResult.selected_classes"
+            :key="`${item.course_id}-${item.class_id}`"
+            class="selected-card course-advice-card"
+          >
+            <div class="selected-card__meta">
+              <span class="selected-card__course">{{ courseLabel(item.course_id) }}</span>
+              <span class="mono selected-card__class">班号：{{ item.class_id }}</span>
+              <span class="selected-card__reason">
+                <strong>推荐原因：</strong>该课程已进入本次推荐方案，请结合培养要求和当前课表核对教学班安排。
+              </span>
+            </div>
+            <label class="confirmation-label">
+              <input
+                v-model="selected"
+                type="checkbox"
+                :value="`course:${item.course_id}`"
+                :disabled="confirmedSet.has(`course:${item.course_id}`)"
+                :aria-label="`纳入规划 ${item.course_id}`"
+                data-testid="case-a-recommended-checkbox"
+              />
+              <span>
+                {{ confirmedSet.has(`course:${item.course_id}`) ? '已纳入本次规划' : '纳入规划' }}
+              </span>
+            </label>
+          </article>
+        </div>
+        <p v-else class="empty-state">本次没有推荐课程。</p>
       </div>
-      <p v-else class="empty-state">本次没有待确认事项，也没有推荐课程。</p>
 
-      <div v-if="unresolvedItems.length" class="confirmation-footer">
-        <span role="status" aria-live="polite" data-testid="case-a-confirmation-count">已选择 {{ selected.length }} 项 · 已确认 {{ confirmedCount }} 项</span>
-        <button class="button" type="button" :disabled="!selected.length" data-testid="case-a-confirm-selection" @click="confirmSelection">确认选择</button>
-      </div>
-      <div v-if="confirmedCount" class="confirmation-feedback" data-testid="case-a-confirmation-feedback">
-        <strong>已确认 {{ confirmedCount }} 项</strong>
-        <span>你的核对结果已保留，重新生成方案后仍会继续显示；最终课程认定仍以学校规定为准。</span>
+      <!-- ② 需要你确认 -->
+      <div class="advice-block advice-block--confirm" data-testid="case-a-need-confirm">
+        <div class="plan-section__header">
+          <h3 class="plan-section__title">
+            <span class="section-icon">❓</span>
+            需要你确认
+          </h3>
+          <span class="plan-section__badge">{{ remainingCount }} 项</span>
+        </div>
+        <p class="section-desc">
+          系统无法判断你是否已经完成这些课程，需要你确认自己的历史学习情况。
+        </p>
+
+        <div v-if="unresolvedItems.length" class="course-advice-grid">
+          <article
+            v-for="item in unresolvedItems"
+            :key="item.key"
+            class="unresolved-row course-advice-card course-advice-card--confirmation"
+            data-testid="case-a-unresolved-row"
+          >
+            <div class="unresolved-row__main">
+              <strong class="unresolved-row__name" data-testid="case-a-unresolved-name">{{ item.courseName }}</strong>
+              <span v-if="item.courseId" class="unresolved-row__course-id">课程编号：{{ item.courseId }}</span>
+              <span v-if="confirmedSet.has(item.key)" class="unresolved-row__status" data-testid="case-a-unresolved-status">已确认</span>
+            </div>
+            <div class="unresolved-row__reason">
+              <strong>为什么需要确认：</strong>
+              <p>{{ confirmationReason(item.type) }}</p>
+            </div>
+            <label class="confirmation-label">
+              <input v-model="selected" type="checkbox" :value="item.key" :disabled="confirmedSet.has(item.key)" :aria-label="`已完成 ${item.title}`" data-testid="case-a-confirmation-checkbox">
+              <span>{{ confirmedSet.has(item.key) ? '已纳入核对记录' : '已完成' }}</span>
+            </label>
+            <details class="unresolved-row__details">
+              <summary data-testid="case-a-unresolved-details-toggle">查看详情</summary>
+              <p class="unresolved-row__detail">{{ item.message || unresolvedTypeHint(item.type) }}</p>
+              <template v-if="item.evidence.length">
+                <p>系统判断依据</p>
+                <ul><li v-for="(text, i) in item.evidence" :key="i">{{ text }}</li></ul>
+              </template>
+            </details>
+          </article>
+        </div>
+        <p v-else class="empty-state">本次没有需要你确认的课程。</p>
+
+        <div v-if="unresolvedItems.length" class="confirmation-footer">
+          <span role="status" aria-live="polite" data-testid="case-a-confirmation-count">已选择 {{ selected.length }} 项 · 已确认 {{ confirmedCount }} 项</span>
+          <button class="button" type="button" :disabled="!selected.length" data-testid="case-a-confirm-selection" @click="confirmSelection">确认选择</button>
+        </div>
+        <div v-if="confirmedCount" class="confirmation-feedback" data-testid="case-a-confirmation-feedback">
+          <strong>已确认 {{ confirmedCount }} 项</strong>
+          <span>你的核对结果已保留，重新生成方案后仍会继续显示；最终课程认定仍以学校规定为准。</span>
+        </div>
       </div>
     </section>
 
@@ -304,6 +351,18 @@ function confirmSelection(): void {
 
   </div>
 </template>
+
+/* 两个子模块：推荐课程 / 需要你确认（保持卡片形式，仅做语义分隔） */
+.advice-block + .advice-block {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid #e6ecf3;
+}
+
+/* 推荐课程的纳入规划勾选：与已完成在视觉上同族但不混淆 */
+.advice-block--confirm .confirmation-label span {
+  color: #33404f;
+}
 
 <style scoped>
 .confirmation-label { display: inline-flex; align-items: center; gap: 10px; cursor: pointer; color: #1e40af; font-weight: 700; }

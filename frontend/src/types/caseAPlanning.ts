@@ -29,8 +29,23 @@ export interface FutureRoadmapSemester {
   semester: string
   required?: FutureRoadmapCourse[]
   makeup?: FutureRoadmapCourse[]
+  /**
+   * **培养要求待覆盖**的课程。
+   *
+   * ⚠️ 语义（严格）：培养方案要求存在，但当前成绩单 / 课表 / 匹配结果
+   *   **不足以判断是否需要补修**。⛔ 不代表系统已判断缺课，
+   *   因此⛔ 不能与 `required`（后端明确判定缺口）混为一谈。
+   */
+  pendingCoverage?: FutureRoadmapCourse[]
   elective?: FutureRoadmapCourse[]
   expected_credit?: number | null
+  /**
+   * 该学期的**完成目标**（Phase 7 任务 2）。
+   *
+   * ⚠️ 由前端按"本学期条目 + 培养方案剩余要求"确定性派生（见 `utils/futureRoadmap.ts`），
+   *   ⛔ 不是学校的学期考核要求，页面必须配合免责说明展示。
+   */
+  completion_goals?: string[]
 }
 
 /**

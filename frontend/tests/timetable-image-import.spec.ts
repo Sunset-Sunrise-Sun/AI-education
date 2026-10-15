@@ -65,13 +65,14 @@ describe('课表截图导入确认', () => {
     expect(wrapper.find('[data-testid="case-a-image-result"]').exists()).toBe(true)
     const blocks = wrapper.findAll('[data-testid="case-a-image-block"]')
     expect(blocks.length).toBeGreaterThan(0)
-    // 演示数据首个候选：网络空间安全导论 · 星期二 7-8节
-    expect(wrapper.find('[data-testid="case-a-image-course"]').text()).toContain('网络空间安全导论')
-    expect(wrapper.find('[data-testid="case-a-image-time"]').text()).toMatch(/星期二\s*7-8节/)
+    // 演示数据按真实课表（`中山大学课程表.png`）逐格核对后的首个候选：
+    // 数据结构与算法 · 星期一 3-4节
+    expect(wrapper.find('[data-testid="case-a-image-course"]').text()).toContain('数据结构与算法')
+    expect(wrapper.find('[data-testid="case-a-image-time"]').text()).toMatch(/星期一\s*3-4节/)
     expect(wrapper.find('[data-testid="case-a-image-place"]').text()).toContain('深圳校区')
-    // 摘要：识别成功约 10 门
-    expect(wrapper.find('[data-testid="case-a-image-summary"]').text()).toContain('10')
-    expect(wrapper.findAll('[data-testid="case-a-image-block"]').length).toBe(10)
+    // 摘要：识别成功约 15 门（14 个格位中同一门课占 2 格的情况按格位计）
+    expect(wrapper.find('[data-testid="case-a-image-summary"]').text()).toContain('15')
+    expect(wrapper.findAll('[data-testid="case-a-image-block"]').length).toBe(15)
   })
 
   it('识别结果明确标注为候选、不含课程号与教学班号', async () => {
@@ -100,7 +101,7 @@ describe('课表截图导入确认', () => {
     const block = (emitted as unknown[][])[0][0] as Record<string, unknown>
     // ⚠️ 方案 A：只传出**识别候选本身**（课程名 + 时间），
     //    ⛔ 绝不产生 course_id / class_id / data_source 等 offering 字段。
-    expect(block.courseName).toBe('网络空间安全导论')
+    expect(block.courseName).toBe('数据结构与算法')
     expect(block.courseId ?? null).toBeNull()
     expect(block.classId ?? null).toBeNull()
     expect(block.dataSource ?? null).toBeNull()
@@ -117,7 +118,7 @@ describe('课表截图导入确认', () => {
 
     const search = wrapper.emitted('search') as unknown[][]
     expect(search.length).toBe(1)
-    expect(search[0][0]).toBe('网络空间安全导论')
+    expect(search[0][0]).toBe('数据结构与算法')
     expect(wrapper.emitted('recognize') as unknown[][]).toHaveLength(1)
   })
 
@@ -173,12 +174,12 @@ describe('课表截图导入确认', () => {
 
   // ------------------------------------------------ 未识别课程 → 引导搜索
 
-  it('展示「识别成功 约 10 门」与「未识别 2 门」摘要', async () => {
+  it('展示「识别成功 约 15 门」与「未识别 2 门」摘要', async () => {
     const wrapper = mount(TimetableImageImport, { props: { semester: '2026-1', selected: [] } })
     await upload(wrapper, png())
 
     expect(wrapper.find('[data-testid="case-a-image-summary"]').text()).toContain('识别成功')
-    expect(wrapper.find('[data-testid="case-a-image-summary"]').text()).toContain('10')
+    expect(wrapper.find('[data-testid="case-a-image-summary"]').text()).toContain('15')
     const summary = wrapper.find('[data-testid="case-a-image-unresolved-summary"]')
     expect(summary.text()).toContain('未识别')
     expect(summary.text()).toContain('2')

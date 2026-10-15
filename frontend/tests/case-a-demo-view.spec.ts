@@ -91,10 +91,13 @@ describe('Case A 学生端页面', () => {
     const firstResult = wrapper.get('[data-testid="case-a-search-result"]')
     await firstResult.get('button').trigger('click')
     expect(wrapper.findAll('[data-testid="case-a-current-schedule-item"]')).toHaveLength(1)
-    // ⚠️ 标题变更（最终展示优化）：由「我的当前课表」改为「已确认加入的当前课表」，
-    //    强调这些课程是**用户确认**的结果，⛔ 不是系统自动认定。
-    expect(wrapper.text()).toContain('已确认加入的当前课表（1）')
-    expect(wrapper.text()).toContain('以下课程已通过用户确认加入，将用于后续方案生成。')
+    // ⚠️ 标题与来源说明：课表来自**用户的原始课表**（课表截图识别 + 匹配真实教学班），
+    //    ⛔ 不再写"已通过用户确认加入"（识别结果并非逐条确认），
+    //    ⛔ 也不冒充真实 OCR（识别用演示固定数据）。
+    expect(wrapper.text()).toContain('当前课表（1）')
+    expect(wrapper.get('[data-testid="case-a-original-schedule-note"]').text()).toContain(
+      '你的原始课表',
+    )
     expect(wrapper.get('[data-testid="case-a-current-schedule-item"]').text()).toContain('任课教师：教师0')
 
     await wrapper.get('[data-testid="case-a-current-schedule-item"] button').trigger('click')
@@ -109,5 +112,65 @@ describe('Case A 学生端页面', () => {
     await wrapper.get('[data-testid="case-a-manual-toggle"]').trigger('click')
     expect(wrapper.find('[data-testid="case-a-manual-form"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('本人填写，未经学校系统核验')
+  })
+
+  /**
+   * ⛔ 回归护栏：当前课表里的课程对象必须与后端下发的**逐字段一致**。
+   *
+   * 后端 `/plan` 会校验 `current_schedule` 与已接受的教学班数据完全相同
+   * （`original.model_dump() != item.model_dump()` ⇒ 422）。
+   * 曾经因为给课程对象注入 `demo-seed://…` 的 `source` 而**必然 422**，
+   * 该演示预置功能已按负责人要求**整体删除**；本用例确保不再出现同类改写。
+   */
+  it('⛔ 提交的当前课表对象不得被前端改写（否则后端 422）', async () => {
+    const fixture = offering(1)
+    loadCaseAOfferings.mockResolvedValue([fixture])
+    // ⚠️ 必须给出形状完整的响应：模板会读取 makeup_tasks / transcript 等字段，
+    //    返回 `{}` 会让渲染抛错（那不是被测行为）。
+    runCaseADemo.mockResolvedValue({
+      transcript: {
+        source_id: 's',
+        artifact_sha256: 'a'.repeat(64),
+        record_count: 0,
+        term_count: 0,
+        terms: [],
+        pending_course_id_count: 0,
+      },
+      makeup_tasks: [],
+      course_offerings: [fixture],
+      preference: {},
+      plan_result: {
+        status: 'partially_feasible',
+        selected_classes: [],
+        changes: [],
+        risks: [],
+        unresolved: [],
+      },
+      provenance: {},
+    } as never)
+
+    const wrapper = mount(CaseADemoView)
+    await flushPromises()
+
+    // 用户自己加入一门课
+    await wrapper.get('[data-testid="case-a-offering-search"]').setValue('教师1')
+    await wrapper.get('[data-testid="case-a-search-result"] button').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('[data-testid="case-a-current-schedule-item"]')).toHaveLength(1)
+
+    const pdfInput = wrapper.get('[data-testid="case-a-pdf"]')
+    Object.defineProperty(pdfInput.element, 'files', {
+      value: [new File(['%PDF-1.7'], 'transcript.pdf', { type: 'application/pdf' })],
+      configurable: true,
+    })
+    await pdfInput.trigger('change')
+    await wrapper.get('[data-testid="case-a-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(runCaseADemo).toHaveBeenCalledTimes(1)
+    const sent = (runCaseADemo.mock.calls[0][0] as { currentSchedule: CourseOffering[] })
+      .currentSchedule
+    // ⛔ 逐字段相等（⛔ 不得注入任何前端标记）
+    expect(sent).toEqual([fixture])
   })
 })

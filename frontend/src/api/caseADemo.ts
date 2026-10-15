@@ -2,6 +2,8 @@ import { CASE_A_DEMO_OFFERINGS_ENDPOINT, CASE_A_DEMO_PLAN_ENDPOINT } from '../co
 // ⚠️ roadmap 是**前端集成类型**（见 caseAPlanning.ts），⛔ 不是公共契约。
 import type { FutureRoadmap } from '../types/caseAPlanning'
 import type { CourseOffering, MakeupTask, PlanResult, Preference } from '../types/contracts'
+import type { ElectiveProgress } from '../types/studyPlan'
+import type { ConfirmedCompletedCourseRecord } from './transcriptImages'
 
 export interface CaseADemoResponse {
   transcript: {
@@ -16,6 +18,13 @@ export interface CaseADemoResponse {
   course_offerings: CourseOffering[]
   preference: Preference
   plan_result: PlanResult
+  /**
+   * 课程组学分进度（Phase 4）。
+   *
+   * ⚠️ 由后端 matching 层计算并下发，⛔ 前端不得自行计算剩余学分。
+   * 可选：未提供课程组的方案不会带该字段。
+   */
+  elective_progress?: ElectiveProgress[]
   provenance: {
     transcript: string
     curriculum: string
@@ -104,23 +113,45 @@ async function fileBase64(file: File): Promise<string> {
 }
 
 export async function runCaseADemo(input: {
-  file: File
+  /** 成绩单 PDF 文件；与 `confirmedCourses` **二选一**。 */
+  file?: File | null
+  /** 用户确认后的图片识别课程记录；与 `file` **二选一**。 */
+  confirmedCourses?: readonly ConfirmedCompletedCourseRecord[] | null
   semester: string
   currentSchedule: CourseOffering[]
   manualScheduleAttested: boolean
   preference: Preference
 }): Promise<CaseADemoResponse> {
+  const hasFile = input.file != null
+  const hasConfirmed = (input.confirmedCourses?.length ?? 0) > 0
+  if (hasFile === hasConfirmed) {
+    // ⛔ 前端就挡住：两条入口必须恰好提供一个（后端也会拒绝）。
+    throw new CaseAApiError(
+      '请恰好提供一种成绩单输入（PDF 或图片确认结果）。',
+      null,
+      'transcript_input_ambiguous',
+    )
+  }
+
+  const body: Record<string, unknown> = {
+    semester: input.semester,
+    current_schedule: input.currentSchedule,
+    manual_schedule_attested: input.manualScheduleAttested,
+    preference: input.preference,
+  }
+  if (hasFile) {
+    body.transcript_pdf_base64 = await fileBase64(input.file as File)
+  } else {
+    // ⚠️ 只提交**用户已确认**的记录；⛔ OCR 原始候选结构（row_id/confidence）
+    //    不会出现在这里（后端 `extra="forbid"` 也会拒绝）。
+    body.confirmed_completed_courses = input.confirmedCourses
+  }
+
   return checkedJson<CaseADemoResponse>(
     await fetch(CASE_A_DEMO_PLAN_ENDPOINT, {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        semester: input.semester,
-        transcript_pdf_base64: await fileBase64(input.file),
-        current_schedule: input.currentSchedule,
-        manual_schedule_attested: input.manualScheduleAttested,
-        preference: input.preference,
-      }),
+      body: JSON.stringify(body),
     }),
   )
 }

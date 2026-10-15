@@ -21,6 +21,13 @@ import { compactMeetingLines } from '../utils/weeklySchedule'
 const props = defineProps<{
   currentSchedule: readonly CourseOffering[]
   attestationNotice?: string
+  /**
+   * 原始课表中**未能定位到真实教学班**的课程名（Phase 6）。
+   *
+   * ⚠️ 如实列出，⛔ 不猜、⛔ 不隐藏：这些课来自课表截图的识别结果，
+   *   但本学期教学班库中找不到对应（或缺课程号而多义），需用户自行搜索选择。
+   */
+  unresolvedCourseNames?: readonly string[]
 }>()
 
 const emit = defineEmits<{
@@ -71,9 +78,20 @@ function confirmClear(): void {
 <template>
   <section class="cse__current" data-testid="case-a-current-schedule">
     <header class="cse__current-head">
-      <h3>已确认加入的当前课表（{{ summary.count }}）</h3>
-      <p class="cse__summary-lead">
-        以下课程<strong>已通过用户确认</strong>加入，将用于后续方案生成。
+      <h3>当前课表（{{ summary.count }}）</h3>
+      <!--
+        ⚠️ 来源如实标注：课表里的课来自「上传我的课表截图」的识别结果，
+           已按 课程名 + 星期 匹配到本学期真实教学班。
+           ⛔ 不写"已通过用户确认加入"（识别结果并非用户逐条确认），
+           ⛔ 也不冒充真实 OCR（识别用的是演示固定数据）。
+      -->
+      <p
+        v-if="currentSchedule.length > 0"
+        class="cse__summary-lead"
+        data-testid="case-a-original-schedule-note"
+      >
+        以下课程来自<strong>你的原始课表</strong>（课表截图识别 + 匹配到本学期真实教学班）。
+        ⚠️ 识别使用演示固定数据，⛔ 非真实 OCR；课号 / 时间 / 地点均取自真实教学班数据。
       </p>
       <p class="cse__summary-safe">
         请核对课程的教学班、时间和地点。
@@ -93,7 +111,22 @@ function confirmClear(): void {
 
     <p v-if="currentSchedule.length === 0" class="cse__empty">尚未添加当前课程。</p>
 
-    <ul v-else class="cse__list">
+    <!--
+      ⚠️ 该提示与下方课程列表**互不影响**（⛔ 不能与列表用 v-if/v-else 绑定，
+         否则只要有任何未定位课程，整个课表列表就不渲染 —— 这是已修复的真 bug）。
+    -->
+    <p
+      v-if="(unresolvedCourseNames ?? []).length > 0"
+      class="cse__hint"
+      data-testid="case-a-original-schedule-unresolved"
+    >
+      ⛔ 原始课表中
+      <strong>{{ (unresolvedCourseNames ?? []).length }}</strong> 门课程未能定位到本学期教学班
+      （{{ (unresolvedCourseNames ?? []).join('、') }}）；
+      请用上方搜索自行选择，系统不会替你猜测。
+    </p>
+
+    <ul class="cse__list">
       <li
         v-for="item in visibleSchedule"
         :key="identity(item)"

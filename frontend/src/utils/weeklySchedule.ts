@@ -4,12 +4,20 @@
  * 数据来源**只有**后端已经返回的事实：
  *
  * ```text
+ * current_schedule（学生已确认加入的真实教学班）
+ *        +
  * PlanResult.selected_classes  +  Case A response.course_offerings
  *            └── 通过 semester + course_id + class_id 匹配真实 CourseOffering
  * ```
  *
+ * ⚠️ 修复（P0）：此前只渲染 `selected_classes`，导致"学生已加入课表的课程"
+ *    在生成后的课表里**看不到**（后端 `selected_classes` 可能只含 Planner 建议的
+ *    少数几个班）。现在两块都画，并用 `ScheduleBlock.origin` **如实区分**：
+ *    `current` = 学生已确认加入的当前课表，`selected` = 后端返回的规划建议。
+ *
  * 边界：
  * - ⛔ 不修改 `PlanResult`、⛔ 不新增字段、⛔ 不推断后端没给的课；
+ * - ⛔ 不伪造课程：两块都必须是**真实 CourseOffering**（学生选的或后端给的）；
  * - `selected_classes` 是 Planner 的**建议**，⛔ 不得呈现成"已选上 / 已注册"；
  * - 匹配不到教学班时如实标记为未知，⛔ 不编造时间 / 地点 / 教师；
  * - `meetings = []` 表示"当前数据中无排课信息"，⛔ 不表示没有课、更不表示无冲突。
@@ -34,6 +42,12 @@ export interface ScheduleBlock {
   startSection: number
   endSection: number
   departureWarning: boolean
+  /**
+   * 课块来源（**如实标注**，⛔ 不推断、⛔ 不美化）：
+   * - `current`：学生**已确认加入当前课表**的真实教学班；
+   * - `selected`：后端 `selected_classes` 返回的规划建议教学班。
+   */
+  origin: 'current' | 'selected' | 'planned'
 }
 
 export interface ScheduleDay {
@@ -77,18 +91,23 @@ export function teachingClassIdentity(
 }
 
 /**
- * 由 `PlanResult.selected_classes` 与本学期真实教学班构造周课表。
+ * 由**当前课表** + `PlanResult.selected_classes` + 本学期真实教学班构造周课表。
  *
  * 匹配键为 **semester + course_id + class_id**（教学班身份），**不是**课程号：
  * 同一门课可以只被建议其中一个教学班。
  *
  * `semester` 必须是**本学期的显式规划学期**（Case A 表单 / 请求上下文），
  * ⛔ 不从系统日期推断。
+ *
+ * ⚠️ 修复（P0）：`currentSchedule` 里的真实教学班**必须**一并绘制成 `origin: 'current'`，
+ *   否则学生"已加入当前课表"的课程在生成后的课表里会凭空消失。
  */
 export function buildWeeklySchedule(
   planResult: PlanResult | null,
   offerings: readonly CourseOffering[],
   semester: string,
+  currentSchedule: readonly CourseOffering[] = [],
+  selectedSemesterCourses: readonly CourseOffering[] = [],
 ): WeeklyScheduleView {
   const byIdentity = new Map<string, CourseOffering>()
   for (const offering of offerings) {
@@ -98,17 +117,16 @@ export function buildWeeklySchedule(
 
   const blocks = new Map<number, ScheduleBlock[]>()
   const unmatched: { courseId: string; classId: string }[] = []
+  /** 已经画过的教学班身份，避免同一班被两块重复绘制。 */
+  const drawn = new Set<string>()
 
-  for (const selected of planResult?.selected_classes ?? []) {
-    // 用显式本学期拼出完整身份；只有**同一学期**的教学班才算同一个班。
-    const offering = byIdentity.get(
-      teachingClassIdentity(semester, selected.course_id, selected.class_id),
-    )
-
-    if (!offering) {
-      unmatched.push({ courseId: selected.course_id, classId: selected.class_id })
-      continue
+  /** 把一个真实教学班的所有 meeting 画进课表。 */
+  function draw(offering: CourseOffering, origin: 'current' | 'selected' | 'planned'): void {
+    const key = identityOf(offering)
+    if (drawn.has(key)) {
+      return
     }
+    drawn.add(key)
 
     // 一个教学班可以有多段 meeting；必须全部绘制，⛔ 不能只看第一段。
     for (const meeting of offering.meetings) {
@@ -125,11 +143,51 @@ export function buildWeeklySchedule(
         // 跨校区提醒是**纯事实比较**（同一门课的多段在不同校区），
         // ⛔ 不是冲突判定、⛔ 不是 Planner 结论。
         departureWarning: false,
+        origin,
       }
       const list = blocks.get(meeting.weekday) ?? []
       list.push(block)
       blocks.set(meeting.weekday, list)
     }
+  }
+
+  // ① 学生已确认加入的当前课表（只画明确是真实来源的班，⛔ 不画演示条目）。
+  for (const offering of currentSchedule) {
+    if (offering.data_source !== 'real') {
+      continue
+    }
+    if (!byIdentity.has(identityOf(offering))) {
+      // 当前课表里的班也必须在**本学期教学班数据**中存在，否则不算同一班。
+      continue
+    }
+    draw(offering, 'current')
+  }
+
+  // ② 学生本次主动加入「本学期方案」的课程（本地状态，实时生效）。
+  for (const offering of selectedSemesterCourses) {
+    if (offering.data_source !== 'real') {
+      continue
+    }
+    if (!byIdentity.has(identityOf(offering))) {
+      continue
+    }
+    draw(offering, 'planned')
+  }
+
+  // ② 后端返回的规划建议教学班。
+  for (const selected of planResult?.selected_classes ?? []) {
+    // 用显式本学期拼出完整身份；只有**同一学期**的教学班才算同一个班。
+    const offering = byIdentity.get(
+      teachingClassIdentity(semester, selected.course_id, selected.class_id),
+    )
+
+    if (!offering) {
+      unmatched.push({ courseId: selected.course_id, classId: selected.class_id })
+      continue
+    }
+
+    // 已被 ① 画过的班不再重复绘制（它已经是"当前课表"里的课）。
+    draw(offering, 'selected')
   }
 
   // 同一天内：若同一门课的不同 meeting 落在不同校区，标记为需要注意的通勤点。

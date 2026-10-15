@@ -3,14 +3,17 @@ import { computed } from 'vue'
 import type { FutureRoadmap, FutureRoadmapSemester } from '../types/caseAPlanning'
 
 /**
- * 未来学期修读路径（**可接入式展示壳**）。
+ * 未来学习路径规划（Phase 7 任务 2）。
  *
  * 边界：
- * - ⛔ 本组件**不生成** roadmap：只有后端真的返回了 roadmap 字段才渲染；
+ * - ⛔ 本组件**不生成** roadmap：数据由 `deriveFutureRoadmap()` 从
+ *   **培养方案推荐学期 + 后端匹配结果**派生后传入；
+ * - ⛔ 不是未来选课预测：不显示且不预测 `class_id` / 教师 / 星期 / 节次 / 教室；
  * - 没有数据时**整块不渲染**（⛔ 不显示占位假数据、⛔ 不显示空壳）；
- * - 未来学期只做**课程级**规划：⛔ 不显示 `class_id` / 教师 / 星期 / 节次 / 教室 / 容量；
- * - ⛔ 不推断学期、不推断学分、不排序，按后端给定顺序原样展示。
+ * - 按传入顺序原样展示，⛔ 本组件不再排序、不再改学分。
  */
+import { termLabel } from '../utils/futureRoadmap'
+
 const props = defineProps<{
   roadmap: FutureRoadmap | null | undefined
 }>()
@@ -37,14 +40,20 @@ function expectedCredit(semester: FutureRoadmapSemester): string | null {
   if (semester.expected_credit !== null && semester.expected_credit !== undefined) {
     return String(semester.expected_credit)
   }
-  return groupTotal([...(semester.required ?? []), ...(semester.makeup ?? []), ...(semester.elective ?? [])])
+  return groupTotal([
+    ...(semester.required ?? []),
+    ...(semester.pendingCoverage ?? []),
+    ...(semester.makeup ?? []),
+    ...(semester.elective ?? []),
+  ])
 }
 </script>
 
 <template>
   <div v-if="hasData" class="roadmap" data-testid="case-a-future-roadmap">
     <p class="roadmap__disclaimer" data-testid="case-a-roadmap-disclaimer">
-      未来学期为基于培养方案的课程级规划；具体教学班需以届时教务系统实际开课为准。
+      以上规划基于培养方案要求生成，不代表实际开课安排。
+      ⛔ 不预测未来学期的教师、时间与地点，也不生成具体教学班。
     </p>
 
     <article
@@ -53,20 +62,35 @@ function expectedCredit(semester: FutureRoadmapSemester): string | null {
       class="roadmap__term"
       data-testid="case-a-roadmap-term"
     >
-      <h3 class="roadmap__term-title">{{ semester.semester }}</h3>
+      <h3 class="roadmap__term-title" data-testid="case-a-roadmap-term-title">
+        {{ termLabel(semester.semester) }}
+        <span class="roadmap__term-code">{{ semester.semester }}</span>
+      </h3>
 
       <div v-if="semester.required?.length" class="roadmap__group">
-        <span class="roadmap__group-label">必修</span>
-        <ul class="roadmap__list">
+        <span class="roadmap__group-label">明确缺口（后端判定必修）</span>
+        <ul class="roadmap__list" data-testid="case-a-roadmap-required">
           <li v-for="entry in semester.required" :key="entry.course_id">
             {{ courseLine(entry.course_name, entry.credit) }}
           </li>
         </ul>
       </div>
 
+      <div v-if="semester.pendingCoverage?.length" class="roadmap__group">
+        <span class="roadmap__group-label">培养要求待覆盖</span>
+        <p class="roadmap__group-note" data-testid="case-a-roadmap-pending-coverage-note">
+          目标培养方案要求存在，但当前成绩单 / 课表 / 匹配结果不足以判断是否需要补修。
+        </p>
+        <ul class="roadmap__list" data-testid="case-a-roadmap-term-pending-coverage">
+          <li v-for="entry in semester.pendingCoverage" :key="entry.course_id">
+            {{ courseLine(entry.course_name, entry.credit) }}
+          </li>
+        </ul>
+      </div>
+
       <div v-if="semester.makeup?.length" class="roadmap__group">
-        <span class="roadmap__group-label">补修</span>
-        <ul class="roadmap__list">
+        <span class="roadmap__group-label">待人工确认</span>
+        <ul class="roadmap__list" data-testid="case-a-roadmap-unconfirmed">
           <li v-for="entry in semester.makeup" :key="entry.course_id">
             {{ courseLine(entry.course_name, entry.credit) }}
           </li>
@@ -74,17 +98,24 @@ function expectedCredit(semester: FutureRoadmapSemester): string | null {
       </div>
 
       <div v-if="semester.elective?.length" class="roadmap__group">
-        <span class="roadmap__group-label">选修建议</span>
-        <ul class="roadmap__list">
+        <span class="roadmap__group-label">专业选修建议</span>
+        <ul class="roadmap__list" data-testid="case-a-roadmap-elective">
           <li v-for="entry in semester.elective" :key="entry.course_id">
             {{ courseLine(entry.course_name, entry.credit) }}
           </li>
         </ul>
       </div>
 
-      <p v-if="expectedCredit(semester)" class="roadmap__total">
+      <p v-if="expectedCredit(semester)" class="roadmap__total" data-testid="case-a-roadmap-credit">
         预计学分：{{ expectedCredit(semester) }}
       </p>
+
+      <div v-if="semester.completion_goals?.length" class="roadmap__goals">
+        <span class="roadmap__group-label">完成目标</span>
+        <ul class="roadmap__list" data-testid="case-a-roadmap-goals">
+          <li v-for="goal in semester.completion_goals" :key="goal">{{ goal }}</li>
+        </ul>
+      </div>
     </article>
   </div>
 </template>
@@ -118,9 +149,26 @@ function expectedCredit(semester: FutureRoadmapSemester): string | null {
 }
 
 .roadmap__term-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
   margin: 0;
   color: #3276df;
   font-size: 16px;
+}
+
+.roadmap__term-code {
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.roadmap__goals {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
 }
 
 .roadmap__group {
@@ -133,6 +181,14 @@ function expectedCredit(semester: FutureRoadmapSemester): string | null {
   color: #475569;
   font-size: 12px;
   font-weight: 700;
+}
+
+/* 「培养要求待覆盖」的固定说明（语义收敛要求逐字展示） */
+.roadmap__group-note {
+  margin: 2px 0 4px;
+  color: #64748b;
+  font-size: 11px;
+  line-height: 1.6;
 }
 
 .roadmap__list {

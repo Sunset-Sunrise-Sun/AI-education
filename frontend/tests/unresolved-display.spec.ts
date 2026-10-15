@@ -61,7 +61,8 @@ describe('实际确认交互', () => {
   it('空状态没有假操作按钮', () => {
     const wrapper = panel(plan())
     expect(wrapper.find('[data-testid="case-a-confirm-selection"]').exists()).toBe(false)
-    expect(wrapper.text()).toContain('本次没有待确认事项，也没有推荐课程')
+    expect(wrapper.text()).toContain('本次没有推荐课程')
+    expect(wrapper.text()).toContain('本次没有需要你确认的课程')
   })
   it('勾选与撤回更新计数；确认只改变选中项的本地状态', async () => {
     const value = plan([{ type: 'manual_confirmation', message: 'FL101 请核对' }, { type: 'missing_data', message: 'CSE335 缺少信息' }])
@@ -104,20 +105,36 @@ describe('实际确认交互', () => {
     await wrapper.get('[data-testid="case-a-confirm-selection"]').trigger('click')
     expect(wrapper.text()).toContain('请补充后再生成方案')
     expect(wrapper.text()).toContain('请选择对应课程或教学班后重新生成方案')
-    expect(wrapper.text()).toContain('不会自动认定课程，也不会自动安排补修')
+    // ⚠️ 拆分后每个子模块各自说明自己的边界
+    expect(wrapper.text()).toContain('需要你确认自己的历史学习情况')
     expect(JSON.stringify(value)).toBe(before)
   })
 })
 
 describe('唯一入口与旧结果模块', () => {
-  it('推荐课程和待确认课程在同一个课程建议区域展示', () => {
+  it('推荐课程与需要你确认分列两个子模块，语义不混', () => {
     const value = plan([{ type: 'manual_confirmation', message: 'FL101 请核对' }])
     value.selected_classes = [{ course_id: 'CSE335', class_id: '01' }]
     const wrapper = panel(value)
-    const area = wrapper.get('[data-testid="case-a-course-advice"]')
-    expect(area.text()).toContain('数据库系统原理（CSE335）')
-    expect(area.text()).toContain('大学外语')
-    expect(area.findAll('[data-testid="case-a-confirmation-checkbox"]')).toHaveLength(1)
+
+    // ⚠️ 产品语义拆分（P0）：两类课程各有自己的子模块与标题。
+    const recommended = wrapper.get('[data-testid="case-a-recommended"]')
+    const needConfirm = wrapper.get('[data-testid="case-a-need-confirm"]')
+
+    expect(recommended.text()).toContain('推荐课程')
+    expect(recommended.text()).toContain('数据库系统原理（CSE335）')
+    expect(recommended.text()).toContain('推荐原因')
+    expect(recommended.findAll('[data-testid="case-a-recommended-checkbox"]')).toHaveLength(1)
+    // ⛔ 推荐里不出现"确认类"课程
+    expect(recommended.text()).not.toContain('大学外语')
+
+    expect(needConfirm.text()).toContain('需要你确认')
+    expect(needConfirm.text()).toContain('大学外语')
+    expect(needConfirm.text()).toContain('为什么需要确认')
+    expect(needConfirm.findAll('[data-testid="case-a-confirmation-checkbox"]')).toHaveLength(1)
+    // ⛔ 确认里不出现"推荐类"课程
+    expect(needConfirm.text()).not.toContain('数据库系统原理')
+
     expect(wrapper.text()).not.toContain('待你确认的课程事项')
   })
 
